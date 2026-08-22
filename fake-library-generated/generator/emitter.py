@@ -1,0 +1,225 @@
+"""
+Emit ast trees from protocol dicts.
+
+Pure tree building — no I/O, no imports of the spec. Everything the
+emitter needs arrives in the dict produced by model.extract_service.
+"""
+
+import ast
+
+RUNNER_BY_THREADING = {
+    "affine": "AffineRunner",
+    "pool": "PoolRunner",
+}
+
+
+def _ann(type_str: str, context: str) -> ast.expr:
+    """Parse a type string into an annotation node. Strict: bad IDL types fail loudly."""
+    try:
+        return ast.parse(type_str, mode="eval").body
+    except SyntaxError as e:
+        raise ValueError(f"unparseable annotation {type_str!r} on {context}") from e
+
+
+def service_module(proto: dict) -> ast.Module:
+    svc = proto["service"]
+    runner = RUNNER_BY_THREADING[proto["threading"]]
+
+    mod = ast.Module(body=[], type_ignores=[])
+
+    used_types = {p["type"] for m in proto["methods"] for p in m["params"]}
+    used_types |= {m["return_type"] for m in proto["methods"]}
+    used_types.add("None")  # aclose
+    if "Any" in used_types:
+        mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
+
+    mod.body.append(
+        ast.Expr(
+            value=ast.Constant(
+                value=(
+                    f"Generated async wrapper for {svc} "
+                    f"(threading: {proto['threading']}) - do not edit. "
+                    f"Built via ast at Nix build time."
+                )
+            )
+        )
+    )
+    mod.body.append(ast.ImportFrom(module="spec", names=[ast.alias(name=svc)], level=1))
+    mod.body.append(
+        ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
+    )
+
+    cls = ast.ClassDef(
+        name=f"Async{svc}",
+        bases=[],
+        keywords=[],
+        body=[],
+        decorator_list=[],
+    )
+    cls.body.append(
+        ast.Expr(
+            value=ast.Constant(
+                value=(
+                    f"Async in-process wrapper over {svc}. The object is "
+                    f"constructed lazily on its runner thread."
+                )
+            )
+        )
+    )
+
+    init_kwargs = []
+    if proto["threading"] == "affine":
+        init_kwargs.append(ast.keyword(arg="name", value=ast.Constant(value=f"flg-affine-{svc}")))
+    cls.body.append(
+        ast.FunctionDef(
+            name="__init__",
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg="self")],
+                vararg=ast.arg(arg="args"),
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=ast.arg(arg="kwargs"),
+                defaults=[],
+            ),
+            body=[
+                ast.Assign(
+                    targets=[ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
+                    value=ast.Call(
+                        func=ast.Name(id=runner),
+                        args=[
+                            # Zero-arg lambda closing over this __init__'s
+                            # args/kwargs: lambda: RemoteCat(*args, **kwargs)
+                            ast.Lambda(
+                                args=ast.arguments(
+                                    posonlyargs=[],
+                                    args=[],
+                                    vararg=None,
+                                    kwonlyargs=[],
+                                    kw_defaults=[],
+                                    kwarg=None,
+                                    defaults=[],
+                                ),
+                                body=ast.Call(
+                                    func=ast.Name(id=svc),
+                                    args=[ast.Starred(value=ast.Name(id="args"))],
+                                    keywords=[
+                                        ast.keyword(arg=None, value=ast.Name(id="kwargs"))
+                                    ],
+                                ),
+                            )
+                        ],
+                        keywords=init_kwargs,
+                    ),
+                )
+            ],
+            decorator_list=[],
+            returns=None,
+            type_params=[],
+        )
+    )
+
+    for m in proto["methods"]:
+        params = [ast.arg(arg="self")] + [
+            ast.arg(arg=p["name"], annotation=_ann(p["type"], f"{svc}.{m['name']}:{p['name']}"))
+            for p in m["params"]
+        ]
+        body: list[ast.stmt] = []
+        if m["doc"]:
+            body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
+        body.append(
+            ast.Return(
+                value=ast.Await(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
+                            attr="call",
+                        ),
+                        args=[
+                            ast.Constant(value=m["name"]),
+                            ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]]),
+                        ],
+                        keywords=[],
+                    )
+                )
+            )
+        )
+        cls.body.append(
+            ast.AsyncFunctionDef(
+                name=m["name"],
+                args=ast.arguments(
+                    posonlyargs=[],
+                    args=params,
+                    vararg=None,
+                    kwonlyargs=[],
+                    kw_defaults=[],
+                    kwarg=None,
+                    defaults=[],
+                ),
+                body=body,
+                decorator_list=[],
+                returns=_ann(m["return_type"], f"{svc}.{m['name']}"),
+                type_params=[],
+            )
+        )
+
+    cls.body.append(_aclose_method())
+    mod.body.append(cls)
+    ast.fix_missing_locations(mod)
+    return mod
+
+
+def _aclose_method() -> ast.AsyncFunctionDef:
+    return ast.AsyncFunctionDef(
+        name="aclose",
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg(arg="self", annotation=None)],
+            vararg=None,
+            kwonlyargs=[],
+            kw_defaults=[],
+            kwarg=None,
+            defaults=[],
+        ),
+        body=[
+            ast.Expr(
+                value=ast.Await(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
+                            attr="aclose",
+                        ),
+                        args=[],
+                        keywords=[],
+                    )
+                )
+            )
+        ],
+        decorator_list=[],
+        returns=ast.parse("None", mode="eval").body,
+        type_params=[],
+    )
+
+
+def init_module(service_names: list[str]) -> ast.Module:
+    mod = ast.Module(body=[], type_ignores=[])
+    mod.body.append(
+        ast.Expr(
+            value=ast.Constant(
+                value="Generated async wrappers - do not edit. Built via ast at Nix build time."
+            )
+        )
+    )
+    for name in service_names:
+        fname = f"async_{name.lower()}"
+        mod.body.append(ast.ImportFrom(module=fname, names=[ast.alias(name=f"Async{name}")], level=1))
+    mod.body.append(
+        ast.Assign(
+            targets=[ast.Name(id="__all__")],
+            value=ast.List(
+                elts=[ast.Constant(value=f"Async{n}") for n in service_names]
+            ),
+        )
+    )
+    ast.fix_missing_locations(mod)
+    return mod

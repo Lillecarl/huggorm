@@ -15,17 +15,15 @@ python3Packages.buildPythonPackage {
 
   propagatedBuildInputs = [ fake-library-bindings ];
 
-  # Codegen happens before setuptools builds. We use `ast` (stdlib) so no
-  # extra deps and we get syntax-checked output via ast.unparse.
+  # Codegen runs before setuptools builds. model.py extracts the IDL into
+  # dicts, emitter.py builds ast trees, generate.py writes files. The
+  # smoke test then imports and exercises the fresh package — a broken
+  # generator fails the build here, not downstream.
   preBuild = ''
     echo "=== AST codegen: generating fake_library_generated/ ==="
-    export PYTHONPATH=$PYTHONPATH:${fake-library-bindings}/${python3Packages.python.sitePackages}
+    export PYTHONPATH=$PWD:$PYTHONPATH:${fake-library-bindings}/${python3Packages.python.sitePackages}
     ${python3Packages.python.interpreter} generator/generate.py --out fake_library_generated
-    echo "--- generated files ---"
-    ls -R fake_library_generated
-    echo "--- example output ---"
-    cat fake_library_generated/__init__.py
-    cat fake_library_generated/manifest.json || true
+    ${python3Packages.python.interpreter} generator/smoke_test.py --out fake_library_generated
   '';
 
   pythonImportsCheck = [ "fake_library_generated" ];
