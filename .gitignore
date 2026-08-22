@@ -1,0 +1,37 @@
+# Nix
+result
+result-*
+.direnv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+*.so
+
+# Cython generated
+*.c
+# Keep hand-written .cpp in fake-library, ignore generated C++ next to pyx
+fake-library-bindings/fake_library/*.cpp
+fake-library-bindings/fake_library/*.c
+
+# Meson
+builddir/
+build/
+subprojects/
+
+# Editors
+.vscode/
+.idea/
+*~
+.DS_Store
+
+# Pytest / tools
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
