@@ -9,8 +9,12 @@ import inspect
 from typing import Any, get_type_hints
 
 
-def _annotation_name(ann, empty) -> str:
-    if ann is empty:
+def _annotation_name(ann) -> str:
+    """Stringify one annotation. The empty-check lives HERE so callers
+    can pass either the resolved hint or the raw annotation - passing
+    sig.return_annotation as a 'sentinel' argument was the bug that
+    turned every annotated return into Any."""
+    if ann is inspect.Signature.empty or ann is None:
         return "Any"
     return getattr(ann, "__name__", str(ann))
 
@@ -25,10 +29,10 @@ def extract_method(func) -> dict:
     return {
         "name": func.__name__,
         "params": [
-            {"name": p.name, "type": _annotation_name(hints.get(p.name, p.annotation), p.annotation)}
+            {"name": p.name, "type": _annotation_name(hints.get(p.name, p.annotation))}
             for p in params
         ],
-        "return_type": _annotation_name(hints.get("return", sig.return_annotation), sig.return_annotation),
+        "return_type": _annotation_name(hints.get("return", sig.return_annotation)),
         "doc": inspect.getdoc(func) or "",
     }
 
