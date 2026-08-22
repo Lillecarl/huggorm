@@ -17,16 +17,16 @@ from codegen.emitter import service_module, init_module
 from codegen.model import extract_service, extract_errors
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="output directory for fake_library_generated")
     parser.add_argument("--spec", default="spec", help="spec module name (default: spec)")
     parser.add_argument(
         "--spec-dir",
         default=None,
-        help="directory containing the spec module (default: generator's parent)",
+        help="directory containing the spec module (default: cwd)",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.spec_dir is not None:
         spec_dir = pathlib.Path(args.spec_dir).resolve()

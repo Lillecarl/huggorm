@@ -57,10 +57,10 @@ async def test_behavior():
     await spider.aclose()
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     out = pathlib.Path(args.out).resolve()
 
     test_parse(out)
