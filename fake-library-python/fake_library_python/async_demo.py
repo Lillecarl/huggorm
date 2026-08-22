@@ -28,7 +28,7 @@ async def main():
     print(await spider.crawl(2.5))
     print(await spider.bite("fly"))
 
-    print("\n=== thread affinity (RemoteCat, affine) ===")
+    print("\n=== thread affinity (spec.Cat, affine) ===")
     await cat.greet("a")
     await cat.greet("b")
     await cat.lives_remaining()
@@ -36,7 +36,7 @@ async def main():
     print(f"last call: {cat._runner.last_worker_name}")
     print(f"workers seen: {sorted(cat._runner.workers_seen)}  <- must be exactly 1")
 
-    print("\n=== thread pool (RemoteSpider, pool) ===")
+    print("\n=== thread pool (spec.Spider, pool) ===")
     results = await asyncio.gather(
         spider.crawl(1.0),
         spider.crawl(2.0),
