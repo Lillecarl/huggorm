@@ -69,9 +69,11 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
 
 
 class BaseRunner:
-    def __init__(self, factory):
+    def __init__(self, factory, obj=None):
+        # Either a lazy factory (constructed on first use, on this
+        # runner's thread) or an already-built obj — never both.
         self._factory = factory
-        self._obj = None
+        self._obj = obj
         self._construct_error = None
         self.last_worker_name = None
         self.last_worker_ident = None
@@ -142,3 +144,41 @@ class PoolRunner(BaseRunner):
 
     async def aclose(self):
         return None  # shared pool outlives clients
+
+
+class AttachedRunner(BaseRunner):
+    """
+    Wraps an already-constructed object and runs every operation on
+    ANOTHER runner's executor. Used for affine returned types: the child
+    inherits the producer's dedicated thread, so its ops serialize with
+    the producer's own.
+    """
+
+    def __init__(self, obj, parent: BaseRunner):
+        super().__init__(factory=None, obj=obj)
+        self._parent = parent
+        # Best knowledge: the producer's last worker is where obj was born.
+        self.born_thread_name = parent.last_worker_name
+
+    def _executor(self):
+        return self._parent._executor()
+
+    async def aclose(self):
+        # Nothing to shut down: the executor is shared with the parent,
+        # and the underlying C++ object dies with this wrapper.
+        self._obj = None
+
+
+def attach_runner(obj, parent: BaseRunner, policy: str) -> BaseRunner:
+    """Pick a runner for a returned object based on its declared policy."""
+    if policy == "affine":
+        if isinstance(parent, AffineRunner | AttachedRunner):
+            return AttachedRunner(obj, parent)
+        raise TypeError(
+            "affine return type produced on a pool runner: the object has "
+            "no home thread. Declare it 'pool' or produce it from an "
+            "affine service."
+        )
+    if policy == "pool":
+        return PoolRunner(None, obj=obj)
+    raise ValueError(f"unknown threading policy {policy!r}")

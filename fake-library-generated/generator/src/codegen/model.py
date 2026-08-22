@@ -56,3 +56,32 @@ def extract_errors(spec_mod) -> list[dict]:
         {"name": cls.__name__, "code": getattr(cls, "code", "service_error")}
         for cls in getattr(spec_mod, "ERRORS", [])
     ]
+
+
+def collect_bound_types(service_classes) -> dict:
+    """
+    Find returned types that carry a _threading marker in the binding layer.
+
+    Returns {class: threading} — insertion-ordered, deduplicated. A type
+    participates only if it is defined in a fake_library module (i.e. it is
+    a Cython wrapper) and declares _threading explicitly.
+    """
+    found = {}
+    for cls in service_classes:
+        for name, val in cls.__dict__.items():
+            if not callable(val) or name.startswith("_"):
+                continue
+            try:
+                hints = get_type_hints(val)
+            except Exception:
+                continue
+            ret = hints.get("return")
+            if ret is None or not hasattr(ret, "_threading"):
+                continue
+            if not getattr(ret, "__module__", "").startswith("fake_library"):
+                raise ValueError(
+                    f"{cls.__qualname__}.{name}: return type {ret.__name__} has "
+                    "a _threading marker but is not from the bindings"
+                )
+            found.setdefault(ret, ret._threading)
+    return found

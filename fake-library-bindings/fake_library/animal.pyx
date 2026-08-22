@@ -7,8 +7,8 @@
 # - ONE cdef class Animal holds Animal* and declares every wrapped method
 #   exactly once. Cat/Dog are constructor-only subclasses: they just pick
 #   which C++ object to allocate; all methods inherit through the C++ vtable.
-# - Cython calls only the most-derived __cinit__, so leaf classes allocate
-#   their concrete pointer and never trigger the trampoline path.
+# - Leaves allocate their own C++ object in their own __cinit__
+#   (see Cat/Dog); the base stays leaf-agnostic.
 
 from libcpp.string cimport string
 from cython.operator cimport dereference as deref
@@ -107,19 +107,29 @@ cdef extern from *:
 
 
 # --- One wrapper class; every method declared once ---
+# Allocation rules (docs/userguide/special_methods.rst):
+# - A base __cinit__ ALWAYS runs before the leaf's and can be neither
+#   skipped nor called explicitly. So the base must not allocate here:
+#   any leaf would overwrite it (leak + pinned self-ref), and avoiding
+#   that via type(self) switches would couple the base to its leaves.
+# - Instead: leaves allocate their own C++ object in their own
+#   __cinit__ (see Cat/Dog). The base stays leaf-agnostic.
+# - Python subclasses of Animal have no allocating __cinit__ anywhere in
+#   their chain, so _ptr is still NULL by __init__ time; the base's
+#   __init__ then installs the trampoline. This is why the dealloc and
+#   init paths are NULL-guarded.
 cdef class Animal:
     cdef CAnimal* _ptr
 
-    def __cinit__(self, str name=""):
-        # Only reached when no __cinit__ override allocated a concrete
-        # object — i.e. direct instantiation or a Python subclass.
-        if type(self) is Animal:
-            raise TypeError("Animal is abstract; subclass it and implement speak()/legs()")
-        cdef string c_name = name.encode('utf-8')
-        self._ptr = new PyAnimal(c_name, <object>self)
+    def __init__(self, str name=""):
+        cdef string c_name
+        if self._ptr == NULL:
+            c_name = name.encode('utf-8')
+            self._ptr = new PyAnimal(c_name, <object>self)
 
     def __dealloc__(self):
-        del self._ptr
+        if self._ptr != NULL:
+            del self._ptr
 
     # Virtual dispatch through Animal*. For plain wrappers this hits the
     # C++ impl; for Python subclasses _ptr is the PyAnimal trampoline,
@@ -163,9 +173,9 @@ cdef class Animal:
         return f"{type(self).__name__}(name={self.name!r})"
 
 
-# --- Constructor-only subclasses ---
-# All methods inherited; only allocation differs. The base's trampoline
-# __cinit__ is NOT called for these (Cython runs the most-derived one).
+# --- Concrete subclasses ---
+# Each leaf allocates its own C++ object in its own __cinit__. The base
+# contributes nothing to the chain (see the note above Animal).
 
 cdef class Cat(Animal):
     def __cinit__(self, str name):

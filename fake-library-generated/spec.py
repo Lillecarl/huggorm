@@ -10,7 +10,7 @@ you import the generated stubs from fake_library_generated — they are
 already present via Nix propagatedBuildInputs.
 """
 
-from fake_library import Animal
+from fake_library import Animal, Ball, Poop
 from fake_library import Cat as _Cat
 
 # Simple marker — replicated from fake_library_python.rpc.rpc but kept
@@ -86,6 +86,16 @@ class Cat(_Cat):
     def lives_remaining(self) -> int:
         """Hypothetical RPC method."""
         return 9
+
+    @rpc
+    def poop(self) -> Poop:
+        """Produce poop. Returned type is affine: its ops run on this cat's thread."""
+        return super().poop()
+
+    @rpc
+    def toy(self) -> Ball:
+        """Produce a toy. Returned type is thread-safe (pool)."""
+        return super().toy()
 
 
 @rpc_service(threading="pool")

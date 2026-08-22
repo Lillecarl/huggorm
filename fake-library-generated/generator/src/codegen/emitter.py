@@ -21,8 +21,12 @@ def _ann(type_str: str, context: str) -> ast.expr:
         raise ValueError(f"unparseable annotation {type_str!r} on {context}") from e
 
 
-def service_module(proto: dict) -> ast.Module:
+def service_module(proto: dict, bound_policies: dict[str, str] | None = None) -> ast.Module:
+    """Emit Async<Svc>. bound_policies maps returned-type names to their
+    declared threading policy; those methods adopt the produced object
+    into an attached runner instead of returning it raw."""
     svc = proto["service"]
+    bound_policies = bound_policies or {}
     runner = RUNNER_BY_THREADING[proto["threading"]]
 
     mod = ast.Module(body=[], type_ignores=[])
@@ -32,6 +36,15 @@ def service_module(proto: dict) -> ast.Module:
     used_types.add("None")  # aclose
     if "Any" in used_types:
         mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
+    bound_used = {m["return_type"] for m in proto["methods"] if m["return_type"] in bound_policies}
+    for name in sorted(bound_used):
+        mod.body.append(
+            ast.ImportFrom(
+                module=f"async_{name.lower()}",
+                names=[ast.alias(name=f"Async{name}")],
+                level=1,
+            )
+        )
 
     mod.body.append(
         ast.Expr(
