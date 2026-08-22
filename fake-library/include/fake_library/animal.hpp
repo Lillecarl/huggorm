@@ -4,6 +4,30 @@
 
 namespace fake_library {
 
+// Stateful value produced by animals. NOT thread-safe: carries mutable
+// state, so all access must happen on the producer's thread.
+class Poop {
+public:
+    explicit Poop(std::string producer);
+    // Mutates: counts inspections.
+    std::string describe();
+    int inspections() const;
+
+private:
+    std::string producer_;
+    int inspections_;
+};
+
+// Immutable value. THREAD-SAFE: const-only access, no mutable state.
+class Ball {
+public:
+    explicit Ball(std::string color);
+    std::string describe() const;
+
+private:
+    std::string color_;
+};
+
 // Base class with pure virtual methods.
 // Cython will wrap this and allow Python to subclass it.
 class Animal {
@@ -21,6 +45,12 @@ public:
 
     // Throws std::invalid_argument for unknown items — tests C++ -> Python exception propagation
     std::string fetch(const std::string &item) const;
+
+    // Produces a thread-unsafe value owned by this animal's context.
+    Poop poop() const;
+
+    // Produces a thread-safe value.
+    Ball toy() const;
 
 private:
     std::string name_;

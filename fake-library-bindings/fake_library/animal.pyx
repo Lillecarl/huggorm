@@ -11,8 +11,44 @@
 #   their concrete pointer and never trigger the trampoline path.
 
 from libcpp.string cimport string
-cimport fake_library.c_animal as c_animal
 from cython.operator cimport dereference as deref
+
+# --- The C++ API, declared in place ---
+# Cython cannot read fake_library/animal.hpp, so the API is described here
+# in Cython syntax. This is the hand-written binding surface; it used to
+# live in c_animal.pxd, but with a single module the pxd was pure
+# indirection. Cython-side names get a C prefix to avoid clashing with the
+# wrapper classes below; the quoted strings are the real C++ names.
+cdef extern from "fake_library/animal.hpp":
+    # Quoted names must be fully qualified: they are emitted verbatim
+    # into generated C++ that lives outside the library's namespace.
+    cdef cppclass CAnimal "fake_library::Animal":
+        CAnimal(string name)
+        string get_name() const
+        void set_name(const string& name)
+        string speak() const
+        int legs() const
+        # except + converts any C++ exception thrown here into a Python exception
+        string fetch(const string& item) except +
+        CPoop poop() const
+        CBall toy() const
+
+    cdef cppclass CCat "fake_library::Cat"(CAnimal):
+        CCat(string name)
+
+    cdef cppclass CDog "fake_library::Dog"(CAnimal):
+        CDog(string name)
+
+    cdef cppclass CPoop "fake_library::Poop":
+        CPoop(string producer)
+        string describe()
+        int inspections() const
+
+    cdef cppclass CBall "fake_library::Ball":
+        CBall(string color)
+        string describe() const
+
+    string describe_animal(const CAnimal& animal)
 
 # --- Trampoline: C++ class that forwards virtuals to Python ---
 cdef extern from *:
@@ -66,13 +102,13 @@ cdef extern from *:
         }
     };
     """
-    cdef cppclass PyAnimal(c_animal.Animal):
+    cdef cppclass PyAnimal(CAnimal):
         PyAnimal(string name, object self)
 
 
 # --- One wrapper class; every method declared once ---
 cdef class Animal:
-    cdef c_animal.Animal* _ptr
+    cdef CAnimal* _ptr
 
     def __cinit__(self, str name=""):
         # Only reached when no __cinit__ override allocated a concrete
@@ -95,8 +131,24 @@ cdef class Animal:
         return self._ptr.legs()
 
     def fetch(self, str item) -> str:
-        # C++ exceptions convert via `except +` in c_animal.pxd
+        # C++ exceptions convert via the `except +` above
         return self._ptr.fetch(item.encode('utf-8')).decode('utf-8')
+
+    def poop(self) -> Poop:
+        """Adopt a C++-created Poop. The wrapper is created here but the
+        C++ object was born on whatever thread runs this method — callers
+        must keep invoking it there (the async layer enforces this)."""
+        cdef Poop p = Poop.__new__(Poop)
+        p._ptr = new CPoop(self._ptr.get_name())
+        # C++ returns Poop by value; move it into the wrapper's allocation.
+        p._ptr[0] = self._ptr.poop()
+        return p
+
+    def toy(self) -> Ball:
+        cdef Ball b = Ball.__new__(Ball)
+        b._ptr = new CBall(self._ptr.get_name())
+        b._ptr[0] = self._ptr.toy()
+        return b
 
     @property
     def name(self) -> str:
@@ -118,13 +170,53 @@ cdef class Animal:
 cdef class Cat(Animal):
     def __cinit__(self, str name):
         cdef string c_name = name.encode('utf-8')
-        self._ptr = new c_animal.Cat(c_name)
+        self._ptr = new CCat(c_name)
 
 
 cdef class Dog(Animal):
     def __cinit__(self, str name):
         cdef string c_name = name.encode('utf-8')
-        self._ptr = new c_animal.Dog(c_name)
+        self._ptr = new CDog(c_name)
+
+
+# --- Adopted value types ---
+# Never constructed by Python directly: instances come from Animal methods
+# via __new__ (which skips __init__). The _threading marker tells the
+# codegen how returned instances may be accessed:
+#   "affine" - mutable state; ops must run on the producer's thread
+#   "pool"   - safe on any thread
+
+cdef class Poop:
+    _threading = "affine"
+
+    cdef CPoop* _ptr
+
+    def __init__(self):
+        raise TypeError("Poop instances are produced by animals, not constructed")
+
+    def __dealloc__(self):
+        del self._ptr
+
+    def describe(self) -> str:
+        return self._ptr.describe().decode('utf-8')
+
+    def inspections(self) -> int:
+        return self._ptr.inspections()
+
+
+cdef class Ball:
+    _threading = "pool"
+
+    cdef CBall* _ptr
+
+    def __init__(self):
+        raise TypeError("Ball instances are produced by animals, not constructed")
+
+    def __dealloc__(self):
+        del self._ptr
+
+    def describe(self) -> str:
+        return self._ptr.describe().decode('utf-8')
 
 
 def describe(obj) -> str:
@@ -133,5 +225,5 @@ def describe(obj) -> str:
     subclasses of Animal), not on plain-Python overrides of Cat/Dog."""
     if not isinstance(obj, Animal):
         raise TypeError(f"describe() expects an Animal, got {type(obj)}")
-    cdef string res = c_animal.describe_animal(deref((<Animal>obj)._ptr))
+    cdef string res = describe_animal(deref((<Animal>obj)._ptr))
     return res.decode('utf-8')

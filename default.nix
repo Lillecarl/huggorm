@@ -2,6 +2,7 @@
   pkgs ? import <nixpkgs> { },
 }:
 rec {
+  inherit pkgs;
   # fake-library should be a C++ project with "complex types", it doesn't have to do anything useful
   fake-library = pkgs.callPackage ./fake-library { };
   # this is Cython bindings into fake-library, should contain pxd and pyx (I believe)

@@ -1,3 +1,3 @@
-from .animal import Animal, Cat, Dog, describe
+from .animal import Animal, Ball, Cat, Dog, Poop, describe
 
-__all__ = ["Animal", "Cat", "Dog", "describe"]
+__all__ = ["Animal", "Ball", "Cat", "Dog", "Poop", "describe"]
