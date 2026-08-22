@@ -3,6 +3,7 @@
   python3Packages,
   fake-library,
   fake-library-bindings,
+  fake-library-generated,
   ...
 }:
 python3Packages.buildPythonPackage {
@@ -13,7 +14,15 @@ python3Packages.buildPythonPackage {
 
   build-system = with python3Packages; [ setuptools ];
 
-  propagatedBuildInputs = [ fake-library-bindings ];
+  # generated is propagated so anyone writing code in/downstream of
+  # fake-library-python sees fake_library_generated in their environment.
+  propagatedBuildInputs = [
+    fake-library-bindings
+    fake-library-generated
+  ];
 
-  pythonImportsCheck = [ "fake_library_python" ];
+  pythonImportsCheck = [
+    "fake_library_python"
+    "fake_library_generated"
+  ];
 }

@@ -10,6 +10,12 @@ rec {
   fake-library-python = pkgs.callPackage ./fake-library-python {
     inherit fake-library;
     inherit fake-library-bindings;
+    inherit fake-library-generated;
+  };
+  # AST codegen layer between bindings and python: spec.py (IDL) -> generated stubs
+  fake-library-generated = pkgs.callPackage ./fake-library-generated {
+    inherit fake-library;
+    inherit fake-library-bindings;
   };
   # nix run --file . python -- $args
   # to be able to run Python commands
@@ -20,6 +26,7 @@ rec {
     ps: with ps; [
       cython
       fake-library-bindings
+      fake-library-generated
       fake-library-python
     ]
   );

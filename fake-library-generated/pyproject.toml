@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fake-library-generated"
+version = "0.1.0"
+description = "Generated RPC stubs for fake-library (AST codegen)"
+requires-python = ">=3.10"
+dependencies = ["fake-library-bindings"]
+
+[tool.setuptools.packages.find]
+include = ["fake_library_generated*"]
+
+[tool.setuptools.package-data]
+fake_library_generated = ["manifest.json"]
