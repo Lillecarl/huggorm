@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
 """
 CLI: load the spec, emit the package, write the manifest.
 
 Glue only — extraction lives in model.py, emission in emitter.py.
+Installed as the `codegen-generate` entry point.
 """
 
 import argparse
@@ -13,18 +13,25 @@ import pathlib
 import shutil
 import sys
 
-from emitter import service_module, init_module
-from model import extract_service, extract_errors
+from codegen.emitter import service_module, init_module
+from codegen.model import extract_service, extract_errors
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="output directory for fake_library_generated")
     parser.add_argument("--spec", default="spec", help="spec module name (default: spec)")
+    parser.add_argument(
+        "--spec-dir",
+        default=None,
+        help="directory containing the spec module (default: generator's parent)",
+    )
     args = parser.parse_args()
 
-    # spec.py sits next to generator/
-    spec_dir = pathlib.Path(__file__).resolve().parent.parent
+    if args.spec_dir is not None:
+        spec_dir = pathlib.Path(args.spec_dir).resolve()
+    else:
+        spec_dir = pathlib.Path.cwd()
     if str(spec_dir) not in sys.path:
         sys.path.insert(0, str(spec_dir))
 

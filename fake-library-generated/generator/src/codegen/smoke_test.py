@@ -1,7 +1,6 @@
-#!/usr/bin/env python3
 """
-Verify the freshly generated package. Runs inside the Nix build,
-right after generate.py, stdlib only:
+Verify the freshly generated package. Installed as the `codegen-smoke`
+entry point; runs after codegen-generate, stdlib only:
 
 1. every emitted .py parses
 2. the package imports and __all__ matches
