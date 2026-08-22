@@ -51,6 +51,16 @@ async def main():
     both = await asyncio.gather(cat.greet("x"), spider.crawl(9.9))
     print(f"{both}")
 
+    print("\n=== returned values inherit threading ===")
+    poop = await cat.poop()
+    ball = await cat.toy()
+    print(await poop.describe())
+    print(await poop.describe())
+    print(f"poop workers: {sorted(poop._runner.workers_seen)} (cat's: {sorted(cat._runner.workers_seen)})")
+    print(f"inspections: {await poop.inspections()}")
+    print(f"{await ball.describe()} on {sorted(ball._runner.workers_seen)}")
+    await asyncio.gather(poop.aclose(), ball.aclose())
+
     print("\n=== typed error passes through untouched ===")
     try:
         await cat.greet("")

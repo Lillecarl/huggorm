@@ -13,8 +13,8 @@ import pathlib
 import shutil
 import sys
 
-from codegen.emitter import service_module, init_module
-from codegen.model import extract_service, extract_errors
+from codegen.emitter import service_module, bound_module, init_module
+from codegen.model import extract_service, extract_errors, collect_bound_types
 
 
 def main(argv=None):
@@ -44,25 +44,38 @@ def main(argv=None):
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
+    # Returned value types: discovered from _threading markers on the
+    # binding classes that service methods return.
+    bound_classes = collect_bound_types(services)
+    bound_protos = [extract_service(cls) for cls in bound_classes]
+    bound_policies = {p["service"]: p["threading"] for p in bound_protos}
+
+    for proto in bound_protos:
+        fname = f"async_{proto['service'].lower()}.py"
+        code = ast.unparse(bound_module(proto))
+        (out / fname).write_text(code + "\n")
+        print(f"generated {fname} for returned type {proto['service']} ({proto['threading']})")
+
     protos = [extract_service(svc) for svc in services]
     for proto in protos:
         fname = f"async_{proto['service'].lower()}.py"
-        code = ast.unparse(service_module(proto))
+        code = ast.unparse(service_module(proto, bound_policies))
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for {proto['service']} ({proto['threading']})")
 
-    names = [p["service"] for p in protos]
-    (out / "__init__.py").write_text(ast.unparse(init_module(names)) + "\n")
+    all_names = [p["service"] for p in bound_protos] + [p["service"] for p in protos]
+    (out / "__init__.py").write_text(ast.unparse(init_module(all_names)) + "\n")
 
     manifest = {
         "schema": 1,
         "services": {p["service"]: p for p in protos},
+        "bound_types": {p["service"]: p for p in bound_protos},
         "errors": extract_errors(spec_mod),
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
-        f"wrote manifest ({len(protos)} services, {len(manifest['errors'])} errors) "
-        f"to {out / 'manifest.json'}"
+        f"wrote manifest ({len(protos)} services, {len(bound_protos)} bound types, "
+        f"{len(manifest['errors'])} errors) to {out / 'manifest.json'}"
     )
 
     shutil.copy(spec_dir / f"{args.spec}.py", out / "spec.py")

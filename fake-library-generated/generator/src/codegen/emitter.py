@@ -21,6 +21,138 @@ def _ann(type_str: str, context: str) -> ast.expr:
         raise ValueError(f"unparseable annotation {type_str!r} on {context}") from e
 
 
+def bound_module(proto: dict) -> ast.Module:
+    """
+    Emit Async<Bound> for a returned value type (e.g. Poop).
+
+    Constructed with (obj, runner): the object was already produced on
+    the producer's thread; attach_runner picks the right execution
+    strategy from the type's declared policy.
+    """
+    svc = proto["service"]
+    policy = proto["threading"]
+
+    mod = ast.Module(body=[], type_ignores=[])
+    used = {m["return_type"] for m in proto["methods"]} | {p["type"] for m in proto["methods"] for p in m["params"]}
+    if "Any" in used:
+        mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
+    mod.body.append(
+        ast.Expr(
+            value=ast.Constant(
+                value=(
+                    f"Generated async wrapper for returned type {svc} "
+                    f"(threading: {policy}) - do not edit."
+                )
+            )
+        )
+    )
+    mod.body.append(
+        ast.ImportFrom(module="_runtime", names=[ast.alias(name="attach_runner")], level=1)
+    )
+
+    cls = ast.ClassDef(name=f"Async{svc}", bases=[], keywords=[], body=[], decorator_list=[])
+    cls.body.append(
+        ast.Expr(
+            value=ast.Constant(
+                value=(
+                    f"Async handle over a {svc} produced by a service. "
+                    f"Policy '{policy}': "
+                    + (
+                        "operations run on the producer's thread."
+                        if policy == "affine"
+                        else "operations may run on any pool thread."
+                    )
+                )
+            )
+        )
+    )
+    cls.body.append(
+        ast.FunctionDef(
+            name="__init__",
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg="self"), ast.arg(arg="obj"), ast.arg(arg="runner")],
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[],
+            ),
+            body=[
+                ast.Assign(
+                    targets=[ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
+                    value=ast.Call(
+                        func=ast.Name(id="attach_runner"),
+                        args=[
+                            ast.Name(id="obj"),
+                            ast.Name(id="runner"),
+                            ast.Constant(value=policy),
+                        ],
+                        keywords=[],
+                    ),
+                )
+            ],
+            decorator_list=[],
+            returns=None,
+            type_params=[],
+        )
+    )
+
+    mod.body.append(cls)
+    _append_methods_and_aclose(cls, proto, svc)
+    ast.fix_missing_locations(mod)
+    return mod
+
+
+def _append_methods_and_aclose(cls: ast.ClassDef, proto: dict, svc: str):
+    for m in proto["methods"]:
+        params = [ast.arg(arg="self")] + [
+            ast.arg(arg=p["name"], annotation=_ann(p["type"], f"{svc}.{m['name']}:{p['name']}"))
+            for p in m["params"]
+        ]
+        body: list[ast.stmt] = []
+        if m["doc"]:
+            body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
+        body.append(_hop_return(m["name"], m["params"]))
+        cls.body.append(
+            ast.AsyncFunctionDef(
+                name=m["name"],
+                args=ast.arguments(
+                    posonlyargs=[],
+                    args=params,
+                    vararg=None,
+                    kwonlyargs=[],
+                    kw_defaults=[],
+                    kwarg=None,
+                    defaults=[],
+                ),
+                body=body,
+                decorator_list=[],
+                returns=_ann(m["return_type"], f"{svc}.{m['name']}"),
+                type_params=[],
+            )
+        )
+    cls.body.append(_aclose_method())
+
+
+def _hop_call(method_name: str, params: list[dict]) -> ast.Call:
+    return ast.Call(
+        func=ast.Attribute(
+            value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
+            attr="call",
+        ),
+        args=[
+            ast.Constant(value=method_name),
+            ast.List(elts=[ast.Name(id=p["name"]) for p in params]),
+        ],
+        keywords=[],
+    )
+
+
+def _hop_return(method_name: str, params: list[dict]) -> ast.Return:
+    return ast.Return(value=ast.Await(value=_hop_call(method_name, params)))
+
+
 def service_module(proto: dict, bound_policies: dict[str, str] | None = None) -> ast.Module:
     """Emit Async<Svc>. bound_policies maps returned-type names to their
     declared threading policy; those methods adopt the produced object
@@ -140,23 +272,26 @@ def service_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
         body: list[ast.stmt] = []
         if m["doc"]:
             body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
-        body.append(
-            ast.Return(
-                value=ast.Await(
+        rt = m["return_type"]
+        if rt in bound_policies:
+            # Adopt the produced object instead of returning it raw.
+            body.append(
+                ast.Assign(
+                    targets=[ast.Name(id="result")],
+                    value=ast.Await(value=_hop_call(m["name"], m["params"])),
+                )
+            )
+            body.append(
+                ast.Return(
                     value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
-                            attr="call",
-                        ),
-                        args=[
-                            ast.Constant(value=m["name"]),
-                            ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]]),
-                        ],
+                        func=ast.Name(id=f"Async{rt}"),
+                        args=[ast.Name(id="result"), ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
                         keywords=[],
                     )
                 )
             )
-        )
+        else:
+            body.append(_hop_return(m["name"], m["params"]))
         cls.body.append(
             ast.AsyncFunctionDef(
                 name=m["name"],
@@ -171,7 +306,11 @@ def service_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
                 ),
                 body=body,
                 decorator_list=[],
-                returns=_ann(m["return_type"], f"{svc}.{m['name']}"),
+                returns=(
+                    _ann(f"Async{rt}", f"{svc}.{m['name']}")
+                    if rt in bound_policies
+                    else _ann(rt, f"{svc}.{m['name']}")
+                ),
                 type_params=[],
             )
         )
@@ -214,7 +353,7 @@ def _aclose_method() -> ast.AsyncFunctionDef:
     )
 
 
-def init_module(service_names: list[str]) -> ast.Module:
+def init_module(all_names: list[str]) -> ast.Module:
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(
         ast.Expr(
@@ -223,14 +362,14 @@ def init_module(service_names: list[str]) -> ast.Module:
             )
         )
     )
-    for name in service_names:
+    for name in all_names:
         fname = f"async_{name.lower()}"
         mod.body.append(ast.ImportFrom(module=fname, names=[ast.alias(name=f"Async{name}")], level=1))
     mod.body.append(
         ast.Assign(
             targets=[ast.Name(id="__all__")],
             value=ast.List(
-                elts=[ast.Constant(value=f"Async{n}") for n in service_names]
+                elts=[ast.Constant(value=f"Async{n}") for n in all_names]
             ),
         )
     )

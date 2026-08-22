@@ -47,6 +47,25 @@ async def test_behavior():
     await cat.greet("a")
     await cat.greet("b")
     assert len(cat._runner.workers_seen) == 1, "affine calls must share one thread"
+    cat_thread = next(iter(cat._runner.workers_seen))
+
+    # Returned affine type: ops pin to the PRODUCER's thread
+    poop = await cat.poop()
+    d1 = await poop.describe()
+    d2 = await poop.describe()
+    assert d1.endswith("(inspected 1x)") and d2.endswith("(inspected 2x)")
+    assert await poop.inspections() == 2
+    assert len(poop._runner.workers_seen) == 1, "poop ops must share one thread"
+    assert poop._runner.workers_seen == cat._runner.workers_seen, (
+        "poop must execute on the producer's thread"
+    )
+
+    # Returned pool type: free to use any pool thread
+    ball = await cat.toy()
+    assert await ball.describe() == "red ball"
+
+    await poop.aclose()
+    await ball.aclose()
     await cat.aclose()
 
     spider = AsyncSpider("Shelob")
