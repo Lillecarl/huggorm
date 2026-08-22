@@ -21,8 +21,25 @@ def rpc(func):
     return func
 
 
+def rpc_service(threading: str = "affine"):
+    """
+    Declare the threading model for a service.
+
+    - "affine": the C++ object is not thread-safe. It is constructed on a
+      dedicated thread and every operation executes there.
+    - "pool": the C++ object is thread-safe. Operations run on a shared
+      thread pool.
+    """
+    def deco(cls):
+        cls._threading = threading  # type: ignore[attr-defined]
+        return cls
+
+    return deco
+
+
+@rpc_service(threading="affine")
 class RemoteCat(Cat):
-    """Cat service exposed over RPC."""
+    """Cat service exposed over RPC. Not thread-safe -> affine."""
 
     @rpc
     def greet(self, whom: str) -> str:
@@ -35,8 +52,9 @@ class RemoteCat(Cat):
         return 9
 
 
+@rpc_service(threading="pool")
 class RemoteSpider(Animal):
-    """Animal subclass — trampoline for C++ *and* RPC for wire."""
+    """Animal subclass — trampoline for C++ *and* RPC for wire. Thread-safe -> pool."""
 
     def speak(self) -> str:
         return "hisss"

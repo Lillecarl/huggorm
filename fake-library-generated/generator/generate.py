@@ -6,14 +6,30 @@ Do NOT emit Python by string concatenation. Build `ast` nodes and
 call `ast.unparse` — this gives you syntax checking, proper handling
 of annotations, and tooling-friendly output.
 
+Emits ASYNC IN-PROCESS wrappers over the spec services:
+    class AsyncRemoteCat:
+        def __init__(self, *args, **kwargs):
+            self._runner = AffineRunner(lambda *a, **kw: RemoteCat(*a, **kw), name=...)
+        async def greet(self, whom: str) -> str:
+            return await self._runner.call('greet', [whom])
+
+Threading model comes from the IDL (@rpc_service(threading=...)):
+- affine: object constructed on + pinned to one dedicated thread
+- pool:   object runs on a shared thread pool
+
+RPC/wire codegen will layer on top of this later.
+
 Invoked at Nix build time:
     python generator/generate.py --out ./fake_library_generated
 """
 
 import argparse
 import ast
+import importlib
+import json
 import inspect
 import pathlib
+import shutil
 import sys
 from typing import Any, get_type_hints
 
@@ -21,45 +37,82 @@ from typing import Any, get_type_hints
 def _type_to_ast(type_str: str) -> ast.expr:
     """Parse a type string into an AST node via ast.parse."""
     try:
-        # Handles `str`, `int`, `list[str]`, `Optional[int]`, etc.
         return ast.parse(type_str, mode="eval").body  # type: ignore[return-value]
     except Exception:
         return ast.Name(id="Any")
 
 
-def _build_client_class(protocol: dict[str, Any]) -> ast.ClassDef:
-    svc = protocol["service"]
-    methods = protocol["methods"]
+def _runner_class(threading_model: str) -> str:
+    if threading_model == "pool":
+        return "PoolRunner"
+    return "AffineRunner"
 
-    # ClassDef: class <Svc>Client:
+
+def _build_async_wrapper(protocol: dict[str, Any]) -> ast.ClassDef:
+    svc = protocol["service"]
+    runner = _runner_class(protocol["threading"])
+
     cls = ast.ClassDef(
-        name=f"{svc}Client",
+        name=f"Async{svc}",
         bases=[],
         keywords=[],
         body=[],
         decorator_list=[],
     )
-    # Docstring
     cls.body.append(
-        ast.Expr(value=ast.Constant(value=f"Client stub for {svc}. Each method does transport.call."))
+        ast.Expr(
+            value=ast.Constant(
+                value=(
+                    f"Async in-process wrapper over {svc} "
+                    f"(threading: {protocol['threading']}). "
+                    f"Object is constructed lazily on its runner thread."
+                )
+            )
+        )
     )
 
-    # def __init__(self, transport):
+    # def __init__(self, *args, **kwargs):
+    init_kwargs = []
+    if protocol["threading"] == "affine":
+        init_kwargs.append(ast.keyword(arg="name", value=ast.Constant(value=f"flg-affine-{svc}")))
     init = ast.FunctionDef(
         name="__init__",
         args=ast.arguments(
             posonlyargs=[],
-            args=[ast.arg(arg="self"), ast.arg(arg="transport")],
-            vararg=None,
+            args=[ast.arg(arg="self")],
+            vararg=ast.arg(arg="args"),
             kwonlyargs=[],
             kw_defaults=[],
-            kwarg=None,
+            kwarg=ast.arg(arg="kwargs"),
             defaults=[],
         ),
         body=[
             ast.Assign(
-                targets=[ast.Attribute(value=ast.Name(id="self"), attr="transport")],
-                value=ast.Name(id="transport"),
+                targets=[ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
+                value=ast.Call(
+                    func=ast.Name(id=runner),
+                    args=[
+                        # Zero-arg lambda closing over this __init__'s
+                        # args/kwargs: lambda: RemoteCat(*args, **kwargs)
+                        ast.Lambda(
+                            args=ast.arguments(
+                                posonlyargs=[],
+                                args=[],
+                                vararg=None,
+                                kwonlyargs=[],
+                                kw_defaults=[],
+                                kwarg=None,
+                                defaults=[],
+                            ),
+                            body=ast.Call(
+                                func=ast.Name(id=svc),
+                                args=[ast.Starred(value=ast.Name(id="args"))],
+                                keywords=[ast.keyword(arg=None, value=ast.Name(id="kwargs"))],
+                            ),
+                        )
+                    ],
+                    keywords=init_kwargs,
+                ),
             )
         ],
         decorator_list=[],
@@ -68,51 +121,86 @@ def _build_client_class(protocol: dict[str, Any]) -> ast.ClassDef:
     )
     cls.body.append(init)
 
-    for m in methods:
-        name = m["name"]
-        params: list[ast.arg] = [ast.arg(arg="self")]
-        for p in m["params"]:
-            ann = _type_to_ast(p["type"])
-            params.append(ast.arg(arg=p["name"], annotation=ann))
+    # async def <method>(self, ...) -> ret:
+    #     """doc"""
+    #     return await self._runner.call('<method>', [args])
+    for m in protocol["methods"]:
+        params = [ast.arg(arg="self")] + [
+            ast.arg(arg=p["name"], annotation=_type_to_ast(p["type"])) for p in m["params"]
+        ]
         ret_ann = _type_to_ast(m["return_type"])
-
-        # Body: [docstring] + return self.transport.call("name", [args])
         body: list[ast.stmt] = []
         if m.get("doc"):
             body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
-        call_args = [ast.Constant(value=name), ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]])]
         body.append(
             ast.Return(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Attribute(value=ast.Name(id="self"), attr="transport"),
-                        attr="call",
-                    ),
-                    args=call_args,
-                    keywords=[],
+                value=ast.Await(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
+                            attr="call",
+                        ),
+                        args=[
+                            ast.Constant(value=m["name"]),
+                            ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]]),
+                        ],
+                        keywords=[],
+                    )
                 )
             )
         )
-        func_def = ast.FunctionDef(
-            name=name,
+        cls.body.append(
+            ast.AsyncFunctionDef(
+                name=m["name"],
+                args=ast.arguments(
+                    posonlyargs=[],
+                    args=params,
+                    vararg=None,
+                    kwonlyargs=[],
+                    kw_defaults=[],
+                    kwarg=None,
+                    defaults=[],
+                ),
+                body=body,
+                decorator_list=[],
+                returns=ret_ann,
+                type_params=[],
+            )
+        )
+
+    # async def aclose(self) -> None:
+    #     await self._runner.aclose()
+    cls.body.append(
+        ast.AsyncFunctionDef(
+            name="aclose",
             args=ast.arguments(
                 posonlyargs=[],
-                args=params,
+                args=[ast.arg(arg="self", annotation=None)],
                 vararg=None,
                 kwonlyargs=[],
                 kw_defaults=[],
                 kwarg=None,
                 defaults=[],
             ),
-            body=body,
+            body=[
+                ast.Expr(
+                    value=ast.Await(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
+                                attr="aclose",
+                            ),
+                            args=[],
+                            keywords=[],
+                        )
+                    )
+                )
+            ],
             decorator_list=[],
-            returns=ret_ann,
+            returns=_type_to_ast("None"),
             type_params=[],
         )
-        cls.body.append(func_def)
-
-    if not methods:
-        cls.body.append(ast.Pass())
+    )
 
     return cls
 
@@ -150,20 +238,37 @@ def generate_protocol(cls) -> dict[str, Any]:
         methods.append({"name": name, "params": param_specs, "return_type": ret, "doc": inspect.getdoc(func) or ""})
 
     bases = [f"{b.__module__}.{b.__qualname__}" for b in cls.__bases__ if b is not object]
-    return {"service": cls.__qualname__, "bases": bases, "methods": methods}
+    threading_model = getattr(cls, "_threading", "affine")
+    return {"service": cls.__qualname__, "bases": bases, "threading": threading_model, "methods": methods}
 
 
 def build_module(protocol: dict[str, Any]) -> ast.Module:
     mod = ast.Module(body=[], type_ignores=[])
-    # from __future__ import annotations not needed, but add header comment via docstring
-    # Add: from typing import Any if needed
-    has_any = any(p["type"] == "Any" or m["return_type"] == "Any" for m in protocol["methods"] for p in m["params"]) or any(
-        m["return_type"] == "Any" for m in protocol["methods"]
-    )
+
+    has_any = any(
+        p["type"] == "Any" or m["return_type"] == "Any"
+        for m in protocol["methods"]
+        for p in m["params"]
+    ) or any(m["return_type"] == "Any" for m in protocol["methods"])
     if has_any:
         mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
-    mod.body.append(ast.Expr(value=ast.Constant(value=f"Auto-generated RPC stub for {protocol['service']}. Bases: {', '.join(protocol['bases'])}")))
-    mod.body.append(_build_client_class(protocol))
+
+    mod.body.append(
+        ast.Expr(
+            value=ast.Constant(
+                value=f"Generated async wrapper for {protocol['service']} — do not edit. Built via ast at Nix build time."
+            )
+        )
+    )
+    mod.body.append(ast.ImportFrom(module="spec", names=[ast.alias(name=protocol["service"])], level=1))
+    mod.body.append(
+        ast.ImportFrom(
+            module="_runtime",
+            names=[ast.alias(name=_runner_class(protocol["threading"]))],
+            level=1,
+        )
+    )
+    mod.body.append(_build_async_wrapper(protocol))
     ast.fix_missing_locations(mod)
     return mod
 
@@ -179,8 +284,6 @@ def main():
     if str(spec_dir) not in sys.path:
         sys.path.insert(0, str(spec_dir))
 
-    import importlib
-
     spec_mod = importlib.import_module(args.spec)
     services = getattr(spec_mod, "SERVICES", [])
     if not services:
@@ -189,45 +292,42 @@ def main():
 
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "__init__.py").write_text(
-        '"""Generated RPC clients — do not edit. Built via ast at Nix build time."""\n'
-    )
 
-    # Track what we generated for __init__ re-exports
     exports = []
     for svc in services:
         proto = generate_protocol(svc)
         mod = build_module(proto)
         code = ast.unparse(mod)
-        fname = f"{proto['service'].lower()}_client.py"
-        # Use lowercased service name for filename; e.g. RemoteCat -> remotecat_client.py
+        fname = f"async_{proto['service'].lower()}.py"
         (out / fname).write_text(code + "\n")
         exports.append((proto["service"], fname))
-        print(f"generated {fname} for {proto['service']}")
+        print(f"generated {fname} for {proto['service']} ({proto['threading']})")
 
-    # Write __init__.py re-exports for convenience
-    init_lines = ['"""Generated RPC clients — do not edit. Built via ast at Nix build time."""', ""]
+    # __init__.py re-exports
+    init_lines = [
+        '"""Generated async wrappers — do not edit. Built via ast at Nix build time."""',
+        "",
+    ]
     for svc, fname in exports:
         modname = fname[:-3]
-        init_lines.append(f"from .{modname} import {svc}Client")
+        init_lines.append(f"from .{modname} import Async{svc}")
     init_lines.append("")
-    init_lines.append(f"__all__ = [{', '.join(repr(svc+'Client') for svc,_ in exports)}]")
+    init_lines.append(f"__all__ = [{', '.join(repr('Async' + svc) for svc, _ in exports)}]")
     (out / "__init__.py").write_text("\n".join(init_lines) + "\n")
 
-    # Also write a JSON manifest for introspection
-    import json
-
+    # JSON manifest for introspection/tooling
     manifest = {svc.__qualname__: generate_protocol(svc) for svc in services}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Wrote manifest with {len(services)} services to {out / 'manifest.json'}")
 
-    # Ship the spec (IDL) inside the generated package so server-side
-    # instances are importable wherever the clients are.
-    import shutil
-
+    # Ship the spec (IDL) and runtime inside the generated package so it is
+    # fully self-contained wherever Nix puts it.
     spec_file = spec_dir / f"{args.spec}.py"
     shutil.copy(spec_file, out / "spec.py")
-    print(f"Copied IDL spec into package: {out / 'spec.py'}")
+    runtime_file = pathlib.Path(__file__).parent / "runtime.py"
+    shutil.copy(runtime_file, out / "_runtime.py")
+    init_pkg = '"""Generated package: async wrappers + IDL spec + runtime."""\n'
+    print(f"Copied IDL spec and runtime into package: {out}")
 
 
 if __name__ == "__main__":
