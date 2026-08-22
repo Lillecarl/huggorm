@@ -10,7 +10,8 @@ you import the generated stubs from fake_library_generated — they are
 already present via Nix propagatedBuildInputs.
 """
 
-from fake_library import Animal, Cat
+from fake_library import Animal
+from fake_library import Cat as _Cat
 
 # Simple marker — replicated from fake_library_python.rpc.rpc but kept
 # local to avoid a Nix cycle (generated cannot depend on fake-library-python).
@@ -66,8 +67,8 @@ class NameRequiredError(ServiceError):
 
 
 @rpc_service(threading="affine")
-class RemoteCat(Cat):
-    """Cat service exposed over RPC. Not thread-safe -> affine."""
+class Cat(_Cat):
+    """Cat service. Not thread-safe -> affine."""
 
     @rpc
     def greet(self, whom: str) -> str:
@@ -88,8 +89,8 @@ class RemoteCat(Cat):
 
 
 @rpc_service(threading="pool")
-class RemoteSpider(Animal):
-    """Animal subclass — trampoline for C++ *and* RPC for wire. Thread-safe -> pool."""
+class Spider(Animal):
+    """Spider service. Thread-safe -> pool."""
 
     def speak(self) -> str:
         return "hisss"
@@ -108,7 +109,7 @@ class RemoteSpider(Animal):
 
 
 # Registry of services to codegen. Add new services here.
-SERVICES = [RemoteCat, RemoteSpider]
+SERVICES = [Cat, Spider]
 
 # Error vocabulary exposed in the manifest for tooling/codegen.
 ERRORS = [ServiceError, FetchError, NameRequiredError]

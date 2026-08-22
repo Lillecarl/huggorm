@@ -23,11 +23,11 @@ def test_parse(out: pathlib.Path):
 
 
 async def test_behavior():
-    from fake_library_generated import AsyncRemoteCat, AsyncRemoteSpider
+    from fake_library_generated import AsyncCat, AsyncSpider
     from fake_library_generated._runtime import InternalError
     from fake_library_generated.spec import NameRequiredError
 
-    cat = AsyncRemoteCat("Whiskers")
+    cat = AsyncCat("Whiskers")
     assert await cat.greet("you") == "meow to you"
     assert await cat.lives_remaining() == 9
     assert await cat.fetch("ball") == "Whiskers fetched the ball"
@@ -50,7 +50,7 @@ async def test_behavior():
     assert len(cat._runner.workers_seen) == 1, "affine calls must share one thread"
     await cat.aclose()
 
-    spider = AsyncRemoteSpider("Shelob")
+    spider = AsyncSpider("Shelob")
     assert await spider.crawl(2.5) == "Shelob crawls 2.5m"
     assert await spider.bite("fly") is True
     results = await asyncio.gather(spider.crawl(1.0), spider.crawl(2.0))

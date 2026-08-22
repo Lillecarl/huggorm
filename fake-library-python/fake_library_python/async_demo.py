@@ -5,7 +5,7 @@ Demo of generated async in-process wrappers.
       -> Cython bindings (sync)
         -> spec.py services (IDL, subclasses of Cython types)
           -> Nix build-time AST codegen
-            -> AsyncRemoteCat / AsyncRemoteSpider (awaitable, thread-policy aware)
+            -> AsyncCat / AsyncSpider (awaitable, thread-policy aware)
 
 Threading policy from the IDL:
 - RemoteCat  (affine): constructed on + pinned to one dedicated thread
@@ -14,13 +14,13 @@ Threading policy from the IDL:
 
 import asyncio
 
-from fake_library_generated import AsyncRemoteCat, AsyncRemoteSpider
+from fake_library_generated import AsyncCat, AsyncSpider
 
 
 async def main():
     # Constructor args pass through; object is constructed lazily on its thread.
-    cat = AsyncRemoteCat("Whiskers")
-    spider = AsyncRemoteSpider("Shelob")
+    cat = AsyncCat("Whiskers")
+    spider = AsyncSpider("Shelob")
 
     print("=== sequential awaits ===")
     print(await cat.greet("you"))
@@ -72,7 +72,7 @@ async def main():
     from fake_library_generated._runtime import InternalError
 
     # Cython Cat.__cinit__ requires a name; this factory always fails.
-    bad = AsyncRemoteCat()
+    bad = AsyncCat()
     seen = []
     for attempt in (1, 2, 3):
         try:
