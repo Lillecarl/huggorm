@@ -1,4 +1,5 @@
 #pragma once
+#include <stdexcept>
 #include <string>
 
 namespace fake_library {
@@ -17,6 +18,9 @@ public:
     // Non-virtual with std::string — tests string handling
     std::string get_name() const;
     void set_name(const std::string &name);
+
+    // Throws std::invalid_argument for unknown items — tests C++ -> Python exception propagation
+    std::string fetch(const std::string &item) const;
 
 private:
     std::string name_;

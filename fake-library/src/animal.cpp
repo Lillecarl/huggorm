@@ -8,6 +8,13 @@ Animal::~Animal() = default;
 std::string Animal::get_name() const { return name_; }
 void Animal::set_name(const std::string &name) { name_ = name; }
 
+std::string Animal::fetch(const std::string &item) const {
+    if (item == "ball") {
+        return name_ + " fetched the ball";
+    }
+    throw std::invalid_argument("unknown item: " + item);
+}
+
 Cat::Cat(std::string name) : Animal(std::move(name)) {}
 std::string Cat::speak() const { return "meow"; }
 int Cat::legs() const { return 4; }

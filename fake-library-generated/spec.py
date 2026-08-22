@@ -37,14 +37,49 @@ def rpc_service(threading: str = "affine"):
     return deco
 
 
+# --- Typed, serializable errors (the IDL's exception vocabulary) ---
+# The runtime recognizes errors by duck-typing: anything with to_dict()
+# passes through untouched. These will serialize over RPC later.
+
+
+class ServiceError(Exception):
+    code = "service_error"
+
+    def __init__(self, message: str = ""):
+        super().__init__(message)
+        self.message = message
+
+    def to_dict(self) -> dict:
+        return {"code": self.code, "message": self.message}
+
+
+class FetchError(ServiceError):
+    """Raised for unknown fetch items."""
+
+    code = "fetch_unknown"
+
+
+class NameRequiredError(ServiceError):
+    """Raised when a name argument is empty."""
+
+    code = "name_required"
+
+
 @rpc_service(threading="affine")
 class RemoteCat(Cat):
     """Cat service exposed over RPC. Not thread-safe -> affine."""
 
     @rpc
     def greet(self, whom: str) -> str:
-        """Greet someone."""
+        """Greet someone. Raises NameRequiredError on empty whom."""
+        if not whom:
+            raise NameRequiredError("whom must not be empty")
         return f"{self.speak()} to {whom}"
+
+    @rpc
+    def fetch(self, item: str) -> str:
+        """Fetch an item via C++. C++ throws std::invalid_argument on unknown items."""
+        return super().fetch(item)
 
     @rpc
     def lives_remaining(self) -> int:
@@ -74,3 +109,6 @@ class RemoteSpider(Animal):
 
 # Registry of services to codegen. Add new services here.
 SERVICES = [RemoteCat, RemoteSpider]
+
+# Error vocabulary exposed in the manifest for tooling/codegen.
+ERRORS = [ServiceError, FetchError, NameRequiredError]

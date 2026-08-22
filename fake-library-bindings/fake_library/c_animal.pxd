@@ -11,6 +11,8 @@ cdef extern from "fake_library/animal.hpp" namespace "fake_library":
         void set_name(const string& name)
         string speak() const
         int legs() const
+        # except + converts any C++ exception thrown here into a Python exception
+        string fetch(const string& item) except +
 
     cdef cppclass Cat(Animal):
         Cat(string name)

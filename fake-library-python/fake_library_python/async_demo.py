@@ -51,6 +51,37 @@ async def main():
     both = await asyncio.gather(cat.greet("x"), spider.crawl(9.9))
     print(f"{both}")
 
+    print("\n=== typed error passes through untouched ===")
+    try:
+        await cat.greet("")
+    except Exception as e:
+        print(f"caught {type(e).__name__}: code={e.code!r} message={e.message!r}")
+        print(f"serializable: {e.to_dict()}  <- this is what RPC will put on the wire")
+
+    print("\n=== C++ exception surfaces as InternalError with cause chain ===")
+    print(await cat.fetch("ball"))
+    try:
+        await cat.fetch("rock")
+    except Exception as e:
+        print(f"caught {type(e).__name__}: {e.to_dict()}")
+        import traceback
+
+        traceback.print_exception(e, limit=6)
+
+    print("\n=== construction failure is cached, not retried ===")
+    from fake_library_generated._runtime import InternalError
+
+    # Cython Cat.__cinit__ requires a name; this factory always fails.
+    bad = AsyncRemoteCat()
+    seen = []
+    for attempt in (1, 2, 3):
+        try:
+            await bad.lives_remaining()
+        except InternalError as e:
+            seen.append(e)
+            print(f"attempt {attempt}: {type(e).__name__} <- {type(e.__cause__).__name__}: {e.__cause__}")
+    print(f"fresh wrapper each call: {seen[0] is not seen[1]}; single cached root cause: {seen[0].__cause__ is seen[2].__cause__}")
+
     await asyncio.gather(cat.aclose(), spider.aclose())
     print("closed cleanly")
 

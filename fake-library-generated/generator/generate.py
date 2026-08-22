@@ -316,9 +316,16 @@ def main():
     (out / "__init__.py").write_text("\n".join(init_lines) + "\n")
 
     # JSON manifest for introspection/tooling
-    manifest = {svc.__qualname__: generate_protocol(svc) for svc in services}
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"Wrote manifest with {len(services)} services to {out / 'manifest.json'}")
+    errors = [
+        {"name": cls.__name__, "code": getattr(cls, "code", "service_error")}
+        for cls in getattr(spec_mod, "ERRORS", [])
+    ]
+    manifest = {
+        svc.__qualname__: generate_protocol(svc) for svc in services
+    }
+    manifest_doc = {"services": manifest, "errors": errors}
+    (out / "manifest.json").write_text(json.dumps(manifest_doc, indent=2) + "\n")
+    print(f"Wrote manifest ({len(services)} services, {len(errors)} errors) to {out / 'manifest.json'}")
 
     # Ship the spec (IDL) and runtime inside the generated package so it is
     # fully self-contained wherever Nix puts it.
