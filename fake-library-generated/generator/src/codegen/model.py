@@ -106,6 +106,11 @@ def extract_wrapper(cls, hide=()) -> dict:
         "module": cls.__module__,
         "bases": [f"{b.__module__}.{b.__qualname__}" for b in cls.__bases__ if b is not object],
         "threading": getattr(cls, "_threading", "affine"),
+        # Wire policy for the future RPC layer: "proxy" objects keep
+        # identity and travel as handles; "value" objects are immutable
+        # and travel serialized (locally emulated as copies). Default is
+        # the safe one: stateful until proven immutable.
+        "wire": getattr(cls, "_wire", "proxy"),
         "methods": methods,
     }
 

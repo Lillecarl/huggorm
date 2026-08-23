@@ -31,6 +31,7 @@ def returned_module(proto: dict) -> ast.Module:
     """
     svc = proto["name"]
     policy = proto["threading"]
+    policy_wire = proto["wire"]
 
     mod = ast.Module(body=[], type_ignores=[])
     used = {m["return_type"] for m in proto["methods"]} | {p["type"] for m in proto["methods"] for p in m["params"]}
@@ -51,6 +52,10 @@ def returned_module(proto: dict) -> ast.Module:
     )
 
     cls = ast.ClassDef(name=f"Async{svc}", bases=[], keywords=[], body=[], decorator_list=[])
+    cls.body.append(ast.Assign(
+        targets=[ast.Name(id="_wire")],
+        value=ast.Constant(value=policy_wire),
+    ))
     cls.body.append(
         ast.Expr(
             value=ast.Constant(
@@ -204,6 +209,10 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
         body=[],
         decorator_list=[],
     )
+    cls.body.append(ast.Assign(
+        targets=[ast.Name(id="_wire")],
+        value=ast.Constant(value=proto["wire"]),
+    ))
     cls.body.append(
         ast.Expr(
             value=ast.Constant(

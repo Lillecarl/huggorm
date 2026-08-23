@@ -29,6 +29,7 @@ cdef extern from "fake_library/store.hpp" nogil:
     cdef cppclass CDerivedPath "fake_library::DerivedPath":
         CDerivedPath(CStorePath path)
         CDerivedPath(CStorePath drv_path, string output)
+        CDerivedPath(const CDerivedPath & other)
         string describe() const
 
     cdef cppclass CStore "fake_library::Store":

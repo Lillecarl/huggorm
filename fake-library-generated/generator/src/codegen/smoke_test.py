@@ -92,6 +92,15 @@ async def test_behavior():
     )
     assert not hasattr(local, "query_derivation")
 
+    # Wire policy lands in the manifest (the future RPC IDL) and on
+    # generated classes: immutable types are wire-values, everything
+    # else proxies.
+    assert manifest["returned_types"]["StorePath"]["wire"] == "value"
+    assert manifest["returned_types"]["Derivation"]["wire"] == "proxy"
+    assert manifest["wrappers"]["DerivedPath"]["wire"] == "value"
+    assert manifest["wrappers"]["EvalState"]["wire"] == "proxy"
+    assert local._wire == "proxy" and spool._wire == "value"
+
     # C++ exceptions surface as InternalError with the cause attached.
     try:
         await remote.query_derivation(spool)

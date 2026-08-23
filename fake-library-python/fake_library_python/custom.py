@@ -66,6 +66,13 @@ def demo():
     out = local.build_derivation(req)
     print(f"built output: {out.to_string()} valid={local.is_valid_path(out)}")
 
+    print("\n--- Wire-value copies (immutable types travel by copy) ---")
+    import copy
+    p2 = copy.copy(p)
+    print(f"store path copy: distinct={p2 is not p}, equal={p2.to_string() == p.to_string()}")
+    req2 = copy.copy(req)
+    print(f"request copy:    distinct={req2 is not req}, equal={req2.describe() == req.describe()}")
+
     try:
         Store()
     except TypeError as e:

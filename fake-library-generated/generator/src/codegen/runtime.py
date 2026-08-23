@@ -22,6 +22,7 @@ Exception policy:
 
 import asyncio
 import concurrent.futures
+import copy
 import threading
 
 _POOL = None
@@ -71,9 +72,19 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
 def unwrap_arg(x):
     """Normalize one argument: an async wrapper contributes its target
     object, anything else passes through. Used for method arguments and
-    for constructor args replayed by a lazy factory."""
+    for constructor args replayed by a lazy factory.
+
+    Wire-value types cross boundaries as COPIES - the local emulation
+    of serialization, so a future remote transport changes nothing
+    about aliasing semantics. Requires the sync binding to expose
+    __copy__; immutable types should always do so."""
     r = getattr(x, "_runner", None)
-    return r.ensure() if r is not None else x
+    if r is None:
+        return x
+    obj = r.ensure()
+    if getattr(x, "_wire", "proxy") == "value":
+        return copy.copy(obj)
+    return obj
 
 
 class BaseRunner:

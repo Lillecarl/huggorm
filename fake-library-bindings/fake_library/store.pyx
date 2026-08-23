@@ -162,6 +162,9 @@ cdef class RemoteStore(Store):
 
 cdef class StorePath:
     _threading = "pool"
+    # Immutable value: safe to serialize across a wire, so it crosses
+    # wrapper boundaries as a copy.
+    _wire = "value"
 
     cdef CStorePath* _ptr
 
@@ -170,6 +173,15 @@ cdef class StorePath:
 
     def __dealloc__(self):
         del self._ptr
+
+    def __copy__(self):
+        cdef StorePath c = StorePath.__new__(StorePath)
+        c._ptr = new CStorePath(deref(self._ptr))
+        return c
+
+    def __deepcopy__(self, memo):
+        # Immutable: deep copy == copy.
+        return self.__copy__()
 
     def to_string(self) -> str:
         return self._ptr.to_string().decode('utf-8')
@@ -183,6 +195,10 @@ cdef class StorePath:
 
 cdef class Derivation:
     _threading = "affine"
+    # The instructive wire case: looks like a value, but set_env and the
+    # access counter mutate it - so despite being a plain data holder it
+    # must travel as a proxy. Mutability forces proxy, always.
+    _wire = "proxy"
 
     cdef CDerivation* _ptr
 
@@ -207,17 +223,39 @@ cdef class Derivation:
 
 cdef class DerivedPath:
     _threading = "pool"
+    # Immutable build request: wire-value.
+    _wire = "value"
 
     cdef CDerivedPath* _ptr
 
-    def __cinit__(self, StorePath path, str output=None):
+    def __cinit__(self, StorePath path=None, str output=None):
+        # Optional args exist only so __copy__ can allocate via __new__
+        # (tp_new always runs __cinit__); real construction validates
+        # in __init__ below.
+        if path is None:
+            self._ptr = NULL
+            return
         if output is None:
             self._ptr = new CDerivedPath(deref((<StorePath>path)._ptr))
         else:
             self._ptr = new CDerivedPath(deref((<StorePath>path)._ptr), output.encode('utf-8'))
 
+    def __init__(self, StorePath path=None, str output=None):
+        if path is None:
+            raise TypeError("DerivedPath requires a StorePath")
+
     def __dealloc__(self):
-        del self._ptr
+        if self._ptr != NULL:
+            del self._ptr
+
+    def __copy__(self):
+        cdef DerivedPath c = DerivedPath.__new__(DerivedPath)
+        c._ptr = new CDerivedPath(deref(self._ptr))
+        return c
+
+    def __deepcopy__(self, memo):
+        # Immutable: deep copy == copy.
+        return self.__copy__()
 
     def describe(self) -> str:
         return self._ptr.describe().decode('utf-8')

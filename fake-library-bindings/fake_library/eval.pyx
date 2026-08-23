@@ -34,6 +34,10 @@ gc_init()
 
 cdef class Value:
     _threading = "affine"
+    # Wire-proxy despite being "just data": thunks must force on their
+    # home thread and forcing mutates in place. A future refinement may
+    # serialize forced scalars; until then, proxy.
+    _wire = "proxy"
 
     # Single bridge field: an uncollectable GC cell holding the CValue
     # pointer. The collector scans the cell, so the value stays alive
