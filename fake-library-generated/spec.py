@@ -97,6 +97,11 @@ class Cat(_Cat):
         """Produce a toy. Returned type is thread-safe (pool)."""
         return super().toy()
 
+    @rpc
+    def wait(self, ms: int) -> None:
+        """Slow C++ sleep; releases the GIL while running."""
+        super().wait_ms(ms)
+
 
 @rpc_service(threading="pool")
 class Spider(Animal):
@@ -116,6 +121,11 @@ class Spider(Animal):
     @rpc
     def bite(self, target: str) -> bool:
         return target == "fly"
+
+    @rpc
+    def wait(self, ms: int) -> None:
+        """Slow C++ sleep; releases the GIL while running."""
+        super().wait_ms(ms)
 
 
 # Registry of services to codegen. Add new services here.

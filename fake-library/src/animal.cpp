@@ -1,4 +1,6 @@
 #include "fake_library/animal.hpp"
+#include <chrono>
+#include <thread>
 
 namespace fake_library {
 
@@ -31,6 +33,10 @@ std::string Animal::fetch(const std::string &item) const {
 Poop Animal::poop() const { return Poop(name_); }
 
 Ball Animal::toy() const { return Ball("red"); }
+
+void Animal::wait_ms(int ms) const {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
 
 Cat::Cat(std::string name) : Animal(std::move(name)) {}
 std::string Cat::speak() const { return "meow"; }

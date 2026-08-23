@@ -1,4 +1,5 @@
 # cython: language_level=3
+# cython: annotation_typing=False
 # This is the "pyx" — the implementation that bridges Python <-> C++.
 #
 # Layout:
@@ -19,7 +20,11 @@ from cython.operator cimport dereference as deref
 # live in c_animal.pxd, but with a single module the pxd was pure
 # indirection. Cython-side names get a C prefix to avoid clashing with the
 # wrapper classes below; the quoted strings are the real C++ names.
-cdef extern from "fake_library/animal.hpp":
+#
+# `nogil` on the block makes every method callable inside `with nogil:`
+# blocks (pattern from Cython's own cpp_nogil test). Combined with
+# `except +`, the GIL is reacquired only if an exception actually throws.
+cdef extern from "fake_library/animal.hpp" nogil:
     # Quoted names must be fully qualified: they are emitted verbatim
     # into generated C++ that lives outside the library's namespace.
     cdef cppclass CAnimal "fake_library::Animal":
@@ -28,10 +33,10 @@ cdef extern from "fake_library/animal.hpp":
         void set_name(const string& name)
         string speak() const
         int legs() const
-        # except + converts any C++ exception thrown here into a Python exception
         string fetch(const string& item) except +
         CPoop poop() const
         CBall toy() const
+        void wait_ms(int ms) const
 
     cdef cppclass CCat "fake_library::Cat"(CAnimal):
         CCat(string name)
@@ -41,11 +46,13 @@ cdef extern from "fake_library/animal.hpp":
 
     cdef cppclass CPoop "fake_library::Poop":
         CPoop(string producer)
+        CPoop(const CPoop& other)
         string describe()
         int inspections() const
 
     cdef cppclass CBall "fake_library::Ball":
         CBall(string color)
+        CBall(const CBall& other)
         string describe() const
 
     string describe_animal(const CAnimal& animal)
@@ -131,9 +138,14 @@ cdef class Animal:
         if self._ptr != NULL:
             del self._ptr
 
-    # Virtual dispatch through Animal*. For plain wrappers this hits the
-    # C++ impl; for Python subclasses _ptr is the PyAnimal trampoline,
-    # which routes back to the Python override.
+    # GIL policy is decided PER METHOD here — only the binding knows
+    # whether a C++ implementation may re-enter Python or how long it
+    # runs:
+    # - speak()/legs(): KEEP the GIL. For trampoline-backed instances
+    #   (Python subclasses) they re-enter Python via PyAnimal; for
+    #   concrete ones they are sub-microsecond.
+    # - fetch/wait_ms: RELEASE. Potentially slow, pure C++ after the
+    #   arguments are converted.
     def speak(self) -> str:
         return self._ptr.speak().decode('utf-8')
 
@@ -141,33 +153,59 @@ cdef class Animal:
         return self._ptr.legs()
 
     def fetch(self, str item) -> str:
-        # C++ exceptions convert via the `except +` above
-        return self._ptr.fetch(item.encode('utf-8')).decode('utf-8')
+        # except + inside nogil reacquires the GIL only if a C++
+        # exception actually throws.
+        cdef string c_item
+        cdef string result
+        if self._ptr == NULL:
+            raise RuntimeError("animal not initialized")
+        c_item = item.encode('utf-8')
+        with nogil:
+            result = self._ptr.fetch(c_item)
+        return result.decode('utf-8')
+
+    def wait_ms(self, int ms) -> None:
+        if self._ptr == NULL:
+            raise RuntimeError("animal not initialized")
+        with nogil:
+            self._ptr.wait_ms(ms)
 
     def poop(self) -> Poop:
         """Adopt a C++-created Poop. The wrapper is created here but the
         C++ object was born on whatever thread runs this method — callers
         must keep invoking it there (the async layer enforces this)."""
         cdef Poop p = Poop.__new__(Poop)
-        p._ptr = new CPoop(self._ptr.get_name())
-        # C++ returns Poop by value; move it into the wrapper's allocation.
-        p._ptr[0] = self._ptr.poop()
+        if self._ptr == NULL:
+            raise RuntimeError("animal not initialized")
+        with nogil:
+            p._ptr = new CPoop(self._ptr.poop())
         return p
 
     def toy(self) -> Ball:
         cdef Ball b = Ball.__new__(Ball)
-        b._ptr = new CBall(self._ptr.get_name())
-        b._ptr[0] = self._ptr.toy()
+        if self._ptr == NULL:
+            raise RuntimeError("animal not initialized")
+        with nogil:
+            b._ptr = new CBall(self._ptr.toy())
         return b
 
     @property
     def name(self) -> str:
-        return self._ptr.get_name().decode('utf-8')
+        cdef string n
+        if self._ptr == NULL:
+            raise RuntimeError("animal not initialized")
+        with nogil:
+            n = self._ptr.get_name()
+        return n.decode('utf-8')
 
     @name.setter
     def name(self, str value):
-        cdef string c_val = value.encode('utf-8')
-        self._ptr.set_name(c_val)
+        cdef string c_val
+        if self._ptr == NULL:
+            raise RuntimeError("animal not initialized")
+        c_val = value.encode('utf-8')
+        with nogil:
+            self._ptr.set_name(c_val)
 
     def __repr__(self):
         return f"{type(self).__name__}(name={self.name!r})"
@@ -208,9 +246,16 @@ cdef class Poop:
         del self._ptr
 
     def describe(self) -> str:
-        return self._ptr.describe().decode('utf-8')
+        cdef string d
+        if self._ptr == NULL:
+            raise RuntimeError("poop not initialized")
+        with nogil:
+            d = self._ptr.describe()
+        return d.decode('utf-8')
 
     def inspections(self) -> int:
+        if self._ptr == NULL:
+            raise RuntimeError("poop not initialized")
         return self._ptr.inspections()
 
 
@@ -223,10 +268,17 @@ cdef class Ball:
         raise TypeError("Ball instances are produced by animals, not constructed")
 
     def __dealloc__(self):
+        if self._ptr == NULL:
+            return
         del self._ptr
 
     def describe(self) -> str:
-        return self._ptr.describe().decode('utf-8')
+        cdef string d
+        if self._ptr == NULL:
+            raise RuntimeError("ball not initialized")
+        with nogil:
+            d = self._ptr.describe()
+        return d.decode('utf-8')
 
 
 def describe(obj) -> str:

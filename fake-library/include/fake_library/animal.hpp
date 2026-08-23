@@ -3,7 +3,6 @@
 #include <string>
 
 namespace fake_library {
-
 // Stateful value produced by animals. NOT thread-safe: carries mutable
 // state, so all access must happen on the producer's thread.
 class Poop {
@@ -51,6 +50,10 @@ public:
 
     // Produces a thread-safe value.
     Ball toy() const;
+
+    // Deliberately slow operation: sleeps without touching shared state.
+    // Safe to call with the GIL released.
+    void wait_ms(int ms) const;
 
 private:
     std::string name_;
