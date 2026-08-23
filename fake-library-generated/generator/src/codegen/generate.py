@@ -93,7 +93,7 @@ def main(argv=None):
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for returned type {proto['name']} ({proto['threading']})")
 
-    protos = [extract_wrapper(svc) for svc in wrapper_classes]
+    protos = [extract_wrapper(svc, api=api, bindings=bindings) for svc in wrapper_classes]
 
     # policy enforcement: a pool wrapper may not return affine types at
     # all - drop them from the surface entirely.
@@ -125,6 +125,10 @@ def main(argv=None):
         f"wrote manifest ({len(protos)} wrappers, {len(returned_protos)} returned types) "
         f"to {out / 'manifest.json'}"
     )
+
+    from codegen.grpc_schema import build_fdset
+    (out / "grpc_schema.pb").write_bytes(build_fdset(manifest))
+    print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
 
     shutil.copy(pathlib.Path(__file__).parent / "runtime.py", out / "_runtime.py")
     print(f"copied runtime into {out}")

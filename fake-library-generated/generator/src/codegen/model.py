@@ -70,13 +70,17 @@ def extract_method(func) -> dict:
     }
 
 
-def extract_wrapper(cls, hide=()) -> dict:
+def extract_wrapper(cls, api=None, bindings=None, hide=()) -> dict:
     """
     Reflect the live Python surface across the fake_library MRO chain:
     every public method and property the bindings actually expose, with
     leaf definitions winning over inherited ones. This - not the pxd -
     is the contract users program against; the pxd only feeds type
     policies elsewhere. `hide` drops names from the emitted surface.
+
+    Cython's `str arg` signature typing yields NO runtime annotation,
+    so parameter types fall back to "Any"; when api+bindings are given,
+    those gaps are filled from the pxd declarations.
     """
     entries: dict[str, object] = {}
     for klass in reversed(cls.__mro__):
@@ -101,6 +105,16 @@ def extract_wrapper(cls, hide=()) -> dict:
             methods.append(_reader_method(name, val))
         # anything else (plain class attrs) is not part of the surface
 
+    if api is not None and bindings is not None:
+        table = _pxd_param_table(cls, api, bindings)
+        for m in methods:
+            known = table.get(m["name"])
+            if not known:
+                continue
+            for i, p in enumerate(m["params"]):
+                if p["type"] == "Any" and i < len(known):
+                    p["type"] = known[i]
+
     return {
         "name": cls.__qualname__,
         "module": cls.__module__,
@@ -113,6 +127,23 @@ def extract_wrapper(cls, hide=()) -> dict:
         "wire": getattr(cls, "_wire", "proxy"),
         "methods": methods,
     }
+
+
+def _pxd_param_table(cls, api: dict, bindings_module) -> dict:
+    """method name -> [python type names], gathered from every fake_library
+    base in the MRO, using the pxd declarations."""
+    wanted = {"C" + k.__name__ for k in cls.__mro__
+              if getattr(k, "__module__", "").split(".")[0] == "fake_library"}
+    out: dict[str, list] = {}
+    for key, info in api["classes"].items():
+        if key not in wanted:
+            continue
+        for m in info["methods"]:
+            out.setdefault(
+                m["name"],
+                [map_c_type(ptype, bindings_module) for _, ptype in m["params"]],
+            )
+    return out
 
 
 def _reader_method(name: str, val) -> dict:

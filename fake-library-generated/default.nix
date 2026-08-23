@@ -15,7 +15,7 @@ let
     pyproject = true;
     src = ./generator;
 
-    build-system = [ python3Packages.setuptools ];
+    build-system = [ python3Packages.setuptools python3Packages.protobuf ];
 
     pythonImportsCheck = [ "codegen" ];
   };
@@ -34,6 +34,7 @@ python3Packages.buildPythonPackage {
   build-system = [
     python3Packages.setuptools
     python3Packages.cython
+    python3Packages.protobuf
     codegen
     fake-library-bindings
   ];
