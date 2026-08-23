@@ -114,6 +114,9 @@ class BaseRunner:
         self._factory = factory
         self._obj = obj
         self._construct_error = None
+        # Pool runners admit concurrent first-calls; this lock makes
+        # check-and-construct atomic so the factory runs exactly once.
+        self._construct_lock = threading.Lock()
         self.last_worker_name = None
         self.last_worker_ident = None
         self.born_thread_name = None
@@ -122,16 +125,20 @@ class BaseRunner:
     def _resolve(self):
         # Runs inside a worker thread. First call constructs the object
         # on whichever thread this runner owns (affine) or a pool thread.
-        if self._obj is None:
-            if self._construct_error is not None:
-                # Factory already failed once; re-raise without retrying.
-                raise self._construct_error
-            try:
-                self._obj = self._factory()
-            except Exception as e:
-                self._construct_error = e
-                raise
-            self.born_thread_name = threading.current_thread().name
+        # Double-checked: the fast path skips the lock once constructed.
+        if self._obj is not None:
+            return self._obj
+        with self._construct_lock:
+            if self._obj is None:
+                if self._construct_error is not None:
+                    # Factory already failed once; re-raise without retrying.
+                    raise self._construct_error
+                try:
+                    self._obj = self._factory()
+                except Exception as e:
+                    self._construct_error = e
+                    raise
+                self.born_thread_name = threading.current_thread().name
         return self._obj
 
     def ensure(self):

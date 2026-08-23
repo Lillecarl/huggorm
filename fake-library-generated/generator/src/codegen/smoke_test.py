@@ -6,7 +6,7 @@ entry point; runs after codegen-generate, stdlib only:
 2. the package imports and __all__ matches
 3. behavioral checks: results, C++ exception wrapping, affine thread
    pinning (including returned affine values), pool execution,
-   policy-driven surface drops, aclose
+   policy-driven surface drops, aclose, exactly-once lazy construction
 """
 
 import argparse
@@ -50,6 +50,43 @@ async def test_behavior():
     assert elapsed < 0.18, f"expected overlapped adds, took {elapsed:.2f}s"
     assert len({await p1.to_string(), await p2.to_string()}) == 2
     assert await local.is_valid_path(p1) is True
+
+    # Lazy construction must run the factory EXACTLY ONCE, even when
+    # concurrent first-calls hit one pool handle. Regression guard for
+    # the unlocked _resolve race (each stray factory call once produced
+    # diverging underlying stores).
+    from fake_library_generated import _runtime
+
+    class _Probe:
+        def noop(self):
+            return "ok"
+
+    made = []
+
+    def factory():
+        made.append(1)
+        return _Probe()
+
+    runner = _runtime.PoolRunner(factory)
+    results = await asyncio.gather(*(runner.call("noop", []) for _ in range(8)))
+    assert results == ["ok"] * 8
+    assert len(made) == 1, f"factory ran {len(made)}x under concurrent first-calls"
+
+    # Same guarantee on the failure path: one attempt, every caller
+    # gets the cached error.
+    failed = []
+
+    def bad_factory():
+        failed.append(1)
+        raise RuntimeError("no")
+
+    bad_runner = _runtime.PoolRunner(bad_factory)
+    errs = await asyncio.gather(
+        *(bad_runner.call("noop", []) for _ in range(4)), return_exceptions=True
+    )
+    assert len(failed) == 1, f"failing factory ran {len(failed)}x"
+    assert all(isinstance(e, InternalError) for e in errs)
+    assert all(type(e.__cause__) is RuntimeError for e in errs)
 
     # Opaque and built derived paths.
     req = AsyncDerivedPath(p1)
