@@ -21,13 +21,13 @@ _PRIMITIVES = {
 
 
 def map_c_type(raw: str, bindings_module) -> str:
-    """Map a raw pxd type ('string', 'const CPoop&', 'CPoop') to the
-    Python annotation used by protocol dicts."""
+    """Map a raw pxd type ('string', 'const CPoop&', 'CPoop*', 'CPoop')
+    to the Python annotation used by protocol dicts."""
     t = raw.strip()
     if t.startswith("const "):
         t = t[6:]
-    if t.endswith("&"):
-        t = t[:-1]
+    if t.endswith("&") or t.endswith("*"):
+        t = t[:-1].rstrip()
     if t in _PRIMITIVES:
         return _PRIMITIVES[t]
     if t.startswith("C"):
