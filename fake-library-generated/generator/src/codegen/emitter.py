@@ -193,6 +193,9 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
     mod.body.append(
         ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
     )
+    mod.body.append(
+        ast.ImportFrom(module="_runtime", names=[ast.alias(name="unwrap_arg")], level=1)
+    )
 
     cls = ast.ClassDef(
         name=f"Async{svc}",
@@ -247,7 +250,28 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
                                 ),
                                 body=ast.Call(
                                     func=ast.Name(id=svc),
-                                    args=[ast.Starred(value=ast.Name(id="args"))],
+                                    args=[
+                                        # Replay constructor args through
+                                        # unwrap_arg: a wrapper argument
+                                        # contributes its target object.
+                                        ast.Starred(
+                                            value=ast.ListComp(
+                                                elt=ast.Call(
+                                                    func=ast.Name(id="unwrap_arg"),
+                                                    args=[ast.Name(id="a")],
+                                                    keywords=[],
+                                                ),
+                                                generators=[
+                                                    ast.comprehension(
+                                                        target=ast.Name(id="a"),
+                                                        iter=ast.Name(id="args"),
+                                                        ifs=[],
+                                                        is_async=0,
+                                                    )
+                                                ],
+                                            )
+                                        )
+                                    ],
                                     keywords=[
                                         ast.keyword(arg=None, value=ast.Name(id="kwargs"))
                                     ],

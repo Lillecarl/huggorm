@@ -68,6 +68,14 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
         return _POOL
 
 
+def unwrap_arg(x):
+    """Normalize one argument: an async wrapper contributes its target
+    object, anything else passes through. Used for method arguments and
+    for constructor args replayed by a lazy factory."""
+    r = getattr(x, "_runner", None)
+    return r.ensure() if r is not None else x
+
+
 class BaseRunner:
     def __init__(self, factory, obj=None):
         # Either a lazy factory (constructed on first use, on this
@@ -95,11 +103,23 @@ class BaseRunner:
             self.born_thread_name = threading.current_thread().name
         return self._obj
 
+    def ensure(self):
+        """Return the underlying object, constructing it if needed.
+        Used when a wrapper is passed as an argument to another wrapper:
+        the sync binding wants the raw target, not the async handle."""
+        return self._resolve()
+
+    @staticmethod
+    def _unwrap(args):
+        # A wrapper argument contributes its target object.
+        return [unwrap_arg(a) for a in args]
+
     def _invoke(self, method, args):
         cur_before = threading.current_thread()
         try:
             obj = self._resolve()
             attr = getattr(obj, method)
+            args = self._unwrap(args)
             # Properties resolve to values, not callables: reading one
             # still runs on this runner's thread, which is the point.
             return attr(*args) if callable(attr) else attr
