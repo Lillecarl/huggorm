@@ -5,10 +5,18 @@ project('fake-library', 'cpp',
 
 inc = include_directories('include')
 
+gc_dep = dependency('bdw-gc', required: false)
+gc_args = []
+if gc_dep.found()
+  gc_args = ['-DFAKE_LIBRARY_USE_BOEHMGC=1']
+endif
+
 lib = library('fake_library',
   'src/store.cpp',
   'src/eval.cpp',
   include_directories : inc,
+  cpp_args : gc_args,
+  dependencies : gc_dep.found() ? [gc_dep] : [],
   install : true,
 )
 

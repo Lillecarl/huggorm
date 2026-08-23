@@ -123,6 +123,24 @@ async def test_behavior():
     v = await state.eval_expr('"hello nix"')
     assert isinstance(v, AsyncValue)
     assert await v.string_value() == "hello nix"
+
+    # Boehm GC proof: values are arena-resident and survive aggressive
+    # collection. Collection is a blocking global operation, so it is
+    # dispatched off the loop thread - which also exercises thread
+    # registration from a fresh pool thread.
+    import fake_library
+    await asyncio.to_thread(fake_library.collect_garbage)
+    assert await v.string_value() == "hello nix"
+    await asyncio.to_thread(fake_library.collect_garbage)
+    # Forced state persists through collection...
+    assert await thunk.type_name() == "int"
+    assert await thunk.integer() == 42
+    # ...and the arena keeps accepting new values afterwards.
+    fresh = await state.parse_expr("7")
+    assert await fresh.type_name() == "thunk"
+    await state.force(fresh)
+    assert await fresh.integer() == 7
+
     assert v._runner.workers_seen == state._runner.workers_seen, (
         "value ops must run on the producer's thread"
     )

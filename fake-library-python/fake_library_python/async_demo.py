@@ -80,6 +80,11 @@ async def main():
 
     v = await state.eval_expr('"hello nix"')
     print(f"eval: {await v.string_value()!r} (type {await v.type_name()})")
+
+    import fake_library
+    await asyncio.to_thread(fake_library.collect_garbage)
+    print(f"after 2x full GC: {await v.string_value()!r}")
+
     print(f"value workers: {sorted(v._runner.workers_seen)} (state's: {sorted(state._runner.workers_seen)})")
 
     t0 = asyncio.get_running_loop().time()

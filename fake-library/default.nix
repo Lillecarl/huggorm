@@ -4,6 +4,7 @@
   meson,
   ninja,
   pkg-config,
+  boehmgc,
 }:
 stdenv.mkDerivation {
   pname = "fake-library";
@@ -15,4 +16,5 @@ stdenv.mkDerivation {
     ninja
     pkg-config
   ];
+  buildInputs = [ boehmgc ];
 }

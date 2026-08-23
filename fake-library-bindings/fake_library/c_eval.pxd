@@ -21,6 +21,13 @@ cdef extern from "fake_library/eval.hpp" nogil:
     cdef cppclass CEvalState "fake_library::EvalState":
         CEvalState(string store_uri)
         string get_store_uri() const
-        CValue parse_expr(string expr) except + nogil
-        CValue eval_expr(string expr) except + nogil
-        void force(CValue & v) except + nogil
+        # Values are arena-resident: the state returns borrowed pointers
+        # and nothing is ever deleted (the collector owns them when the
+        # Boehm build is active).
+        CValue * parse_expr(string expr) except + nogil
+        CValue * eval_expr(string expr) except + nogil
+        void force(CValue * v) except + nogil
+
+    void gc_init "fake_library::gcenv::init" ()
+    void gc_register_current_thread "fake_library::gcenv::register_current_thread" ()
+    void gc_collect "fake_library::gcenv::collect" ()

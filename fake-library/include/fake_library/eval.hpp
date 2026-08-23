@@ -12,10 +12,17 @@
 // true/false. Enough to exercise parsing errors, forcing and typed
 // access - not a real evaluator.
 
+#include <list>
 #include <string>
+
+#include "fake_library/gc-env.hpp"
 
 namespace fake_library {
 
+// Values live in the state's arena. The arena uses gc_allocator, so with
+// Boehm GC enabled the collector scans it and owns every value in it:
+// nothing is ever freed individually, and wrappers may hold Value*
+// across arbitrary pauses because the anchor stays visible.
 class Value {
 public:
     // Default state is invalid; exists only as binding glue.
@@ -45,25 +52,30 @@ private:
     void force();
 };
 
-class EvalState {
+class EvalState : public gcenv::gc_base {
 public:
     explicit EvalState(std::string store_uri);
+    ~EvalState();
 
     std::string get_store_uri() const;
 
     // Parse without evaluating: the result is an unforced thunk.
     // Throws std::invalid_argument on a parse error.
-    Value parse_expr(const std::string & expr);
+    // The returned pointer borrows from the state's arena and stays
+    // valid for the lifetime of the state.
+    Value * parse_expr(const std::string & expr);
 
     // Parse and evaluate: slow, and the result is fully forced.
-    Value eval_expr(const std::string & expr);
+    Value * eval_expr(const std::string & expr);
 
     // Force a value in place. Idempotent on already-forced values.
-    void force(Value & v);
+    void force(Value * v);
 
 private:
+    Value * export_(Value v);
     Value parse_(const std::string & expr) const;
     std::string store_uri_;
+    std::list<Value, gc_allocator<Value>> arena_;
 };
 
 }  // namespace fake_library
