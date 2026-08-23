@@ -10,7 +10,7 @@ you import the generated stubs from fake_library_generated — they are
 already present via Nix propagatedBuildInputs.
 """
 
-from fake_library import Animal, Ball, Poop
+from fake_library import Animal
 from fake_library import Cat as _Cat
 
 # Simple marker — replicated from fake_library_python.rpc.rpc but kept
@@ -68,7 +68,13 @@ class NameRequiredError(ServiceError):
 
 @rpc_service(threading="affine")
 class Cat(_Cat):
-    """Cat service. Not thread-safe -> affine."""
+    """
+    Cat service. Not thread-safe -> affine.
+
+    Binding surface (fetch/poop/toy/wait_ms/speak/legs/name) is inherited
+    from the pxd declarations by the codegen - only genuine service logic
+    lives here.
+    """
 
     @rpc
     def greet(self, whom: str) -> str:
@@ -78,34 +84,21 @@ class Cat(_Cat):
         return f"{self.speak()} to {whom}"
 
     @rpc
-    def fetch(self, item: str) -> str:
-        """Fetch an item via C++. C++ throws std::invalid_argument on unknown items."""
-        return super().fetch(item)
-
-    @rpc
     def lives_remaining(self) -> int:
         """Hypothetical RPC method."""
         return 9
 
-    @rpc
-    def poop(self) -> Poop:
-        """Produce poop. Returned type is affine: its ops run on this cat's thread."""
-        return super().poop()
-
-    @rpc
-    def toy(self) -> Ball:
-        """Produce a toy. Returned type is thread-safe (pool)."""
-        return super().toy()
-
-    @rpc
-    def wait(self, ms: int) -> None:
-        """Slow C++ sleep; releases the GIL while running."""
-        super().wait_ms(ms)
-
 
 @rpc_service(threading="pool")
 class Spider(Animal):
-    """Spider service. Thread-safe -> pool."""
+    """
+    Spider service. Thread-safe -> pool.
+
+    _hide: poop() returns an affine value; an affine value produced on a
+    pool service has no home thread, so it is removed from the surface.
+    """
+
+    _hide = frozenset({"poop"})
 
     def speak(self) -> str:
         return "hisss"
@@ -121,11 +114,6 @@ class Spider(Animal):
     @rpc
     def bite(self, target: str) -> bool:
         return target == "fly"
-
-    @rpc
-    def wait(self, ms: int) -> None:
-        """Slow C++ sleep; releases the GIL while running."""
-        super().wait_ms(ms)
 
 
 # Registry of services to codegen. Add new services here.

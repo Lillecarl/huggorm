@@ -14,7 +14,19 @@ import shutil
 import sys
 
 from codegen.emitter import service_module, bound_module, init_module
-from codegen.model import extract_service, extract_errors, collect_bound_types
+from codegen.model import (
+    extract_service,
+    extract_errors,
+    inherited_from_pxd,
+    bound_types_from_pxd,
+)
+from codegen.pxd import extract_api
+
+
+def _load_bindings_module():
+    import fake_library
+
+    return fake_library
 
 
 def main(argv=None):
@@ -25,6 +37,12 @@ def main(argv=None):
         "--spec-dir",
         default=None,
         help="directory containing the spec module (default: cwd)",
+    )
+    parser.add_argument(
+        "--pxd",
+        default=None,
+        help="path to the bindings .pxd declaration file; enables pxd-derived "
+        "inherited exposure with full typing",
     )
     args = parser.parse_args(argv)
 
@@ -41,13 +59,21 @@ def main(argv=None):
         print(f"No SERVICES found in {args.spec}", file=sys.stderr)
         sys.exit(1)
 
+    bindings = _load_bindings_module()
+
+    api = None
+    if args.pxd:
+        api = extract_api(pathlib.Path(args.pxd).read_text())
+        print(f"parsed pxd: {len(api['classes'])} classes from {args.pxd}")
+
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    # Returned value types: discovered from _threading markers on the
-    # binding classes that service methods return.
-    bound_classes = collect_bound_types(services)
-    bound_protos = [extract_service(cls) for cls in bound_classes]
+    if api is not None:
+        bound_classes = bound_types_from_pxd(api, bindings)
+    else:
+        bound_classes = []
+    bound_protos = [extract_service(kls) for kls in bound_classes]
     bound_policies = {p["service"]: p["threading"] for p in bound_protos}
 
     for proto in bound_protos:
@@ -56,12 +82,28 @@ def main(argv=None):
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for returned type {proto['service']} ({proto['threading']})")
 
-    protos = [extract_service(svc) for svc in services]
+    protos = []
+    for svc in services:
+        inherited = inherited_from_pxd(svc, api, bindings) if api is not None else None
+        hide = getattr(svc, "_hide", ())
+        protos.append(extract_service(svc, inherited_methods=inherited, hide=hide))
+
+    # re-filter using bound policy knowledge: a pool service may not
+    # return affine types at all - hide them from the surface entirely.
+    affine_bound = {name for name, pol in bound_policies.items() if pol == "affine"}
+    for svc, proto in zip(services, protos):
+        if proto["threading"] == "pool":
+            before = len(proto["methods"])
+            proto["methods"] = [m for m in proto["methods"] if m["return_type"] not in affine_bound]
+            dropped = before - len(proto["methods"])
+            if dropped:
+                print(f"dropped {dropped} affine-returning method(s) from pool service {proto['service']}")
+
     for proto in protos:
         fname = f"async_{proto['service'].lower()}.py"
         code = ast.unparse(service_module(proto, bound_policies))
         (out / fname).write_text(code + "\n")
-        print(f"generated {fname} for {proto['service']} ({proto['threading']})")
+        print(f"generated {fname} for {proto['service']} ({proto['threading']}, {len(proto['methods'])} methods)")
 
     all_names = [p["service"] for p in bound_protos] + [p["service"] for p in protos]
     (out / "__init__.py").write_text(ast.unparse(init_module(all_names)) + "\n")

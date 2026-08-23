@@ -28,11 +28,17 @@ python3Packages.buildPythonPackage {
 
   # setup.py's build_py hook imports codegen to run it, and spec.py
   # imports fake_library - both are standard build requirements.
+  # codegen additionally parses c_animal.pxd with Cython's own parser.
+  # PXD_FILE points the generator at the bindings' declaration file so
+  # inherited surface + bound types derive from it.
   build-system = [
     python3Packages.setuptools
+    python3Packages.cython
     codegen
     fake-library-bindings
   ];
+
+  env.PXD_FILE = "${fake-library-bindings.src}/fake_library/c_animal.pxd";
 
   propagatedBuildInputs = [ fake-library-bindings ];
 

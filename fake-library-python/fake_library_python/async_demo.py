@@ -40,21 +40,21 @@ async def main():
 
     hb = asyncio.create_task(heartbeat())
     t0 = asyncio.get_running_loop().time()
-    await spider.wait(400)
+    await spider.wait_ms(400)
     elapsed = asyncio.get_running_loop().time() - t0
     hb.cancel()
     print(f"wait_ms(400) took {elapsed * 1000:.0f}ms with the loop free to tick")
 
     # Pool policy + nogil => two waits genuinely overlap
     t0 = asyncio.get_running_loop().time()
-    await asyncio.gather(spider.wait(400), spider.wait(400))
+    await asyncio.gather(spider.wait_ms(400), spider.wait_ms(400))
     both = asyncio.get_running_loop().time() - t0
     print(f"2x wait_ms(400) gathered: {both * 1000:.0f}ms (parallel if << 800)")
 
     # Affine policy serializes by design, even though the GIL is released
     t0 = asyncio.get_running_loop().time()
-    await cat.wait(250)
-    await cat.wait(250)
+    await cat.wait_ms(250)
+    await cat.wait_ms(250)
     serial = asyncio.get_running_loop().time() - t0
     print(f"2x cat wait_ms(250): {serial * 1000:.0f}ms (>=500: one dedicated thread)")
 
