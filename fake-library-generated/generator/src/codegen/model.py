@@ -117,14 +117,16 @@ def extract_wrapper(cls, api=None, bindings=None, hide=()) -> dict:
         # anything else (plain class attrs) is not part of the surface
 
     if api is not None and bindings is not None:
-        table = _pxd_param_table(cls, api, bindings)
+        table = _pxd_signature_table(cls, api, bindings)
         for m in methods:
             known = table.get(m["name"])
             if not known:
                 continue
             for i, p in enumerate(m["params"]):
-                if p["type"] == "Any" and i < len(known):
-                    p["type"] = known[i]
+                if p["type"] == "Any" and i < len(known["params"]):
+                    p["type"] = known["params"][i]
+            if m["return_type"] == "Any" and known["ret"] is not None:
+                m["return_type"] = known["ret"]
 
     return {
         "name": cls.__qualname__,
@@ -140,19 +142,29 @@ def extract_wrapper(cls, api=None, bindings=None, hide=()) -> dict:
     }
 
 
-def _pxd_param_table(cls, api: dict, bindings_module) -> dict:
-    """method name -> [python type names], gathered from every fake_library
-    base in the MRO, using the pxd declarations."""
+def _pxd_signature_table(cls, api: dict, bindings_module) -> dict:
+    """method name -> {'params': [python type names], 'ret': python type
+    name or None}, gathered from every fake_library base in the MRO,
+    using the pxd declarations."""
     wanted = {"C" + k.__name__ for k in cls.__mro__
               if getattr(k, "__module__", "").split(".")[0] == "fake_library"}
-    out: dict[str, list] = {}
+    out: dict[str, dict] = {}
     for key, info in api["classes"].items():
         if key not in wanted:
             continue
         for m in info["methods"]:
+            try:
+                ret = map_c_type(m["ret"], bindings_module)
+            except ValueError:
+                ret = None
             out.setdefault(
                 m["name"],
-                [map_c_type(ptype, bindings_module) for _, ptype in m["params"]],
+                {
+                    "params": [
+                        map_c_type(ptype, bindings_module) for _, ptype in m["params"]
+                    ],
+                    "ret": ret,
+                },
             )
     return out
 

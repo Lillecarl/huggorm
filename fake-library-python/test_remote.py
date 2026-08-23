@@ -129,6 +129,18 @@ async def main():
         desc = await drv.describe()
         check("proxy method executes on producer thread", "seen 1x" in desc, desc)
 
+        # Regression: set_env used to ship 'Any' params - alive locally,
+        # uncallable over the wire. The env-count delta in describe()
+        # proves the call landed on the real object.
+        before_desc = await drv.describe()
+        await asyncio.wait_for(drv.set_env("wire_added", "1"), 10)
+        after_desc = await drv.describe()
+        def _env_count(d):
+            return int(d.split("(")[1].split()[0])
+        check("backfilled Any params call over the wire",
+              _env_count(after_desc) == _env_count(before_desc) + 1,
+              f"{before_desc!r} -> {after_desc!r}")
+
         state = await client.acquire("EvalState")
         thunk = await state.parse_expr("42")
         threw = False

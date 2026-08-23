@@ -84,7 +84,9 @@ def main(argv=None):
         print("no constructible wrapper classes found", file=sys.stderr)
         sys.exit(1)
 
-    returned_protos = [extract_wrapper(kls) for kls in returned_classes]
+    returned_protos = [
+        extract_wrapper(kls, api=api, bindings=bindings) for kls in returned_classes
+    ]
     returned_policies = {p["name"]: p["threading"] for p in returned_protos}
 
     for proto in returned_protos:
@@ -120,6 +122,26 @@ def main(argv=None):
         "wrappers": {p["name"]: p for p in protos},
         "returned_types": {p["name"]: p for p in returned_protos},
     }
+
+    # No silent Any may survive into the artifact: a method whose types
+    # never resolved is uncallable over the wire while looking alive
+    # locally. Fail the build naming every offender; an explicit escape
+    # hatch can be added when a legitimate case first appears.
+    unresolved = []
+    for group in ("wrappers", "returned_types"):
+        for cls_name, proto in manifest[group].items():
+            for m in proto["methods"]:
+                for p in m["params"]:
+                    if p["type"] == "Any":
+                        unresolved.append(
+                            f"{cls_name}.{m['name']} param {p['name']!r} (live annotation and pxd both silent)")
+                if m["return_type"] == "Any":
+                    unresolved.append(f"{cls_name}.{m['name']} return type")
+    if unresolved:
+        for u in unresolved:
+            print(f"unresolved type: {u}", file=sys.stderr)
+        sys.exit(1)
+
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         f"wrote manifest ({len(protos)} wrappers, {len(returned_protos)} returned types) "
