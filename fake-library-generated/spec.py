@@ -1,28 +1,27 @@
 """
-Source of truth for RPC services.
+Source of truth for the async service surface.
 
 These are Python subclasses of Cython types from fake_library.
-At Nix build time, generator/generate.py introspects them and emits
-Python code via `ast` (not string templating) into fake_library_generated/.
+At Nix build time, the codegen merges their own methods with the pxd
+declaration surface and emits async wrappers via `ast` (not string
+templating) into fake_library_generated/.
 
 When you write code in fake-library-python (or any downstream package),
-you import the generated stubs from fake_library_generated — they are
+you import the generated wrappers from fake_library_generated — they are
 already present via Nix propagatedBuildInputs.
 """
 
 from fake_library import Animal
 from fake_library import Cat as _Cat
 
-# Simple marker — replicated from fake_library_python.rpc.rpc but kept
-# local to avoid a Nix cycle (generated cannot depend on fake-library-python).
 
-
-def rpc(func):
-    func._is_rpc = True  # type: ignore[attr-defined]
+def exposed(func):
+    """Mark a method as part of the generated async surface."""
+    func._exposed = True  # type: ignore[attr-defined]
     return func
 
 
-def rpc_service(threading: str = "affine"):
+def service(threading: str = "affine"):
     """
     Declare the threading model for a service.
 
@@ -38,9 +37,9 @@ def rpc_service(threading: str = "affine"):
     return deco
 
 
-# --- Typed, serializable errors (the IDL's exception vocabulary) ---
+# --- Typed errors (the IDL's exception vocabulary) ---
 # The runtime recognizes errors by duck-typing: anything with to_dict()
-# passes through untouched. These will serialize over RPC later.
+# passes through untouched, so callers always get structured errors.
 
 
 class ServiceError(Exception):
@@ -66,7 +65,7 @@ class NameRequiredError(ServiceError):
     code = "name_required"
 
 
-@rpc_service(threading="affine")
+@service(threading="affine")
 class Cat(_Cat):
     """
     Cat service. Not thread-safe -> affine.
@@ -76,20 +75,20 @@ class Cat(_Cat):
     lives here.
     """
 
-    @rpc
+    @exposed
     def greet(self, whom: str) -> str:
         """Greet someone. Raises NameRequiredError on empty whom."""
         if not whom:
             raise NameRequiredError("whom must not be empty")
         return f"{self.speak()} to {whom}"
 
-    @rpc
+    @exposed
     def lives_remaining(self) -> int:
-        """Hypothetical RPC method."""
+        """Hypothetical extra accessor."""
         return 9
 
 
-@rpc_service(threading="pool")
+@service(threading="pool")
 class Spider(Animal):
     """
     Spider service. Thread-safe -> pool.
@@ -106,12 +105,12 @@ class Spider(Animal):
     def legs(self) -> int:
         return 8
 
-    @rpc
+    @exposed
     def crawl(self, meters: float) -> str:
         """Ask the spider to crawl."""
         return f"{self.name} crawls {meters}m"
 
-    @rpc
+    @exposed
     def bite(self, target: str) -> bool:
         return target == "fly"
 

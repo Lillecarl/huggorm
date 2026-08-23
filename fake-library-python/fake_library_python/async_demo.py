@@ -96,7 +96,7 @@ async def main():
         await cat.greet("")
     except Exception as e:
         print(f"caught {type(e).__name__}: code={e.code!r} message={e.message!r}")
-        print(f"serializable: {e.to_dict()}  <- this is what RPC will put on the wire")
+        print(f"serializable: {e.to_dict()}  <- structured, wire-ready")
 
     print("\n=== C++ exception surfaces as InternalError with cause chain ===")
     print(await cat.fetch("ball"))

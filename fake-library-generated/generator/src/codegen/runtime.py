@@ -13,7 +13,7 @@ Both bridge the sync C++ calls into asyncio via run_in_executor.
 Exception policy:
 - Errors from the IDL (ServiceError subclasses) pass through untouched.
   They are recognized by duck-typing: they carry a to_dict() method,
-  which is also what will serialize them over RPC later.
+  which keeps error handling uniform regardless of where the failure came from.
 - Anything else is wrapped in InternalError with the original as
   __cause__, so C++ exceptions and programming bugs arrive uniformly.
 - Construction failures are cached and re-raised on every call; we do

@@ -80,9 +80,9 @@ def extract_service(cls, inherited_methods=None, hide=()) -> dict:
         for name, val in cls.__dict__.items()
         if not name.startswith("_") and callable(val)
     }
-    marked = any(getattr(v, "_is_rpc", False) for v in own.values())
+    marked = any(getattr(v, "_exposed", False) for v in own.values())
     if marked:
-        own = {n: v for n, v in own.items() if getattr(v, "_is_rpc", False)}
+        own = {n: v for n, v in own.items() if getattr(v, "_exposed", False)}
 
     methods = [extract_method(f) for f in own.values()]
     seen = {m["name"] for m in methods}
