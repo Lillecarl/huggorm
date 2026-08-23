@@ -23,6 +23,7 @@ Exception policy:
 import asyncio
 import concurrent.futures
 import copy
+import json
 import threading
 
 _POOL = None
@@ -40,6 +41,25 @@ class WrapperError(Exception):
 
     def to_dict(self) -> dict:
         return {"code": self.code, "message": self.message}
+
+
+    def to_dict(self) -> dict:
+        return {"code": self.code, "message": self.message}
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        """Rebuild a wrapper error from to_dict() output - used at RPC
+        boundaries so typed errors survive the wire. A dict carrying a
+        cause is by definition an InternalError; the original cause
+        type is approximated by name."""
+        known = {"ValueError": ValueError, "TypeError": TypeError,
+                 "RuntimeError": RuntimeError, "KeyError": KeyError,
+                 "OSError": OSError}
+        if "cause_type" not in d:
+            return WrapperError(d.get("message", ""))
+        cause_cls = known.get(d["cause_type"], Exception)
+        cause = cause_cls(d.get("cause_message", ""))
+        return InternalError(d.get("message", ""), cause=cause)
 
 
 class InternalError(WrapperError):

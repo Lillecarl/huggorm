@@ -11,6 +11,8 @@ the in-process layer, different location.
 import grpclib
 import grpclib.client
 import grpclib.const
+import grpclib.exceptions
+import json
 from google.protobuf import message_factory
 
 from . import grpc_pb as schema
@@ -70,6 +72,8 @@ class NixClient:
         obj.handle_id = None
 
     async def invoke(self, cls_name, m, handle_id, args):
+        from fake_library_generated._runtime import InternalError, WrapperError
+
         Req = self.msg(f"{cls_name}_{m['name']}Req")
         RespName = _resp(cls_name, m)
         req = Req()
@@ -90,8 +94,18 @@ class NixClient:
             else:
                 setattr(req, p["name"], val)
 
-        resp = await self._rpc(
-            f"/{schema.PKG}.{cls_name}Service/{m['name']}", req, RespName)
+        try:
+            resp = await self._rpc(
+                f"/{schema.PKG}.{cls_name}Service/{m['name']}", req, RespName)
+        except grpclib.exceptions.GRPCError as e:
+            # Typed wrapper errors cross as JSON in the status message.
+            try:
+                d = json.loads(e.message)
+                if isinstance(d, dict) and "code" in d:
+                    raise WrapperError.from_dict(d) from None
+            except (ValueError, TypeError):
+                pass
+            raise
 
         rt = m["return_type"]
         if rt in ("Value", "Derivation"):

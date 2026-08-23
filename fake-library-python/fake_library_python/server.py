@@ -11,11 +11,14 @@ hand-written per method.
 
 import asyncio
 import inspect
+import json
 
 import grpclib
 import grpclib.const
+import grpclib.exceptions
 import grpclib.server
 from google.protobuf import message_factory
+from grpclib.reflection.service import ServerReflection
 
 from . import grpc_pb as schema
 
@@ -79,6 +82,20 @@ class Dispatcher:
 
     # -- handler construction ----------------------------------------------
     def _service(self, cls_name, proto):
+        from fake_library_generated._runtime import WrapperError
+
+        def wrap(errors):
+            """Typed wrapper errors cross the wire as a JSON payload in
+            the gRPC status message; the client rebuilds them."""
+            async def guard(stream):
+                try:
+                    await errors(stream)
+                except WrapperError as e:
+                    raise grpclib.exceptions.GRPCError(
+                        grpclib.const.Status.UNKNOWN,
+                        json.dumps(e.to_dict()))
+            return guard
+
         for m in proto["methods"]:
             req_cls = self.msg(f"{cls_name}_{m['name']}Req")
             resp_cls = self.msg(_resp(cls_name, m))
@@ -100,7 +117,7 @@ class Dispatcher:
 
             self.mapping[f"/{schema.PKG}.{cls_name}Service/{m['name']}"] = \
                 grpclib.const.Handler(
-                    handler, grpclib.const.Cardinality.UNARY_UNARY,
+                    wrap(handler), grpclib.const.Cardinality.UNARY_UNARY,
                     req_cls, resp_cls)
 
     def _session(self):
@@ -158,11 +175,32 @@ async def serve(host="127.0.0.1", port=50051):
     pool = schema.load_pool()
     dispatcher = Dispatcher(pool, schema.load_manifest())
 
-    class DispatchHandler:
-        def __mapping__(self):
-            return dispatcher.mapping
-
-    server = grpclib.server.Server([DispatchHandler()])
+    # Reflection serves descriptors out of the same pool the handlers
+    # use, so external tools see exactly the manifest-built schema.
+    # One servable PER SERVICE: reflection's list_services reports one
+    # name per handler object.
+    services = []
+    grouped: dict[str, dict] = {}
+    for path, h in dispatcher.mapping.items():
+        svc_name = path.split("/")[1]
+        grouped.setdefault(svc_name, {})[path] = h
+    for subset in grouped.values():
+        class Servable:
+            def __mapping__(self, _subset=subset):
+                return _subset
+        services.append(Servable())
+    services = ServerReflection.extend(
+        services,
+        pool=pool,
+    )
+    server = grpclib.server.Server(services)
     await server.start(host, port)
     print(f"nixmock gRPC server listening on {host}:{port}")
     await server.wait_closed()
+
+
+if __name__ == "__main__":
+    import sys
+    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 50051
+    asyncio.run(serve(host, port))
