@@ -61,4 +61,28 @@ ownership; pure wallet-based leases disconnected from connections).
   leases from every proxy return; clients should Release eagerly -
   harness/tests must model this (see 012).
 
-Not building yet. Blocks 014 (transport shims); feeds 016.
+## Open questions, resolved at implementation (2026-08-24)
+
+- Share defaults to COPY (transfer explicit) - safer for fork
+  handover where the granter keeps working until exit.
+- Tokens are protocol-level: Session/Bind issues one, every request
+  carries it in gRPC metadata (x-nixmock-conn), reference constant
+  TOKEN_HEADER lives in lifecycle.py for all transports. Tokenless
+  callers (grpcurl pokes) share an anonymous connection.
+- Disconnect detection is TTL-based (sweeper task), NOT transport
+  events: transports need report nothing; half-open TCP covered.
+  Bind's response carries the TTL so clients pace pings at ttl/4.
+- Detach supports per-handle and whole-connection (all=true).
+- Force-close: unnecessary as a primitive - producer pinning already
+  prevents premature parent death; killing live dependents explicitly
+  stays future work.
+- Escrow is keyed by the detaching token and survives its connection;
+  Bind(claim=token) adopts it.
+
+Built in this commit: lifecycle.py (transport-free core: entries,
+connections, escrow, share/detach/sweep/fixpoint-cascade reaper),
+Session rpcs Bind/Ping/Share/Detach in the schema and server,
+client-side token management + adaptive ping loop + connect(auto-
+bind), typed-error decoding moved into _rpc so EVERY call rebuilds
+typed failures. test_lifecycle.py drives all seventeen wire-level
+checks (17/17); test_remote still 23/23.

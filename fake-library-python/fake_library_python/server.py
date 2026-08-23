@@ -21,13 +21,22 @@ from google.protobuf import message_factory
 from grpclib.reflection.service import ServerReflection
 
 from . import grpc_pb as schema
+from .lifecycle import TOKEN_HEADER, HandleTable
+
+
+def _tok(stream) -> str:
+    """The connection token presented with this request ('' if none)."""
+    md = stream.metadata or {}
+    value = md.get(TOKEN_HEADER, "")
+    return value.decode() if isinstance(value, bytes) else value
 
 
 class Dispatcher:
-    def __init__(self, pool, manifest):
+    def __init__(self, pool, manifest, lease_ttl=120.0):
         self.pool = pool
         self.manifest = manifest
-        self.table = {}
+        self.table = HandleTable(ttl=lease_ttl)
+        self.table.on_drop = self._on_drop
         self.classes = _acquire_able(manifest)
         self.mapping = {}
         self._session()
@@ -35,21 +44,27 @@ class Dispatcher:
             for cls_name, proto in manifest[group].items():
                 self._service(cls_name, proto)
 
+    @staticmethod
+    def _on_drop(obj):
+        # Fire-and-forget runner shutdown; sweep runs on the loop.
+        async def _close():
+            try:
+                await obj.aclose()
+            except Exception:
+                pass
+        import asyncio
+        asyncio.ensure_future(_close())
+
     def msg(self, name):
         return message_factory.GetMessageClass(
             self.pool.FindMessageTypeByName(f"{schema.PKG}.{name}"))
 
     # -- handles ---------------------------------------------------------
-    def put(self, obj) -> str:
-        hid = uuid_hex()
-        self.table[hid] = obj
-        return hid
+    def put(self, obj, token, parents=()) -> str:
+        return self.table.put(obj, token, parents)
 
     def get(self, hid: str):
-        return self.table[hid]
-
-    def drop(self, hid: str) -> None:
-        self.table.pop(hid, None)
+        return self.table.get(hid)
 
     # -- wire-value codec -------------------------------------------------
     def decode(self, type_str, msg):
@@ -118,7 +133,10 @@ class Dispatcher:
                 resp = resp_cls()
                 rt = m["return_type"]
                 if rt in ("Value", "Derivation"):
-                    resp.result.id = self.put(result)
+                    # Proxy return: the produced object pins its producer
+                    # (parents=[self]) and leases to the CALLER's connection.
+                    resp.result.id = self.put(result, _tok(stream),
+                                              parents=[req.self.id])
                 elif rt != "None":
                     await self.encode(resp, "result", rt, result)
                 await stream.send_message(resp)
@@ -130,6 +148,20 @@ class Dispatcher:
 
     def _session(self):
         from fake_library_generated._runtime import InternalError
+
+        def guard_untyped(fn):
+            """Session rpcs raise plain KeyError/ValueError from the
+            lifecycle core; give them the same typed-JSON contract as
+            the service handlers."""
+            async def guarded(stream):
+                try:
+                    await fn(stream)
+                except Exception as e:
+                    internal = InternalError(f"Session/{fn.__name__} failed", cause=e)
+                    raise grpclib.exceptions.GRPCError(
+                        grpclib.const.Status.UNKNOWN,
+                        json.dumps(internal.to_dict()))
+            return guarded
 
         async def acquire(stream):
             req = await stream.recv_message()
@@ -143,30 +175,66 @@ class Dispatcher:
                     grpclib.const.Status.UNKNOWN,
                     json.dumps(internal.to_dict()))
             resp = self.msg("Handle")()
-            resp.id = self.put(obj)
+            resp.id = self.put(obj, _tok(stream))
             await stream.send_message(resp)
 
         async def release(stream):
             req = await stream.recv_message()
-            self.drop(req.self.id if hasattr(req, "self") else req.id)
+            self.table.release(_tok(stream),
+                               req.self.id if hasattr(req, "self") else req.id)
             await stream.send_message(self.msg("Handle")())
+
+        async def bind(stream):
+            req = await stream.recv_message()
+            claim = getattr(req, "claim_token") or None
+            resp = self.msg("ConnResp")()
+            resp.token = self.table.bind(claim)
+            resp.lease_ttl = self.table.ttl or 0.0
+            await stream.send_message(resp)
+
+        async def ping(stream):
+            req = await stream.recv_message()
+            self.table._conn_for(getattr(req, "token"))
+            ack = self.msg("AckResp")()
+            ack.ok = True
+            await stream.send_message(ack)
+
+        async def share(stream):
+            req = await stream.recv_message()
+            self.table.share(_tok(stream), getattr(req, "to_token"),
+                             req.handle.id, mode=getattr(req, "mode") or "copy")
+            ack = self.msg("AckResp")()
+            ack.ok = True
+            await stream.send_message(ack)
+
+        async def detach(stream):
+            req = await stream.recv_message()
+            token = _tok(stream)
+            hid = req.target.id if req.HasField("target") else None
+            if hid is None and not getattr(req, "all"):
+                raise ValueError("detach needs a target handle or all=true")
+            moved = self.table.detach(token, hid)
+            ack = self.msg("AckResp")()
+            ack.ok = moved > 0
+            await stream.send_message(ack)
 
         Handle = self.msg("Handle")
         AcqReq = self.msg("AcquireReq")
-        EmptyHandleResp = Handle
-        self.mapping[f"/{schema.PKG}.Session/Acquire"] = grpclib.const.Handler(
-            acquire, grpclib.const.Cardinality.UNARY_UNARY, AcqReq, Handle)
-        self.mapping[f"/{schema.PKG}.Session/Release"] = grpclib.const.Handler(
-            release, grpclib.const.Cardinality.UNARY_UNARY, Handle, EmptyHandleResp)
+        for name, fn, req_cls, resp_cls in (
+            ("Acquire", acquire, AcqReq, Handle),
+            ("Release", release, Handle, Handle),
+            ("Bind", bind, self.msg("BindReq"), self.msg("ConnResp")),
+            ("Ping", ping, self.msg("PingReq"), self.msg("AckResp")),
+            ("Share", share, self.msg("ShareReq"), self.msg("AckResp")),
+            ("Detach", detach, self.msg("DetachReq"), self.msg("AckResp")),
+        ):
+            self.mapping[f"/{schema.PKG}.Session/{name}"] = grpclib.const.Handler(
+                guard_untyped(fn), grpclib.const.Cardinality.UNARY_UNARY,
+                req_cls, resp_cls)
 
 
 def _resp(cls_name, m):
     return f"{cls_name}_{m['name'].title().replace('_', '')}Resp"
-
-
-def uuid_hex() -> str:
-    import uuid
-    return uuid.uuid4().hex
 
 
 def _acquire_able(manifest) -> dict:
@@ -189,9 +257,22 @@ def _acquire_able(manifest) -> dict:
     return out
 
 
-async def serve(host="127.0.0.1", port=50051):
+async def serve(host="127.0.0.1", port=50051, lease_ttl=120.0):
     pool = schema.load_pool()
-    dispatcher = Dispatcher(pool, schema.load_manifest())
+    dispatcher = Dispatcher(pool, schema.load_manifest(), lease_ttl=lease_ttl)
+
+    # Connection liveness: transports never report death; the sweeper
+    # notices silence past the TTL and releases what the dead
+    # connection held (tasks/002).
+    async def sweeper():
+        interval = max(0.5, min(lease_ttl / 4 if lease_ttl else 5, 5))
+        while True:
+            await asyncio.sleep(interval)
+            dropped = dispatcher.table.sweep()
+            for hid in dropped:
+                print(f"swept handle {hid[:8]}")
+
+    sweep_task = asyncio.create_task(sweeper()) if lease_ttl else None
 
     # Reflection serves descriptors out of the same pool the handlers
     # use, so external tools see exactly the manifest-built schema.
@@ -213,12 +294,18 @@ async def serve(host="127.0.0.1", port=50051):
     )
     server = grpclib.server.Server(services)
     await server.start(host, port)
-    print(f"nixmock gRPC server listening on {host}:{port}")
-    await server.wait_closed()
+    print(f"nixmock gRPC server listening on {host}:{port} "
+          f"(lease ttl: {lease_ttl if lease_ttl else 'off'})")
+    try:
+        await server.wait_closed()
+    finally:
+        if sweep_task is not None:
+            sweep_task.cancel()
 
 
 if __name__ == "__main__":
     import sys
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 50051
-    asyncio.run(serve(host, port))
+    ttl = float(sys.argv[3]) if len(sys.argv) > 3 else 120.0
+    asyncio.run(serve(host, port, lease_ttl=ttl))

@@ -121,6 +121,51 @@ def build_fdset(manifest: dict) -> bytes:
     acq.name = "Acquire"
     acq.input_type = f".{PKG}.AcquireReq"
     acq.output_type = f".{PKG}.Handle"
+
+    # Connection lifecycle (tasks/002). The connection token travels in
+    # gRPC metadata on every request; these rpcs manage it.
+    conn_resp = f.message_type.add()
+    conn_resp.name = "ConnResp"
+    _field(conn_resp, "token", 1, proto_type=_scalar_const("string"))
+    _field(conn_resp, "lease_ttl", 2, proto_type=_scalar_const("double"))
+    ack = f.message_type.add()
+    ack.name = "AckResp"
+    _field(ack, "ok", 1, proto_type=_scalar_const("bool"))
+    bind_req = f.message_type.add()
+    bind_req.name = "BindReq"
+    _field(bind_req, "claim_token", 1, proto_type=_scalar_const("string"))
+    bnd = sess.method.add()
+    bnd.name = "Bind"
+    bnd.input_type = f".{PKG}.BindReq"
+    bnd.output_type = f".{PKG}.ConnResp"
+
+    ping_req = f.message_type.add()
+    ping_req.name = "PingReq"
+    _field(ping_req, "token", 1, proto_type=_scalar_const("string"))
+    png = sess.method.add()
+    png.name = "Ping"
+    png.input_type = f".{PKG}.PingReq"
+    png.output_type = f".{PKG}.AckResp"
+
+    share_req = f.message_type.add()
+    share_req.name = "ShareReq"
+    _field(share_req, "handle", 1, type_name="Handle")
+    _field(share_req, "to_token", 2, proto_type=_scalar_const("string"))
+    _field(share_req, "mode", 3, proto_type=_scalar_const("string"))
+    shr = sess.method.add()
+    shr.name = "Share"
+    shr.input_type = f".{PKG}.ShareReq"
+    shr.output_type = f".{PKG}.AckResp"
+
+    detach_req = f.message_type.add()
+    detach_req.name = "DetachReq"
+    _field(detach_req, "target", 1, type_name="Handle")
+    _field(detach_req, "all", 2, proto_type=_scalar_const("bool"))
+    det = sess.method.add()
+    det.name = "Detach"
+    det.input_type = f".{PKG}.DetachReq"
+    det.output_type = f".{PKG}.AckResp"
+
     rel = sess.method.add()
     rel.name = "Release"
     rel.input_type = f".{PKG}.Handle"
