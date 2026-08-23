@@ -59,14 +59,18 @@ def main(argv=None):
     parser.add_argument(
         "--pxd",
         required=True,
-        help="path to the bindings .pxd declaration file (the C++ mapping)",
+        nargs="+",
+        help="paths to the bindings .pxd declaration files (the C++ mapping)",
     )
     args = parser.parse_args(argv)
 
     bindings = _load_bindings_module()
 
-    api = extract_api(pathlib.Path(args.pxd).read_text())
-    print(f"parsed pxd: {len(api['classes'])} classes from {args.pxd}")
+    api = {"classes": {}}
+    for path_str in args.pxd:
+        part = extract_api(pathlib.Path(path_str).read_text())
+        api["classes"].update(part["classes"])
+        print(f"parsed pxd: {len(part['classes'])} classes from {path_str}")
 
     wrapper_classes = _wrapper_classes(bindings)
 

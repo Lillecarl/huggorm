@@ -28,9 +28,9 @@ python3Packages.buildPythonPackage {
 
   # setup.py's build_py hook imports codegen to run it, and the generated
   # package imports fake_library - both are standard build requirements.
-  # codegen additionally parses c_store.pxd with Cython's own parser.
-  # PXD_FILE points the generator at the bindings' declaration file so
-  # returned types derive from pxd usage.
+  # codegen parses each .pxd with Cython's own parser.
+  # PXD_FILE lists the bindings' declaration files so returned types
+  # derive from pxd usage.
   build-system = [
     python3Packages.setuptools
     python3Packages.cython
@@ -38,7 +38,7 @@ python3Packages.buildPythonPackage {
     fake-library-bindings
   ];
 
-  env.PXD_FILE = "${fake-library-bindings.src}/fake_library/c_store.pxd";
+  env.PXD_FILE = "${fake-library-bindings.src}/fake_library/c_store.pxd ${fake-library-bindings.src}/fake_library/c_eval.pxd";
 
   propagatedBuildInputs = [ fake-library-bindings ];
 

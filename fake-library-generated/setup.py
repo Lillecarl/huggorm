@@ -21,9 +21,9 @@ class build_with_codegen(build_py):
         cwd = os.getcwd()
         pkg_dir = os.path.join(cwd, "fake_library_generated")
         argv = ["--out", pkg_dir]
-        pxd = os.environ.get("PXD_FILE")
-        if pxd:
-            argv += ["--pxd", pxd]
+        pxds = os.environ.get("PXD_FILE", "").split()
+        if pxds:
+            argv += ["--pxd"] + pxds
         generate(argv)
         smoke(["--out", pkg_dir])
         super().run()
