@@ -124,12 +124,22 @@ async def test_behavior():
     assert isinstance(v, AsyncValue)
     assert await v.string_value() == "hello nix"
 
-    # Boehm GC proof: values are arena-resident and survive aggressive
-    # collection. Collection is a blocking global operation, so it is
-    # dispatched off the loop thread - which also exercises thread
-    # registration from a fresh pool thread.
+    # Boehm GC proof, in two layers. First the counters bound straight
+    # from gc.h prove the collector is ACTIVE and that this exact value
+    # lives inside a GC-allocated block. A no-op integration could not
+    # produce either fact.
     import fake_library
+    stats = fake_library.gc_stats()
+    assert stats["heap_size"] > 0 and stats["total_bytes"] > 0
+    assert await v.is_gc_managed()
+    assert await thunk.is_gc_managed()
+
+    # Second layer: survival. Collection is a blocking global operation,
+    # so it is dispatched off the loop thread - which also exercises
+    # thread registration from a fresh pool thread.
+    collections_before = stats["collections"]
     await asyncio.to_thread(fake_library.collect_garbage)
+    assert fake_library.gc_stats()["collections"] >= collections_before + 2
     assert await v.string_value() == "hello nix"
     await asyncio.to_thread(fake_library.collect_garbage)
     # Forced state persists through collection...

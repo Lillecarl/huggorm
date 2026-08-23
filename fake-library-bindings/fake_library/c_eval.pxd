@@ -5,7 +5,12 @@
 
 from libcpp.string cimport string
 from libc.stdint cimport int64_t
+from libc.stddef cimport size_t
 
+# eval.hpp must come first: it pulls in gc-env.hpp, which defines
+# GC_THREADS before gc.h is ever included. Reversed, gc.h processes
+# without thread support and its include guard hides the registration
+# API from every later consumer.
 cdef extern from "fake_library/eval.hpp" nogil:
     cdef cppclass CValue "fake_library::Value":
         CValue() except +
@@ -31,3 +36,12 @@ cdef extern from "fake_library/eval.hpp" nogil:
     void gc_init "fake_library::gcenv::init" ()
     void gc_register_current_thread "fake_library::gcenv::register_current_thread" ()
     void gc_collect "fake_library::gcenv::collect" ()
+
+# Bound directly - no wrapper layer. Safe only AFTER gc.h has been
+# included with GC_THREADS set (see note above).
+cdef extern from "gc/gc.h" nogil:
+    size_t GC_get_heap_size()
+    size_t GC_get_total_bytes()
+    size_t GC_get_bytes_since_gc()
+    unsigned long GC_get_gc_no()
+    void * GC_base(void * p)

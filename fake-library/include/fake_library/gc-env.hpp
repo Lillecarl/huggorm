@@ -72,8 +72,9 @@ inline void register_current_thread()
 
 inline void collect()
 {
+    // Two cycles: finalizers and frees lag one behind.
     GC_gcollect();
-    GC_gcollect();  // finalizers and frees lag one cycle behind
+    GC_gcollect();
 }
 
 }  // namespace fake_library::gcenv
@@ -94,6 +95,12 @@ namespace fake_library::gcenv {
 inline void init() {}
 inline void register_current_thread() {}
 inline void collect() {}
+
+inline size_t heap_size() { return 0; }
+inline size_t total_bytes() { return 0; }
+inline size_t bytes_since_gc() { return 0; }
+inline unsigned long collection_count() { return 0; }
+inline bool is_gc_managed(const void *) { return false; }
 
 }  // namespace fake_library::gcenv
 

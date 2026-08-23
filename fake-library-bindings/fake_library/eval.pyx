@@ -14,6 +14,11 @@ from cython.operator cimport dereference as deref
 from fake_library.c_eval cimport (
     CEvalState,
     CValue,
+    GC_base,
+    GC_get_bytes_since_gc,
+    GC_get_gc_no,
+    GC_get_heap_size,
+    GC_get_total_bytes,
     gc_init,
     gc_register_current_thread,
     gc_collect,
@@ -36,6 +41,11 @@ cdef class Value:
         # Arena-resident: the state owns the value, the collector owns
         # the memory. Deleting here would be wrong under Boehm GC.
         pass
+
+    def is_gc_managed(self) -> bint:
+        """True when this value lives inside a GC-allocated block.
+        Bound straight from gc.h: a no-op integration cannot fake it."""
+        return GC_base(self._ptr) != NULL
 
     def type_name(self) -> str:
         return self._ptr.type_name().decode('utf-8')
@@ -92,6 +102,17 @@ cdef class EvalState:
     def force(self, Value v) -> None:
         """Force a value in place. Idempotent."""
         self._ptr.force(v._ptr)
+
+
+def gc_stats() -> dict:
+    """Live collector counters, bound straight from gc.h. These prove
+    the collector is ACTIVE: a no-op integration cannot fake them."""
+    return {
+        "heap_size": GC_get_heap_size(),
+        "total_bytes": GC_get_total_bytes(),
+        "bytes_since_gc": GC_get_bytes_since_gc(),
+        "collections": GC_get_gc_no(),
+    }
 
 
 def collect_garbage() -> None:
