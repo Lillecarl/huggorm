@@ -7,6 +7,8 @@ entry point; runs after codegen-generate, stdlib only:
 3. behavioral checks: results, C++ exception wrapping, affine thread
    pinning (including returned affine values), pool execution,
    policy-driven surface drops, aclose, exactly-once lazy construction
+4. the emitter-runtime symbol contract: every name any emitted module
+   imports from _runtime must exist on the runtime module
 """
 
 import argparse
@@ -21,6 +23,26 @@ import sys
 def test_parse(out: pathlib.Path):
     for py in sorted(out.glob("*.py")):
         ast.parse(py.read_text(), filename=str(py))
+
+
+def test_runtime_contract(out: pathlib.Path):
+    """The emitter-runtime import contract. Generated modules reference
+    the runtime only via `from _runtime import X`; a rename on either
+    side otherwise ships a wheel that fails at first wrapper import.
+    Every referenced symbol must exist, and the core trio must still be
+    exercised at all."""
+    import fake_library_generated._runtime as rt
+    referenced = set()
+    for py in sorted(out.glob("*.py")):
+        tree = ast.parse(py.read_text(), filename=str(py.name))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "_runtime":
+                referenced |= {a.name for a in node.names}
+    missing = sorted(n for n in referenced if not hasattr(rt, n))
+    assert not missing, f"emitted modules import missing _runtime symbols: {missing}"
+    assert {"attach_runner", "unwrap_arg"} <= referenced, (
+        f"emitters stopped importing the core runtime: {sorted(referenced)}"
+    )
 
 
 async def test_behavior():
@@ -264,6 +286,7 @@ def main(argv=None):
     # installed copy. Bindings (fake_library) come from PYTHONPATH.
     sys.path.insert(0, str(out.parent))
     importlib.invalidate_caches()
+    test_runtime_contract(out)
     asyncio.run(test_behavior())
     print("smoke test OK")
 
