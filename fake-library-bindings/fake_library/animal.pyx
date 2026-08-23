@@ -14,48 +14,18 @@
 from libcpp.string cimport string
 from cython.operator cimport dereference as deref
 
-# --- The C++ API, declared in place ---
-# Cython cannot read fake_library/animal.hpp, so the API is described here
-# in Cython syntax. This is the hand-written binding surface; it used to
-# live in c_animal.pxd, but with a single module the pxd was pure
-# indirection. Cython-side names get a C prefix to avoid clashing with the
-# wrapper classes below; the quoted strings are the real C++ names.
-#
-# `nogil` on the block makes every method callable inside `with nogil:`
-# blocks (pattern from Cython's own cpp_nogil test). Combined with
-# `except +`, the GIL is reacquired only if an exception actually throws.
-cdef extern from "fake_library/animal.hpp" nogil:
-    # Quoted names must be fully qualified: they are emitted verbatim
-    # into generated C++ that lives outside the library's namespace.
-    cdef cppclass CAnimal "fake_library::Animal":
-        CAnimal(string name)
-        string get_name() const
-        void set_name(const string& name)
-        string speak() const
-        int legs() const
-        string fetch(const string& item) except +
-        CPoop poop() const
-        CBall toy() const
-        void wait_ms(int ms) const
-
-    cdef cppclass CCat "fake_library::Cat"(CAnimal):
-        CCat(string name)
-
-    cdef cppclass CDog "fake_library::Dog"(CAnimal):
-        CDog(string name)
-
-    cdef cppclass CPoop "fake_library::Poop":
-        CPoop(string producer)
-        CPoop(const CPoop& other)
-        string describe()
-        int inspections() const
-
-    cdef cppclass CBall "fake_library::Ball":
-        CBall(string color)
-        CBall(const CBall& other)
-        string describe() const
-
-    string describe_animal(const CAnimal& animal)
+# The C++ API is declared in c_animal.pxd (cimported below). That file is
+# the single hand-written declaration surface: the compiler validates our
+# usage against it, and the codegen parses it (with Cython's own parser)
+# to learn names, params and return types for spec generation.
+from fake_library.c_animal cimport (
+    CAnimal,
+    CBall,
+    CCat,
+    CDog,
+    CPoop,
+    describe_animal,
+)
 
 # --- Trampoline: C++ class that forwards virtuals to Python ---
 cdef extern from *:
