@@ -42,6 +42,11 @@ cdef extern from "fake_library/eval.hpp" nogil:
 cdef extern from "gc/gc.h" nogil:
     size_t GC_get_heap_size()
     size_t GC_get_total_bytes()
+    size_t GC_get_free_bytes()
     size_t GC_get_bytes_since_gc()
     unsigned long GC_get_gc_no()
     void * GC_base(void * p)
+    # Uncollectable but SCANNED: the wrapper bridge cells. They keep
+    # values visible exactly as long as their Python wrapper exists.
+    void * GC_malloc_uncollectable(size_t)
+    void GC_free(void *)

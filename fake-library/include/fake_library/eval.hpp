@@ -3,8 +3,11 @@
 //
 // - EvalState is NOT thread-safe. The real docs say to use one state per
 //   thread; here that judgment becomes the affine policy.
-// - Values live in the state's arena and belong to the thread that
-//   evaluates them: access stays on the producer's thread.
+// - Values live in the GC heap and belong to no one: like the real
+//   libexpr, a value dies when the collector can no longer see any
+//   reference to it, even while its producing EvalState lives on.
+//   Bindings keep values alive by holding the pointer where the
+//   collector can see it (see eval.pyx anchor blocks).
 // - Values can be thunks: reading an unforced value throws, forcing it
 //   mutates the value in place (the real forceValue does the same).
 //
@@ -12,18 +15,16 @@
 // true/false. Enough to exercise parsing errors, forcing and typed
 // access - not a real evaluator.
 
-#include <list>
 #include <string>
 
 #include "fake_library/gc-env.hpp"
 
 namespace fake_library {
 
-// Values live in the state's arena. The arena uses gc_allocator, so with
-// Boehm GC enabled the collector scans it and owns every value in it:
-// nothing is ever freed individually, and wrappers may hold Value*
-// across arbitrary pauses because the anchor stays visible.
-class Value {
+// Deriving from gc_base routes allocation into scanned GC memory. This
+// is what makes non-reachability collection possible: nothing else has
+// to remember a value for it to stay alive.
+class Value : public gcenv::gc_base {
 public:
     // Default state is invalid; exists only as binding glue.
     Value() = default;
@@ -52,17 +53,17 @@ private:
     void force();
 };
 
-class EvalState : public gcenv::gc_base {
+// Plain C++ ownership again: the state allocates values but keeps none
+// of them, so nothing in it needs collector visibility.
+class EvalState {
 public:
     explicit EvalState(std::string store_uri);
-    ~EvalState();
 
     std::string get_store_uri() const;
 
     // Parse without evaluating: the result is an unforced thunk.
     // Throws std::invalid_argument on a parse error.
-    // The returned pointer borrows from the state's arena and stays
-    // valid for the lifetime of the state.
+    // The returned value is GC-owned; callers anchor it or lose it.
     Value * parse_expr(const std::string & expr);
 
     // Parse and evaluate: slow, and the result is fully forced.
@@ -72,10 +73,8 @@ public:
     void force(Value * v);
 
 private:
-    Value * export_(Value v);
     Value parse_(const std::string & expr) const;
     std::string store_uri_;
-    std::list<Value, gc_allocator<Value>> arena_;
 };
 
 }  // namespace fake_library

@@ -2,24 +2,12 @@
 
 #include <chrono>
 #include <cctype>
-#include <set>
 #include <stdexcept>
 #include <thread>
 
 namespace fake_library {
 
 namespace {
-
-// Language bindings hold EvalState pointers inside their own object
-// layouts, which the collector cannot see. This registry anchors every
-// live state in GC-visible memory instead: the static itself sits in
-// the data segment (always scanned) and its node buffers come from
-// gc_allocator.
-std::set<EvalState *, std::less<EvalState *>, gc_allocator<EvalState *>> & live_states()
-{
-    static std::set<EvalState *, std::less<EvalState *>, gc_allocator<EvalState *>> states;
-    return states;
-}
 
 // Evaluation and forcing are deliberately slow: the async layer has to
 // overlap work on other runners while this one serializes.
@@ -115,14 +103,6 @@ bool Value::boolean() const
 EvalState::EvalState(std::string store_uri) : store_uri_(std::move(store_uri))
 {
     gcenv::init();
-    live_states().insert(this);
-}
-
-EvalState::~EvalState()
-{
-    // Out-of-line on purpose: the registry erase must run exactly once,
-    // from the TU that owns the GC-enabled definitions.
-    live_states().erase(this);
 }
 
 std::string EvalState::get_store_uri() const { return store_uri_; }
@@ -145,23 +125,14 @@ Value EvalState::parse_(const std::string & expr) const
     throw std::invalid_argument("parse error: " + t);
 }
 
-Value * EvalState::export_(Value v)
-{
-    // The anchor lives in GC-scanned memory: with Boehm GC enabled the
-    // collector sees every arena entry, so a value cannot be reclaimed
-    // while a wrapper still points into the arena.
-    arena_.push_back(std::move(v));
-    return &arena_.back();
-}
-
-Value * EvalState::parse_expr(const std::string & expr) { return export_(parse_(expr)); }
+Value * EvalState::parse_expr(const std::string & expr) { return new Value(parse_(expr)); }
 
 Value * EvalState::eval_expr(const std::string & expr)
 {
     Value v = parse_(expr);
     pretend_eval_work(40);  // evaluation costs more than parsing
     v.force();
-    return export_(std::move(v));
+    return new Value(std::move(v));
 }
 
 void EvalState::force(Value * v) { v->force(); }

@@ -151,6 +151,24 @@ async def test_behavior():
     await state.force(fresh)
     assert await fresh.integer() == 7
 
+    # Non-reachability collection, the Nix-faithful behavior: dropping
+    # the wrapper frees its bridge cell, leaving nothing visible that
+    # points at the value, so the collector reclaims it while the state
+    # stays alive.
+    kept = [await state.parse_expr(f'"{"p" * 200}-{i}"') for i in range(200)]
+    await asyncio.to_thread(fake_library.collect_garbage)
+    kept_used = fake_library.gc_stats()["used_bytes"]
+
+    del kept
+    await asyncio.to_thread(fake_library.collect_garbage)
+    dropped_used = fake_library.gc_stats()["used_bytes"]
+    # Counters are page-granular; any strict decrease proves values died
+    # on non-reachability. Under the old arena design this could never
+    # move while the state lives.
+    assert dropped_used < kept_used, (
+        f"dropped values must be reclaimed: used {kept_used} -> {dropped_used}"
+    )
+
     assert v._runner.workers_seen == state._runner.workers_seen, (
         "value ops must run on the producer's thread"
     )
