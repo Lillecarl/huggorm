@@ -1,12 +1,13 @@
 project('fake-library', 'cpp',
   version : '0.1.0',
-  default_options : ['cpp_std=c++17', 'warning_level=2']
+  default_options : ['cpp_std=c++23', 'warning_level=2']
 )
 
 inc = include_directories('include')
 
 lib = library('fake_library',
   'src/store.cpp',
+  'src/eval.cpp',
   include_directories : inc,
   install : true,
 )

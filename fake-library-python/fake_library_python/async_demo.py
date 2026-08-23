@@ -8,6 +8,7 @@ from fake_library_generated import (
     AsyncLocalStore,
     AsyncRemoteStore,
     AsyncDerivedPath,
+    AsyncEvalState,
 )
 from fake_library_generated._runtime import InternalError
 
@@ -62,6 +63,39 @@ async def main():
 
     out = await local.build_derivation(AsyncDerivedPath(drv_path, "out"))
     print(f"built: {await out.to_string()} valid: {await local.is_valid_path(out)}")
+
+    print("\n=== evaluation (EvalState, affine service) ===")
+    state = AsyncEvalState("local")
+    print(f"store uri: {await state.get_store_uri()}")
+
+    thunk = await state.parse_expr("42")
+    print(f"parsed: type={await thunk.type_name()}")
+    try:
+        await thunk.integer()
+        print("should not happen")
+    except InternalError as e:
+        print(f"unforced access fails: {e.__cause__}")
+    await state.force(thunk)
+    print(f"forced: type={await thunk.type_name()}, value={await thunk.integer()}")
+
+    v = await state.eval_expr('"hello nix"')
+    print(f"eval: {await v.string_value()!r} (type {await v.type_name()})")
+    print(f"value workers: {sorted(v._runner.workers_seen)} (state's: {sorted(state._runner.workers_seen)})")
+
+    t0 = asyncio.get_running_loop().time()
+    await asyncio.gather(state.eval_expr("1"), state.eval_expr("2"))
+    elapsed = asyncio.get_running_loop().time() - t0
+    print(f"2x eval_expr gathered: {elapsed * 1000:.0f}ms (>=80: one dedicated thread)")
+
+    try:
+        await state.eval_expr("not an expression")
+        print("should not happen")
+    except InternalError as e:
+        print(f"caught InternalError: {e.to_dict()}")
+
+    await v.aclose()
+    await thunk.aclose()
+    await state.aclose()
 
     print("\n=== policy enforcement ===")
     print("AsyncLocalStore exposes query_derivation:", hasattr(local, "query_derivation"),

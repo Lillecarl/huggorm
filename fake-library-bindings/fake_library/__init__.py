@@ -7,6 +7,7 @@ from .store import (
     DerivedPath,
     describe,
 )
+from .eval import EvalState, Value
 
 __all__ = [
     "Store",
@@ -15,5 +16,7 @@ __all__ = [
     "StorePath",
     "Derivation",
     "DerivedPath",
+    "EvalState",
+    "Value",
     "describe",
 ]

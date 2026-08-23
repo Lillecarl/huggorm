@@ -30,6 +30,8 @@ async def test_behavior():
         AsyncStorePath,
         AsyncDerivation,
         AsyncDerivedPath,
+        AsyncEvalState,
+        AsyncValue,
     )
     from fake_library_generated._runtime import InternalError
 
@@ -97,6 +99,51 @@ async def test_behavior():
     except InternalError as e:
         d = e.to_dict()
         assert d["code"] == "internal" and d["cause_type"] == "ValueError"
+
+    # Evaluation: EvalState is the affine SERVICE exemplar. Its values
+    # attach to its thread, and forcing mutates them in place.
+    state = AsyncEvalState("local")
+    assert await state.get_store_uri() == "local"
+
+    # Thunk protocol: parse gives an unforced value; accessors throw
+    # until it is forced.
+    thunk = await state.parse_expr("42")
+    assert await thunk.type_name() == "thunk"
+    try:
+        await thunk.integer()
+        raise AssertionError("expected unforced access to fail")
+    except InternalError as e:
+        assert type(e.__cause__) is RuntimeError
+    await state.force(thunk)
+    assert await thunk.type_name() == "int"
+    assert await thunk.integer() == 42
+    assert await thunk.integer() == 42  # force is idempotent
+
+    # eval returns a fully forced value on the state's thread.
+    v = await state.eval_expr('"hello nix"')
+    assert isinstance(v, AsyncValue)
+    assert await v.string_value() == "hello nix"
+    assert v._runner.workers_seen == state._runner.workers_seen, (
+        "value ops must run on the producer's thread"
+    )
+
+    # Affine serialization: two gathered evals take ~2x one eval.
+    t0 = asyncio.get_running_loop().time()
+    await asyncio.gather(state.eval_expr("1"), state.eval_expr("2"))
+    elapsed = asyncio.get_running_loop().time() - t0
+    assert elapsed >= 0.075, f"evals must serialize, took {elapsed * 1000:.0f}ms"
+
+    # Parse errors surface as InternalError with the C++ cause.
+    try:
+        await state.eval_expr("not an expression")
+        raise AssertionError("expected parse error")
+    except InternalError as e:
+        d = e.to_dict()
+        assert d["code"] == "internal" and d["cause_type"] == "ValueError"
+
+    await v.aclose()
+    await thunk.aclose()
+    await state.aclose()
 
     # Construction failures are cached and re-raised identically.
     # Wrappers construct lazily, so the bad argument fails on first call.

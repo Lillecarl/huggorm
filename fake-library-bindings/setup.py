@@ -16,10 +16,21 @@ ext = Extension(
     include_dirs=[os.path.join(fake_lib, "include")],
     library_dirs=[os.path.join(fake_lib, "lib")],
     libraries=["fake_library"],
-    extra_compile_args=["-std=c++17"],
+    extra_compile_args=["-std=c++23"],
+    extra_link_args=[f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
+)
+
+ext_eval = Extension(
+    "fake_library.eval",
+    sources=["fake_library/eval.pyx"],
+    language="c++",
+    include_dirs=[os.path.join(fake_lib, "include")],
+    library_dirs=[os.path.join(fake_lib, "lib")],
+    libraries=["fake_library"],
+    extra_compile_args=["-std=c++23"],
     extra_link_args=[f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
 )
 
 setup(
-    ext_modules=[ext],
+    ext_modules=[ext, ext_eval],
 )
