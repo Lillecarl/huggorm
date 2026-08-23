@@ -2,7 +2,7 @@
 Emit ast trees from protocol dicts.
 
 Pure tree building — no I/O, no imports of the spec. Everything the
-emitter needs arrives in the dict produced by model.extract_service.
+emitter needs arrives in the dict produced by model.extract_wrapper.
 """
 
 import ast
@@ -14,14 +14,14 @@ RUNNER_BY_THREADING = {
 
 
 def _ann(type_str: str, context: str) -> ast.expr:
-    """Parse a type string into an annotation node. Strict: bad IDL types fail loudly."""
+    """Parse a type string into an annotation node. Strict: bad type strings fail loudly."""
     try:
         return ast.parse(type_str, mode="eval").body
     except SyntaxError as e:
         raise ValueError(f"unparseable annotation {type_str!r} on {context}") from e
 
 
-def bound_module(proto: dict) -> ast.Module:
+def returned_module(proto: dict) -> ast.Module:
     """
     Emit Async<Bound> for a returned value type (e.g. Poop).
 
@@ -29,7 +29,7 @@ def bound_module(proto: dict) -> ast.Module:
     the producer's thread; attach_runner picks the right execution
     strategy from the type's declared policy.
     """
-    svc = proto["service"]
+    svc = proto["name"]
     policy = proto["threading"]
 
     mod = ast.Module(body=[], type_ignores=[])
@@ -55,7 +55,7 @@ def bound_module(proto: dict) -> ast.Module:
         ast.Expr(
             value=ast.Constant(
                 value=(
-                    f"Async handle over a {svc} produced by a service. "
+                    f"Async handle over a {svc} produced by another wrapper. "
                     f"Policy '{policy}': "
                     + (
                         "operations run on the producer's thread."
@@ -153,11 +153,11 @@ def _hop_return(method_name: str, params: list[dict]) -> ast.Return:
     return ast.Return(value=ast.Await(value=_hop_call(method_name, params)))
 
 
-def service_module(proto: dict, bound_policies: dict[str, str] | None = None) -> ast.Module:
+def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) -> ast.Module:
     """Emit Async<Svc>. bound_policies maps returned-type names to their
     declared threading policy; those methods adopt the produced object
     into an attached runner instead of returning it raw."""
-    svc = proto["service"]
+    svc = proto["name"]
     bound_policies = bound_policies or {}
     runner = RUNNER_BY_THREADING[proto["threading"]]
 
@@ -189,7 +189,7 @@ def service_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
             )
         )
     )
-    mod.body.append(ast.ImportFrom(module="spec", names=[ast.alias(name=svc)], level=1))
+    mod.body.append(ast.ImportFrom(module="fake_library", names=[ast.alias(name=svc)], level=0))
     mod.body.append(
         ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
     )

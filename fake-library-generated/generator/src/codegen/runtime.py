@@ -1,8 +1,8 @@
 """
-Hand-written runtime for generated clients. NOT generated.
+Hand-written runtime for generated wrappers. NOT generated.
 
 Two execution strategies:
-- AffineRunner: one dedicated thread per client. The service object is
+- AffineRunner: one dedicated thread per wrapper. The target object is
   CONSTRUCTED on that thread and every call hops to it. Use for classes
   whose C++ implementation is not thread-safe.
 - PoolRunner: a shared thread pool. Any thread may touch the object.
@@ -11,7 +11,7 @@ Two execution strategies:
 Both bridge the sync C++ calls into asyncio via run_in_executor.
 
 Exception policy:
-- Errors from the IDL (ServiceError subclasses) pass through untouched.
+- Typed errors (WrapperError subclasses) pass through untouched.
   They are recognized by duck-typing: they carry a to_dict() method,
   which keeps error handling uniform regardless of where the failure came from.
 - Anything else is wrapped in InternalError with the original as
@@ -28,10 +28,10 @@ _POOL = None
 _POOL_LOCK = threading.Lock()
 
 
-class ServiceError(Exception):
-    """Base for typed, serializable errors raised inside services."""
+class WrapperError(Exception):
+    """Base for typed, serializable errors raised inside wrapped targets."""
 
-    code = "service_error"
+    code = "wrapper_error"
 
     def __init__(self, message: str = ""):
         super().__init__(message)
@@ -41,7 +41,7 @@ class ServiceError(Exception):
         return {"code": self.code, "message": self.message}
 
 
-class InternalError(ServiceError):
+class InternalError(WrapperError):
     """Wrapper for unexpected errors (C++ exceptions, bugs)."""
 
     code = "internal"
@@ -99,10 +99,13 @@ class BaseRunner:
         cur_before = threading.current_thread()
         try:
             obj = self._resolve()
-            return getattr(obj, method)(*args)
+            attr = getattr(obj, method)
+            # Properties resolve to values, not callables: reading one
+            # still runs on this runner's thread, which is the point.
+            return attr(*args) if callable(attr) else attr
         except Exception as e:
             if hasattr(e, "to_dict"):
-                raise  # typed service error — pass through untouched
+                raise  # typed wrapper error — pass through untouched
             raise InternalError(f"{method} failed", cause=e) from e
         finally:
             cur = threading.current_thread()
@@ -143,7 +146,7 @@ class PoolRunner(BaseRunner):
         return _shared_pool()
 
     async def aclose(self):
-        return None  # shared pool outlives clients
+        return None  # shared pool outlives wrappers
 
 
 class AttachedRunner(BaseRunner):
@@ -177,7 +180,7 @@ def attach_runner(obj, parent: BaseRunner, policy: str) -> BaseRunner:
         raise TypeError(
             "affine return type produced on a pool runner: the object has "
             "no home thread. Declare it 'pool' or produce it from an "
-            "affine service."
+            "affine wrapper."
         )
     if policy == "pool":
         return PoolRunner(None, obj=obj)

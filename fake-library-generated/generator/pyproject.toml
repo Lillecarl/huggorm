@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fake-library-codegen"
 version = "0.1.0"
-description = "IDL-to-async-wrapper codegen for fake_library_generated"
+description = "PXD-and-bindings-to-async-wrapper codegen for fake_library_generated"
 requires-python = ">=3.10"
 
 [project.scripts]

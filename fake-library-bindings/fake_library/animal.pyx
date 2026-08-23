@@ -98,6 +98,9 @@ cdef extern from *:
 cdef class Animal:
     cdef CAnimal* _ptr
 
+    _threading = "affine"
+    _async = False  # abstract: excluded from wrapper generation
+
     def __init__(self, str name=""):
         cdef string c_name
         if self._ptr == NULL:
@@ -184,14 +187,25 @@ cdef class Animal:
 # --- Concrete subclasses ---
 # Each leaf allocates its own C++ object in its own __cinit__. The base
 # contributes nothing to the chain (see the note above Animal).
+#
+# `_threading` marks the execution policy the async generator uses:
+#   "affine" - not thread-safe; ops pinned to one dedicated thread
+#   "pool"   - safe on any thread
+# `_async = False` excludes a class from wrapper generation (Animal:
+# abstract).
 
 cdef class Cat(Animal):
+    _threading = "affine"
+
     def __cinit__(self, str name):
         cdef string c_name = name.encode('utf-8')
         self._ptr = new CCat(c_name)
 
 
 cdef class Dog(Animal):
+    # Thread-safe exemplar so both policies have a concrete wrapper.
+    _threading = "pool"
+
     def __cinit__(self, str name):
         cdef string c_name = name.encode('utf-8')
         self._ptr = new CDog(c_name)

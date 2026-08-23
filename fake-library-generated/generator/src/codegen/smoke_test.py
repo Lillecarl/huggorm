@@ -4,8 +4,8 @@ entry point; runs after codegen-generate, stdlib only:
 
 1. every emitted .py parses
 2. the package imports and __all__ matches
-3. behavioral checks: results, typed-error passthrough, C++ exception
-   wrapping, affine thread pinning, pool execution, aclose
+3. behavioral checks: results, C++ exception wrapping, affine thread
+   pinning (including returned affine values), pool execution, aclose
 """
 
 import argparse
@@ -22,14 +22,14 @@ def test_parse(out: pathlib.Path):
 
 
 async def test_behavior():
-    from fake_library_generated import AsyncCat, AsyncSpider
+    from fake_library_generated import AsyncCat, AsyncDog
     from fake_library_generated._runtime import InternalError
-    from fake_library_generated.spec import NameRequiredError
 
     cat = AsyncCat("Whiskers")
-    assert await cat.greet("you") == "meow to you"
-    assert await cat.lives_remaining() == 9
+    assert await cat.speak() == "meow"
+    assert await cat.legs() == 4
     assert await cat.fetch("ball") == "Whiskers fetched the ball"
+    assert await cat.name() == "Whiskers"
 
     try:
         await cat.fetch("rock")
@@ -38,16 +38,9 @@ async def test_behavior():
         d = e.to_dict()
         assert d["code"] == "internal" and d["cause_type"] == "ValueError"
 
-    try:
-        await cat.greet("")
-        raise AssertionError("expected NameRequiredError")
-    except NameRequiredError as e:
-        assert e.to_dict()["code"] == "name_required"
-
-    await cat.greet("a")
-    await cat.greet("b")
+    await cat.speak()
+    await cat.legs()
     assert len(cat._runner.workers_seen) == 1, "affine calls must share one thread"
-    cat_thread = next(iter(cat._runner.workers_seen))
 
     # Returned affine type: ops pin to the PRODUCER's thread
     poop = await cat.poop()
@@ -66,14 +59,17 @@ async def test_behavior():
 
     await poop.aclose()
     await ball.aclose()
-    await cat.aclose()
 
-    spider = AsyncSpider("Shelob")
-    assert await spider.crawl(2.5) == "Shelob crawls 2.5m"
-    assert await spider.bite("fly") is True
-    results = await asyncio.gather(spider.crawl(1.0), spider.crawl(2.0))
-    assert results == ["Shelob crawls 1.0m", "Shelob crawls 2.0m"]
-    await spider.aclose()
+    # GIL release: two gathered waits on the pool dog overlap (~1x)
+    dog = AsyncDog("Rex")
+    await dog.wait_ms(50)
+    t0 = asyncio.get_running_loop().time()
+    await asyncio.gather(dog.wait_ms(120), dog.wait_ms(120))
+    elapsed = asyncio.get_running_loop().time() - t0
+    assert elapsed < 0.22, f"expected overlapped waits, took {elapsed:.2f}s"
+
+    await dog.aclose()
+    await cat.aclose()
 
 
 def main(argv=None):

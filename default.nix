@@ -13,7 +13,7 @@ rec {
     inherit fake-library-bindings;
     inherit fake-library-generated;
   };
-  # AST codegen layer between bindings and python: spec.py (IDL) -> generated stubs
+  # AST codegen layer between bindings and python: pxd + live bindings -> generated stubs
   fake-library-generated = pkgs.callPackage ./fake-library-generated {
     inherit fake-library;
     inherit fake-library-bindings;

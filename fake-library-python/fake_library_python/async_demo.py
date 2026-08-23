@@ -2,52 +2,54 @@
 Demo of generated async in-process wrappers.
 
     C++ fake-library (sync)
-      -> Cython bindings (sync)
-        -> spec.py services (IDL, subclasses of Cython types)
-          -> Nix build-time AST codegen
-            -> AsyncCat / AsyncSpider (awaitable, thread-policy aware)
+      -> Cython bindings (sync; pxd = C++ mapping, pyx = mechanics)
+        -> Nix build-time AST codegen from that mapping
+          -> AsyncCat / AsyncDog / AsyncPoop / AsyncBall
 
-Threading policy from the IDL:
-- RemoteCat  (affine): constructed on + pinned to one dedicated thread
-- RemoteSpider (pool): runs on a shared thread pool
+Threading policy comes from `_threading` markers on the binding classes:
+- Cat  (affine): constructed on + pinned to one dedicated thread
+- Dog  (pool): runs on a shared thread pool
 """
 
 import asyncio
 
-from fake_library_generated import AsyncCat, AsyncSpider
+from fake_library_generated import AsyncCat, AsyncDog
 
 
 async def main():
     # Constructor args pass through; object is constructed lazily on its thread.
     cat = AsyncCat("Whiskers")
-    spider = AsyncSpider("Shelob")
+    dog = AsyncDog("Rex")
 
     print("=== sequential awaits ===")
-    print(await cat.greet("you"))
-    print(await cat.lives_remaining())
-    print(await spider.crawl(2.5))
-    print(await spider.bite("fly"))
+    print(await cat.speak())
+    print(await cat.fetch("ball"))
+    print(await dog.legs())
 
     print("\n=== GIL released during slow C++ calls ===")
     # Heartbeat proves the event loop stays live while a worker thread
     # sits inside the nogil C++ sleep. If the GIL were held, no ticks.
     async def heartbeat():
-        ticks = 0
         while True:
             await asyncio.sleep(0.05)
-            ticks += 1
-        return ticks  # unreachable; cancelled
+            yield
 
-    hb = asyncio.create_task(heartbeat())
+    ticks = 0
+    async def tick():
+        nonlocal ticks
+        ticks += 1
+        await asyncio.sleep(0.05)
+
     t0 = asyncio.get_running_loop().time()
-    await spider.wait_ms(400)
+    ticker = asyncio.create_task(tick())
+    await dog.wait_ms(400)
     elapsed = asyncio.get_running_loop().time() - t0
-    hb.cancel()
-    print(f"wait_ms(400) took {elapsed * 1000:.0f}ms with the loop free to tick")
+    ticker.cancel()
+    print(f"wait_ms(400) took {elapsed * 1000:.0f}ms, heartbeat ticks: {ticks}")
 
     # Pool policy + nogil => two waits genuinely overlap
     t0 = asyncio.get_running_loop().time()
-    await asyncio.gather(spider.wait_ms(400), spider.wait_ms(400))
+    await asyncio.gather(dog.wait_ms(400), dog.wait_ms(400))
     both = asyncio.get_running_loop().time() - t0
     print(f"2x wait_ms(400) gathered: {both * 1000:.0f}ms (parallel if << 800)")
 
@@ -58,27 +60,24 @@ async def main():
     serial = asyncio.get_running_loop().time() - t0
     print(f"2x cat wait_ms(250): {serial * 1000:.0f}ms (>=500: one dedicated thread)")
 
-    print("\n=== thread affinity (spec.Cat, affine) ===")
-    await cat.greet("a")
-    await cat.greet("b")
-    await cat.lives_remaining()
+    print("\n=== thread affinity (Cat, affine) ===")
+    await cat.speak()
+    await cat.fetch("ball")
     print(f"born on:   {cat._runner.born_thread_name}")
     print(f"last call: {cat._runner.last_worker_name}")
     print(f"workers seen: {sorted(cat._runner.workers_seen)}  <- must be exactly 1")
 
-    print("\n=== thread pool (spec.Spider, pool) ===")
+    print("\n=== thread pool (Dog, pool) ===")
     results = await asyncio.gather(
-        spider.crawl(1.0),
-        spider.crawl(2.0),
-        spider.crawl(3.0),
-        spider.bite("fly"),
+        dog.name(),
+        dog.speak(),
+        dog.legs(),
     )
     print(f"results: {results}")
-    print(f"workers seen: {sorted(spider._runner.workers_seen)}  <- multiple pool threads")
+    print(f"workers seen: {sorted(dog._runner.workers_seen)}")
 
     print("\n=== concurrency works (asyncio) ===")
-    # Interleave both services concurrently
-    both = await asyncio.gather(cat.greet("x"), spider.crawl(9.9))
+    both = await asyncio.gather(cat.speak(), dog.speak())
     print(f"{both}")
 
     print("\n=== returned values inherit threading ===")
@@ -91,22 +90,11 @@ async def main():
     print(f"{await ball.describe()} on {sorted(ball._runner.workers_seen)}")
     await asyncio.gather(poop.aclose(), ball.aclose())
 
-    print("\n=== typed error passes through untouched ===")
-    try:
-        await cat.greet("")
-    except Exception as e:
-        print(f"caught {type(e).__name__}: code={e.code!r} message={e.message!r}")
-        print(f"serializable: {e.to_dict()}  <- structured, wire-ready")
-
     print("\n=== C++ exception surfaces as InternalError with cause chain ===")
-    print(await cat.fetch("ball"))
     try:
         await cat.fetch("rock")
     except Exception as e:
         print(f"caught {type(e).__name__}: {e.to_dict()}")
-        import traceback
-
-        traceback.print_exception(e, limit=6)
 
     print("\n=== construction failure is cached, not retried ===")
     from fake_library_generated._runtime import InternalError
@@ -116,13 +104,13 @@ async def main():
     seen = []
     for attempt in (1, 2, 3):
         try:
-            await bad.lives_remaining()
+            await bad.speak()
         except InternalError as e:
             seen.append(e)
             print(f"attempt {attempt}: {type(e).__name__} <- {type(e.__cause__).__name__}: {e.__cause__}")
     print(f"fresh wrapper each call: {seen[0] is not seen[1]}; single cached root cause: {seen[0].__cause__ is seen[2].__cause__}")
 
-    await asyncio.gather(cat.aclose(), spider.aclose())
+    await asyncio.gather(cat.aclose(), dog.aclose())
     print("closed cleanly")
 
 
