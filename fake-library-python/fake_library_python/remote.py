@@ -99,10 +99,13 @@ class NixClient:
                 f"/{schema.PKG}.{cls_name}Service/{m['name']}", req, RespName)
         except grpclib.exceptions.GRPCError as e:
             # Typed wrapper errors cross as JSON in the status message.
+            # No `from` clause: the rebuilt error keeps the decoded
+            # cause as __cause__; the GRPCError stays visible as
+            # __context__.
             try:
                 d = json.loads(e.message)
                 if isinstance(d, dict) and "code" in d:
-                    raise WrapperError.from_dict(d) from None
+                    raise WrapperError.from_dict(d)
             except (ValueError, TypeError):
                 pass
             raise

@@ -82,11 +82,13 @@ class Dispatcher:
 
     # -- handler construction ----------------------------------------------
     def _service(self, cls_name, proto):
-        from fake_library_generated._runtime import WrapperError
+        from fake_library_generated._runtime import InternalError, WrapperError
 
-        def wrap(errors):
-            """Typed wrapper errors cross the wire as a JSON payload in
-            the gRPC status message; the client rebuilds them."""
+        def wrap(errors, method):
+            """Every failure crosses the wire as a typed JSON payload in
+            the gRPC status message: WrapperErrors as themselves,
+            everything else wrapped in InternalError - so unknown
+            handles and bugs arrive debuggable, not anonymous."""
             async def guard(stream):
                 try:
                     await errors(stream)
@@ -94,6 +96,12 @@ class Dispatcher:
                     raise grpclib.exceptions.GRPCError(
                         grpclib.const.Status.UNKNOWN,
                         json.dumps(e.to_dict()))
+                except Exception as e:
+                    internal = InternalError(f"{cls_name}.{method} failed",
+                                             cause=e)
+                    raise grpclib.exceptions.GRPCError(
+                        grpclib.const.Status.UNKNOWN,
+                        json.dumps(internal.to_dict()))
             return guard
 
         for m in proto["methods"]:
@@ -117,15 +125,25 @@ class Dispatcher:
 
             self.mapping[f"/{schema.PKG}.{cls_name}Service/{m['name']}"] = \
                 grpclib.const.Handler(
-                    wrap(handler), grpclib.const.Cardinality.UNARY_UNARY,
+                    wrap(handler, m["name"]), grpclib.const.Cardinality.UNARY_UNARY,
                     req_cls, resp_cls)
 
     def _session(self):
+        from fake_library_generated._runtime import InternalError
+
         async def acquire(stream):
             req = await stream.recv_message()
-            cls_name = getattr(req, "class")
+            try:
+                obj = self.classes[getattr(req, "class")]()
+            except Exception as e:
+                # Unknown class or failed constructor: same typed JSON
+                # contract as the service handlers.
+                internal = InternalError("Acquire failed", cause=e)
+                raise grpclib.exceptions.GRPCError(
+                    grpclib.const.Status.UNKNOWN,
+                    json.dumps(internal.to_dict()))
             resp = self.msg("Handle")()
-            resp.id = self.put(self.classes[cls_name]())
+            resp.id = self.put(obj)
             await stream.send_message(resp)
 
         async def release(stream):

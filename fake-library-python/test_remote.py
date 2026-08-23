@@ -143,6 +143,43 @@ async def main():
         v = await state.eval_expr('"hello over grpc"')
         check("eval round trip", await v.string_value() == "hello over grpc")
 
+        # ---- wire error fidelity -----------------------------------------
+        # A C++ failure crosses as a rebuilt InternalError whose decoded
+        # cause SURVIVES: __cause__ must be the original ValueError,
+        # not None (regression guard for `raise ... from None`).
+        bad_path = await rstore.add_text_to_store("plain.txt", "x")
+        try:
+            await rstore.query_derivation(bad_path)
+            raise AssertionError("expected remote InternalError")
+        except InternalError as e:
+            check("decoded cause survives the wire",
+                  type(e.__cause__) is ValueError, type(e.__cause__).__name__)
+            check("cause chain re-serializes",
+                  e.to_dict()["cause_type"] == "ValueError", e.to_dict())
+
+        # Non-WrapperError server exceptions arrive typed too: unknown
+        # and released handles come back as InternalError over KeyError.
+        tmp = await client.acquire("LocalStore")
+        ghost_id = tmp.handle_id
+        await client.release(tmp)
+        ghost = remote.RemoteObj(client, "LocalStore", ghost_id)
+        threw = None
+        try:
+            await ghost.get_uri()
+        except InternalError as e:
+            threw = e.to_dict()
+        check("released handle fails typed",
+              threw is not None and threw["cause_type"] == "KeyError", threw)
+
+        phantom = remote.RemoteObj(client, "LocalStore", "0" * 32)
+        threw = None
+        try:
+            await phantom.get_uri()
+        except InternalError as e:
+            threw = e.to_dict()
+        check("unknown handle fails typed",
+              threw is not None and threw["cause_type"] == "KeyError", threw)
+
         # ---- external tool via reflection -------------------------------
         if not grpcurl_bin:
             print("[SKIP] grpcurl not found")
