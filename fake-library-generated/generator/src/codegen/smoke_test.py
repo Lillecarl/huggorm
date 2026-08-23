@@ -274,6 +274,31 @@ async def test_behavior():
     await local.aclose()
 
 
+def test_annotations_resolve():
+    """PEP 649 defers annotation evaluation, so a missing import only
+    explodes when something calls typing.get_type_hints - which every
+    introspecting consumer does, and every Python below 3.14 does at
+    class creation time. Force resolution over the whole surface."""
+    import typing
+
+    import fake_library_generated as flg
+
+    failures = []
+    for name in flg.__all__:
+        cls = getattr(flg, name)
+        targets = [(name, cls)]
+        for attr, val in vars(cls).items():
+            fn = val.__func__ if isinstance(val, (staticmethod, classmethod)) else val
+            if callable(fn):
+                targets.append((f"{name}.{attr}", fn))
+        for label, obj in targets:
+            try:
+                typing.get_type_hints(obj)
+            except Exception as e:
+                failures.append(f"{label}: {type(e).__name__}: {e}")
+    assert not failures, "unresolvable annotations:\n" + "\n".join(failures)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
@@ -287,6 +312,7 @@ def main(argv=None):
     sys.path.insert(0, str(out.parent))
     importlib.invalidate_caches()
     test_runtime_contract(out)
+    test_annotations_resolve()
     asyncio.run(test_behavior())
     print("smoke test OK")
 

@@ -143,6 +143,12 @@ async def main():
         v = await state.eval_expr('"hello over grpc"')
         check("eval round trip", await v.string_value() == "hello over grpc")
 
+        # bint-returning methods cross as real booleans (regression:
+        # 'bint' used to leak into the schema and map to an opaque
+        # Handle, killing the RPC server-side).
+        check("bint rpc returns bool over the wire",
+              await asyncio.wait_for(v.is_gc_managed(), 10) is True)
+
         # ---- wire error fidelity -----------------------------------------
         # A C++ failure crosses as a rebuilt InternalError whose decoded
         # cause SURVIVES: __cause__ must be the original ValueError,

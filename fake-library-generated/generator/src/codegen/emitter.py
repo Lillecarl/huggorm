@@ -12,6 +12,34 @@ RUNNER_BY_THREADING = {
     "pool": "PoolRunner",
 }
 
+# Annotation atoms that never need an import. Everything else must be
+# imported from fake_library, or get_type_hints raises NameError -
+# invisible on Python 3.14 (PEP 649 lazy annotations), fatal below.
+_BUILTIN_TYPES = {"None", "Any", "str", "int", "float", "bool", "bytes", "object"}
+
+
+def _annotation_names(proto: dict) -> set[str]:
+    """Every named type appearing in any method annotation, params and
+    returns alike."""
+    out: set[str] = set()
+    for m in proto["methods"]:
+        exprs = [p["type"] for p in m["params"]] + [m["return_type"]]
+        for s in exprs:
+            node = ast.parse(s, mode="eval").body
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Name):
+                    out.add(sub.id)
+    return out
+
+
+def _fake_library_import(names: set[str]) -> ast.ImportFrom | None:
+    usable = sorted(n for n in names if n not in _BUILTIN_TYPES)
+    if not usable:
+        return None
+    return ast.ImportFrom(
+        module="fake_library", names=[ast.alias(name=n) for n in usable], level=0
+    )
+
 
 def _ann(type_str: str, context: str) -> ast.expr:
     """Parse a type string into an annotation node. Strict: bad type strings fail loudly."""
@@ -50,6 +78,9 @@ def returned_module(proto: dict) -> ast.Module:
     mod.body.append(
         ast.ImportFrom(module="_runtime", names=[ast.alias(name="attach_runner")], level=1)
     )
+    ann_import = _fake_library_import(_annotation_names(proto))
+    if ann_import is not None:
+        mod.body.append(ann_import)
 
     cls = ast.ClassDef(name=f"Async{svc}", bases=[], keywords=[], body=[], decorator_list=[])
     cls.body.append(ast.Assign(
@@ -195,6 +226,11 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
         )
     )
     mod.body.append(ast.ImportFrom(module="fake_library", names=[ast.alias(name=svc)], level=0))
+    ann_import = _fake_library_import(
+        _annotation_names(proto) - {f"Async{n}" for n in bound_policies}
+    )
+    if ann_import is not None:
+        mod.body.append(ann_import)
     mod.body.append(
         ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
     )

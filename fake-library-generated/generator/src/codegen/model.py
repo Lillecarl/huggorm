@@ -16,8 +16,19 @@ _PRIMITIVES = {
     "double": "float",
     "float": "float",
     "bool": "bool",
+    "bint": "bool",
     "void": "None",
 }
+
+# Live Cython annotations can carry C-only type names verbatim (Cython
+# stores the written annotation string). Normalize them here, once, so
+# everything downstream - emitter imports, gRPC schema, remote codec -
+# sees plain Python scalars.
+_C_ALIASES = {"bint": "bool"}
+
+
+def _normalize(t: str) -> str:
+    return _C_ALIASES.get(t, t)
 
 
 def map_c_type(raw: str, bindings_module) -> str:
@@ -62,10 +73,10 @@ def extract_method(func) -> dict:
     return {
         "name": func.__name__,
         "params": [
-            {"name": p.name, "type": _annotation_name(hints.get(p.name, p.annotation))}
+            {"name": p.name, "type": _normalize(_annotation_name(hints.get(p.name, p.annotation)))}
             for p in params
         ],
-        "return_type": _annotation_name(hints.get("return", sig.return_annotation)),
+        "return_type": _normalize(_annotation_name(hints.get("return", sig.return_annotation))),
         "doc": inspect.getdoc(func) or "",
     }
 
@@ -154,7 +165,7 @@ def _reader_method(name: str, val) -> dict:
     fget = getattr(val, "fget", None)
     if fget is not None:
         try:
-            ret = _annotation_name(inspect.signature(fget).return_annotation)
+            ret = _normalize(_annotation_name(inspect.signature(fget).return_annotation))
         except (TypeError, ValueError):
             pass
         doc = inspect.getdoc(fget) or inspect.getdoc(val) or ""
