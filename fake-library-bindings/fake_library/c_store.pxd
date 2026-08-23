@@ -13,6 +13,7 @@ cdef extern from "fake_library/store.hpp" nogil:
     cdef cppclass CStorePath "fake_library::StorePath":
         CStorePath() except +
         CStorePath(string hash, string name) except +
+        CStorePath(string base_name) except +
         CStorePath(const CStorePath & other)
         string to_string() const
         string hash() const
@@ -31,6 +32,9 @@ cdef extern from "fake_library/store.hpp" nogil:
         CDerivedPath(CStorePath drv_path, string output)
         CDerivedPath(const CDerivedPath & other)
         string describe() const
+        bint is_built() const
+        const CStorePath& path() const
+        const string& output_name() const
 
     cdef cppclass CStore "fake_library::Store":
         string get_uri() const

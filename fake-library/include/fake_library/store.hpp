@@ -35,6 +35,10 @@ public:
     // Throws std::invalid_argument on a malformed hash or name.
     StorePath(std::string hash, std::string name);
 
+    // Parse from "<hash>-<name>". Mirrors the real nix::StorePath
+    // constructor taking a baseName; throws on malformed input.
+    explicit StorePath(std::string base_name);
+
     std::string to_string() const;  // "<hash>-<name>"
     std::string hash() const;
     std::string name() const;

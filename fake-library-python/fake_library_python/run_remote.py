@@ -1,0 +1,23 @@
+"""Run the grpclib server and the remote demo against it, in-process."""
+
+import asyncio
+import logging
+
+logging.basicConfig(level=logging.ERROR)
+
+from fake_library_python import server, remote_demo
+
+
+async def main():
+    srv = asyncio.create_task(server.serve("127.0.0.1", 50051))
+    done, _ = await asyncio.wait({srv}, timeout=0.5)
+    if srv in done and srv.exception():
+        raise srv.exception()
+    try:
+        await remote_demo.main()
+    finally:
+        srv.cancel()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

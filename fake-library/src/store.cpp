@@ -58,6 +58,15 @@ StorePath::StorePath(std::string hash, std::string name)
         throw std::invalid_argument("invalid store path name: " + name_);
 }
 
+StorePath::StorePath(std::string base_name)
+{
+    // Same shape as the real nix::StorePath(std::string_view): exactly
+    // HashLen base-32 chars, then '-', then a name.
+    if (base_name.size() <= HashLen + 1 || base_name[HashLen] != '-')
+        throw std::invalid_argument("store path must be <hash>-<name>: " + base_name);
+    *this = StorePath(base_name.substr(0, HashLen), base_name.substr(HashLen + 1));
+}
+
 std::string StorePath::to_string() const { return hash_ + "-" + name_; }
 std::string StorePath::hash() const { return hash_; }
 std::string StorePath::name() const { return name_; }

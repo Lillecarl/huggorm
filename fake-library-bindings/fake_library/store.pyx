@@ -189,6 +189,15 @@ cdef class StorePath:
     def hash_part(self) -> str:
         return self._ptr.hash().decode('utf-8')
 
+    @classmethod
+    def _from_base_name(cls, str base):
+        """Wire-deserialization helper (private, never surfaced by the
+        codegen): rebuild a produced value from its '<hash>-<name>'.
+        Parsing and validation live in C++, mirroring real Nix."""
+        cdef StorePath s = StorePath.__new__(StorePath)
+        s._ptr = new CStorePath(base.encode('utf-8'))
+        return s
+
     def name_part(self) -> str:
         return self._ptr.name().decode('utf-8')
 
@@ -259,6 +268,23 @@ cdef class DerivedPath:
 
     def describe(self) -> str:
         return self._ptr.describe().decode('utf-8')
+
+    @classmethod
+    def _from_parts(cls, StorePath path, str output):
+        """Wire-deserialization helper (private)."""
+        cdef DerivedPath d = DerivedPath.__new__(DerivedPath)
+        if output is None:
+            d._ptr = new CDerivedPath(deref(path._ptr))
+        else:
+            d._ptr = new CDerivedPath(deref(path._ptr), output.encode('utf-8'))
+        return d
+
+    def _parts(self):
+        """Wire-serialization helper (private): (base_name, output|None)."""
+        cdef str out = None
+        if self._ptr.is_built():
+            out = self._ptr.output_name().decode('utf-8')
+        return (self._ptr.path().to_string().decode('utf-8'), out)
 
 
 def describe(obj) -> str:
