@@ -1,3 +1,19 @@
-from .animal import Animal, Ball, Cat, Dog, Poop, describe
+from .store import (
+    Store,
+    LocalStore,
+    RemoteStore,
+    StorePath,
+    Derivation,
+    DerivedPath,
+    describe,
+)
 
-__all__ = ["Animal", "Ball", "Cat", "Dog", "Poop", "describe"]
+__all__ = [
+    "Store",
+    "LocalStore",
+    "RemoteStore",
+    "StorePath",
+    "Derivation",
+    "DerivedPath",
+    "describe",
+]

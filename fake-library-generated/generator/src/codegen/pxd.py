@@ -1,5 +1,5 @@
 """
-Consume c_animal.pxd declarations using Cython's own parser.
+Consume the bindings pxd (e.g. c_store.pxd) using Cython's own parser.
 
 No regex, no compiled-artifact introspection: the pxd IS the machine-
 readable declaration surface, and this module turns it into plain dicts

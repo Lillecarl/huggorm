@@ -1,99 +1,79 @@
 # This file demonstrates the key learning goal:
 # Python subclasses of Cython-bound C++ classes.
 #
-# Two patterns:
-# 1. Subclassing concrete Cat/Dog — Python-only override (no C++ trampoline).
-#    `class LoudCat(Cat): def speak():` works in Python but C++ `describe(loudcat)`
-#    still sees the original "meow". Good for pure-Python extensions.
-# 2. Subclassing abstract Animal — trampoline (PyAnimal) makes Python overrides
-#    visible to C++. `class Spider(Animal):` + `describe(spider)` goes through
-#    C++ virtual dispatch and sees the Python impl. This is in
-#    fake_library/animal.pyx:22-71.
+# Two patterns, now on the Store hierarchy:
+# 1. Subclassing concrete LocalStore — Python-only override (no C++
+#    trampoline). `class LoudLocal(LocalStore): def get_uri():` works in
+#    Python but C++ describe() still sees "local". Good for pure-Python
+#    extensions.
+# 2. Subclassing abstract Store — trampoline (PyStore) makes Python
+#    overrides visible to C++. `class MyCache(Store):` + describe(cache)
+#    goes through C++ virtual dispatch and sees the Python get_uri.
 
-from fake_library import Animal, Cat, Dog, describe
-
-
-class LoudCat(Cat):
-    """A Python subclass that overrides speak()."""
-
-    def speak(self) -> str:
-        # Call the C++ implementation via super(), then modify
-        base = super().speak()
-        return base.upper() + "!!!"
-
-    def describe(self) -> str:
-        return f"{self.name} the LoudCat says {self.speak()} with {self.legs()} legs"
+from fake_library import (
+    Store,
+    LocalStore,
+    RemoteStore,
+    StorePath,
+    Derivation,
+    DerivedPath,
+    describe,
+)
 
 
-class SilentDog(Dog):
-    """Another subclass — shows we can replace behavior entirely."""
+class LoudLocal(LocalStore):
+    """A Python subclass that overrides get_uri()."""
 
-    def speak(self) -> str:
-        return "..."
-
-    def describe(self) -> str:
-        return f"{self.name} the SilentDog says {self.speak()} with {self.legs()} legs"
+    def get_uri(self) -> str:
+        return "local-loud"
 
 
-class Spider(Animal):
-    """Trampoline demo: Python subclass of abstract Animal is visible to C++."""
+class MyCache(Store):
+    """Trampoline demo: Python subclass of abstract Store is visible to C++."""
 
-    def speak(self) -> str:
-        return "hisss"
-
-    def legs(self) -> int:
-        return 8
-
-
-class Ant(Animal):
-    def speak(self) -> str:
-        return "..."
-
-    def legs(self) -> int:
-        return 6
+    def get_uri(self) -> str:
+        return "https://my-cache.example.com"
 
 
 def demo():
-    cat = Cat("Whiskers")
-    dog = Dog("Rex")
-    loud = LoudCat("Thunder")
-    silent = SilentDog("Shy")
+    local = LocalStore()
+    remote = RemoteStore()
+    loud = LoudLocal()
+    cache = MyCache()
 
-    print(f"Cat: {cat} name={cat.name} speak={cat.speak()} legs={cat.legs()}")
-    print(f"Dog: {dog} name={dog.name} speak={dog.speak()} legs={dog.legs()}")
-    print(f"LoudCat: {loud} name={loud.name} speak={loud.speak()} legs={loud.legs()}")
-    print(f"  describe: {loud.describe()}")
-    print(f"SilentDog: {silent} name={silent.name} speak={silent.speak()} legs={silent.legs()}")
-    print(f"  describe: {silent.describe()}")
+    print(f"local:   uri={local.get_uri()}")
+    print(f"remote:  uri={remote.get_uri()}")
+    print(f"loud:    uri={loud.get_uri()}")
 
-    # Show property setter and isinstance checks
-    loud.name = "Boomer"
-    print(f"Renamed LoudCat: {loud.name}")
+    print("\n--- Trampoline: Store subclass visible to C++ ---")
+    # C++-level via describe() - goes through C++ virtual dispatch + PyStore
+    print(f"MyCache C++ describe: {describe(cache)}")
+    print(f"local C++ describe:   {describe(local)}")
 
-    print(f"isinstance(loud, Cat): {isinstance(loud, Cat)}")
-    print(f"isinstance(loud, LoudCat): {isinstance(loud, LoudCat)}")
-    print(f"issubclass(LoudCat, Cat): {issubclass(LoudCat, Cat)}")
+    print("\n--- Limitation demo: LocalStore subclass NOT visible to C++ ---")
+    print(f"LoudLocal Python get_uri: {loud.get_uri()}")
+    print(f"LoudLocal C++ describe:   {describe(loud)}  # still 'local', not 'local-loud'")
+    print("-> leaves have no trampoline; override is Python-only. Store has one.")
 
-    print("\n--- Trampoline: Animal subclass visible to C++ ---")
-    spider = Spider("Shelob")
-    ant = Ant("Tiny")
-    # Python-level
-    print(f"Spider Python: {spider} speak={spider.speak()} legs={spider.legs()}")
-    # C++-level via describe() — goes through C++ virtual dispatch + PyAnimal trampoline
-    print(f"Spider C++ describe: {describe(spider)}")
-    print(f"Ant C++ describe: {describe(ant)}")
+    print("\n--- Value types come from stores, not constructors ---")
+    p = local.add_text_to_store("greeting.txt", "hi")
+    print(f"path: {p.to_string()} hash={p.hash_part()} name={p.name_part()}")
+    drv_path = local.add_text_to_store("demo.drv", "DrvDemo")
+    drv = local.query_derivation(drv_path)
+    print(drv.describe())
+    req = DerivedPath(drv_path, "out")
+    print(f"request: {req.describe()}")
+    out = local.build_derivation(req)
+    print(f"built output: {out.to_string()} valid={local.is_valid_path(out)}")
 
-    print("\n--- Limitation demo: Cat subclass NOT visible to C++ ---")
-    # describe() calls C++ describe_animal which does NOT go through trampoline for Cat
-    print(f"LoudCat Python speak: {loud.speak()}")
-    print(f"LoudCat C++ describe: {describe(loud)}  # still 'meow', not 'MEOW!!!'")
-    print("-> Cat/Dog have no trampoline; override is Python-only. Animal has trampoline.")
-
-    print("\n--- Abstract check ---")
     try:
-        Animal("fail")
+        Store()
     except TypeError as e:
-        print(f"Animal() correctly raises: {e}")
+        print(f"\nStore() correctly raises: {e}")
+    try:
+        StorePath()
+    except TypeError as e:
+        print(f"StorePath() correctly raises: {e}")
 
 
 if __name__ == "__main__":

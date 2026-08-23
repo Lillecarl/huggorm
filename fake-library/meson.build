@@ -6,7 +6,7 @@ project('fake-library', 'cpp',
 inc = include_directories('include')
 
 lib = library('fake_library',
-  'src/animal.cpp',
+  'src/store.cpp',
   include_directories : inc,
   install : true,
 )
@@ -15,7 +15,7 @@ lib = library('fake_library',
 pkg = import('pkgconfig')
 pkg.generate(lib,
   name : 'fake_library',
-  description : 'Fake C++ library for Cython demo',
+  description : 'Mock of the Nix store domain for the Cython wrapper experiment',
 )
 
 install_subdir('include/fake_library', install_dir : get_option('includedir'))

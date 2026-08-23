@@ -1,3 +1,3 @@
-from .custom import Ant, LoudCat, SilentDog, Spider
+from .custom import LoudLocal, MyCache
 
-__all__ = ["LoudCat", "SilentDog", "Spider", "Ant"]
+__all__ = ["LoudLocal", "MyCache"]

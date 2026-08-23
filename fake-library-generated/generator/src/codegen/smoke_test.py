@@ -5,13 +5,15 @@ entry point; runs after codegen-generate, stdlib only:
 1. every emitted .py parses
 2. the package imports and __all__ matches
 3. behavioral checks: results, C++ exception wrapping, affine thread
-   pinning (including returned affine values), pool execution, aclose
+   pinning (including returned affine values), pool execution,
+   policy-driven surface drops, aclose
 """
 
 import argparse
 import ast
 import asyncio
 import importlib
+import json
 import pathlib
 import sys
 
@@ -22,54 +24,93 @@ def test_parse(out: pathlib.Path):
 
 
 async def test_behavior():
-    from fake_library_generated import AsyncCat, AsyncDog
+    from fake_library_generated import (
+        AsyncLocalStore,
+        AsyncRemoteStore,
+        AsyncStorePath,
+        AsyncDerivation,
+        AsyncDerivedPath,
+    )
     from fake_library_generated._runtime import InternalError
 
-    cat = AsyncCat("Whiskers")
-    assert await cat.speak() == "meow"
-    assert await cat.legs() == 4
-    assert await cat.fetch("ball") == "Whiskers fetched the ball"
-    assert await cat.name() == "Whiskers"
+    pkg_dir = pathlib.Path(importlib.import_module("fake_library_generated").__file__).parent
+    manifest = json.loads((pkg_dir / "manifest.json").read_text())
 
+    # Pool store: concurrent adds genuinely overlap.
+    local = AsyncLocalStore()
+    assert await local.get_uri() == "local"
+    t0 = asyncio.get_running_loop().time()
+    p1, p2 = await asyncio.gather(
+        local.add_text_to_store("hello.txt", "world"),
+        local.add_text_to_store("note.txt", "nix mock"),
+    )
+    elapsed = asyncio.get_running_loop().time() - t0
+    assert elapsed < 0.18, f"expected overlapped adds, took {elapsed:.2f}s"
+    assert len({await p1.to_string(), await p2.to_string()}) == 2
+    assert await local.is_valid_path(p1) is True
+
+    # Opaque and built derived paths.
+    req = AsyncDerivedPath(p1)
+    out_opaque = await local.build_derivation(req)
+    assert await out_opaque.to_string() == await p1.to_string()
+    drv_req = AsyncDerivedPath(p2, "out")
+    out_built = await local.build_derivation(drv_req)
+    assert (await out_built.name_part()).endswith("-out")
+    assert await local.is_valid_path(out_built) is True
+
+    # Affine store: everything pinned to one dedicated thread, including
+    # a slow add.
+    remote = AsyncRemoteStore()
+    assert await remote.get_uri() == "uds://daemon"
+    await remote.is_valid_path(p1)
+    await remote.add_text_to_store("slow.drv", "DrvFoobar")
+    assert len(remote._runner.workers_seen) == 1, "affine calls must share one thread"
+
+    # Returned affine value pins to the PRODUCER's thread.
+    drv_path = await remote.add_text_to_store("mysite.drv", "DrvMine")
+    drv = await remote.query_derivation(drv_path)
+    d1 = await drv.describe()
+    d2 = await drv.describe()
+    assert "seen 1x" in d1 and "seen 2x" in d2
+    assert await drv.queries() == 2
+    assert drv._runner.workers_seen == remote._runner.workers_seen, (
+        "derivation ops must run on the producer's thread"
+    )
+
+    # Returned pool values are free to use any thread.
+    spool = await local.add_text_to_store("x", "y")
+    assert isinstance(spool, AsyncStorePath)
+    assert isinstance(drv, AsyncDerivation)
+    assert isinstance(drv_req, AsyncDerivedPath)
+
+    # Policy enforcement: the pool LocalStore may not expose an
+    # affine-returning method, so the generator dropped it.
+    assert "query_derivation" not in manifest["wrappers"]["LocalStore"]["methods"], (
+        "affine-returning method must be dropped from pool wrapper"
+    )
+    assert not hasattr(local, "query_derivation")
+
+    # C++ exceptions surface as InternalError with the cause attached.
     try:
-        await cat.fetch("rock")
-        raise AssertionError("expected InternalError from C++ throw")
+        await remote.query_derivation(spool)
+        raise AssertionError("expected InternalError for non-.drv path")
     except InternalError as e:
         d = e.to_dict()
         assert d["code"] == "internal" and d["cause_type"] == "ValueError"
 
-    await cat.speak()
-    await cat.legs()
-    assert len(cat._runner.workers_seen) == 1, "affine calls must share one thread"
+    # Construction failures are cached and re-raised identically.
+    # Wrappers construct lazily, so the bad argument fails on first call.
+    bad = AsyncRemoteStore("unexpected-arg")
+    for _ in range(2):
+        try:
+            await bad.get_uri()
+            raise AssertionError("expected construction failure")
+        except InternalError as e:
+            assert type(e.__cause__) is TypeError
 
-    # Returned affine type: ops pin to the PRODUCER's thread
-    poop = await cat.poop()
-    d1 = await poop.describe()
-    d2 = await poop.describe()
-    assert d1.endswith("(inspected 1x)") and d2.endswith("(inspected 2x)")
-    assert await poop.inspections() == 2
-    assert len(poop._runner.workers_seen) == 1, "poop ops must share one thread"
-    assert poop._runner.workers_seen == cat._runner.workers_seen, (
-        "poop must execute on the producer's thread"
-    )
-
-    # Returned pool type: free to use any pool thread
-    ball = await cat.toy()
-    assert await ball.describe() == "red ball"
-
-    await poop.aclose()
-    await ball.aclose()
-
-    # GIL release: two gathered waits on the pool dog overlap (~1x)
-    dog = AsyncDog("Rex")
-    await dog.wait_ms(50)
-    t0 = asyncio.get_running_loop().time()
-    await asyncio.gather(dog.wait_ms(120), dog.wait_ms(120))
-    elapsed = asyncio.get_running_loop().time() - t0
-    assert elapsed < 0.22, f"expected overlapped waits, took {elapsed:.2f}s"
-
-    await dog.aclose()
-    await cat.aclose()
+    await drv.aclose()
+    await remote.aclose()
+    await local.aclose()
 
 
 def main(argv=None):

@@ -3,7 +3,7 @@ Introspect binding classes into plain protocol dicts.
 
 No I/O, no ast — pure reflection plus the parsed pxd surface handed in
 by the caller. The dict shape is the contract between the sources
-(c_animal.pxd + the installed bindings) and the emitter (emitter.py).
+(the bindings pxd + the installed bindings) and the emitter (emitter.py).
 """
 
 import inspect

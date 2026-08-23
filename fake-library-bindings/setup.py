@@ -10,8 +10,8 @@ if not fake_lib:
     raise RuntimeError("FAKE_LIBRARY env var not set — build via Nix, or set FAKE_LIBRARY=/path/to/fake-library")
 
 ext = Extension(
-    "fake_library.animal",
-    sources=["fake_library/animal.pyx"],
+    "fake_library.store",
+    sources=["fake_library/store.pyx"],
     language="c++",
     include_dirs=[os.path.join(fake_lib, "include")],
     library_dirs=[os.path.join(fake_lib, "lib")],
