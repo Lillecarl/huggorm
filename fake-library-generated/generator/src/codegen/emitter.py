@@ -318,7 +318,39 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
                                         )
                                     ],
                                     keywords=[
-                                        ast.keyword(arg=None, value=ast.Name(id="kwargs"))
+                                        # Replay constructor kwargs through
+                                        # unwrap_arg too: a wrapper passed
+                                        # as kwarg contributes its target
+                                        # object, not the async shell.
+                                        ast.keyword(
+                                            arg=None,
+                                            value=ast.DictComp(
+                                                key=ast.Name(id="k"),
+                                                value=ast.Call(
+                                                    func=ast.Name(id="unwrap_arg"),
+                                                    args=[ast.Name(id="v")],
+                                                    keywords=[],
+                                                ),
+                                                generators=[
+                                                    ast.comprehension(
+                                                        target=ast.Tuple(
+                                                            elts=[ast.Name(id="k"), ast.Name(id="v")],
+                                                            ctx=ast.Load(),
+                                                        ),
+                                                        iter=ast.Call(
+                                                            func=ast.Attribute(
+                                                                value=ast.Name(id="kwargs"),
+                                                                attr="items",
+                                                            ),
+                                                            args=[],
+                                                            keywords=[],
+                                                        ),
+                                                        ifs=[],
+                                                        is_async=0,
+                                                    )
+                                                ],
+                                            ),
+                                        )
                                     ],
                                 ),
                             )

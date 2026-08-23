@@ -104,6 +104,10 @@ def unwrap_arg(x):
 
 
 class BaseRunner:
+    # Dedicated-thread runners (affine/attached) may only construct on
+    # their own thread; pool runners may construct anywhere.
+    dedicated_thread = False
+
     def __init__(self, factory, obj=None):
         # Either a lazy factory (constructed on first use, on this
         # runner's thread) or an already-built obj — never both.
@@ -140,7 +144,20 @@ class BaseRunner:
     def ensure(self):
         """Return the underlying object, constructing it if needed.
         Used when a wrapper is passed as an argument to another wrapper:
-        the sync binding wants the raw target, not the async handle."""
+        the sync binding wants the raw target, not the async handle.
+
+        Construction normally happens on the runner's own thread via
+        _invoke -> _resolve. This method therefore runs OFF-home by
+        definition, so a dedicated-thread runner refuses to construct
+        here: silently building an affine object on a foreign thread is
+        exactly the corruption this layer exists to prevent."""
+        if self.dedicated_thread and self._obj is None:
+            if self._construct_error is not None:
+                raise self._construct_error
+            raise TypeError(
+                "affine wrapper used as an argument before its first "
+                "call: it can only be constructed on its own thread. "
+                "Call a method on it first, or declare the type 'pool'.")
         return self._resolve()
 
     @staticmethod
@@ -178,6 +195,8 @@ class BaseRunner:
 class AffineRunner(BaseRunner):
     """All operations (including construction) run on one dedicated thread."""
 
+    dedicated_thread = True
+
     def __init__(self, factory, name: str = "flg-affine"):
         super().__init__(factory)
         self._pool = concurrent.futures.ThreadPoolExecutor(
@@ -210,6 +229,8 @@ class AttachedRunner(BaseRunner):
     inherits the producer's dedicated thread, so its ops serialize with
     the producer's own.
     """
+
+    dedicated_thread = True
 
     def __init__(self, obj, parent: BaseRunner):
         super().__init__(factory=None, obj=obj)

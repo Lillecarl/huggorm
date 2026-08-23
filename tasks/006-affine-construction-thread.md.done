@@ -1,0 +1,29 @@
+# Affine construction on wrong thread; kwargs unwrap gap
+
+Review finding 6 (proven). runtime.unwrap_arg calls ensure()
+synchronously on the caller's worker, constructing affine objects off
+their home thread (violates the documented invariant). Emitted lazy
+factories unwrap *args but forward **kwargs raw, so a wrapper passed
+as kwarg hands the async shell to the sync constructor.
+
+Fixed 2026-08-23, via the loud-guard variant:
+
+- runtime: AffineRunner/AttachedRunner carry dedicated_thread = True;
+  ensure() refuses to CONSTRUCT such a runner off-home (TypeError with
+  guidance). Normal construction never routes through ensure - it goes
+  _invoke -> _resolve on the owner's thread - so the guard only fires
+  on genuine cross-thread unwraps. Pool runners keep lazy constructing
+  anywhere. A blocking route-through-the-executor was rejected: it
+  deadlocks when an AttachedRunner shares the caller's single worker.
+- emitter: factory kwargs replay through unwrap_arg
+  (**{k: unwrap_arg(v) ...}), closing the async-shell-as-kwarg hole.
+
+Possible future upgrade if a real surface needs unconstructed affine
+args: eager async pre-resolution of wrapper args in BaseRunner.call
+(schedule each arg's construction on its OWN executor from the loop,
+await, then hop). Not needed while no manifest param takes an affine
+type.
+
+Guards in smoke: cross-thread unwrap raises; post-first-call unwrap
+works and born thread is the affine worker; pool still lazy; every
+emitted wrapper __init__ AST-verifiably unwraps kwargs.

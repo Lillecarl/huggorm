@@ -110,6 +110,60 @@ async def test_behavior():
     assert all(isinstance(e, InternalError) for e in errs)
     assert all(type(e.__cause__) is RuntimeError for e in errs)
 
+    # Cross-thread unwrap guard: an affine wrapper that has never been
+    # called refuses construction on a foreign thread. Silent off-home
+    # construction was the bug (ensure() used to build affine objects
+    # wherever the caller happened to run).
+    import types
+
+    def _shell(runner):
+        return types.SimpleNamespace(_runner=runner, _wire="proxy")
+
+    lazy_affine = _shell(_runtime.AffineRunner(lambda: object()))
+    try:
+        _runtime.unwrap_arg(lazy_affine)
+        raise AssertionError("unconstructed affine must refuse cross-thread unwrap")
+    except TypeError:
+        pass
+
+    # Its first call constructs on its OWN thread; afterwards the
+    # wrapper unwraps fine from anywhere.
+    try:
+        await lazy_affine._runner.call("noop", [])
+        raise AssertionError("expected probe method error")
+    except InternalError:
+        pass
+    assert _runtime.unwrap_arg(lazy_affine) is not None
+    assert lazy_affine._runner.born_thread_name.startswith("flg-affine")
+
+    # Pool runners keep constructing lazily from any thread.
+    pool_shell = _shell(_runtime.PoolRunner(lambda: {"ok": True}))
+    assert _runtime.unwrap_arg(pool_shell) == {"ok": True}
+
+    # Every emitted wrapper factory must replay kwargs through
+    # unwrap_arg: a raw **kwargs forward would hand the async shell to
+    # the sync constructor.
+    checked_ctors = 0
+    for py in sorted(pkg_dir.glob("async_*.py")):
+        tree = ast.parse(py.read_text(), filename=str(py.name))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "__init__" and node.args.kwarg:
+                unwraps_kwargs = any(
+                    isinstance(n, ast.DictComp)
+                    and any(
+                        isinstance(c, ast.Call) and getattr(c.func, "id", "") == "unwrap_arg"
+                        for c in ast.walk(n)
+                    )
+                    for n in ast.walk(node)
+                )
+                assert unwraps_kwargs, (
+                    f"{py.name}.__init__ must replay kwargs through unwrap_arg"
+                )
+                checked_ctors += 1
+    assert checked_ctors == len(manifest["wrappers"]), (
+        f"checked {checked_ctors} wrapper ctors, expected {len(manifest['wrappers'])}"
+    )
+
     # Opaque and built derived paths.
     req = AsyncDerivedPath(p1)
     out_opaque = await local.build_derivation(req)
