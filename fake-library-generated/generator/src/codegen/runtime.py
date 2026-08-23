@@ -42,10 +42,6 @@ class WrapperError(Exception):
     def to_dict(self) -> dict:
         return {"code": self.code, "message": self.message}
 
-
-    def to_dict(self) -> dict:
-        return {"code": self.code, "message": self.message}
-
     @classmethod
     def from_dict(cls, d: dict):
         """Rebuild a wrapper error from to_dict() output - used at RPC
