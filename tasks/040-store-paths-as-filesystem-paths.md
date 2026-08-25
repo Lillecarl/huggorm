@@ -126,18 +126,34 @@ is neither, and an emitted module that annotates with it needs a plain
 because it is a fact about how a type is SPELLED. It is explicitly not
 a wire type - nothing on it crosses.
 
-## The async half
+## The async half, done
 
-`anyio.Path` is a wrapper around an `os.PathLike`, so the async
-wrapper could return `anyio.Path(sync_result)` with no new type. It
-does not yet, and there is no hurry: the emitted wrapper hops to a
-thread, and what it hands back is a `pathlib.Path` that a caller can
-wrap themselves.
+Carl: "It'd be cool if real_path could return anyio.Path when async,
+they should be seen as equivalent when comparing outputs."
 
-Worth doing when something wants async file IO on a store path. Worth
-NOT doing as a reflex: an `anyio.Path` is only useful if the caller
-awaits reads on it, and that is a different feature from naming a
-location.
+It does. `AsyncStore.real_path` returns an `anyio.Path`; the binding
+returns a `pathlib.Path` and says nothing about threads. Same value,
+awaitable methods - which is the whole difference between the two
+surfaces, so it is the one place the spelling should differ.
+
+Declared by the BINDINGS, not known by the codegen:
+
+    _async_twins = {"pathlib.Path": "anyio.Path"}
+
+beside `_errors_module`, for the same reason. The generator turns it
+into one annotation and one constructor call, and a second twin needs
+no edit above the bindings.
+
+The wrapper CONSTRUCTS rather than casts. A cast would claim the
+awaitable methods without adding them, and anyio.Path takes any
+path-like, so `anyio.Path(await self._runner.call(...))` is both the
+honest and the short answer.
+
+Nothing about the wire changes. `pathlib.Path` has no protobuf field
+either way, so a twin decides an annotation and a call in the
+in-process wrapper and nothing else. The conformance gate knows the
+pair: an in-process return of `anyio.Path` where the protocol says
+`pathlib.Path` is the declared twin, not drift.
 
 ## Done, in part
 

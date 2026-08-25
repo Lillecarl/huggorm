@@ -121,6 +121,15 @@ the same knowledge by hand. The generator reads all of them:
     _abstract    True for a generated base       inheritance   (018)
     _blocking    False if no method can wait     wrap or not   (025)
 
+The PACKAGE declares two more, in its __init__:
+
+    _errors_module   where the exception hierarchy lives      (036)
+    _async_twins     a type's async spelling, if it has one   (040)
+
+`_async_twins` maps pathlib.Path to anyio.Path: the binding returns
+the sync type and the wrapper hands back the other, which is the one
+place the two surfaces should differ. It never reaches the wire.
+
 A class declares itself in its BODY, and that is forced rather than
 chosen. Cython refuses any decorator on a cdef class but
 `functools.total_ordering` and `dataclasses.dataclass` - "Cdef
