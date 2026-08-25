@@ -145,3 +145,26 @@ where the interesting functions live.
 Pairs with tasks/033: that one is Python code called BY the evaluator,
 this one is evaluator code called by Python. Doing either first makes
 the other's threading rules obvious by contrast.
+
+## Deferred 2026-08-25, before any of it was built
+
+Carl: "At this point it feels like we're implementing quite a lot of
+Nix. Maybe it's better if we abort 034 and start linking against real
+Nix?"
+
+Correct, and the mock work had already started when he said it: a
+builtin table, currying, partial application, formals with defaults
+and an ellipsis. All of it real Nix has, none of it this repo needs to
+invent. It was discarded.
+
+What survives is the analysis above, which cost nothing to keep and is
+about the PYTHON surface rather than the mock: coroutine not callable,
+inspect.Signature built from the formals, fetched on request, and the
+sync/async inversion against tasks/033. Every one of those still
+applies against libexpr, and against libexpr the formals are real.
+
+Pick this up after tasks/015. The one design decision already made and
+worth keeping: applying lives on EvalState, not on Value, because it
+runs the evaluator - the same reason force lives there. Which means a
+bare `await f(x)` needs the value to know its state, and that is the
+question to answer with a real ExprLambda in hand.
