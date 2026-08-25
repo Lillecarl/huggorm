@@ -45,6 +45,11 @@ Findings reference two architectural reviews, 2026-08-23 and
   rebuilds a cause by name from a map of five builtins. Building function values into
   the mock was the point where mock fidelity stopped paying: it was
   reimplementing libexpr to prove things libexpr already does.
+- 037 (tests outside the sandbox) is the cost of binding real Nix
+  showing up in the test suite. A sandbox has no daemon, no db and no
+  writable store, so a real store can only be asked what it refuses
+  and what it holds when empty. Not blocking yet - it becomes urgent
+  at the first binding that WRITES to a store.
 - 034 (functions as values) waits on 015. Its analysis is about the
   Python surface, not the mock, so it survives intact - and against
   libexpr the formals are real.
