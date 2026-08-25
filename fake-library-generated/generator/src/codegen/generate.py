@@ -163,6 +163,10 @@ def main(argv=None):
     unresolved = []
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
+            for p in proto.get("ctor", ()):
+                if p["type"] == "Any":
+                    unresolved.append(
+                        f"{cls_name}.__init__ param {p['name']!r}")
             for m in proto["methods"]:
                 for p in m["params"]:
                     if p["type"] == "Any":
