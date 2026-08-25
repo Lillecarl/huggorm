@@ -52,6 +52,12 @@ Findings reference two architectural reviews, 2026-08-23 and
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
+- 041 (containers inside a wire value) is open, and it is what
+  PathInfo's `references` waits on. The list helpers already exist for
+  rpc fields; a wire value's own fields just never route through them.
+  The parameter direction has one extra question - what a container
+  parameter defaults to, where None IS representable because a
+  repeated field has no presence problem.
 - 040 (store paths as filesystem paths) is half done. Store.real_path
   answers with the REAL directory and raises Unsupported for a store
   with no filesystem. It is a local method and not a remote call, and
@@ -120,6 +126,7 @@ the same knowledge by hand. The generator reads all of them:
 
     _abstract    True for a generated base       inheritance   (018)
     _blocking    False if no method can wait     wrap or not   (025)
+    _produced    True if __init__ raises         constructible (041)
 
 The PACKAGE declares two more, in its __init__:
 
