@@ -135,7 +135,7 @@ cdef class EvalState:
         self._ptr.force(v._cell[0])
 
 
-def gc_stats() -> dict:
+def gc_stats() -> dict[str, int]:
     """Live collector counters, bound straight from gc.h. These prove
     the collector is ACTIVE: a no-op integration cannot fake them."""
     return {

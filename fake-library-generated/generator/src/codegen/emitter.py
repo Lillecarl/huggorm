@@ -139,8 +139,6 @@ def returned_module(proto: dict, async_types: set[str] | None = None) -> ast.Mod
     mod = ast.Module(body=[], type_ignores=[])
     annotations = _emitted_annotations(proto, async_types, {})
     used = _annotation_names(annotations)
-    if "Any" in used:
-        mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
     mod.body.append(
         ast.Expr(
             value=ast.Constant(
@@ -151,9 +149,17 @@ def returned_module(proto: dict, async_types: set[str] | None = None) -> ast.Mod
             )
         )
     )
-    mod.body.append(
-        ast.ImportFrom(module="_runtime", names=[ast.alias(name="attach_runner")], level=1)
-    )
+    typing_names = {"Any"} if "Any" in used else set()
+    typing_names.add("Any")  # the constructor takes the produced object
+    if any(m["return_type"] != "None" for m in proto["methods"]):
+        typing_names.add("cast")
+    mod.body.append(ast.ImportFrom(
+        module="typing",
+        names=[ast.alias(name=n) for n in sorted(typing_names)], level=0))
+    mod.body.append(ast.ImportFrom(
+        module="_runtime",
+        names=[ast.alias(name="BaseRunner"), ast.alias(name="attach_runner")],
+        level=1))
     mod.body.extend(_sibling_imports(used))
     ann_import = _fake_library_import(used)
     if ann_import is not None:
@@ -181,12 +187,16 @@ def returned_module(proto: dict, async_types: set[str] | None = None) -> ast.Mod
         targets=[ast.Name(id="_wire")],
         value=ast.Constant(value=policy_wire),
     ))
+    cls.body.append(_runner_decl())
     cls.body.append(
         ast.FunctionDef(
             name="__init__",
             args=ast.arguments(
                 posonlyargs=[],
-                args=[ast.arg(arg="self"), ast.arg(arg="obj"), ast.arg(arg="runner")],
+                args=[ast.arg(arg="self"),
+                      ast.arg(arg="obj", annotation=_ann("Any", f"{svc}.__init__")),
+                      ast.arg(arg="runner",
+                              annotation=_ann("BaseRunner", f"{svc}.__init__"))],
                 vararg=None,
                 kwonlyargs=[],
                 kw_defaults=[],
@@ -208,7 +218,7 @@ def returned_module(proto: dict, async_types: set[str] | None = None) -> ast.Mod
                 )
             ],
             decorator_list=[],
-            returns=None,
+            returns=_ann("None", f"{svc}.__init__"),
             type_params=[],
         )
     )
@@ -231,7 +241,7 @@ def _append_methods_and_aclose(cls: ast.ClassDef, proto: dict, svc: str,
         body: list[ast.stmt] = []
         if m["doc"]:
             body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
-        body.append(_hop_return(m["name"], m["params"]))
+        body.append(_hop_return(m["name"], m["params"], m["return_type"]))
         cls.body.append(
             ast.AsyncFunctionDef(
                 name=m["name"],
@@ -267,8 +277,37 @@ def _hop_call(method_name: str, params: list[dict]) -> ast.Call:
     )
 
 
-def _hop_return(method_name: str, params: list[dict]) -> ast.Return:
-    return ast.Return(value=ast.Await(value=_hop_call(method_name, params)))
+def _forward(call: ast.expr, return_type: str) -> ast.stmt:
+    """Return the result of an awaited forward, typed.
+
+    The runtime hands back Any - it dispatches by method name onto an
+    object it knows nothing about. The declared type is the manifest's
+    claim about that method, so the cast is where the claim is made
+    rather than a silent Any leaking into every caller. A method
+    returning None does not return at all: casting to None is not a
+    thing, and there is nothing to hand back."""
+    if return_type == "None":
+        return ast.Expr(value=ast.Await(value=call))
+    return ast.Return(value=ast.Call(
+        func=ast.Name(id="cast"),
+        args=[_ann(return_type, "cast"), ast.Await(value=call)],
+        keywords=[]))
+
+
+def _hop_return(method_name: str, params: list[dict],
+                return_type: str = "None") -> ast.stmt:
+    return _forward(_hop_call(method_name, params), return_type)
+
+
+def _runner_decl() -> ast.AnnAssign:
+    """The attribute every emitted method reaches through.
+
+    Declared, not merely assigned: the abstract base never assigns it -
+    its __init__ refuses - so without this its own method bodies read
+    an attribute a typechecker cannot see."""
+    return ast.AnnAssign(target=ast.Name(id="_runner"),
+                         annotation=ast.Name(id="BaseRunner"),
+                         value=None, simple=1)
 
 
 def _append_hop_method(cls: ast.ClassDef, proto: dict, m: dict, svc: str,
@@ -298,7 +337,7 @@ def _append_hop_method(cls: ast.ClassDef, proto: dict, m: dict, svc: str,
                   ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
             keywords=[])))
     else:
-        body.append(_hop_return(m["name"], m["params"]))
+        body.append(_hop_return(m["name"], m["params"], rt))
     cls.body.append(ast.AsyncFunctionDef(
         name=m["name"],
         args=ast.arguments(posonlyargs=[], args=params, vararg=None,
@@ -340,8 +379,19 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
 
     annotations = _emitted_annotations(proto, async_types, bound_policies)
     used_types = _annotation_names(annotations) | {"None"}  # None: aclose
-    if "Any" in used_types:
-        mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
+    typing_names = {"Any"} if "Any" in used_types else set()
+    if proto["abstract"]:
+        typing_names.add("Any")  # the refusing __init__ takes *args/**kwargs
+    # A forward hands back Any; the declared type is the manifest's
+    # claim, and cast is where it gets made. Adopted returns build a
+    # real object instead, and None returns do not return.
+    if any(m["return_type"] != "None" and m["return_type"] not in bound_policies
+           for m in proto["methods"]):
+        typing_names.add("cast")
+    if typing_names:
+        mod.body.append(ast.ImportFrom(
+            module="typing",
+            names=[ast.alias(name=n) for n in sorted(typing_names)], level=0))
     # Never import our own class from ourselves.
     if proto.get("async_base"):
         used_types.add(f"Async{proto['async_base']}")
@@ -352,6 +402,7 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
     # if a method mentions it, which is why the subtraction below is
     # conditional too.
     constructs = not proto["abstract"]
+    runtime_names = [] if proto.get("async_base") else ["BaseRunner"]
     if constructs:
         mod.body.append(ast.ImportFrom(
             module="fake_library", names=[ast.alias(name=svc)], level=0))
@@ -359,9 +410,11 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
     if ann_import is not None:
         mod.body.append(ann_import)
     if constructs:
-        mod.body.append(
-            ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
-        )
+        runtime_names.append(runner)
+    if runtime_names:
+        mod.body.append(ast.ImportFrom(
+            module="_runtime",
+            names=[ast.alias(name=n) for n in sorted(runtime_names)], level=1))
     if proto["ctor"] and constructs:
         # Only the factory calls it, so a constructor taking nothing
         # leaves the import unused - which the smoke gate rejects.
@@ -402,6 +455,8 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
         targets=[ast.Name(id="_wire")],
         value=ast.Constant(value=proto["wire"]),
     ))
+    if base is None:
+        cls.body.append(_runner_decl())
 
     init_kwargs = []
     if proto["threading"] == "affine":
@@ -413,8 +468,11 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
         cls.body.append(ast.FunctionDef(
             name="__init__",
             args=ast.arguments(
-                posonlyargs=[], args=[ast.arg(arg="self")], vararg=ast.arg(arg="args"),
-                kwonlyargs=[], kw_defaults=[], kwarg=ast.arg(arg="kwargs"), defaults=[]),
+                posonlyargs=[], args=[ast.arg(arg="self")],
+                vararg=ast.arg(arg="args", annotation=_ann("Any", f"{svc}.__init__")),
+                kwonlyargs=[], kw_defaults=[],
+                kwarg=ast.arg(arg="kwargs", annotation=_ann("Any", f"{svc}.__init__")),
+                defaults=[]),
             body=[ast.Raise(exc=ast.Call(
                 func=ast.Name(id="TypeError"),
                 args=[ast.Constant(value=(
@@ -701,9 +759,46 @@ def rpc_module(manifest: dict, ordered: list[dict],
         "spec the manifest gave it, so a call needs no lookup and names "
         "nothing the build did not put there."))))
     mod.body.append(_future_annotations())
-    sync = _sync_imports(annotations, defined)
+    mod.body.append(ast.ImportFrom(
+        module="typing",
+        names=[ast.alias(name="Any"), ast.alias(name="Protocol"),
+               ast.alias(name="cast")], level=0))
+    sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL})
     if sync is not None:
         mod.body.append(sync)
+
+    # What these classes need from whatever is driving them. Declaring
+    # it as a Protocol keeps the dependency pointing the right way: the
+    # generated package describes what it requires, and the hand-written
+    # client satisfies it without either importing the other.
+    client_p = ast.ClassDef(
+        name=CLIENT_PROTOCOL, bases=[ast.Name(id="Protocol")], keywords=[],
+        body=[ast.Expr(value=ast.Constant(value=(
+            "What an RPC class needs from its client. The client owns "
+            "the connection, the codec and the handle lifetime; these "
+            "classes own the surface.")))],
+        decorator_list=[], type_params=[])
+    for name, args, ret in (
+        # handle_id is Optional because release() blanks it. Passing a
+        # blanked one is a real mistake, and the client answers it with
+        # a message instead of a protobuf failure.
+        ("invoke", [("spec", "dict[str, Any]"), ("handle_id", "str | None"),
+                    ("args", "list[Any]")], "Any"),
+        ("release", [("obj", "Any")], "None"),
+    ):
+        client_p.body.append(ast.AsyncFunctionDef(
+            name=name,
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg="self")]
+                + [ast.arg(arg=a, annotation=_ann(t, f"{CLIENT_PROTOCOL}.{name}"))
+                   for a, t in args],
+                vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
+                defaults=[]),
+            body=[ast.Expr(value=ast.Constant(value=Ellipsis))],
+            decorator_list=[],
+            returns=_ann(ret, f"{CLIENT_PROTOCOL}.{name}"), type_params=[]))
+    mod.body.append(client_p)
 
     for proto in ordered:
         name = proto["name"]
@@ -720,6 +815,13 @@ def rpc_module(manifest: dict, ordered: list[dict],
                else "")))))
         cls.body.append(ast.Assign(targets=[ast.Name(id="_wire")],
                                    value=ast.Constant(value=proto["wire"])))
+        if base is None:
+            for attr, kind in (("_client", CLIENT_PROTOCOL),
+                               ("handle_id", "str | None")):
+                cls.body.append(ast.AnnAssign(
+                    target=ast.Name(id=attr),
+                    annotation=_ann(kind, f"{name}.{attr}"),
+                    value=None, simple=1))
 
         # The call specs. A subclass that adds methods must restate the
         # base's too: an attribute shadows rather than merges, and an
@@ -734,14 +836,20 @@ def rpc_module(manifest: dict, ordered: list[dict],
                     keys=[None] + specs.keys,
                     values=[ast.Attribute(value=ast.Name(id=rpc_class_name(base)),
                                           attr="_rpc")] + specs.values)
-            cls.body.append(ast.Assign(targets=[ast.Name(id="_rpc")], value=specs))
+            cls.body.append(ast.AnnAssign(
+                target=ast.Name(id="_rpc"),
+                annotation=_ann("dict[str, dict[str, Any]]", f"{name}._rpc"),
+                value=specs, simple=1))
 
         if base is None:
             cls.body.append(ast.FunctionDef(
                 name="__init__",
                 args=ast.arguments(
                     posonlyargs=[],
-                    args=[ast.arg(arg="self"), ast.arg(arg="client"),
+                    args=[ast.arg(arg="self"),
+                          ast.arg(arg="client",
+                                  annotation=_ann(CLIENT_PROTOCOL,
+                                                  f"{name}.__init__")),
                           ast.arg(arg="handle_id",
                                   annotation=_ann("str", f"{name}.__init__"))],
                     vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
@@ -763,7 +871,7 @@ def rpc_module(manifest: dict, ordered: list[dict],
             body: list[ast.stmt] = []
             if m["doc"]:
                 body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
-            body.append(ast.Return(value=ast.Await(value=ast.Call(
+            body.append(_forward(ast.Call(
                 func=ast.Attribute(
                     value=ast.Attribute(value=ast.Name(id="self"),
                                         attr="_client"),
@@ -776,7 +884,7 @@ def rpc_module(manifest: dict, ordered: list[dict],
                     ast.Attribute(value=ast.Name(id="self"), attr="handle_id"),
                     ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]]),
                 ],
-                keywords=[]))))
+                keywords=[]), ann.get(m["return_type"], m["return_type"])))
             cls.body.append(ast.AsyncFunctionDef(
                 name=m["name"],
                 args=_params(m, name, ann),
@@ -840,6 +948,9 @@ def free_function_module(protos: list[dict], async_types: set[str]) -> ast.Modul
         annotations += [_param_ann(p["type"], async_types) for p in proto["params"]]
         annotations.append(proto["return_type"])
     used = _annotation_names(annotations)
+    if any(p["return_type"] != "None" for p in protos):
+        mod.body.append(ast.ImportFrom(
+            module="typing", names=[ast.alias(name="cast")], level=0))
     mod.body.extend(_sibling_imports(used))
     ann_import = _fake_library_import(used)
     if ann_import is not None:
@@ -856,11 +967,11 @@ def free_function_module(protos: list[dict], async_types: set[str]) -> ast.Modul
         body: list[ast.stmt] = []
         if proto["doc"]:
             body.append(ast.Expr(value=ast.Constant(value=proto["doc"])))
-        body.append(ast.Return(value=ast.Await(value=ast.Call(
+        body.append(_forward(ast.Call(
             func=ast.Name(id="call_function"),
             args=[ast.Name(id="_" + proto["name"]),
                   ast.List(elts=[ast.Name(id=p["name"]) for p in proto["params"]])],
-            keywords=[]))))
+            keywords=[]), proto["return_type"]))
         mod.body.append(ast.AsyncFunctionDef(
             name=proto["name"],
             args=ast.arguments(
@@ -880,6 +991,9 @@ def free_function_module(protos: list[dict], async_types: set[str]) -> ast.Modul
 
 
 STUB_PACKAGE = "fake_library-stubs"
+
+# What the generated RPC classes require of whatever drives them.
+CLIENT_PROTOCOL = "RPCClient"
 
 
 def _stub_body(doc: str) -> list[ast.stmt]:
