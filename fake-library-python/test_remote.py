@@ -230,6 +230,34 @@ async def main():
         check("unknown handle fails typed",
               threw is not None and threw["cause_type"] == "KeyError", threw)
 
+        # ---- the abstract base over the wire -----------------------------
+        # A handle is a handle: the shared surface resolves through
+        # StoreService whichever implementation is behind it, and the
+        # Python client walks to the base exactly as Python would.
+        for kind, want in (("LocalStore", "local"), ("RemoteStore", "uds://daemon")):
+            h = await client.acquire(kind)
+            check(f"inherited method on {kind}", await h.get_uri() == want)
+            check(f"{kind} dispatches get_uri through StoreService",
+                  h._resolve("get_uri")["rpc"]["path"]
+                  == "/nixmock.v1.StoreService/get_uri",
+                  h._resolve("get_uri")["rpc"]["path"])
+            await client.release(h)
+
+        # query_derivation is NOT guaranteed: the pool policy drops it
+        # from LocalStore, so it is on RemoteStore alone.
+        pool_store = await client.acquire("LocalStore")
+        threw = None
+        try:
+            pool_store.query_derivation
+        except AttributeError as e:
+            threw = str(e)
+        # It must be missing, and the error must list what IS offered
+        # across the chain - which is Store's guaranteed four.
+        check("un-guaranteed method absent from the pool subclass",
+              threw is not None and "query_derivation" not in threw.split("offers")[1],
+              threw)
+        await client.release(pool_store)
+
         # ---- free functions over the wire --------------------------------
         # No handle: a module-level function has no instance. Only the
         # ones the wire can represent are offered, and the others say
@@ -237,6 +265,12 @@ async def main():
         # a dict the schema has no type for).
         check("free function crosses the wire",
               await client.call_function("collect_garbage") is None)
+        # describe takes a Store. It had no RPC surface at all until
+        # Store became a generated base with a wire identity.
+        check("free function takes an abstract-base handle",
+              await client.call_function("describe", store) == "store(local)")
+        check("...for either implementation",
+              await client.call_function("describe", rstore) == "store(uds://daemon)")
         threw = None
         try:
             await client.call_function("gc_stats")
@@ -260,7 +294,7 @@ async def main():
                 print(f"[WARN] grpcurl list empty; rc={rc} err={err!r}")
             for svc in ("Session", "LocalStoreService", "EvalStateService",
                         "ValueService", "DerivationService",
-                        "FunctionsService"):
+                        "FunctionsService", "StoreService"):
                 check(f"reflection lists {svc}", f"nixmock.v1.{svc}" in out,
                       f"rc={rc} out={out[:120]!r} err={err[:120]!r}")
 
@@ -288,9 +322,13 @@ async def main():
             check("grpcurl calls a free function", rc == 0,
                   f"rc={rc} out={out[:80]!r} err={err[:120]!r}")
 
+            # Shared store methods live on StoreService, the one place
+            # they are declared. An external tool calls a store without
+            # knowing which implementation is behind the handle - which
+            # is what the abstract base is for.
             rc, out, err = await run_tool(
                 grpcurl_bin,
-                symbol="nixmock.v1.LocalStoreService/add_text_to_store",
+                symbol="nixmock.v1.StoreService/add_text_to_store",
                 payload=json.dumps({
                     "self": {"id": handle},
                     "name": "via-grpcurl.txt",
@@ -298,6 +336,18 @@ async def main():
             base = json.loads(out)["result"]["base_name"]
             check("grpcurl typed call returns StorePath",
                   base.endswith("via-grpcurl.txt"), base)
+
+            # ...and the same rpc, same handle-shaped request, against a
+            # RemoteStore. One service, either implementation.
+            rc, out, err = await run_tool(
+                grpcurl_bin, symbol="nixmock.v1.RemoteStoreService/Acquire",
+                payload='{}')
+            rhandle = json.loads(out)["id"]
+            rc, out, err = await run_tool(
+                grpcurl_bin, symbol="nixmock.v1.StoreService/get_uri",
+                payload=json.dumps({"self": {"id": rhandle}}))
+            check("one StoreService serves both implementations",
+                  json.loads(out).get("result") == "uds://daemon", out[:120])
 
         print("\nALL REMOTE CHECKS PASSED")
 

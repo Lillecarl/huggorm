@@ -203,6 +203,9 @@ def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
         "module": cls.__module__,
         "bases": [f"{b.__module__}.{b.__qualname__}" for b in cls.__bases__ if b is not object],
         "threading": getattr(cls, "_threading", "affine"),
+        # Generated as a base class: carries the surface its subclasses
+        # share, and is never constructed.
+        "abstract": bool(cls.__dict__.get("_abstract", False)),
         # Wire policy for the future RPC layer: "proxy" objects keep
         # identity and travel as handles; "value" objects are immutable
         # and travel serialized (locally emulated as copies). Default is

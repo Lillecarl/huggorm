@@ -14,12 +14,11 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 018 (Store hierarchy) is now blocking two things at once. 017 needs
-  it, and 021 stopped there: describe() takes a Store, which is
-  abstract and excluded from generation, so there is no name for "any
-  store" on the wire nor for "any async store" in an annotation.
-- 017 (protocol over async + RPC) shapes, with 018, the surface the
-  real-Nix spike (015) would substitute into.
+- 017 (protocol over async + RPC) is next: 018 gave it a real base to
+  mirror, and the open question there is now only about the REMOTE
+  side's return types.
+- 017 shapes the surface the real-Nix spike (015) would substitute
+  into.
 - 008 (transitive policy), 012 (test blind spots), 013 (lint and
   typecheck), 022 (proto field stability) are hardening. 022 grew:
   free-function requests number their fields positionally too.
@@ -36,6 +35,8 @@ the same knowledge by hand. The generator reads all of them:
     _wire_fields message shape + helpers  HOW it serializes  (023)
     _binds       the pxd class it wraps   pxd <-> pyx link   (020)
     _async       False to exclude         generation opt-out
+
+    _abstract    True for a generated base       inheritance   (018)
 
 Module-level functions declare `_threading` (which is what opts them
 into the surface) and `_binds`. "pool" is their only legal policy: no

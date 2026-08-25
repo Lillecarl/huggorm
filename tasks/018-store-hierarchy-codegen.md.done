@@ -1,0 +1,101 @@
+# Store hierarchy: one ABC, shared surface through every layer
+
+Carl's call (2026-08-23): Store/LocalStore/RemoteStore share
+practically all API surface - Store IS the ABC, mirroring upstream
+Nix. Today that shape survives C++ -> pxd (CLocalStore(CStore)) but
+dissolves above it: emitted Async* classes are flat and standalone,
+and the gRPC layer emits LocalStoreService/RemoteStoreService as
+unrelated duplicates of the same method list.
+
+## Goal
+
+Model the base-class relationship once and let every layer derive
+from it: sync bindings, generated async wrappers, manifest, gRPC
+schema. Concrete subclasses add or restrict; nothing duplicates.
+
+## Design questions
+
+- Emitted AsyncStore as a real base carrying the hop-method bodies
+  (they are identical: self._runner.call(...)); subclasses contribute
+  __init__/runner and their POLICY-FILTERED surface. Tension to
+  resolve: LocalStore is pool, RemoteStore is affine, and policy
+  drops diverge (query_derivation exists only on RemoteStore).
+  Inheritance plus per-subclass hiding needs a clean mechanism -
+  candidates: base holds everything and subclasses shadow-drops, or
+  emitter flattens per subclass but VALIDATES against the shared set.
+- gRPC: proto has no inheritance. Keep per-concrete services but
+  generate their method sets from the deduplicated Store surface;
+  consider whether reflection clients should see a StoreService.
+- Manifest gains explicit bases/borrowed-from metadata so the
+  protocol layer (017) and external tools see the true shape.
+- Upstream alignment: real Nix has an abstract refcounted Store base;
+  getting this right now makes the 015 spike a substitution, not a
+  rewrite.
+
+Depends on nothing open; synergizes with 017 and 015.
+
+## Done 2026-08-25
+
+Carl's call, restated: "Store should definitely exist, it's what will
+be used the most by real bindings since you don't want to care about
+what store type you're resolving to." That decides the design question
+the task left open, because it makes the base a THING CALLERS HOLD,
+not an implementation detail of the emitter.
+
+Store stops being `_async = False` and becomes `_abstract = True`:
+generated, wire-addressable, never constructed. A bare Store() is a
+trampoline whose Python overrides do not exist, so refusing to build
+one loses nothing.
+
+## The tension, resolved
+
+The base carries the INTERSECTION of what its subclasses actually
+expose AFTER their own policy filtering. That is exactly the set a
+caller can use without knowing which implementation it holds - which
+is what an abstract Store is for - so the rule and the purpose are the
+same sentence.
+
+Neither candidate from the task was needed. Nothing shadow-drops: a
+method the base does not promise simply is not on it. And validation
+is not an alternative to inheritance but a companion to it - the
+generator checks that every shared method has the SAME signature on
+base and subclass, because a subclass whose types drifted would
+inherit the base's body and lie about them.
+
+    Store         get_uri, is_valid_path, add_text_to_store,
+                  build_derivation          (guaranteed)
+    LocalStore    - nothing but a constructor
+    RemoteStore   query_derivation          (pool policy drops it from
+                                             LocalStore, so it is not
+                                             guaranteed)
+
+## gRPC
+
+Proto has no inheritance, so each method is declared exactly ONCE, on
+the service that owns it. Shared store methods live on StoreService;
+a LocalStore handle calls them there. RemoteObj walks the base chain
+the way Python does and lands on the declaring service.
+
+That is the type-agnostic path working for real: one service, either
+implementation, and the server resolves the handle to whatever wrapper
+it holds. An external grpcurl call does the same.
+
+The alternative - concrete services repeating their inherited surface
+- would let a client use one service per class, at the cost of
+duplicate req/resp messages for every inherited method on every
+subclass. Rejected: it is schema bloat in exchange for not knowing
+about a base the reflection already describes.
+
+## It unblocked 021 in passing
+
+describe(obj: Store) had NO rpc at all, because Store was excluded
+from generation and so had no wire policy. It crosses now, for either
+implementation. The build stopped printing that blocker on its own -
+the surest sign the two tasks were the same problem.
+
+## Left open
+
+017 (protocols) is the natural follow-on and now has a real base to
+mirror. Note that AsyncStore is already close to the Protocol that
+task wants for the in-process side; the open question there is
+unchanged and is about the REMOTE side's return types.

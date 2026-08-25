@@ -82,6 +82,59 @@ def _free_functions(bindings_module) -> list:
     return out
 
 
+def _hierarchy(wrapper_classes, protos):
+    """Link each emitted wrapper to its nearest emitted ancestor, and
+    work out which methods the ancestor may guarantee.
+
+    The base carries the INTERSECTION of what its subclasses actually
+    expose after their own policy filtering - which is exactly the set a
+    caller can use without knowing which implementation it holds, and so
+    exactly what an abstract Store is for. Nothing is shadow-dropped: a
+    method the base does not promise simply is not on it.
+
+    That resolves the tension between inheritance and per-subclass
+    policy. LocalStore is pool and loses query_derivation, RemoteStore
+    is affine and keeps it, so query_derivation is not part of the
+    guaranteed surface and lands on RemoteStore alone.
+
+    Returns (base_of, shared_of, complaints).
+    """
+    by_class = dict(zip(wrapper_classes, protos))
+    emitted = set(wrapper_classes)
+    base_of, children = {}, {}
+    for cls in wrapper_classes:
+        parent = next((k for k in cls.__mro__[1:] if k in emitted), None)
+        if parent is not None:
+            base_of[by_class[cls]["name"]] = by_class[parent]["name"]
+            children.setdefault(by_class[parent]["name"], []).append(by_class[cls])
+
+    shared_of, complaints = {}, []
+    for base_name, kids in children.items():
+        base = next(p for p in protos if p["name"] == base_name)
+        names = {m["name"] for m in base["methods"]}
+        for kid in kids:
+            names &= {m["name"] for m in kid["methods"]}
+        shared_of[base_name] = names
+
+        # Inheritance is only sound if the shared methods really are the
+        # same method. A subclass whose signature drifted would inherit
+        # the base's body and lie about its own types.
+        base_sigs = {m["name"]: m for m in base["methods"]}
+        for kid in kids:
+            for m in kid["methods"]:
+                if m["name"] not in names:
+                    continue
+                b = base_sigs[m["name"]]
+                if ([p["type"] for p in m["params"]] != [p["type"] for p in b["params"]]
+                        or m["return_type"] != b["return_type"]):
+                    complaints.append(
+                        f"{kid['name']}.{m['name']} does not match "
+                        f"{base_name}.{m['name']}: "
+                        f"{[p['type'] for p in m['params']]} -> {m['return_type']} "
+                        f"vs {[p['type'] for p in b['params']]} -> {b['return_type']}")
+    return base_of, shared_of, complaints
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="output directory for fake_library_generated")
@@ -146,6 +199,30 @@ def main(argv=None):
             dropped = before - len(proto["methods"])
             if dropped:
                 print(f"dropped {dropped} affine-returning method(s) from pool wrapper {proto['name']}")
+
+    base_of, shared_of, complaints = _hierarchy(wrapper_classes, protos)
+    if complaints:
+        for c in complaints:
+            print(f"hierarchy: {c}", file=sys.stderr)
+        sys.exit(1)
+    for proto in protos:
+        proto["async_base"] = base_of.get(proto["name"])
+        shared = shared_of.get(proto["name"])
+        if shared is not None:
+            dropped = [m["name"] for m in proto["methods"] if m["name"] not in shared]
+            if dropped:
+                print(f"{proto['name']} guarantees {sorted(shared)}; "
+                      f"{sorted(dropped)} live on subclasses only")
+            proto["methods"] = [m for m in proto["methods"] if m["name"] in shared]
+    # Subclasses keep only what the base does not already provide.
+    for proto in protos:
+        base = proto["async_base"]
+        if base is not None:
+            inherited = shared_of.get(base, set())
+            proto["inherited"] = sorted(
+                m["name"] for m in proto["methods"] if m["name"] in inherited)
+            proto["methods"] = [m for m in proto["methods"]
+                                if m["name"] not in inherited]
 
     # Every name that gets an Async wrapper. Parameters typed with one of
     # these accept the wrapper as well as the sync binding object, and

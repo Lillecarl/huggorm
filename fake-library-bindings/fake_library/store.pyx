@@ -21,7 +21,8 @@
 # - StorePath/DerivedPath "pool": immutable values.
 # - Derivation "affine": mutable builder state; ops stay on the producer's
 #   thread (the returned-value attachment rule makes this enforceable).
-# `_async = False` excludes the abstract base from generation.
+# `_abstract = True` marks Store as a generated BASE: wrapped and
+# wire-addressable, but never constructed.
 
 from libcpp.string cimport string
 from cython.operator cimport dereference as deref
@@ -90,7 +91,13 @@ cdef class Store:
     cdef CStore* _ptr
 
     _threading = "pool"
-    _async = False  # abstract: excluded from wrapper generation
+    # Abstract, and GENERATED. Store is the type real callers hold most
+    # of the time - you ask for a store and use it without caring which
+    # implementation answered - so it needs an async wrapper and a wire
+    # identity of its own. What it does not need is construction: a bare
+    # Store() is a trampoline whose get_uri calls a Python method that
+    # does not exist. Subclasses construct; this one is a base.
+    _abstract = True
     # The C++ declaration this class binds. Declared per class, never
     # inherited: the codegen reads __dict__, so LocalStore must name its
     # own. This is the ONLY link between the pxd and the pyx.

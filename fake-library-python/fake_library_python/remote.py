@@ -28,13 +28,39 @@ class RemoteObj:
         self._cls = cls_name
         self.handle_id = handle_id
 
-    def _proto(self) -> dict:
+    def _proto(self, cls_name=None) -> dict:
         mft = self._client.manifest
-        try:
-            return mft["wrappers"].get(self._cls) or mft["returned_types"][self._cls]
-        except KeyError:
-            raise AttributeError(
-                f"{self._cls!r} is not a class in the manifest") from None
+        name = cls_name or self._cls
+        proto = mft["wrappers"].get(name) or mft["returned_types"].get(name)
+        if proto is None:
+            raise AttributeError(f"{name!r} is not a class in the manifest")
+        return proto
+
+    def _resolve(self, method):
+        """Find a method on this class or on a base, walking the same
+        chain Python walks.
+
+        An inherited method's rpc lives on the service that DECLARED it,
+        so calling get_uri on a LocalStore handle dispatches through
+        StoreService. That is the type-agnostic path: the server
+        resolves the handle to whatever wrapper it is and the call lands
+        regardless of which implementation answered."""
+        name, seen = self._cls, []
+        while name is not None:
+            proto = self._proto(name)
+            seen.append(name)
+            for m in proto["methods"]:
+                if m["name"] == method:
+                    return m
+            name = proto.get("async_base")
+        offered = sorted(
+            m["name"]
+            for n in seen
+            for m in self._proto(n)["methods"]
+        )
+        raise AttributeError(
+            f"{self._cls!r} has no remote method {method!r}; the manifest "
+            f"offers {offered} across {seen}")
 
     @property
     def wire(self) -> str:
@@ -48,15 +74,10 @@ class RemoteObj:
             # Never let a dunder lookup (copy, pickle, repr helpers) walk
             # into manifest resolution and come back as a coroutine.
             raise AttributeError(method)
-        proto = self._proto()
-        m = next((m for m in proto["methods"] if m["name"] == method), None)
-        if m is None:
-            # next() with no default raised StopIteration here, which
-            # neither reads as a missing attribute nor survives inside a
-            # coroutine.
-            raise AttributeError(
-                f"{self._cls!r} has no remote method {method!r}; the manifest "
-                f"offers {sorted(x['name'] for x in proto['methods'])}")
+        # next() with no default used to raise StopIteration here, which
+        # neither reads as a missing attribute nor survives inside a
+        # coroutine. _resolve raises AttributeError, and walks bases.
+        m = self._resolve(method)
 
         async def call(*args):
             return await self._client.invoke(self._cls, m, self.handle_id, args)

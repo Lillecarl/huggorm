@@ -36,6 +36,15 @@ async def main():
     v = await state.eval_expr('"hello over grpc"')
     print(f"eval: {await v.string_value()!r}")
 
+    print("\n=== the abstract base over the wire ===")
+    # Shared store methods are declared once, on StoreService, so a
+    # caller works a store without knowing which kind answered.
+    for h in (local, remote_store):
+        print(f"  {h._cls:12} get_uri -> {await h.get_uri()}"
+              f"  (via {h._resolve('get_uri')['rpc']['path']})")
+    print("  describe(store) over the wire:",
+          await client.call_function("describe", local))
+
     print("\n=== cleanup ===")
     await client.release(local)
     await client.release(remote_store)

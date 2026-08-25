@@ -153,6 +153,7 @@ async def test_behavior():
     # to what can still go wrong: a parameter the emitter forgot to
     # unwrap, or a signature that drifted from the manifest.
     checked_ctors = 0
+    abstract = []
     for cls_name, proto in manifest["wrappers"].items():
         py = pkg_dir / f"async_{cls_name.lower()}.py"
         tree = ast.parse(py.read_text(), filename=str(py.name))
@@ -160,6 +161,14 @@ async def test_behavior():
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == "__init__"
         )
+        if proto["abstract"]:
+            # An abstract base has no constructor to check - it has one
+            # that refuses. Pin the refusal instead.
+            assert any(isinstance(n, ast.Raise) for n in ast.walk(init)), (
+                f"{py.name}.__init__ must refuse to construct an abstract base"
+            )
+            abstract.append(cls_name)
+            continue
         assert init.args.vararg is None and init.args.kwarg is None, (
             f"{py.name}.__init__ still takes *args/**kwargs"
         )
@@ -185,9 +194,12 @@ async def test_behavior():
             f"manifest declares {n_optional} optional parameter(s)"
         )
         checked_ctors += 1
-    assert checked_ctors == len(manifest["wrappers"]), (
-        f"checked {checked_ctors} wrapper ctors, expected {len(manifest['wrappers'])}"
+    assert checked_ctors == len(manifest["wrappers"]) - len(abstract), (
+        f"checked {checked_ctors} wrapper ctors, expected "
+        f"{len(manifest['wrappers']) - len(abstract)} "
+        f"(abstract, so skipped: {abstract})"
     )
+    assert abstract, "expected at least one abstract base in the surface"
 
     # Opaque and built derived paths.
     req = AsyncDerivedPath(p1)
@@ -293,10 +305,44 @@ async def test_behavior():
     )
     assert free["collect_garbage"]["return_type"] == "None"
     # ...and each one records whether the wire can carry it, with the
-    # reason when it cannot. describe takes an excluded base class,
-    # gc_stats returns a dict.
+    # reason when it cannot. describe takes a Store, which used to be
+    # excluded from generation and so had no wire policy; now that Store
+    # is a generated base it crosses like any other proxy. gc_stats
+    # still returns a dict the schema has no type for.
     assert not free["collect_garbage"]["wire_blockers"]
-    assert free["describe"]["wire_blockers"] and free["gc_stats"]["wire_blockers"]
+    assert not free["describe"]["wire_blockers"], free["describe"]["wire_blockers"]
+    assert free["gc_stats"]["wire_blockers"]
+
+    # The hierarchy: the base guarantees what every subclass keeps, and
+    # a caller holding one need not know which it has. query_derivation
+    # is NOT guaranteed - the pool policy drops it from LocalStore - so
+    # it lives on RemoteStore alone rather than being shadow-dropped.
+    assert issubclass(AsyncLocalStore, flg.AsyncStore)
+    assert issubclass(AsyncRemoteStore, flg.AsyncStore)
+    guaranteed = {m["name"] for m in manifest["wrappers"]["Store"]["methods"]}
+    assert guaranteed == {"get_uri", "is_valid_path", "add_text_to_store",
+                          "build_derivation"}, sorted(guaranteed)
+    assert manifest["wrappers"]["LocalStore"]["methods"] == []
+    assert [m["name"] for m in manifest["wrappers"]["RemoteStore"]["methods"]] \
+        == ["query_derivation"]
+    assert not hasattr(AsyncLocalStore, "query_derivation")
+    assert hasattr(AsyncRemoteStore, "query_derivation")
+
+    # One function, either implementation, no branching. This is the
+    # point of the base existing.
+    async def uri_of(store: flg.AsyncStore) -> str:
+        return await store.get_uri()
+
+    assert await uri_of(local) == "local"
+    assert await uri_of(remote) == "uds://daemon"
+
+    # The base itself refuses construction: it is a surface, not an
+    # implementation.
+    try:
+        flg.AsyncStore()
+        raise AssertionError("abstract base must refuse construction")
+    except TypeError:
+        pass
 
     # Boehm GC proof, in two layers. First the counters bound straight
     # from gc.h prove the collector is ACTIVE and that this exact value

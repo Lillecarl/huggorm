@@ -7,6 +7,7 @@ import asyncio
 from fake_library_generated import (
     AsyncLocalStore,
     AsyncRemoteStore,
+    AsyncStore,
     AsyncDerivedPath,
     AsyncEvalState,
 )
@@ -107,6 +108,20 @@ async def main():
     await v.aclose()
     await thunk.aclose()
     await state.aclose()
+
+    print("\n=== one function, either store, no branching ===")
+
+    async def report(store: AsyncStore) -> str:
+        # Typed against the base. Everything it calls is guaranteed by
+        # every implementation, so it never asks which one it holds.
+        path = await store.add_text_to_store("shared.txt", "either store")
+        return f"{await store.get_uri()}: {await path.to_string()}"
+
+    print(await report(local))
+    print(await report(remote))
+    print("AsyncLocalStore is an AsyncStore:", isinstance(local, AsyncStore))
+    print("query_derivation is not guaranteed, so it is on RemoteStore only:",
+          hasattr(remote, "query_derivation"), "/", hasattr(local, "query_derivation"))
 
     print("\n=== free functions (C++ virtual dispatch through a wrapper) ===")
     print("describe(local): ", await describe(local))

@@ -271,6 +271,45 @@ def _hop_return(method_name: str, params: list[dict]) -> ast.Return:
     return ast.Return(value=ast.Await(value=_hop_call(method_name, params)))
 
 
+def _append_hop_method(cls: ast.ClassDef, proto: dict, m: dict, svc: str,
+                       async_types: set[str], bound_policies: dict[str, str]):
+    """One `async def` that hops to the runner. Shared by the abstract
+    base and its subclasses: the body is identical either way, which is
+    exactly why a base can carry it - the runner comes from whichever
+    __init__ ran."""
+    params = [ast.arg(arg="self")] + [
+        ast.arg(arg=p["name"],
+                annotation=_ann(_param_ann(p["type"], async_types),
+                                f"{svc}.{m['name']}:{p['name']}"))
+        for p in m["params"]
+    ]
+    body: list[ast.stmt] = []
+    if m["doc"]:
+        body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
+    rt = m["return_type"]
+    if rt in bound_policies:
+        # Adopt the produced object instead of returning it raw.
+        body.append(ast.Assign(
+            targets=[ast.Name(id="result")],
+            value=ast.Await(value=_hop_call(m["name"], m["params"]))))
+        body.append(ast.Return(value=ast.Call(
+            func=ast.Name(id=f"Async{rt}"),
+            args=[ast.Name(id="result"),
+                  ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
+            keywords=[])))
+    else:
+        body.append(_hop_return(m["name"], m["params"]))
+    cls.body.append(ast.AsyncFunctionDef(
+        name=m["name"],
+        args=ast.arguments(posonlyargs=[], args=params, vararg=None,
+                           kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
+        body=body,
+        decorator_list=[],
+        returns=(_ann(f"Async{rt}", f"{svc}.{m['name']}") if rt in bound_policies
+                 else _ann(rt, f"{svc}.{m['name']}")),
+        type_params=[]))
+
+
 def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
                    async_types: set[str] | None = None) -> ast.Module:
     """Emit Async<Svc>. bound_policies maps returned-type names to their
@@ -304,25 +343,36 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
     if "Any" in used_types:
         mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
     # Never import our own class from ourselves.
+    if proto.get("async_base"):
+        used_types.add(f"Async{proto['async_base']}")
     mod.body.extend(_sibling_imports(used_types - {f"Async{svc}"}))
 
-    mod.body.append(ast.ImportFrom(module="fake_library", names=[ast.alias(name=svc)], level=0))
-    ann_import = _fake_library_import(used_types - {svc})
+    # An abstract base constructs nothing, so it imports neither the
+    # sync target nor a runner class. It still annotates with the target
+    # if a method mentions it, which is why the subtraction below is
+    # conditional too.
+    constructs = not proto["abstract"]
+    if constructs:
+        mod.body.append(ast.ImportFrom(
+            module="fake_library", names=[ast.alias(name=svc)], level=0))
+    ann_import = _fake_library_import(used_types - ({svc} if constructs else set()))
     if ann_import is not None:
         mod.body.append(ann_import)
-    mod.body.append(
-        ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
-    )
-    if proto["ctor"]:
+    if constructs:
+        mod.body.append(
+            ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
+        )
+    if proto["ctor"] and constructs:
         # Only the factory calls it, so a constructor taking nothing
         # leaves the import unused - which the smoke gate rejects.
         mod.body.append(
             ast.ImportFrom(module="_runtime", names=[ast.alias(name="unwrap_arg")], level=1)
         )
 
+    base = proto.get("async_base")
     cls = ast.ClassDef(
         name=f"Async{svc}",
-        bases=[],
+        bases=[ast.Name(id=f"Async{base}")] if base else [],
         keywords=[],
         body=[],
         decorator_list=[],
@@ -331,8 +381,19 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
         ast.Expr(
             value=ast.Constant(
                 value=(
-                    f"Async in-process wrapper over {svc}. The object is "
-                    f"constructed lazily on its runner thread."
+                    (
+                        f"Async base over {svc}: the surface every "
+                        f"subclass guarantees. Hold one when you do not "
+                        f"care which implementation answered; construct a "
+                        f"subclass to get one."
+                    )
+                    if proto["abstract"] else
+                    (
+                        f"Async in-process wrapper over {svc}. The object "
+                        f"is constructed lazily on its runner thread."
+                        + (f" Inherits {', '.join(proto['inherited'])} from "
+                           f"Async{base}." if base and proto.get("inherited") else "")
+                    )
                 )
             )
         )
@@ -345,6 +406,31 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
     init_kwargs = []
     if proto["threading"] == "affine":
         init_kwargs.append(ast.keyword(arg="name", value=ast.Constant(value=f"flg-affine-{svc}")))
+    if proto["abstract"]:
+        # No runner and no target: an abstract base has no implementation
+        # to construct. Saying so here beats letting the factory build a
+        # trampoline whose overrides do not exist.
+        cls.body.append(ast.FunctionDef(
+            name="__init__",
+            args=ast.arguments(
+                posonlyargs=[], args=[ast.arg(arg="self")], vararg=ast.arg(arg="args"),
+                kwonlyargs=[], kw_defaults=[], kwarg=ast.arg(arg="kwargs"), defaults=[]),
+            body=[ast.Raise(exc=ast.Call(
+                func=ast.Name(id="TypeError"),
+                args=[ast.Constant(value=(
+                    f"Async{svc} is abstract: it is the shared surface, not an "
+                    f"implementation. Construct a subclass, or receive one from "
+                    f"a call that returns {svc}."))],
+                keywords=[]))],
+            decorator_list=[], returns=_ann("None", f"{svc}.__init__"),
+            type_params=[]))
+        for m in proto["methods"]:
+            _append_hop_method(cls, proto, m, svc, async_types, bound_policies)
+        cls.body.append(_aclose_method())
+        mod.body.append(cls)
+        ast.fix_missing_locations(mod)
+        return mod
+
     cls.body.append(
         ast.FunctionDef(
             name="__init__",
@@ -397,57 +483,7 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
     )
 
     for m in proto["methods"]:
-        params = [ast.arg(arg="self")] + [
-            ast.arg(arg=p["name"],
-                    annotation=_ann(_param_ann(p["type"], async_types),
-                                    f"{svc}.{m['name']}:{p['name']}"))
-            for p in m["params"]
-        ]
-        body: list[ast.stmt] = []
-        if m["doc"]:
-            body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
-        rt = m["return_type"]
-        if rt in bound_policies:
-            # Adopt the produced object instead of returning it raw.
-            body.append(
-                ast.Assign(
-                    targets=[ast.Name(id="result")],
-                    value=ast.Await(value=_hop_call(m["name"], m["params"])),
-                )
-            )
-            body.append(
-                ast.Return(
-                    value=ast.Call(
-                        func=ast.Name(id=f"Async{rt}"),
-                        args=[ast.Name(id="result"), ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
-                        keywords=[],
-                    )
-                )
-            )
-        else:
-            body.append(_hop_return(m["name"], m["params"]))
-        cls.body.append(
-            ast.AsyncFunctionDef(
-                name=m["name"],
-                args=ast.arguments(
-                    posonlyargs=[],
-                    args=params,
-                    vararg=None,
-                    kwonlyargs=[],
-                    kw_defaults=[],
-                    kwarg=None,
-                    defaults=[],
-                ),
-                body=body,
-                decorator_list=[],
-                returns=(
-                    _ann(f"Async{rt}", f"{svc}.{m['name']}")
-                    if rt in bound_policies
-                    else _ann(rt, f"{svc}.{m['name']}")
-                ),
-                type_params=[],
-            )
-        )
+        _append_hop_method(cls, proto, m, svc, async_types, bound_policies)
 
     cls.body.append(_aclose_method())
     mod.body.append(cls)
