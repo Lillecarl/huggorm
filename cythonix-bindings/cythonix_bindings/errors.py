@@ -9,6 +9,11 @@ a caller who wants only a bad NAME catches the leaf.
 Only what a binding can actually raise lives here. Adding a Nix type
 means adding whatever it throws, in nix_error.hpp beside the catch that
 produces it (tasks/015).
+
+Every class in this module reaches the wire. The codegen reflects the
+module named by `_errors_module` in the package __init__, so an error
+crosses as a NAME checked against a declared set - which is what keeps
+a status message from naming any importable class (tasks/036).
 """
 
 
@@ -20,6 +25,15 @@ class NixError(Exception):
     what libstore actually wrote - the colour exists so an error can be
     printed to a terminal, and stripping it at the boundary would take
     that away from every caller who has one."""
+
+    # What crosses the wire, in constructor order: an error is rebuilt
+    # as cls(*parts) on the far side. Declared once and inherited,
+    # because every error here IS a nix::Error and carries the same two
+    # strings. The same word as a wire value's declaration, meaning the
+    # same thing - the parts this object can be rebuilt from - though
+    # an error travels as JSON in the gRPC status rather than as a
+    # message of its own (tasks/036).
+    _wire_fields = (("message", "str"), ("colored", "str"))
 
     def __init__(self, message: str, colored: str | None = None) -> None:
         super().__init__(message)

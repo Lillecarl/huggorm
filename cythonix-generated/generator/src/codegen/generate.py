@@ -30,8 +30,10 @@ from codegen.model import (
     binding_map,
     check_binding_map,
     check_collection_contract,
+    check_error_contract,
     check_wire_contract,
     check_wrap_contract,
+    extract_errors,
     extract_free_function,
     extract_wrapper,
     returned_types_from_api,
@@ -322,11 +324,22 @@ def main(argv: list[str] | None = None) -> None:
     for proto in protos + returned_protos:
         proto.pop("_helpers", None)
 
+    # The exception hierarchy, read from the module the bindings
+    # declare. An error crosses the wire as a NAME, and this is the set
+    # that makes a name safe to construct (tasks/036).
+    errors = extract_errors(bindings)
+    complaints = check_error_contract(errors)
+    if complaints:
+        for c in complaints:
+            print(f"error contract: {c}", file=sys.stderr)
+        sys.exit(1)
+
     manifest: Proto = {
         "schema": MANIFEST_SCHEMA,
         "wrappers": {p["name"]: p for p in protos},
         "returned_types": {p["name"]: p for p in returned_protos},
         "free_functions": {p["name"]: p for p in free_protos},
+        "errors": errors,
     }
 
     # No silent Any may survive into the artifact: a method whose types

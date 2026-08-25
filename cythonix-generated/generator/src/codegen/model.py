@@ -7,6 +7,7 @@ by the caller. The dict shape is the contract between the sources
 """
 
 import contextlib
+import importlib
 import inspect
 from types import ModuleType
 from typing import Any, get_args, get_origin, get_type_hints
@@ -478,6 +479,82 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
         for helper in ("_parts", "_from_parts"):
             if helper not in proto["_helpers"]:
                 bad.append(f"{name}: wire-value needs a {helper} round-trip helper")
+    return bad
+
+
+def extract_errors(bindings: ModuleType) -> Proto:
+    """The exception hierarchy a binding can raise, as the manifest
+    carries it.
+
+    Read from the module the package DECLARES in `_errors_module`, not
+    from a name this file knows. A package with no such declaration has
+    no error surface, which is a legitimate answer: the generator does
+    not require a library to have one.
+
+    What crosses is the class NAME, and the point of recording the set
+    here is that a name is only safe to construct against a declared
+    one. Without it the alternative is a status message that says which
+    module to import, which lets the far side name any importable
+    class."""
+    module_name = getattr(bindings, "_errors_module", None)
+    if module_name is None:
+        return {"module": None, "classes": {}}
+    module = importlib.import_module(module_name)
+    classes: Proto = {}
+    for name, kls in sorted(vars(module).items()):
+        if not (isinstance(kls, type) and issubclass(kls, BaseException)):
+            continue
+        if kls.__module__ != module_name:
+            continue  # imported, not declared here
+        classes[name] = {
+            # Bases INSIDE this module, so a reader can see the
+            # hierarchy without importing anything. Python gives the
+            # real one on import; this is for describing the surface.
+            "bases": [b.__name__ for b in kls.__bases__
+                      if b.__module__ == module_name],
+            "wire_fields": [list(f) for f in getattr(kls, "_wire_fields", ())],
+        }
+    return {"module": module_name, "classes": classes}
+
+
+def check_error_contract(errors: Proto) -> list[str]:
+    """Every declared error must survive its own round trip.
+
+    An error crosses as its declared parts and comes back as
+    `cls(*parts)`, so the parts have to reach the attributes they are
+    named after. Nothing static proves that - so this builds one of
+    each and reads it back. A class whose __init__ reorders, renames or
+    drops a part fails the BUILD rather than the first remote failure,
+    which is the one moment nobody is watching for a bug.
+
+    Returns a list of complaints; empty means the contract holds."""
+    module_name = errors["module"]
+    if module_name is None:
+        return []
+    module = importlib.import_module(module_name)
+    bad = []
+    for name, proto in errors["classes"].items():
+        fields = proto["wire_fields"]
+        if not fields:
+            bad.append(
+                f"{name}: no _wire_fields, so nothing says how to rebuild it "
+                f"on the far side")
+            continue
+        kls = getattr(module, name)
+        # Distinct values, so a swap is visible. A reordering that kept
+        # the same string in both slots would otherwise pass.
+        probe = [f"<{fname}>" for fname, _ in fields]
+        try:
+            built = kls(*probe)
+        except Exception as e:
+            bad.append(f"{name}: cannot be rebuilt as cls(*parts): {e}")
+            continue
+        for (fname, _), sent in zip(fields, probe, strict=True):
+            got = getattr(built, fname, None)
+            if got != sent:
+                bad.append(
+                    f"{name}._wire_fields names {fname!r}, but building it "
+                    f"from its parts leaves {fname} = {got!r}, not {sent!r}")
     return bad
 
 

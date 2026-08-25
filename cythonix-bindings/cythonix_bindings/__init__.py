@@ -54,6 +54,13 @@ from .mock_store import (
 from .path import StorePath
 from .store import Store
 
+# Where the exception hierarchy lives. A declaration, like _binds or
+# _wire, and for the same reason: the codegen must not know a module
+# name this package could rename. An error crosses the wire as a name,
+# and a name is only safe to construct against a declared set - so the
+# set has to come from here (tasks/036).
+_errors_module = "cythonix_bindings.errors"
+
 __all__ = [
     "EvalState",
     "MockDerivation",
