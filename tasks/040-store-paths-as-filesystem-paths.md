@@ -92,39 +92,74 @@ libstore's error, because that needs no new class and no new
 declaration. Grow the hierarchy when a second `LocalFSStore`-only
 method wants it.
 
-## The async and RPC half
+## The wire question, answered
 
-This is where it gets interesting, and where it should NOT be rushed.
+Carl, mid-implementation: "I don't think this has to go over the wire
+at all, it can just be a method?"
 
-Over RPC the real path is on the SERVER's filesystem. Handing an
-`anyio.Path` back to a client that will happily `await p.read_text()`
-is the same footgun as option A, one layer out: the object works, and
-it reads a different machine's file or nothing at all.
+Right, and it is the better answer. `pathlib.Path` is not a wire type,
+and teaching the schema to carry one would have bought a remote method
+whose result names a filesystem the caller cannot reach.
 
-Three sub-questions, none of them answered yet:
+What it needed instead was a gap in the codegen. A FREE FUNCTION could
+already say "the wire cannot carry this" - `wire_blocker` reports it,
+the manifest records it, and the build prints it. A METHOD could not:
+every method of a wrapped class got an rpc unconditionally, and a type
+the schema could not represent raised while BUILDING the schema. So
+methods now get the same treatment, and one piece of knowledge -
+`wire_blocker` - decides both.
 
-1. What does the codegen do with `pathlib.Path` as a return type? It
-   is not a wire scalar. Either the codegen learns it the way it
-   learned `bytes` and `StrEnum` - a scalar whose constructor is
-   `pathlib.Path` - or the declared return stays `str` and the
-   convenience lives above the generated surface.
-2. Should the RPC surface offer it at all? A method that means
-   "a path on whichever machine answered" is honest only if the caller
-   can tell which machine that is. Blocking it on the wire, the way a
-   proxy parameter is blocked, is a legitimate answer.
-3. `anyio.Path` is a wrapper, so the async surface can return
-   `anyio.Path(sync_result)` with no new type. That is a one-line
-   adaptation IF the sync answer is right, which is the whole reason
-   to settle the sync side first.
+A blocked method leaves three places and keeps one:
 
-## What to do first
+- no message in the schema, so nothing describes a call that cannot
+  happen;
+- no handler on the server;
+- off the protocol, because a protocol is what BOTH implementations
+  satisfy - a wire blocker IS a protocol blocker, and surface.py reads
+  grpc_schema's answer rather than deciding again;
+- and it keeps its in-process wrapper, which is the whole point.
 
-`Store.real_path(path) -> pathlib.Path`, in process, returning the
-REAL directory and raising libstore's error for a store that has none.
-Test it against the chroot store, which is the case that proves the
-distinction: the printed path and the real path differ there, and the
-test helper in test_store.py currently reconstructs the real one by
-hand.
+The emitter also learned that an annotation may name a MODULE. A
+declared type is normally a builtin or a binding class; `pathlib.Path`
+is neither, and an emitted module that annotates with it needs a plain
+`import pathlib`. That list lives in wiretypes.py, beside the scalars,
+because it is a fact about how a type is SPELLED. It is explicitly not
+a wire type - nothing on it crosses.
 
-Then decide the wire question with a working local method in hand,
-rather than in the abstract.
+## The async half
+
+`anyio.Path` is a wrapper around an `os.PathLike`, so the async
+wrapper could return `anyio.Path(sync_result)` with no new type. It
+does not yet, and there is no hurry: the emitted wrapper hops to a
+thread, and what it hands back is a `pathlib.Path` that a caller can
+wrap themselves.
+
+Worth doing when something wants async file IO on a store path. Worth
+NOT doing as a reflex: an `anyio.Path` is only useful if the caller
+awaits reads on it, and that is a different feature from naming a
+location.
+
+## Done, in part
+
+`Store.real_path(path) -> pathlib.Path` exists. It answers with the
+REAL directory - `<root>/nix/store/...` for a chroot store, where
+`print_store_path` answers `/nix/store/...` and that does not exist -
+and it raises `Unsupported` for a store with no filesystem, by asking
+whether the store is a `LocalFSStore` the way libstore's own code
+does.
+
+It is in process only, deliberately, and the codegen now has a way to
+say that.
+
+## Still open
+
+`add_path_to_store` takes a path the STORE reads, and that one DOES
+cross the wire - as a string, which is what it is. The asymmetry is
+real and defensible: sending a path to a store is a normal thing to
+do, and receiving one back invites opening it. It is worth a second
+look if a caller ever gets confused by it.
+
+Nothing here gives a StorePath a `pathlib` surface of its own. That
+was the original ask and it stays refused for the reason at the top: a
+StorePath is a name, not a location, and only a store can turn one
+into the other.
