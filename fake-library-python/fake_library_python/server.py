@@ -196,6 +196,28 @@ class Dispatcher:
                         json.dumps(internal.to_dict()))
             return guarded
 
+        async def release_many(stream):
+            """Best-effort batch release for handles the client dropped.
+
+            Per-handle tolerance is the point. The client queues an id
+            when its last local reference goes away, and by flush time
+            that lease may already be gone - closed explicitly,
+            transferred, or swept with an earlier connection. One stale
+            id must not cost the caller the rest of the batch, so the
+            reply counts instead of raising."""
+            req = await stream.recv_message()
+            token = _tok(stream)
+            released = unknown = 0
+            for h in req.handles:
+                try:
+                    self.table.release(token, h.id)
+                    released += 1
+                except (KeyError, ValueError):
+                    unknown += 1
+            resp = self.msg("ReleaseManyResp")()
+            resp.released, resp.unknown = released, unknown
+            await stream.send_message(resp)
+
         async def release(stream):
             req = await stream.recv_message()
             self.table.release(_tok(stream),
@@ -239,6 +261,8 @@ class Dispatcher:
         Handle = self.msg("Handle")
         for name, fn, req_cls, resp_cls in (
             ("Release", release, Handle, Handle),
+            ("ReleaseMany", release_many, self.msg("ReleaseManyReq"),
+             self.msg("ReleaseManyResp")),
             ("Bind", bind, self.msg("BindReq"), self.msg("ConnResp")),
             ("Ping", ping, self.msg("PingReq"), self.msg("AckResp")),
             ("Share", share, self.msg("ShareReq"), self.msg("AckResp")),

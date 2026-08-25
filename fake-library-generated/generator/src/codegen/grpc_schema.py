@@ -300,6 +300,25 @@ def _add_session(f):
     rel.input_type = f".{PKG}.{HANDLE}"
     rel.output_type = f".{PKG}.{HANDLE}"
 
+    # Batched release, for handles the client dropped rather than
+    # closed (tasks/028). A garbage collector frees many objects at
+    # once, so one rpc per flush beats one per handle. Failures are
+    # per-handle: a client cannot know whether a queued id was already
+    # released by something else, and one stale id must not sink the
+    # rest of the batch.
+    many_req = f.message_type.add()
+    many_req.name = "ReleaseManyReq"
+    field = _field(many_req, "handles", 1, type_name=HANDLE)
+    field.label = field.LABEL_REPEATED
+    many_resp = f.message_type.add()
+    many_resp.name = "ReleaseManyResp"
+    _field(many_resp, "released", 1, proto_type=_scalar_const("sint64"))
+    _field(many_resp, "unknown", 2, proto_type=_scalar_const("sint64"))
+    relm = sess.method.add()
+    relm.name = "ReleaseMany"
+    relm.input_type = f".{PKG}.ReleaseManyReq"
+    relm.output_type = f".{PKG}.ReleaseManyResp"
+
 
 def _add_free_service(file_dp, manifest, kinds):
     """One service for every free function the wire can represent."""
