@@ -9,7 +9,7 @@ by the caller. The dict shape is the contract between the sources
 import contextlib
 import inspect
 from types import ModuleType
-from typing import Any, get_type_hints
+from typing import Any, get_args, get_origin, get_type_hints
 
 # One class or function, reflected into the plain dict every layer
 # above reads. Named rather than spelled dict[str, Any] everywhere:
@@ -127,11 +127,23 @@ def _annotation_name(ann: Any) -> str:
     """Stringify one annotation. The empty-check lives HERE so callers
     can pass either the resolved hint or the raw annotation - passing
     sig.return_annotation as a 'sentinel' argument was the bug that
-    turned every annotated return into Any."""
+    turned every annotated return into Any.
+
+    A subscripted generic renders in full. `__name__` on one answers
+    with the head - `dict[str, int]` says `dict` - which loses exactly
+    the part that says what the entries hold. Whether that mattered
+    depended on which path resolved the annotation: a free function's
+    stayed the written string and kept its parameters, a method's
+    resolved to a real generic and lost them, so the same declaration
+    meant two different things depending on where it was written."""
     if ann is inspect.Signature.empty:
         return "Any"
     if ann is None or getattr(ann, "__name__", None) == "NoneType":
         return "None"
+    origin = get_origin(ann)
+    if origin is not None:
+        inner = ", ".join(_annotation_name(a) for a in get_args(ann))
+        return f"{_annotation_name(origin)}[{inner}]"
     return getattr(ann, "__name__", str(ann))
 
 
@@ -429,6 +441,16 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
     return bad
 
 
+def _names_in(type_str: str) -> set[str]:
+    """Every type named inside one annotation string, subscripts
+    included. `dict[str, Value]` names Value; reading the head alone
+    says `dict` and misses it."""
+    import ast as _ast
+
+    node = _ast.parse(type_str, mode="eval").body
+    return {n.id for n in _ast.walk(node) if isinstance(n, _ast.Name)}
+
+
 def check_wrap_contract(protos: list[Proto]) -> list[str]:
     """An unwrapped class must be self-contained.
 
@@ -456,6 +478,41 @@ def check_wrap_contract(protos: list[Proto]) -> list[str]:
                     f"which needs a wrapper. An unwrapped class cannot "
                     f"attach one; declare _blocking on one side or the "
                     f"other so the two agree.")
+    return bad
+
+
+def check_collection_contract(protos: list[Proto]) -> list[str]:
+    """No method may return a COLLECTION of wrapped types.
+
+    A wrapped type only works when something attaches a runner to it,
+    and every layer does that for one object: the async wrapper writes
+    `AsyncX(result, self._runner)`, the server puts one handle, the
+    client builds one proxy. None of them walks a container, so
+    `dict[str, Value]` type-checks, builds, emits a schema - and hands
+    back bare sync objects in process while failing on the first call
+    over the wire.
+
+    That is the same accepted-then-explodes shape a proxy in
+    _wire_fields had. It is not an oversight either: a collection of
+    remote objects is a value TREE, which is what Realize answers, and
+    that is protocol rather than something a return annotation can ask
+    for (tasks/030).
+
+    Returns a list of complaints; empty means the contract holds."""
+    wrapped = {p["name"] for p in protos if p["wrapped"]}
+    bad = []
+    for proto in protos:
+        for m in proto["methods"]:
+            rt = m["return_type"]
+            if rt in wrapped:
+                continue  # a single wrapped object is the supported case
+            for named in sorted(_names_in(rt) & wrapped):
+                bad.append(
+                    f"{proto['name']}.{m['name']} returns {rt}, a collection "
+                    f"holding {named}. Nothing attaches a runner to the "
+                    f"elements of a container. Return the container's owner "
+                    f"and let the caller walk it, or realize it as a value "
+                    f"tree (tasks/030).")
     return bad
 
 

@@ -69,6 +69,38 @@ cdef extern from "x.hpp" nogil:
         raise AssertionError("map_c_type accepted a template type")
 
 
+def test_annotation_rendering() -> None:
+    """A subscripted generic renders in full, wherever it is written.
+
+    `__name__` on one answers with the head, so `dict[str, int]` became
+    `dict` - and whether it did depended on which path resolved the
+    annotation. A free function's stayed the written string and kept
+    its parameters; a method's resolved to a real generic and lost
+    them. The same declaration meant two different things depending on
+    where it appeared."""
+    from codegen.model import _annotation_name, check_collection_contract
+
+    assert _annotation_name(dict[str, int]) == "dict[str, int]"
+    assert _annotation_name(list[str]) == "list[str]"
+    assert _annotation_name(dict[str, list[int]]) == "dict[str, list[int]]"
+    assert _annotation_name(int) == "int"
+    assert _annotation_name(None) == "None"
+
+    # ...which is what lets the collection rule see inside one. A
+    # container of wrapped types builds, emits a schema, and then hands
+    # back bare sync objects: nothing attaches a runner to elements.
+    protos = [{
+        "name": "V", "wrapped": True, "methods": [
+            {"name": "attrs", "return_type": "dict[str, V]"},
+            {"name": "items", "return_type": "list[V]"},
+            {"name": "one", "return_type": "V"},
+            {"name": "n", "return_type": "int"},
+        ]}]
+    bad = check_collection_contract(protos)
+    assert len(bad) == 2, bad
+    assert all("attrs" in b or "items" in b for b in bad), bad
+
+
 def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference
     the runtime only via `from _runtime import X`; a rename on either
@@ -969,6 +1001,7 @@ def main(argv: list[str] | None = None) -> None:
 
     test_parse(out)
     test_pxd_renders_every_type()
+    test_annotation_rendering()
 
     # Import the generated package from its parent dir, shadowing any
     # installed copy. Bindings (fake_library) come from PYTHONPATH.

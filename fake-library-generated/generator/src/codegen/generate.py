@@ -29,6 +29,7 @@ from codegen.emitter import (
 from codegen.model import (
     binding_map,
     check_binding_map,
+    check_collection_contract,
     check_wire_contract,
     check_wrap_contract,
     extract_free_function,
@@ -214,6 +215,15 @@ def main(argv: list[str] | None = None) -> None:
     if complaints:
         for c in complaints:
             print(f"wrap contract: {c}", file=sys.stderr)
+        sys.exit(1)
+    # ...and nothing may return a CONTAINER of wrapped types. Every
+    # layer attaches a runner to one object, not to the elements of a
+    # collection, so such a return builds and then fails at the first
+    # call that touches it.
+    complaints = check_collection_contract(protos + returned_protos)
+    if complaints:
+        for c in complaints:
+            print(f"collection contract: {c}", file=sys.stderr)
         sys.exit(1)
     unwrapped = sorted(p["name"] for p in protos + returned_protos
                        if not p["wrapped"])
