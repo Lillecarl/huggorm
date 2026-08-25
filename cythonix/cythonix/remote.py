@@ -239,7 +239,7 @@ class NixClient:
                 f"{cls_name!r} cannot be constructed remotely; the manifest "
                 f"offers {offered}")
         ctor = proto["ctor"]
-        required = [p["name"] for p in ctor if not p["optional"]]
+        required = [p["name"] for p in ctor if p["default"] is None]
         if len(args) < len(required) or len(args) > len(ctor):
             raise TypeError(
                 f"{cls_name} takes {len(required)}..{len(ctor)} argument(s) "

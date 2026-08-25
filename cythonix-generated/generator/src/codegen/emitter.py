@@ -81,28 +81,19 @@ def _ctor_args(proto: Proto, async_types: set[str]) -> ast.arguments:
     signature), so the wrapper states it: wrong arity fails at the call
     site instead of inside a lazy factory on some worker thread, and a
     typechecker can see it."""
-    args = [ast.arg(arg="self")]
-    defaults: list[ast.expr] = []
-    for p in proto["ctor"]:
-        ann = _param_ann(p["type"], async_types)
-        if p["optional"]:
-            # Spell the None out. `output: str = None` is implicit
-            # Optional, which strict typecheckers reject and which
-            # misdescribes the default the emitter itself writes.
-            ann += " | None"
-        args.append(ast.arg(
-            arg=p["name"],
-            annotation=_ann(ann, f"{proto['name']}.__init__:{p['name']}")))
-        if p["optional"]:
-            defaults.append(ast.Constant(value=None))
-        elif defaults:
-            # sorted-by-arity overloads cannot produce this, but a future
-            # explicit declaration could.
-            raise ValueError(
-                f"{proto['name']}.__init__: required parameter {p['name']!r} "
-                f"follows an optional one")
-    return ast.arguments(posonlyargs=[], args=args, vararg=None, kwonlyargs=[],
-                         kw_defaults=[], kwarg=None, defaults=defaults)
+    return _arguments([ast.arg(arg="self")], proto["ctor"],
+                      [_ctor_ann(p, async_types) for p in proto["ctor"]],
+                      f"{proto['name']}.__init__")
+
+
+def _ctor_ann(p: Proto, async_types: set[str]) -> str:
+    """One constructor parameter's annotation.
+
+    A parameter that may be omitted is spelled `T | None`. `output: str
+    = None` is implicit Optional, which strict typecheckers reject and
+    which misdescribes the default the emitter itself writes."""
+    ann = _param_ann(p["type"], async_types)
+    return f"{ann} | None" if p["default"] == "None" else ann
 
 
 def _return_ann(rt: str, bound_policies: dict[str, str],

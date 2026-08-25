@@ -383,7 +383,7 @@ async def test_behavior() -> None:
             f"must unwrap every declared parameter {declared}"
         )
         # Optional parameters must actually be optional.
-        n_optional = sum(1 for p in proto["ctor"] if p["optional"])
+        n_optional = sum(1 for p in proto["ctor"] if p["default"] is not None)
         assert len(init.args.defaults) == n_optional, (
             f"{py.name}.__init__ has {len(init.args.defaults)} default(s), "
             f"manifest declares {n_optional} optional parameter(s)"

@@ -318,7 +318,7 @@ class Dispatcher:
             token = _tok(stream)
             args = [self.codec.decode(req, p["name"], p["type"],
                                       lambda hid: self.resolve(hid, token),
-                                      optional=p["optional"])
+                                      optional=p["default"] == "None")
                     for p in proto["ctor"]]
             resp = handle_cls()
             resp.id = self.put(wrapper_cls(*args), token)

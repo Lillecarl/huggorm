@@ -240,7 +240,15 @@ def default_source(value: Any, where: str) -> str | None:
     A default of None is refused. The surface has no optional spelling
     yet - a proxy has no None to send and a scalar field has no
     presence - so a None default would typecheck here and fail at the
-    first call that took it."""
+    first call that took it.
+
+    A CONSTRUCTOR parameter may still default to None, and does not
+    come through here: it comes from constructor_signature, where the
+    overload set says a parameter may be omitted and C++ says nothing
+    about what it would have been. That path is carried because the
+    acquire request handles absence - the client skips a None argument
+    and the server decodes with optional=True - which a method request
+    does not."""
     if value is inspect.Parameter.empty:
         return None
     if value is None:
@@ -417,6 +425,15 @@ def constructor_signature(cls: type, api: Api,
     the longest overload; C++ overloads often rename (path/drv_path)
     and the longest one is the most descriptive.
 
+    The overload set is the ONLY source of optionality here, because a
+    pxd cannot carry a real default at all - Cython refuses one
+    outright: "default values cannot be specified in pxd files, use ?
+    or *". What it does accept is `int n = *`, which says a parameter
+    may be omitted without saying what it would have been. That is the
+    same fact the overload set gives, and it is the mechanism to reach
+    for if a _ctor_from FACTORY ever needs an optional parameter -
+    there is no overload set to read for one of those.
+
     Raises when the overloads do NOT reconcile, naming the class. That
     is a real ambiguity - CStorePath's (string) means a base name while
     its (string, string) means hash-plus-name - and the author has to
@@ -435,7 +452,7 @@ def constructor_signature(cls: type, api: Api,
             if fn["name"] == factory:
                 return [
                     {"name": pname, "type": map_c_type(ptype, mapping),
-                     "optional": False}
+                     "default": None}
                     for pname, ptype in fn["params"]
                 ]
         raise ValueError(
@@ -459,11 +476,16 @@ def constructor_signature(cls: type, api: Api,
                     f"{[t for _, t in longest]}; they differ at position {i}. "
                     f"Declare which one the binding offers.")
     required = len(overloads[0])
+    # Past the shortest overload the parameter may be omitted, and C++
+    # says nothing about what it would have been - the short overload
+    # simply does not take it. So the default is None, meaning "not
+    # given", and it is written as source like any other so a
+    # constructor parameter and a method parameter have ONE shape.
     return [
         {
             "name": pname,
             "type": map_c_type(ptype, mapping),
-            "optional": i >= required,
+            "default": "None" if i >= required else None,
         }
         for i, (pname, ptype) in enumerate(longest)
     ]
