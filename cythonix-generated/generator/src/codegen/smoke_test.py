@@ -101,6 +101,27 @@ def test_annotation_rendering() -> None:
     assert all("attrs" in b or "items" in b for b in bad), bad
 
 
+def test_declarations_are_found_by_binds() -> None:
+    """The pxd is linked to the bindings by _binds, not by a naming
+    convention.
+
+    tasks/020 replaced "strip a leading C and hope" with a
+    declaration, and this lookup was missed: a class whose _binds did
+    not happen to match the convention got no signature backfill at
+    all, silently, and every parameter Cython could not annotate
+    stayed Any."""
+    from codegen.model import _pxd_signature_table
+
+    odd = type("Odd", (), {"_binds": "SomethingElse",
+                           "__module__": "cythonix_bindings.odd"})
+    api = {"classes": {"SomethingElse": {
+        "methods": [{"name": "m", "params": [("a", "string")], "ret": "bint"}],
+        "ctors": []}}}
+    assert "C" + odd.__name__ != "SomethingElse", "the convention must not match"
+    table = _pxd_signature_table(odd, api, {})
+    assert table["m"] == {"params": ["str"], "ret": "bool"}, table
+
+
 def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference
     the runtime only via `from _runtime import X`; a rename on either
@@ -1002,6 +1023,7 @@ def main(argv: list[str] | None = None) -> None:
     test_parse(out)
     test_pxd_renders_every_type()
     test_annotation_rendering()
+    test_declarations_are_found_by_binds()
 
     # Import the generated package from its parent dir, shadowing any
     # installed copy. Bindings (cythonix_bindings) come from PYTHONPATH.

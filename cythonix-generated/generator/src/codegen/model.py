@@ -536,7 +536,14 @@ def _pxd_signature_table(cls: type, api: Api,
     for k in cls.__mro__:
         if getattr(k, "__module__", "").split(".")[0] != "cythonix_bindings":
             continue
-        info = api["classes"].get("C" + k.__name__)
+        # _binds, not "C" + the class name. The convention was the
+        # only link between the pxd and the bindings until tasks/020
+        # replaced it with a declaration, and this lookup was missed:
+        # a class whose _binds did not happen to match the convention
+        # got NO signature backfill, silently, and its parameters
+        # stayed Any. Read from __dict__ so a subclass does not
+        # inherit its base's declaration.
+        info = api["classes"].get(k.__dict__.get("_binds", ""))
         if info is None:
             continue
         for m in info["methods"]:
