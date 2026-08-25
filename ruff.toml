@@ -1,0 +1,42 @@
+# Lint configuration for the whole lab. One file at the root, because
+# ruff walks up from each file and every package should be held to the
+# same rules.
+#
+# The generated package is NOT listed here. It is checked by the smoke
+# gates instead - which are stricter than a linter about the things
+# that matter for emitted code (imports exactly matching use, a real
+# docstring on every module and class, signatures agreeing across the
+# three surfaces) and which a linter cannot express.
+
+line-length = 88
+target-version = "py314"
+
+[lint]
+select = [
+  "E",     # pycodestyle
+  "F",     # pyflakes: dead imports, dead variables, real mistakes
+  "I",     # import sorting
+  "UP",    # pyupgrade: syntax this Python version supersedes
+  "B",     # bugbear: closures over loop variables, mutable defaults
+  "SIM",   # simplifiable constructs
+  "PIE",   # small redundancies
+  "RUF",   # ruff's own
+]
+
+# Deliberately not selected:
+#
+# S (bandit) and BLE (blind-except). This codebase catches broadly on
+# purpose in three places, each with a comment saying why: the ping
+# loop keeps trying because the server sweeps a silent connection, the
+# handle reaper must not let one bad aclose stop the sweep, and a
+# finalizer cannot raise anywhere useful. A rule that fires on all
+# three and is silenced all three times measures nothing.
+
+[lint.per-file-ignores]
+# The demos print a narrative and are read top to bottom; an import
+# next to the section it belongs to is clearer than one at the top.
+"fake-library-python/fake_library_python/*_demo.py" = ["E402", "PLC0415"]
+"fake-library-python/fake_library_python/run_remote.py" = ["E402"]
+
+[lint.isort]
+known-first-party = ["codegen", "fake_library", "fake_library_generated", "fake_library_python"]
