@@ -99,3 +99,12 @@ It is also a different project. The whole design here rests on reading
 C++ declarations out of a pxd, and the C API would make the generator
 read a C header instead. Worth a decision before the first binding is
 written, not after.
+
+**Decided 2026-08-25.** Carl: "The C API is not feature complete at
+all which is why we're binding C++, we are doing 100% C++."
+
+So the C API is not a fallback for the awkward cases either. Every
+C++-in-Cython problem gets solved rather than routed around:
+`StorePath() = delete` needs a produced-value shape that does not
+default-construct, `except +` stays, and a template type in a pxd
+renders as itself and maps to nothing until something maps it.
