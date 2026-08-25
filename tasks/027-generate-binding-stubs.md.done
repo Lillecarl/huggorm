@@ -59,3 +59,52 @@ CONSUMER of the sync bindings is passing the right thing.
 
 Independent of 013, which is about adding the tools. This is about
 giving them something to read.
+
+## Done 2026-08-25
+
+Cython 3.2.5 has no stub generation (checked: no --pyi flag, nothing in
+Compiler.Options), so the emitter is ours. That is the better answer
+anyway - Cython does not know the pxd-derived constructor signatures,
+and those are the ones reflection cannot see either.
+
+`fake_library-stubs/` is emitted next to the generated package, as a
+PEP 561 stub-only package. The generated package also gains py.typed.
+
+### Result, measured
+
+All five deliberate mistakes are caught now, including the one that
+motivated this:
+
+    await store.is_valid_path("not-a-storepath")
+    -> Argument 1 to "is_valid_path" of "StoreLike" has incompatible
+       type "str"; expected "StorePath"
+
+and a correct consumer driving four implementations through two
+protocols is clean under --strict.
+
+### Three things learned the hard way
+
+The stub must be built from UNFILTERED protos. The manifest holds the
+generated surface, which the affine-return drop and 018's hierarchy
+split have already filtered. The first version denied
+Store.query_derivation - a method that exists, and that custom.py
+calls.
+
+py.typed is not optional. Without it a typechecker skips an INSTALLED
+package however well annotated, so the protocols were invisible even
+after the stubs resolved.
+
+mypy does NOT honour a `<pkg>-stubs` directory on MYPYPATH - only in a
+real site-packages. Verified: the same directory renamed to
+`fake_library` resolved immediately. So checking a consumer means
+pointing mypy at an environment (`--python-executable`), which is what
+013 should wire up.
+
+### Known inaccuracy
+
+DerivedPath's constructor parameter is `drv_path` in the stub and
+`path` in the pyx. The name comes from the pxd, which is the only
+source there is; a keyword call would use the wrong name. Cython's
+`embedsignature` directive would put the real signature in __doc__ and
+make this checkable - worth trying, and it might also revisit 019's
+conclusion that the pxd is the only source.

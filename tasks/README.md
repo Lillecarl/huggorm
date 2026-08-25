@@ -14,15 +14,14 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 027 (stubs for the bindings) is next, and it is small. 017 proved
-  the protocol layer catches consumer mistakes, and proved the one it
-  misses: every binding type is Any to a typechecker, because a .so
-  carries no signatures. Everything else about "as typed as possible"
-  is in place and reading an empty type.
-- 013 (lint and typecheck) follows it, now with a measured inventory
-  rather than an intention. Annotating _runtime.py is the first move:
-  it is the cause of three quarters of the errors in the emitted
-  package.
+- 013 (lint and typecheck) is next. Every piece it needs now exists:
+  027 gave the bindings stubs, 017 gave consumers protocols to be
+  checked against, and a mypy run over a consumer is already clean and
+  already catches the five mistakes it should. What remains is wiring
+  it into the build and annotating _runtime.py, which is the cause of
+  three quarters of the errors left in the emitted package. Note that
+  the run needs --python-executable, not MYPYPATH: mypy honours a
+  -stubs package only in a real site-packages (see 027).
 - 026 (typed proxy parameters) is a design question, not a defect. It
   is the one place the two locations genuinely disagree.
 - 015 (real-Nix spike) substitutes into the surface 017 settled.
@@ -40,6 +39,11 @@ Per wrapped class, three forms plus the wire:
     <X>Like      the protocol both implementations satisfy    (protocols.py)
     RPC<X>       client class over a handle                   (rpc.py)
     <X>Service   gRPC service, and <X>Msg for a wire-value    (grpc_schema.pb)
+
+Plus one stub package describing the BINDINGS, so the types all of the
+above name are not Any to a typechecker (fake_library-stubs/, 027).
+That one is built from the unfiltered surface: the policy drops and the
+hierarchy split are rules about the wrappers, not about the bindings.
 
 A class that needs no wrapper gets none of the first three and keeps
 its message: it crosses as itself. The smoke test holds the three
