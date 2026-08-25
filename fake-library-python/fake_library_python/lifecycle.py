@@ -79,9 +79,14 @@ class HandleTable:
             conn = self.connections[token] = Connection()
         else:
             conn.last_seen = time.monotonic()
+        # Escrowed leases were never subtracted from the entry (that is
+        # what kept it alive with no owner), so adopting them MOVES the
+        # lease back onto a connection - it does not create a new one.
+        # Incrementing here inflated entry.leases permanently: the
+        # claimer's later Release could never reach zero and the handle
+        # leaked for the life of the process.
         for hid, n in self.escrow.pop(token, {}).items():
             conn.leases[hid] = conn.leases.get(hid, 0) + n
-            self.entries[hid].leases += n
         return token
 
     def _conn_for(self, token: str) -> Connection:
@@ -172,6 +177,31 @@ class HandleTable:
                 bucket[t] = bucket.get(t, 0) + n
                 moved += n
         return moved
+
+    # -- invariants -------------------------------------------------------
+    def audit(self) -> None:
+        """Check the one invariant the whole model rests on: an entry's
+        lease count equals what connections hold plus what sits in
+        escrow. Every mutation is a MOVE between those three places, so
+        a mismatch means a lease was created or destroyed by accident -
+        which shows up much later as a leaked or prematurely reaped
+        handle. Cheap enough for tests to call after every step."""
+        counted: dict[str, int] = {}
+        for conn in self.connections.values():
+            for hid, n in conn.leases.items():
+                counted[hid] = counted.get(hid, 0) + n
+        for bucket in self.escrow.values():
+            for hid, n in bucket.items():
+                counted[hid] = counted.get(hid, 0) + n
+        bad = []
+        for hid, entry in self.entries.items():
+            held = counted.pop(hid, 0)
+            if held != entry.leases:
+                bad.append(f"{hid[:8]}: entry says {entry.leases}, holders say {held}")
+        for hid, n in counted.items():
+            bad.append(f"{hid[:8]}: {n} lease(s) held on a dropped entry")
+        if bad:
+            raise AssertionError("handle table invariant violated: " + "; ".join(bad))
 
     # -- reaping ----------------------------------------------------------
     def sweep(self, now: float | None = None) -> list[str]:

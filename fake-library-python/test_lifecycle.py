@@ -116,6 +116,7 @@ async def main():
         state = await a.acquire("EvalState")
         thunk = await state.parse_expr("42")
         await state.force(thunk)
+        hid_thunk = thunk.handle_id
         detached = await a.detach(all=True)
         check("detach reports moved leases", detached)
         # a no longer holds them: release must fail...
@@ -139,6 +140,21 @@ async def main():
         claimed_thunk = remote.RemoteObj(c, "Value", thunk.handle_id)
         check("escrowed objects survive connection death",
               await claimed_thunk.integer() == 42)
+
+        # A claimed lease must still be a NORMAL lease: releasing it
+        # drops the handle. Regression guard for the escrow double
+        # count, where Bind added a lease instead of moving the escrowed
+        # one back, so no number of Releases ever reached zero and every
+        # detach/claim round trip leaked its handle for good.
+        await c.release(claimed_thunk)
+        phantom_claimed = remote.RemoteObj(c, "Value", hid_thunk)
+        threw = None
+        try:
+            await phantom_claimed.integer()
+        except InternalError as e:
+            threw = e.to_dict()
+        check("releasing a claimed lease drops the handle",
+              threw is not None and threw["cause_type"] == "KeyError", threw)
 
         # ---- TTL reaping of abandoned (non-detached) handles ---------
         d = await remote.connect("127.0.0.1", port)
