@@ -45,7 +45,10 @@ Findings reference two architectural reviews, 2026-08-23 and
   cannot hop threads, cannot await, and its arguments do not outlive
   the call.
 - 014 (transport shims) and 016 (evaluation server) are the
-  destinations.
+  destinations. 016's lifecycle contract is settled and executable -
+  a detached evaluator survives its creator's death and a successor
+  claims it warm - so what is left of it is the part that needs a real
+  evaluator: warm caches, the file graph, background evaluation.
 
 Every build lints and typechecks the code its package owns, and
 `nix run --file . check` does the whole tree in about a second (013).

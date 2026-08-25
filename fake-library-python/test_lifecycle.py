@@ -199,6 +199,27 @@ async def main() -> None:
         check("releasing a claimed lease drops the handle",
               threw is not None and threw["cause_type"] == "KeyError", threw)
 
+        # ---- 016: an evaluation state that outlives its creator ------
+        # The vision the whole lifecycle exists for. One EvalState
+        # serves many connections over time: a client creates it, does
+        # work, detaches and exits; a later client presents the token
+        # and finds the SAME evaluator with its work intact, rather
+        # than a cold one it has to warm up again.
+        #
+        # Set up before the sweep below, so one wait covers both.
+        maker = await remote.connect("127.0.0.1", port)
+        warm = await maker.acquire("EvalState", "local")
+        bag = await warm.make_attrs()
+        await warm.attrs_set(bag, "answer", await warm.eval_expr("42"))
+        lazy = await warm.parse_expr("7")
+        check("a thunk starts out unforced", await lazy.type_name() == "thunk")
+        await warm.force(lazy)
+        hid_state, hid_bag, hid_lazy = (
+            warm.handle_id, bag.handle_id, lazy.handle_id)
+        check("the creator detaches everything it holds",
+              await maker.detach(all=True))
+        maker.stop_pinging()
+
         # ---- TTL reaping of abandoned (non-detached) handles ---------
         d = await remote.connect("127.0.0.1", port)
         doomed = await d.acquire("LocalStore")
@@ -212,6 +233,27 @@ async def main() -> None:
             threw = e.to_dict()
         check("abandoned connection's handles are reaped after ttl",
               threw is not None and threw["cause_type"] == "KeyError", threw)
+
+        # ...and the same sweep did NOT touch what was detached, so the
+        # evaluator set up above is still there to be claimed.
+        heir = await remote.connect("127.0.0.1", port, claim=maker.token)
+        check("the successor adopts the creator's identity",
+              heir.token == maker.token)
+        same = heir.proxy("EvalState", hid_state)
+        check("the evaluator itself outlives the connection that made it",
+              await same.get_store_uri() == "local")
+        # Warm, not rebuilt. Forcing is the proof: it mutates a value in
+        # place, so a value that reads as an int on the far side of a
+        # handover is the one that was forced before it.
+        check("work done before the handover is still done",
+              await heir.proxy("Value", hid_lazy).type_name() == "int")
+        check("and its values are still reachable",
+              await heir.realize(heir.proxy("Value", hid_bag))
+              == {"answer": 42})
+        fresh = await same.eval_expr('"after the handover"')
+        check("the claimed evaluator still evaluates",
+              await fresh.string_value() == "after the handover")
+        heir.stop_pinging()
 
         # Pinging connections are immune (control).
         alive = await c.acquire("LocalStore")
