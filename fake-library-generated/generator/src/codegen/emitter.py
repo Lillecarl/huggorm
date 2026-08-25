@@ -18,27 +18,68 @@ RUNNER_BY_THREADING = {
 _BUILTIN_TYPES = {"None", "Any", "str", "int", "float", "bool", "bytes", "object"}
 
 
-def _annotation_names(proto: dict) -> set[str]:
-    """Every named type appearing in any method annotation, params and
-    returns alike."""
-    out: set[str] = set()
+def _names_in(type_str: str) -> set[str]:
+    """Every named type inside one annotation string."""
+    node = ast.parse(type_str, mode="eval").body
+    return {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
+
+
+def _param_ann(type_str: str, async_types: set[str]) -> str:
+    """The annotation a parameter really accepts.
+
+    unwrap_arg takes either side: the sync binding object or the async
+    wrapper over it, which contributes its target. Annotating the sync
+    type alone was a lie - in-process callers pass wrappers (that is
+    the whole surface), the RPC server passes sync objects. Say both."""
+    return f"{type_str} | Async{type_str}" if type_str in async_types else type_str
+
+
+def _emitted_annotations(proto: dict, async_types: set[str],
+                         bound_policies: dict[str, str]) -> list[str]:
+    """The annotation strings the emitter will actually write. Import
+    collection reads THIS, not the raw protocol types: a return type
+    that gets adopted is written as AsyncX and must not drag the sync X
+    into the module as an unused import."""
+    out = []
     for m in proto["methods"]:
-        exprs = [p["type"] for p in m["params"]] + [m["return_type"]]
-        for s in exprs:
-            node = ast.parse(s, mode="eval").body
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Name):
-                    out.add(sub.id)
+        out += [_param_ann(p["type"], async_types) for p in m["params"]]
+        rt = m["return_type"]
+        out.append(f"Async{rt}" if rt in bound_policies else rt)
+    return out
+
+
+def _annotation_names(annotations: list[str]) -> set[str]:
+    out: set[str] = set()
+    for a in annotations:
+        out |= _names_in(a)
     return out
 
 
 def _fake_library_import(names: set[str]) -> ast.ImportFrom | None:
-    usable = sorted(n for n in names if n not in _BUILTIN_TYPES)
+    """Import the SYNC binding types an emitted module annotates with.
+    Async* names are excluded: those come from sibling modules."""
+    usable = sorted(
+        n for n in names if n not in _BUILTIN_TYPES and not n.startswith("Async")
+    )
     if not usable:
         return None
     return ast.ImportFrom(
         module="fake_library", names=[ast.alias(name=n) for n in usable], level=0
     )
+
+
+def _sibling_imports(names: set[str]) -> list[ast.ImportFrom]:
+    """`from .async_x import AsyncX` for every generated wrapper an
+    emitted module annotates with - adopted returns and wrapper-typed
+    parameters alike."""
+    return [
+        ast.ImportFrom(
+            module=f"async_{n.removeprefix('Async').lower()}",
+            names=[ast.alias(name=n)],
+            level=1,
+        )
+        for n in sorted(n for n in names if n.startswith("Async"))
+    ]
 
 
 def _ann(type_str: str, context: str) -> ast.expr:
@@ -49,7 +90,7 @@ def _ann(type_str: str, context: str) -> ast.expr:
         raise ValueError(f"unparseable annotation {type_str!r} on {context}") from e
 
 
-def returned_module(proto: dict) -> ast.Module:
+def returned_module(proto: dict, async_types: set[str] | None = None) -> ast.Module:
     """
     Emit Async<Bound> for a returned value type (e.g. Poop).
 
@@ -60,9 +101,11 @@ def returned_module(proto: dict) -> ast.Module:
     svc = proto["name"]
     policy = proto["threading"]
     policy_wire = proto["wire"]
+    async_types = async_types or set()
 
     mod = ast.Module(body=[], type_ignores=[])
-    used = {m["return_type"] for m in proto["methods"]} | {p["type"] for m in proto["methods"] for p in m["params"]}
+    annotations = _emitted_annotations(proto, async_types, {})
+    used = _annotation_names(annotations)
     if "Any" in used:
         mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
     mod.body.append(
@@ -78,15 +121,14 @@ def returned_module(proto: dict) -> ast.Module:
     mod.body.append(
         ast.ImportFrom(module="_runtime", names=[ast.alias(name="attach_runner")], level=1)
     )
-    ann_import = _fake_library_import(_annotation_names(proto))
+    mod.body.extend(_sibling_imports(used))
+    ann_import = _fake_library_import(used)
     if ann_import is not None:
         mod.body.append(ann_import)
 
     cls = ast.ClassDef(name=f"Async{svc}", bases=[], keywords=[], body=[], decorator_list=[])
-    cls.body.append(ast.Assign(
-        targets=[ast.Name(id="_wire")],
-        value=ast.Constant(value=policy_wire),
-    ))
+    # Docstring FIRST: a string preceded by any other statement is a
+    # dead expression, not __doc__.
     cls.body.append(
         ast.Expr(
             value=ast.Constant(
@@ -102,6 +144,10 @@ def returned_module(proto: dict) -> ast.Module:
             )
         )
     )
+    cls.body.append(ast.Assign(
+        targets=[ast.Name(id="_wire")],
+        value=ast.Constant(value=policy_wire),
+    ))
     cls.body.append(
         ast.FunctionDef(
             name="__init__",
@@ -135,15 +181,18 @@ def returned_module(proto: dict) -> ast.Module:
     )
 
     mod.body.append(cls)
-    _append_methods_and_aclose(cls, proto, svc)
+    _append_methods_and_aclose(cls, proto, svc, async_types)
     ast.fix_missing_locations(mod)
     return mod
 
 
-def _append_methods_and_aclose(cls: ast.ClassDef, proto: dict, svc: str):
+def _append_methods_and_aclose(cls: ast.ClassDef, proto: dict, svc: str,
+                               async_types: set[str]):
     for m in proto["methods"]:
         params = [ast.arg(arg="self")] + [
-            ast.arg(arg=p["name"], annotation=_ann(p["type"], f"{svc}.{m['name']}:{p['name']}"))
+            ast.arg(arg=p["name"],
+                    annotation=_ann(_param_ann(p["type"], async_types),
+                                    f"{svc}.{m['name']}:{p['name']}"))
             for p in m["params"]
         ]
         body: list[ast.stmt] = []
@@ -189,31 +238,22 @@ def _hop_return(method_name: str, params: list[dict]) -> ast.Return:
     return ast.Return(value=ast.Await(value=_hop_call(method_name, params)))
 
 
-def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) -> ast.Module:
+def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
+                   async_types: set[str] | None = None) -> ast.Module:
     """Emit Async<Svc>. bound_policies maps returned-type names to their
     declared threading policy; those methods adopt the produced object
-    into an attached runner instead of returning it raw."""
+    into an attached runner instead of returning it raw. async_types is
+    every generated wrapper name, used to widen parameter annotations."""
     svc = proto["name"]
     bound_policies = bound_policies or {}
+    async_types = async_types or set()
     runner = RUNNER_BY_THREADING[proto["threading"]]
 
     mod = ast.Module(body=[], type_ignores=[])
 
-    used_types = {p["type"] for m in proto["methods"] for p in m["params"]}
-    used_types |= {m["return_type"] for m in proto["methods"]}
-    used_types.add("None")  # aclose
-    if "Any" in used_types:
-        mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
-    bound_used = {m["return_type"] for m in proto["methods"] if m["return_type"] in bound_policies}
-    for name in sorted(bound_used):
-        mod.body.append(
-            ast.ImportFrom(
-                module=f"async_{name.lower()}",
-                names=[ast.alias(name=f"Async{name}")],
-                level=1,
-            )
-        )
-
+    # Docstring FIRST: the bound-type imports used to be emitted ahead
+    # of it, which demoted it to a dead expression and left the module
+    # with no __doc__.
     mod.body.append(
         ast.Expr(
             value=ast.Constant(
@@ -225,10 +265,16 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
             )
         )
     )
+
+    annotations = _emitted_annotations(proto, async_types, bound_policies)
+    used_types = _annotation_names(annotations) | {"None"}  # None: aclose
+    if "Any" in used_types:
+        mod.body.append(ast.ImportFrom(module="typing", names=[ast.alias(name="Any")], level=0))
+    # Never import our own class from ourselves.
+    mod.body.extend(_sibling_imports(used_types - {f"Async{svc}"}))
+
     mod.body.append(ast.ImportFrom(module="fake_library", names=[ast.alias(name=svc)], level=0))
-    ann_import = _fake_library_import(
-        _annotation_names(proto) - {f"Async{n}" for n in bound_policies}
-    )
+    ann_import = _fake_library_import(used_types - {svc})
     if ann_import is not None:
         mod.body.append(ann_import)
     mod.body.append(
@@ -245,10 +291,6 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
         body=[],
         decorator_list=[],
     )
-    cls.body.append(ast.Assign(
-        targets=[ast.Name(id="_wire")],
-        value=ast.Constant(value=proto["wire"]),
-    ))
     cls.body.append(
         ast.Expr(
             value=ast.Constant(
@@ -259,6 +301,10 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
             )
         )
     )
+    cls.body.append(ast.Assign(
+        targets=[ast.Name(id="_wire")],
+        value=ast.Constant(value=proto["wire"]),
+    ))
 
     init_kwargs = []
     if proto["threading"] == "affine":
@@ -367,7 +413,9 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None) ->
 
     for m in proto["methods"]:
         params = [ast.arg(arg="self")] + [
-            ast.arg(arg=p["name"], annotation=_ann(p["type"], f"{svc}.{m['name']}:{p['name']}"))
+            ast.arg(arg=p["name"],
+                    annotation=_ann(_param_ann(p["type"], async_types),
+                                    f"{svc}.{m['name']}:{p['name']}"))
             for p in m["params"]
         ]
         body: list[ast.stmt] = []

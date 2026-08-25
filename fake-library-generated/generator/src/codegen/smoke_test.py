@@ -4,10 +4,12 @@ entry point; runs after codegen-generate, stdlib only:
 
 1. every emitted .py parses
 2. the package imports and __all__ matches
-3. behavioral checks: results, C++ exception wrapping, affine thread
+3. every emitted module and class carries a real docstring, and
+   imports exactly the names it uses
+4. behavioral checks: results, C++ exception wrapping, affine thread
    pinning (including returned affine values), pool execution,
    policy-driven surface drops, aclose, exactly-once lazy construction
-4. the emitter-runtime symbol contract: every name any emitted module
+5. the emitter-runtime symbol contract: every name any emitted module
    imports from _runtime must exist on the runtime module
 """
 
@@ -328,6 +330,57 @@ async def test_behavior():
     await local.aclose()
 
 
+def test_no_unused_imports(out: pathlib.Path):
+    """Emitted modules must import exactly what they use. An import the
+    emitter adds but never references means the import list is derived
+    from the wrong set - which is how the sync Derivation kept arriving
+    in wrappers that only ever annotate AsyncDerivation. Generated code
+    gets no linter, so the gate lives here."""
+    offenders = []
+    for py in sorted(out.glob("*.py")):
+        tree = ast.parse(py.read_text(), filename=str(py.name))
+        imported = {
+            (a.asname or a.name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for a in node.names
+        }
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        # __init__ re-exports rather than uses; __all__ names it instead.
+        if py.name == "__init__.py":
+            used |= {
+                c.value
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                for c in [n]
+            }
+        unused = sorted(imported - used)
+        if unused:
+            offenders.append(f"{py.name}: {unused}")
+    assert not offenders, "emitted modules with unused imports:\n" + "\n".join(offenders)
+
+
+def test_docstrings():
+    """Every emitted module and class must carry a real __doc__. A
+    string literal is only a docstring when nothing precedes it, so an
+    import or a class attribute emitted first silently demotes it to a
+    dead expression - the generated surface then documents itself to
+    nobody, help() included."""
+    import fake_library_generated as flg
+
+    missing = []
+    if not (flg.__doc__ or "").strip():
+        missing.append("fake_library_generated")
+    for name in flg.__all__:
+        cls = getattr(flg, name)
+        mod = sys.modules[cls.__module__]
+        if not (mod.__doc__ or "").strip():
+            missing.append(f"module {cls.__module__}")
+        if not (cls.__doc__ or "").strip():
+            missing.append(f"class {name}")
+    assert not missing, f"emitted objects without a docstring: {sorted(set(missing))}"
+
+
 def test_annotations_resolve():
     """PEP 649 defers annotation evaluation, so a missing import only
     explodes when something calls typing.get_type_hints - which every
@@ -366,6 +419,8 @@ def main(argv=None):
     sys.path.insert(0, str(out.parent))
     importlib.invalidate_caches()
     test_runtime_contract(out)
+    test_no_unused_imports(out)
+    test_docstrings()
     test_annotations_resolve()
     asyncio.run(test_behavior())
     print("smoke test OK")

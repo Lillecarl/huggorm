@@ -88,13 +88,6 @@ def main(argv=None):
         extract_wrapper(kls, api=api, bindings=bindings) for kls in returned_classes
     ]
     returned_policies = {p["name"]: p["threading"] for p in returned_protos}
-
-    for proto in returned_protos:
-        fname = f"async_{proto['name'].lower()}.py"
-        code = ast.unparse(returned_module(proto))
-        (out / fname).write_text(code + "\n")
-        print(f"generated {fname} for returned type {proto['name']} ({proto['threading']})")
-
     protos = [extract_wrapper(svc, api=api, bindings=bindings) for svc in wrapper_classes]
 
     # policy enforcement: a pool wrapper may not return affine types at
@@ -108,9 +101,20 @@ def main(argv=None):
             if dropped:
                 print(f"dropped {dropped} affine-returning method(s) from pool wrapper {proto['name']}")
 
+    # Every name that gets an Async wrapper. Parameters typed with one of
+    # these accept the wrapper as well as the sync binding object, and
+    # the emitter widens their annotations accordingly.
+    async_types = {p["name"] for p in returned_protos} | {p["name"] for p in protos}
+
+    for proto in returned_protos:
+        fname = f"async_{proto['name'].lower()}.py"
+        code = ast.unparse(returned_module(proto, async_types))
+        (out / fname).write_text(code + "\n")
+        print(f"generated {fname} for returned type {proto['name']} ({proto['threading']})")
+
     for proto in protos:
         fname = f"async_{proto['name'].lower()}.py"
-        code = ast.unparse(wrapper_module(proto, returned_policies))
+        code = ast.unparse(wrapper_module(proto, returned_policies, async_types))
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for {proto['name']} ({proto['threading']}, {len(proto['methods'])} methods)")
 
