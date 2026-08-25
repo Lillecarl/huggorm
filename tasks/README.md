@@ -14,14 +14,15 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 018 (Store hierarchy) and 017 (protocol over async + RPC) shape the
-  surface the real-Nix spike (015) would substitute into.
-- 021 (free functions) is the largest uncovered part of the goal:
-  complete surface coverage from the binding specifications. Real
-  libstore keeps a lot of surface there - openStore, parseStorePath,
-  computeFSClosure.
+- 018 (Store hierarchy) is now blocking two things at once. 017 needs
+  it, and 021 stopped there: describe() takes a Store, which is
+  abstract and excluded from generation, so there is no name for "any
+  store" on the wire nor for "any async store" in an annotation.
+- 017 (protocol over async + RPC) shapes, with 018, the surface the
+  real-Nix spike (015) would substitute into.
 - 008 (transitive policy), 012 (test blind spots), 013 (lint and
-  typecheck), 022 (proto field stability) are hardening.
+  typecheck), 022 (proto field stability) are hardening. 022 grew:
+  free-function requests number their fields positionally too.
 - 014 (transport shims) and 016 (evaluation server) are the
   destinations.
 
@@ -35,6 +36,10 @@ the same knowledge by hand. The generator reads all of them:
     _wire_fields message shape + helpers  HOW it serializes  (023)
     _binds       the pxd class it wraps   pxd <-> pyx link   (020)
     _async       False to exclude         generation opt-out
+
+Module-level functions declare `_threading` (which is what opts them
+into the surface) and `_binds`. "pool" is their only legal policy: no
+instance, so no thread to be affine to (021).
 
 Constructor signatures come from the pxd, which is the only place they
 exist at all - Cython exposes no signature for __cinit__ (019).
