@@ -261,7 +261,7 @@ async def main() -> None:
         pool_store = await client.acquire("LocalStore")
         threw = None
         try:
-            pool_store.query_derivation
+            _ = pool_store.query_derivation
         except AttributeError as e:
             threw = str(e)
         # It is simply not on the class, so Python raises before any

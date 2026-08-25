@@ -726,21 +726,25 @@ def test_stubs(out: pathlib.Path) -> None:
                 f"{pyi.name}: declares {sorted(declared - live)} that do not "
                 f"exist, and omits {sorted(live - declared)}")
 
-        for name, node in classes.items():
+        # Everything the stub says a class has, including what it
+        # inherits through a base the stub also declares. Defined once
+        # over `classes` rather than rebuilt inside the loop: a closure
+        # written in a loop body reads as a deferred capture of the
+        # loop variable, which is a bug in every case but this one.
+        def surface(n: str, classes: dict[str, ast.ClassDef] = classes) -> set[str]:
+            out_: set[str] = set()
+            cn = classes.get(n)
+            if cn is None:
+                return out_
+            for b in cn.bases:
+                if isinstance(b, ast.Name):
+                    out_ |= surface(b.id)
+            return out_ | {f.name for f in cn.body
+                           if isinstance(f, ast.FunctionDef)
+                           and not f.name.startswith("_")}
+
+        for name in classes:
             cls = getattr(module, name)
-            # Everything the stub says this class has, including what it
-            # inherits through a base the stub also declares.
-            def surface(n: str) -> set[str]:
-                out_: set[str] = set()
-                cn = classes.get(n)
-                if cn is None:
-                    return out_
-                for b in cn.bases:
-                    if isinstance(b, ast.Name):
-                        out_ |= surface(b.id)
-                return out_ | {f.name for f in cn.body
-                               if isinstance(f, ast.FunctionDef)
-                               and not f.name.startswith("_")}
             stub_methods = surface(name)
             live_methods = set()
             for k in cls.__mro__:

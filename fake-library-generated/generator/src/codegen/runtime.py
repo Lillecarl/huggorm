@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import copy
-import json
 import threading
 from typing import Any, Callable, Iterable
 
@@ -185,7 +184,6 @@ class BaseRunner:
         return [unwrap_arg(a) for a in args]
 
     def _invoke(self, method: str, args: list[Any]) -> Any:
-        cur_before = threading.current_thread()
         try:
             obj = self._resolve()
             attr = getattr(obj, method)
