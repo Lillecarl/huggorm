@@ -15,7 +15,7 @@ Review finding 14.
   handle_id, so the second call sent an empty id and the test asserted
   that releasing "" fails. It now releases the same id through a fresh
   object and asserts the id appears in the error.
-- Neither suite ran in any build. Both run in fake-library-python's
+- Neither suite ran in any build. Both run in cythonix's
   checkPhase now, grpcurl included. A green suite finally says
   something about the last commit.
 

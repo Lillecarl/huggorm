@@ -52,8 +52,8 @@ select = [
 # file and one of them always fails.
 known-first-party = [
   "codegen",
-  "fake_library",
-  "fake_library_generated",
-  "fake_library_python",
+  "cythonix_bindings",
+  "cythonix_generated",
+  "cythonix",
   "test_remote",
 ]

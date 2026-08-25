@@ -64,7 +64,7 @@ Per wrapped class, three forms plus the wire:
     <X>Service   gRPC service, and <X>Msg for a wire-value    (grpc_schema.pb)
 
 Plus one stub package describing the BINDINGS, so the types all of the
-above name are not Any to a typechecker (fake_library-stubs/, 027).
+above name are not Any to a typechecker (cythonix_bindings-stubs/, 027).
 That one is built from the unfiltered surface: the policy drops and the
 hierarchy split are rules about the wrappers, not about the bindings.
 

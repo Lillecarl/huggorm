@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cythonix"
+version = "0.1.0"
+description = "Python library that subclasses Cython bindings"
+requires-python = ">=3.10"
+dependencies = ["cythonix-bindings", "cythonix-generated"]
+
+[tool.setuptools.packages.find]
+include = ["cythonix*"]
