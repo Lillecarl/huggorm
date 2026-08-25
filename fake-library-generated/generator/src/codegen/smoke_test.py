@@ -505,6 +505,151 @@ def test_no_unused_imports(out: pathlib.Path):
     assert not offenders, "emitted modules with unused imports:\n" + "\n".join(offenders)
 
 
+def _emitted_classes(out: pathlib.Path) -> dict:
+    """Every class the build emitted: name -> (base names, methods).
+
+    Read with ast rather than by importing, so the comparison is
+    between what was WRITTEN in each of the three modules. An
+    annotation that resolves to the same object through two different
+    spellings is exactly the kind of drift this is looking for."""
+    found = {}
+    for py in sorted(out.glob("*.py")):
+        tree = ast.parse(py.read_text(), filename=py.name)
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            methods = {}
+            for f in node.body:
+                if not isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if f.name.startswith("_"):
+                    continue
+                args = f.args.args[1:]  # drop self
+                methods[f.name] = {
+                    "params": [a.arg for a in args],
+                    "annotations": [ast.unparse(a.annotation) if a.annotation
+                                    else None for a in args],
+                    "returns": ast.unparse(f.returns) if f.returns else None,
+                    "is_async": isinstance(f, ast.AsyncFunctionDef),
+                    "where": py.name,
+                }
+            found[node.name] = ([b.id for b in node.bases
+                                 if isinstance(b, ast.Name)], methods)
+    return found
+
+
+def _resolved(found: dict, name: str) -> dict:
+    """One class's whole method surface, leaf definitions winning."""
+    bases, methods = found[name]
+    out = {}
+    for b in bases:
+        if b in found:
+            out |= _resolved(found, b)
+    return out | methods
+
+
+def test_conformance(out: pathlib.Path):
+    """The three emitted surfaces must agree.
+
+    A protocol is only worth having if the implementations really
+    satisfy it, and isinstance() against a runtime_checkable Protocol
+    checks method NAMES and nothing else - an implementation whose
+    parameters drifted still passes. So this compares signatures, and
+    it compares the three modules against EACH OTHER rather than
+    against a rederivation of what the emitter should have written.
+
+    The rules:
+      - the async and rpc implementations offer the same method names;
+      - the protocol offers those minus the ones the manifest blocked,
+        and blocks nothing else;
+      - parameter names and annotations are identical in all three
+        (which is what tasks/025 bought: after it, a method on the
+        protocol mentions no type that differs by location);
+      - a return is identical in all three, unless the protocol names
+        another protocol - then each implementation must return ITS
+        form of that same class."""
+    import fake_library_generated as flg
+
+    manifest = json.loads(
+        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
+    wrapped = {
+        name: proto
+        for group in ("wrappers", "returned_types")
+        for name, proto in manifest[group].items()
+        if proto["wrapped"]
+    }
+    # protocol name -> the class it speaks for, so a protocol-typed
+    # return can be checked against each implementation's own form.
+    speaks_for = {proto["protocol"]: name for name, proto in wrapped.items()}
+    found = _emitted_classes(out)
+
+    def blocked_over_chain(name):
+        out_ = {}
+        while name is not None:
+            proto = wrapped[name]
+            for m in proto["methods"]:
+                out_.setdefault(m["name"], m["protocol_blockers"])
+            name = proto.get("async_base")
+        return {n for n, why in out_.items() if why}
+
+    failures, checked = [], 0
+    for cls_name, proto in wrapped.items():
+        P = _resolved(found, proto["protocol"])
+        A = _resolved(found, proto["async_class"])
+        R = _resolved(found, proto["rpc_class"])
+        blocked = blocked_over_chain(cls_name)
+
+        if set(A) != set(R):
+            failures.append(
+                f"{cls_name}: in-process offers {sorted(set(A) - set(R))} "
+                f"the rpc client does not, and {sorted(set(R) - set(A))} "
+                f"the other way")
+        if set(P) != set(A) - blocked:
+            failures.append(
+                f"{cls_name}: {proto['protocol']} offers {sorted(P)}; the "
+                f"implementations offer {sorted(A)} and the manifest blocks "
+                f"{sorted(blocked)}")
+
+        for m in sorted(P):
+            checked += 1
+            want = P[m]
+            for label, sig in (("in-process", A.get(m)), ("rpc", R.get(m))):
+                if sig is None:
+                    failures.append(f"{cls_name}.{m}: no {label} implementation")
+                    continue
+                if sig["params"] != want["params"]:
+                    failures.append(
+                        f"{cls_name}.{m}: {label} takes {sig['params']}, "
+                        f"{proto['protocol']} declares {want['params']}")
+                if sig["annotations"] != want["annotations"]:
+                    failures.append(
+                        f"{cls_name}.{m}: {label} annotates "
+                        f"{sig['annotations']}, {proto['protocol']} declares "
+                        f"{want['annotations']}")
+                if not sig["is_async"]:
+                    failures.append(f"{cls_name}.{m}: {label} is not async")
+                expected = want["returns"]
+                if expected in speaks_for:
+                    other = wrapped[speaks_for[expected]]
+                    expected = other["async_class"] if label == "in-process" \
+                        else other["rpc_class"]
+                if sig["returns"] != expected:
+                    failures.append(
+                        f"{cls_name}.{m}: {label} returns {sig['returns']}, "
+                        f"expected {expected} for {want['returns']}")
+
+    assert not failures, ("the generated surfaces disagree:\n  "
+                          + "\n  ".join(failures))
+    # Non-vacuity: the gate must have had something to compare, and the
+    # blocked set must be real rather than an empty rule.
+    assert checked >= 3 * len(wrapped), (
+        f"conformance checked only {checked} method(s) across "
+        f"{len(wrapped)} classes")
+    assert any(blocked_over_chain(n) for n in wrapped), (
+        "no method is blocked from any protocol; either the rule stopped "
+        "working or the surface changed and this gate now proves nothing")
+
+
 def test_docstrings():
     """Every emitted module and class must carry a real __doc__. A
     string literal is only a docstring when nothing precedes it, so an
@@ -569,6 +714,7 @@ def main(argv=None):
     importlib.invalidate_caches()
     test_runtime_contract(out)
     test_no_unused_imports(out)
+    test_conformance(out)
     test_docstrings()
     test_annotations_resolve()
     asyncio.run(test_behavior())
