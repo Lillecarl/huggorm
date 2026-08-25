@@ -65,3 +65,19 @@ neither.
 Not urgent: 017 gets the right answer for wire-values from the
 immutability half alone. This matters when a pool class turns up whose
 methods are all cheap, or a wire-value gains an expensive method.
+
+## Partly done 2026-08-25
+
+The rule landed. `_blocking` is a binding declaration defaulting to
+True, StorePath and DerivedPath declare False, and the codegen emits
+no Async form for them, no gRPC service and no acquire rpc. That
+resolved 017's return-type question and removed the
+`StorePath | AsyncStorePath` unions from every annotation.
+
+check_wrap_contract guards the combination: an unwrapped class must be
+pool, and may not return a type that IS wrapped.
+
+What remains is the part this file argued for: DERIVING the blocking
+half from `with nogil:` in the pyx and `nogil` in the pxd, instead of
+being told it by hand, plus the cross-check between the two. The
+declaration is honest but it is knowledge stated twice.

@@ -60,3 +60,64 @@ Note for the emission-home question: emitted modules now import
 sibling wrappers for parameter annotations. Nothing cycles today, but
 A-takes-B plus B-takes-A would deadlock the module imports. Protocols
 emitted per class will hit this sooner than the wrappers did.
+
+## Done 2026-08-25
+
+Three surfaces are generated from the manifest now, and a gate holds
+them to each other.
+
+`protocols.py` holds one typing.Protocol per wrapped class, mirroring
+the wrapper hierarchy: LocalStoreLike EXTENDS StoreLike rather than
+restating it, which is 018's intersection rule expressed in the type
+system. `rpc.py` holds one client class per wrapped class, with real
+methods carrying the call spec the build gave them.
+
+The return-type divergence that was this task's open question resolved
+itself in two halves.
+
+The wire-value half went away. 025 stopped wrapping StorePath and
+DerivedPath, so both sides return the same binding object and the
+question does not arise. That is most of the surface: all four of
+Store's guaranteed methods are on StoreLike unchanged.
+
+The proxy half stands, and it is only about PARAMETERS. A protocol
+return can name the protocol - returns are covariant, and both
+implementations return something that satisfies it. A parameter cannot:
+the in-process wrapper needs a local object, the RPC class needs a
+handle, and parameters are contravariant. Those methods stay off the
+protocol and the manifest records why per method, the same way
+wire_blockers reports a type the schema cannot carry. One method is
+affected: EvalState.force. Written up as 026.
+
+RemoteObj is gone. It resolved method names inside __getattr__, which
+is why a Protocol could never be more than a docstring here: a
+__getattr__ object satisfies every Protocol vacuously and rejects no
+call. That was proven, not assumed, in a mypy spike before any of this
+was written.
+
+The emission-home warning in the note above is handled by putting each
+surface in ONE module rather than one per class. A per-class protocol
+module would have hit the A-takes-B/B-takes-A import cycle sooner than
+the wrappers did.
+
+### Acceptance
+
+Met. `remote_demo` runs one function typed against StoreLike against
+an in-process AsyncLocalStore and a remote RPCLocalStore, no
+branching. The smoke test does the same in process.
+
+### Verified with mypy --strict
+
+A consumer typed against the protocols is clean, and four of five
+deliberate mistakes are caught: unknown member, missing argument,
+wrong return type, and calling a method the base does not guarantee.
+The fifth - passing a str where a StorePath is declared - is missed
+because the compiled bindings ship no stubs, so every binding type is
+Any. That is 027, and it is the remaining hole in "as typed as
+possible".
+
+### Two bugs found on the way, both fixed
+
+Passing an affine wrapper as an argument used to depend on call order,
+and closing an affine wrapper left its thread registered with Boehm so
+the next collection aborted the process. Both are covered now.

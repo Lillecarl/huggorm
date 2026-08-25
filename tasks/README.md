@@ -14,16 +14,36 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 017 (protocol over async + RPC) is next: 018 gave it a real base to
-  mirror, and the open question there is now only about the REMOTE
-  side's return types.
-- 017 shapes the surface the real-Nix spike (015) would substitute
-  into.
-- 008 (transitive policy), 012 (test blind spots), 013 (lint and
-  typecheck), 022 (proto field stability) are hardening. 022 grew:
+- 027 (stubs for the bindings) is next, and it is small. 017 proved
+  the protocol layer catches consumer mistakes, and proved the one it
+  misses: every binding type is Any to a typechecker, because a .so
+  carries no signatures. Everything else about "as typed as possible"
+  is in place and reading an empty type.
+- 013 (lint and typecheck) follows it, now with a measured inventory
+  rather than an intention. Annotating _runtime.py is the first move:
+  it is the cause of three quarters of the errors in the emitted
+  package.
+- 026 (typed proxy parameters) is a design question, not a defect. It
+  is the one place the two locations genuinely disagree.
+- 015 (real-Nix spike) substitutes into the surface 017 settled.
+- 008 (transitive policy), 012 (test blind spots), 022 (proto field
+  stability), and the derivation half of 025 are hardening. 022 grew:
   free-function requests number their fields positionally too.
 - 014 (transport shims) and 016 (evaluation server) are the
   destinations.
+
+## What the codegen emits
+
+Per wrapped class, three forms plus the wire:
+
+    Async<X>     in-process wrapper, owns the thread hop      (async_x.py)
+    <X>Like      the protocol both implementations satisfy    (protocols.py)
+    RPC<X>       client class over a handle                   (rpc.py)
+    <X>Service   gRPC service, and <X>Msg for a wire-value    (grpc_schema.pb)
+
+A class that needs no wrapper gets none of the first three and keeps
+its message: it crosses as itself. The smoke test holds the three
+Python surfaces to each other by signature, not by isinstance.
 
 ## What the bindings now declare
 
@@ -37,6 +57,7 @@ the same knowledge by hand. The generator reads all of them:
     _async       False to exclude         generation opt-out
 
     _abstract    True for a generated base       inheritance   (018)
+    _blocking    False if no method can wait     wrap or not   (025)
 
 Module-level functions declare `_threading` (which is what opts them
 into the surface) and `_binds`. "pool" is their only legal policy: no

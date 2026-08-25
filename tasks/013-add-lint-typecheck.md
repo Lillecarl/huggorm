@@ -32,3 +32,31 @@ Remaining, unchanged: ruff over generator + fake-library-python
 pyright over the hand-written modules, and a -Wall/clang-tidy pass
 over the mock. The generated wrappers are now typed honestly enough
 for mypy to be worth pointing at consumers (see 017).
+
+## Update 2026-08-25 (second)
+
+017 pointed mypy --strict at the emitted package for the first time,
+which produced a concrete inventory rather than an intention. A
+consumer typed against the generated protocols is CLEAN. The package
+itself is not, and the errors group cleanly:
+
+    _runtime.py       38   untyped defs, untyped calls, bare type-args
+    rpc.py            19   Any returns from client.invoke; untyped client
+    async_*.py        21   Any returns from _runner.call; _runner unknown
+                           on the abstract base; untyped __init__
+    free_functions.py  4   Any returns; bare `dict` from gc_stats
+    bindings           2   no stubs for the .so (see 027)
+
+Most of it has one cause: `_runtime.py` is hand-written and carries no
+annotations, so every call into it returns Any and every emitted
+method that forwards to it reports no-any-return. Annotating the
+runtime is therefore the first move, not the last - it collapses three
+of those five rows.
+
+Two follow from it: the emitted classes should declare `_runner`
+(mypy cannot see it on the abstract base, which never assigns it), and
+the rpc classes should type their `client` parameter - a small
+Protocol declaring invoke and release, which keeps the dependency
+pointing the right way.
+
+027 covers the bindings row and is independent of this task.
