@@ -11,6 +11,7 @@ hand-written per method.
 
 import asyncio
 import json
+from typing import Any
 
 import grpclib
 import grpclib.const
@@ -26,7 +27,7 @@ from .wire import WireCodec
 
 def _tok(stream) -> str:
     """The connection token presented with this request ('' if none)."""
-    md = stream.metadata or {}
+    md: dict[str, Any] = stream.metadata or {}
     value = md.get(TOKEN_HEADER, "")
     return value.decode() if isinstance(value, bytes) else value
 
@@ -38,7 +39,7 @@ class Dispatcher:
         self.table = HandleTable(ttl=lease_ttl)
         self.table.on_drop = self._on_drop
         self.codec = WireCodec(manifest)
-        self.mapping = {}
+        self.mapping: dict[str, grpclib.const.Handler] = {}
         self._session()
         for group in ("wrappers", "returned_types"):
             for cls_name, proto in manifest[group].items():
@@ -295,7 +296,7 @@ async def serve(host="127.0.0.1", port=50051, lease_ttl=120.0):
     # One servable PER SERVICE: reflection's list_services reports one
     # name per handler object.
     services = []
-    grouped: dict[str, dict] = {}
+    grouped: dict[str, dict[str, grpclib.const.Handler]] = {}
     for path, h in dispatcher.mapping.items():
         svc_name = path.split("/")[1]
         grouped.setdefault(svc_name, {})[path] = h
@@ -304,11 +305,10 @@ async def serve(host="127.0.0.1", port=50051, lease_ttl=120.0):
             def __mapping__(self, _subset=subset):
                 return _subset
         services.append(Servable())
-    services = ServerReflection.extend(
-        services,
-        pool=pool,
-    )
-    server = grpclib.server.Server(services)
+    # A new name: extend() hands back reflection's own servable type,
+    # not the list that went in.
+    reflected = ServerReflection.extend(services, pool=pool)
+    server = grpclib.server.Server(reflected)
     await server.start(host, port)
     print(f"nixmock gRPC server listening on {host}:{port} "
           f"(lease ttl: {lease_ttl if lease_ttl else 'off'})")

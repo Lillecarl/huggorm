@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+from typing import Any
 
 from google.protobuf import descriptor_pb2, descriptor_pool
 
@@ -25,5 +26,7 @@ def load_pool() -> descriptor_pool.DescriptorPool:
     return pool
 
 
-def load_manifest() -> dict:
-    return json.loads((_pkg_dir() / "manifest.json").read_text())
+def load_manifest() -> dict[str, Any]:
+    manifest: dict[str, Any] = json.loads(
+        (_pkg_dir() / "manifest.json").read_text())
+    return manifest

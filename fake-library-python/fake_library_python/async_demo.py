@@ -146,12 +146,15 @@ async def main():
     # A wrong call used to sail through __init__(*args) and surface much
     # later, from inside the lazy factory on a worker thread.
     try:
-        AsyncRemoteStore("unexpected-arg")
+        # Deliberately wrong, and a typechecker says so - which is the
+        # point being demonstrated. The ignore is what makes the demo
+        # runnable AND checkable.
+        AsyncRemoteStore("unexpected-arg")  # type: ignore[call-arg]
         print("should not happen")
     except TypeError as e:
         print(f"AsyncRemoteStore('unexpected-arg') -> TypeError: {e}")
     try:
-        AsyncEvalState()
+        AsyncEvalState()  # type: ignore[call-arg]
         print("should not happen")
     except TypeError as e:
         print(f"AsyncEvalState() -> TypeError: {e}")

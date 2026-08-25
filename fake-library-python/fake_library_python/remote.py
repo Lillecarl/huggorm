@@ -44,7 +44,7 @@ class NixClient:
         self.codec = WireCodec(self.manifest)
         self.channel = grpclib.client.Channel(host, port)
         self.token: str | None = None
-        self._pinger: asyncio.Task | None = None
+        self._pinger: asyncio.Task[None] | None = None
         # How many live client objects point at each handle, and which
         # handles have lost their last one. A finalizer runs on
         # whichever thread dropped the reference - possibly during
@@ -132,7 +132,8 @@ class NixClient:
             req.handles.add().id = hid
         resp = await self._rpc(
             f"/{schema.PKG}.Session/ReleaseMany", req, "ReleaseManyResp")
-        return resp.released
+        # protobuf fields are Any; the schema says what this one is.
+        return int(resp.released)
 
     async def _rpc(self, path, req, reply_name):
         from fake_library_generated._runtime import WrapperError
@@ -155,7 +156,7 @@ class NixClient:
             # keeps the decoded cause as __cause__; the GRPCError stays
             # visible as __context__.
             try:
-                d = json.loads(e.message)
+                d = json.loads(e.message or "")
                 if isinstance(d, dict) and "code" in d:
                     raise WrapperError.from_dict(d)
             except (ValueError, TypeError):
@@ -179,7 +180,7 @@ class NixClient:
             if self._pinger is not None:
                 self._pinger.cancel()
             self._pinger = asyncio.create_task(self._ping_loop(interval))
-        return resp.token
+        return str(resp.token)
 
     async def _ping_loop(self, interval=10.0):
         while True:
@@ -213,7 +214,7 @@ class NixClient:
         if obj is not None:
             req.target.id = obj.handle_id
         resp = await self._rpc(f"/{schema.PKG}.Session/Detach", req, "AckResp")
-        return resp.ok
+        return bool(resp.ok)
 
     async def acquire(self, cls_name, *args):
         """Construct one instance remotely, from typed constructor

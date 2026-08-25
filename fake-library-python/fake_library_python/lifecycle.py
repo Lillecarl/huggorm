@@ -25,6 +25,7 @@ Model (tasks/002):
 
 import time
 import uuid
+from typing import Any, Callable
 
 ANON = "\x00anon"
 
@@ -67,7 +68,7 @@ class HandleTable:
         self.escrow: dict[str, dict[str, int]] = {}
         # Set by the transport layer: called with each wrapper object
         # as it drops, for async cleanup (runner shutdown etc).
-        self.on_drop = None
+        self.on_drop: Callable[[Any], None] | None = None
 
     # -- connection lifecycle -----------------------------------------
     def bind(self, claim_token: str | None = None) -> str:

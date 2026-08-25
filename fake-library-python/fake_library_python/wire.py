@@ -21,6 +21,12 @@ RemoteObj and reads ids back off one.
 """
 
 import importlib
+from typing import Any, Callable
+
+# str/int/bool as a lookup. Annotated because the inferred value type is
+# the join of three unrelated classes, which is `type[object]` - and
+# object takes no constructor arguments.
+_SCALARS: dict[str, Callable[[Any], Any]] = {"str": str, "int": int, "bool": bool}
 
 
 class WireCodec:
@@ -30,7 +36,7 @@ class WireCodec:
         self.manifest = manifest
         self._bindings = bindings
         self.kinds: dict[str, str] = {}
-        self.fields: dict[str, list] = {}
+        self.fields: dict[str, list[list[str]]] = {}
         for group in ("wrappers", "returned_types"):
             for name, proto in manifest[group].items():
                 self.kinds[name] = proto["wire"]
@@ -113,7 +119,7 @@ class WireCodec:
         if kind == "none":
             return
         if kind == "scalar":
-            setattr(container, field, {"str": str, "int": int, "bool": bool}[type_str](value))
+            setattr(container, field, _SCALARS[type_str](value))
         elif kind == "value":
             self.value_to_msg(type_str, value, getattr(container, field))
         else:

@@ -8,11 +8,15 @@ logging.basicConfig(level=logging.ERROR)
 from fake_library_python import server, remote_demo
 
 
-async def main():
+async def main() -> None:
     srv = asyncio.create_task(server.serve("127.0.0.1", 50051))
     done, _ = await asyncio.wait({srv}, timeout=0.5)
-    if srv in done and srv.exception():
-        raise srv.exception()
+    if srv in done:
+        # Bound once: exception() was called twice, and it raises rather
+        # than returns if the task was cancelled between the two calls.
+        exc = srv.exception()
+        if exc is not None:
+            raise exc
     try:
         await remote_demo.main()
     finally:
