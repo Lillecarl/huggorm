@@ -14,7 +14,7 @@ from enum import Enum
 from types import ModuleType
 from typing import Any, get_args, get_origin, get_type_hints
 
-from codegen.wiretypes import names_in
+from codegen.wiretypes import list_value, map_value, names_in
 
 # One class or function, reflected into the plain dict every layer
 # above reads. Named rather than spelled dict[str, Any] everywhere:
@@ -589,7 +589,27 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
                 f"{name}: wire-value must be threading 'pool', not "
                 f"{proto['threading']!r}")
         for fname, ftype in fields:
+            optional = ftype.endswith("?")
             ftype = ftype.removesuffix("?")
+            # A container field is a repeated protobuf field, so what
+            # goes under test is the type it HOLDS. The declaration is
+            # the same one an annotation uses - `list[StorePath]` - and
+            # it is read by the same code, so the two cannot drift.
+            try:
+                element = list_value(ftype) or map_value(ftype)
+            except TypeError as e:
+                bad.append(f"{name}._wire_fields {fname!r}: {e}")
+                continue
+            if element is not None:
+                if optional:
+                    # A repeated field has no presence, so an absent
+                    # one and an empty one are the same field. "?"
+                    # would promise a distinction that cannot exist.
+                    bad.append(
+                        f"{name}._wire_fields {fname!r}: a container cannot "
+                        f"be optional. A repeated field has no presence, so "
+                        f"an absent one IS an empty one - drop the '?'.")
+                ftype = element
             if ftype not in _PRIMITIVES.values() and ftype not in known:
                 bad.append(f"{name}._wire_fields {fname!r}: unknown field type {ftype!r}")
             elif kinds.get(ftype) == "proxy":

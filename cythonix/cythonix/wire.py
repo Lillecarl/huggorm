@@ -38,6 +38,22 @@ _SCALARS: dict[str, Callable[[Any], Any]] = {
     "str": str, "int": int, "bool": bool, "bytes": bytes}
 
 
+def _no_proxy(type_str: str, fname: str) -> Callable[[Any], Any]:
+    """The arm a wire-value field can never take.
+
+    encode() and decode() both need one, because an rpc field may
+    carry a proxy. A _wire_fields entry may not: a wire-value is
+    rebuilt from its parts on the far side, and a proxy is exactly the
+    thing that has no object there. check_wire_contract says so at
+    build time, so reaching this means the build let something
+    through."""
+    def refuse(_: Any) -> Any:
+        raise TypeError(
+            f"{type_str}.{fname} carries a proxy inside a wire value, which "
+            f"the build refuses: a wire-value copies all the way down")
+    return refuse
+
+
 class WireCodec:
     """Reads the manifest; encodes and decodes rpc fields."""
 
@@ -108,7 +124,13 @@ class WireCodec:
         return unwrap_arg(obj)
 
     def value_to_msg(self, type_str: str, obj: Any, msg: Any) -> None:
-        """Fill msg from obj, one declared field at a time."""
+        """Fill msg from obj, one declared field at a time.
+
+        A field is put the same way an rpc field is. It was its own
+        two-armed dispatch - a nested value, else assign - which meant
+        a declared `list[T]` reached `setattr` and a repeated protobuf
+        field cannot be assigned. encode() already had every arm, so
+        this asks it rather than growing a second copy."""
         parts = self._sync(obj)._parts()
         declared = self.fields[type_str]
         if len(parts) != len(declared):
@@ -122,10 +144,7 @@ class WireCodec:
                 if not optional:
                     raise TypeError(f"{type_str}.{fname} is not optional")
                 continue  # proto3 default stands in for "unset"
-            if self.kind(ftype) == "value":
-                self.value_to_msg(ftype, val, getattr(msg, fname))
-            else:
-                setattr(msg, fname, val)
+            self.encode(msg, fname, ftype, val, _no_proxy(type_str, fname))
 
     # -- maps -------------------------------------------------------------
     # An attribute set has string keys, always, so `map<string, V>`
@@ -256,26 +275,19 @@ class WireCodec:
         return getattr(msg, arm)
 
     def value_from_msg(self, type_str: str, msg: Any) -> Any:
-        """Rebuild a sync binding object from its message."""
-        args = []
-        for fname, ftype in self.fields[type_str]:
-            optional = ftype.endswith("?")
-            ftype = ftype.removesuffix("?")
-            raw = getattr(msg, fname)
-            if self.kind(ftype) == "value":
-                # A message field HAS presence, so an optional one
-                # reads back as absent rather than as a default-built
-                # object. Without this an unset StorePath rebuilt from
-                # an empty base name, which raises rather than
-                # answering None.
-                if optional and not msg.HasField(fname):
-                    args.append(None)
-                else:
-                    args.append(self.value_from_msg(ftype, raw))
-            else:
-                # proto3 cannot distinguish unset from default, so the
-                # "?" marker decides how to read an empty one back.
-                args.append(None if optional and not raw else raw)
+        """Rebuild a sync binding object from its message.
+
+        The mirror of value_to_msg, and it delegates for the same
+        reason. decode() already knows that a message field has
+        presence - so an optional nested value reads back as None
+        rather than as a StorePath rebuilt from an empty base name -
+        and that a repeated field is read, not fetched."""
+        args = [
+            self.decode(msg, fname, ftype.removesuffix("?"),
+                        _no_proxy(type_str, fname),
+                        optional=ftype.endswith("?"))
+            for fname, ftype in self.fields[type_str]
+        ]
         return getattr(self.bindings, type_str)._from_parts(*args)
 
     # -- rpc fields -------------------------------------------------------
