@@ -167,22 +167,14 @@ def extract_api(pxd_text: str, module_name: str = "c_declarations") -> dict:
                     "methods": methods,
                     "ctors": ctors,
                 }
-            elif t == "CFuncDefNode":
-                # free functions arrive as CFuncDefNode with direct fields
-                args = []
-                for a in e.args or []:
-                    anode, ref, const = _unwrap(a.declarator)
-                    tname = _type_name(a.base_type)
-                    if ref:
-                        tname += "&"
-                    if const:
-                        tname = "const " + tname
-                    args.append((getattr(anode, "name", None), tname))
-                api["free_functions"].append(
-                    {
-                        "name": e.name,
-                        "params": args,
-                        "ret": _type_name(e.return_type_node) if e.return_type_node is not None else "void",
-                    }
-                )
+            elif t == "CVarDefNode":
+                # A free function inside `cdef extern from ...:` is a
+                # CVarDefNode carrying a CFuncDeclaratorNode - the same
+                # shape a class method has, one level up. It is NOT a
+                # CFuncDefNode; this branch used to look for one of
+                # those, so it never matched and the free-function list
+                # was silently always empty.
+                f = _func_info(e)
+                if f is not None:
+                    api["free_functions"].append(f)
     return api
