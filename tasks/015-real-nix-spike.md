@@ -216,3 +216,70 @@ of builtins - so a `BadStorePath` arrives as a plain Exception with
 the right message and the wrong type. Teaching that map about the nix
 errors means the generated runtime importing from the bindings, which
 it does not do today.
+
+## Done 2026-08-25: nix::Store, through openStore
+
+`Store("dummy://")` opens an in-memory store - nothing on disk, so it
+works in a build sandbox - and prints, parses and checks paths.
+`Store("bogus://nowhere")` raises `NixError: don't know how to open Nix
+store with scheme 'bogus'`, and parsing a path outside the store
+directory raises `BadStorePath`.
+
+### Three things the header does not tell you
+
+**libstore ABORTS if it has not been initialised.** Not an exception -
+`The program must call nix::initNix() before calling any libstore
+library functions`, and the process is gone. So the binding calls it
+on import, before anything can reach libstore. `initLibStore`, not
+`initNix`: initNix lives in libnixmain and does what a COMMAND needs -
+argv0, signal handlers, a logger on stderr - and a library embedded in
+someone else's process should not take those over. initLibStore calls
+initLibUtil itself.
+
+**There is no getUri().** 2.34 moved it to `getHumanReadableURI()` on
+the config, which Store reaches through a reference member. Upstream is
+explicit that it is for logging only: it does not round-trip as a store
+reference and is not a cache key.
+
+**Construction is a factory.** nix::Store is abstract and the URI picks
+the implementation, so there is no constructor for a pxd to describe.
+The binding declares `_ctor_from = "open_store"` and the generator
+reads the FACTORY's parameters as the constructor's - which is how a
+typed Acquire keeps working (tasks/019) for a type C++ never lets you
+construct.
+
+### Structure, before there is more of it
+
+Carl: "There's going to be a lot of dependent bindings all of the time
+[...] All intermediary bindings need to be treated with care and
+respect as well [...] Put thought into where to put all code to keep
+the structure easy to understand and maintainable."
+
+So the layout is written down in `cythonix_bindings/__init__.py` rather
+than left to accrete:
+
+- one Nix header, one binding module, named after it. Nix's own layout
+  is the map, so nobody learns a second one;
+- three files per module: `c_<name>.pxd` for what C++ declares,
+  `<name>.pxd` for what OUR cdef classes declare, `<name>.pyx` for the
+  binding. The middle one is what makes DEPENDENT bindings work -
+  Cython will not share a cdef class's fields across modules without
+  it, and `store.pyx` needs `StorePath._ptr`;
+- `_cpp/` for C++ this repo writes, one header per binding plus a
+  shared `errors.hpp`. Its README carries the rule for what belongs
+  there - shapes a pxd cannot say - and the sharper rule for what does
+  not: anything that computes, decides or holds state is a binding
+  written in the wrong language.
+
+### Still to bind: queryAllValidPaths
+
+Simple in C++ and not simple on the wire. It returns a `StorePathSet`,
+so the Python surface is `list[StorePath]` - and a method returning a
+list has no schema representation yet. `_msg_arg_type` raises rather
+than reporting, so declaring it today fails the build outright.
+
+Repeated fields are the answer and they are small: `_add_field` emits a
+repeated field for `list[T]`, the codec grows the encode/decode pair
+beside the map one, and `wiretypes` grows a `list_value()` beside
+`map_value()`. A list of PROXIES stays refused, for the same reason a
+map of them is.

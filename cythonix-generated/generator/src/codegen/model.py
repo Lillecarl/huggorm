@@ -306,6 +306,23 @@ def constructor_signature(cls: type, api: Api,
     A class with no declared constructor takes none: C++ gives it an
     implicit default and the binding's __cinit__ matches.
     """
+    factory = cls.__dict__.get("_ctor_from")
+    if factory is not None:
+        # Some types are not constructed at all: nix::Store is abstract
+        # and openStore(uri) picks the implementation. There is no
+        # constructor for the pxd to describe, so the binding names the
+        # FACTORY and its parameters are the ones a caller passes.
+        for fn in api.get("free_functions", []):
+            if fn["name"] == factory:
+                return [
+                    {"name": pname, "type": map_c_type(ptype, mapping),
+                     "optional": False}
+                    for pname, ptype in fn["params"]
+                ]
+        raise ValueError(
+            f"{cls.__name__}._ctor_from = {factory!r}: no free function of "
+            f"that name in the pxd")
+
     info = api["classes"].get(cls.__dict__.get("_binds", ""))
     if info is None:
         return []

@@ -1,0 +1,59 @@
+"""
+The real nix::Store (tasks/015).
+
+Abstract in C++ and chosen by a URI, so the binding is built through
+openStore rather than a constructor. "dummy://" is in-memory and needs
+nothing on disk, which is what makes it testable in a build sandbox.
+"""
+
+import pytest
+
+from cythonix_bindings import Store, StorePath
+from cythonix_bindings.errors import BadStorePath, NixError
+
+HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
+
+
+@pytest.fixture
+def store() -> Store:
+    return Store("dummy://")
+
+
+def test_a_store_opens_from_a_uri(store: Store) -> None:
+    assert store.get_uri() == "dummy://"
+
+
+def test_an_unknown_scheme_is_refused() -> None:
+    """openStore decides the implementation, so a URI it cannot read is
+    the first thing a caller gets wrong."""
+    with pytest.raises(NixError, match="don't know how to open"):
+        Store("bogus://nowhere")
+
+
+def test_a_store_prints_and_parses_paths(store: Store) -> None:
+    printed = store.print_store_path(StorePath(HELLO))
+    assert printed == f"/nix/store/{HELLO}"
+    assert store.parse_store_path(printed).to_string() == HELLO
+
+
+def test_parsing_checks_the_store_directory(store: Store) -> None:
+    """A different question from whether the NAME is well formed, which
+    is why it lives on the store rather than on StorePath: only the
+    store knows its own directory."""
+    with pytest.raises(BadStorePath, match="is not in the Nix store"):
+        store.parse_store_path("/somewhere/else/x")
+
+
+def test_an_empty_store_holds_nothing(store: Store) -> None:
+    assert store.is_valid_path(StorePath(HELLO)) is False
+
+
+def test_the_binding_initialises_libstore() -> None:
+    """libstore ABORTS rather than raising when it has not been
+    initialised - "The program must call nix::initNix() before calling
+    any libstore library functions" - so a caller can never be the one
+    to discover it. Importing the module is what runs it, and this test
+    passing at all is the evidence."""
+    import cythonix_bindings.store
+
+    assert cythonix_bindings.store.Store is Store

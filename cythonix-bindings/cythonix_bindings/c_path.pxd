@@ -15,7 +15,7 @@ from libcpp.string_view cimport string_view
 # Every `except +translate_nix_error` below names this. A bare
 # `except +` would map nix::BadStorePathName onto RuntimeError
 # and leave libstore's terminal escape codes in the message.
-cdef extern from "cythonix_bindings/nix_error.hpp" namespace "cythonix" nogil:
+cdef extern from "cythonix_bindings/_cpp/errors.hpp" namespace "cythonix" nogil:
     cdef void translate_nix_error()
 
 cdef extern from "nix/store/path.hh" nogil:

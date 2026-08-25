@@ -79,6 +79,13 @@ ext_path = Extension(
     **_nix,
 )
 
+ext_store = Extension(
+    "cythonix_bindings.store",
+    sources=["cythonix_bindings/store.pyx"],
+    language="c++",
+    **_nix,
+)
+
 setup(
-    ext_modules=[ext, ext_eval, ext_path],
+    ext_modules=[ext, ext_eval, ext_path, ext_store],
 )

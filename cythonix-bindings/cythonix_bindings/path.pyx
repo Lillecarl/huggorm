@@ -45,8 +45,6 @@ cdef class StorePath:
     _wire = "value"
     _wire_fields = (("base_name", "str"),)
 
-    cdef CStorePath* _ptr
-
     def __init__(self, str base_name):
         # __init__, not __cinit__: __cinit__ runs on every __new__,
         # including the argument-less one a copy needs, so it cannot
