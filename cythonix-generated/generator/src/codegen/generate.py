@@ -248,8 +248,11 @@ def main(argv: list[str] | None = None) -> None:
     returned_protos = [
         extract_wrapper(kls, api=api, mapping=mapping) for kls in returned_classes
     ]
-    protos = [extract_wrapper(svc, api=api, mapping=mapping, constructible=True)
-              for svc in wrapper_classes]
+    protos = [
+        extract_wrapper(svc, api=api, mapping=mapping,
+                        constructible=not svc.__dict__.get("_produced", False))
+        for svc in wrapper_classes
+    ]
 
     # Which classes get an async wrapper at all. A pool class whose
     # methods cannot block gets nothing from one, so it crosses every
@@ -495,7 +498,11 @@ def main(argv: list[str] | None = None) -> None:
     all_protos.sort(key=lambda p: (
         len([b for b in p["bases"] if b.rsplit(".", 1)[-1] in order_of]),
         order_of[p["name"]]))
-    produced = {p["name"] for p in returned_protos}
+    # A stub says NoReturn for a constructor that raises. Returned
+    # types are produced by definition; a wrapper says so with
+    # _produced, because nothing about it can be inferred from the pxd.
+    produced = ({p["name"] for p in returned_protos}
+                | {p["name"] for p in all_protos if p["produced"]})
     home = {p["name"]: p["module"] for p in all_protos}
     # An enum is named in a signature and defined somewhere else, so
     # the stub for the module that names it needs the import. `home`

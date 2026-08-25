@@ -366,6 +366,14 @@ def extract_wrapper(cls: type, api: Api | None = None,
         # Generated as a base class: carries the surface its subclasses
         # share, and is never constructed.
         "abstract": bool(cls.__dict__.get("_abstract", False)),
+        # Produced by something else, never constructed: __init__
+        # raises, so no surface may offer a constructor. Declared,
+        # because it is a fact only the binding knows - a class the
+        # pxd names as a method return type is produced today, which
+        # is a proxy for this and true of the others by coincidence
+        # (CMockStorePath declares constructors in the pxd and its
+        # Python __init__ still raises).
+        "produced": bool(cls.__dict__.get("_produced", False)),
         # Wire policy for the future RPC layer: "proxy" objects keep
         # identity and travel as handles; "value" objects are immutable
         # and travel serialized (locally emulated as copies). Default is
