@@ -88,17 +88,32 @@ the loop hands each to a wrapper and blanks the slot. Skip the
 blanking and the test fails on a freed StorePath. A sandbox sees an
 empty list and none of it.
 
+## Answered: a chroot store CAN hold something
+
+That was the question worth asking, because the answer moves work back
+INTO the sandbox rather than out of it.
+
+`Store.add_to_store` writes to a chroot store rooted in `tmp_path`
+with no daemon, no `/nix/var` and no network. So the store suite -
+content addressing, the vocabulary libstore accepts, and the ownership
+loop in `query_all_valid_paths` - is hermetic after all, and runs on
+every build.
+
+`addToStoreFromDump` is what made it small. `addToStore` takes a
+`SourcePath`, which is a filesystem abstraction and a large surface;
+the dump variant takes bytes, which is exactly what a test has.
+
+The live suite keeps one test, and it is honest about what only it
+covers: `auto` is the DAEMON - a different implementation on both
+sides of a socket, holding tens of thousands of paths rather than
+three.
+
 ## Still open
 
-1. **What does a live test get to assume?** It currently opens
-   `Store("auto")` - whatever the machine says, usually the daemon.
-   That makes the test easy and the machine a dependency. A test that
-   needs a WRITABLE store cannot use it.
-2. **Can a chroot store be made to HOLD something?** That is the one
-   that would move work back INTO the sandbox rather than out of it: a
-   chroot store plus a binding that writes (`addToStore`, which needs
-   `SourcePath`, `ContentAddressMethod` and `HashAlgorithm` first).
-   Carl names `local-overlay-store` in a user namespace as the further
-   version.
+**What does a live test get to assume?** `Store("auto")` is whatever
+the machine says. That makes a test easy and the machine a dependency.
+Nothing is blocked on answering it while the live suite is one test.
 
-Neither blocks `addToStore`. They are what `addToStore` will answer.
+The further version Carl names - `local-overlay-store` in a user
+namespace - is what would let a sandbox hold a store with real
+content in it, rather than three files this suite put there.

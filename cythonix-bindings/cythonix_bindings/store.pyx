@@ -15,6 +15,7 @@ from libcpp.vector cimport vector
 from cythonix_bindings.c_path cimport CStorePath
 from cythonix_bindings.c_store cimport (
     CStore,
+    add_to_store,
     init_libstore,
     open_store,
     parse_store_path,
@@ -78,6 +79,42 @@ cdef class Store:
         with nogil:
             out = store.is_valid_path(deref(p))
         return out
+
+    def add_to_store(self, name: str, data: bytes, method: str,
+                     hash_algo: str) -> StorePath:
+        """Add one file's contents to the store, and name the result.
+
+        `data` is a regular file's CONTENTS - bytes, not text, because
+        a store holds files and the hash that names the path is a hash
+        of exactly these bytes.
+
+        `method` and `hash_algo` are Nix's own words, parsed by Nix:
+        "flat", "nar", "git" or "text", and "sha256" and friends. An
+        invented one raises, with libstore's message, rather than
+        being quietly corrected here.
+
+        Neither has a default. A default would exist on this method
+        and on no generated wrapper - the codegen carries a parameter's
+        type and not its default - so the local surface and the remote
+        one would disagree about what a two-argument call means. These
+        two decide the resulting path, which is the last place to want
+        a silent answer.
+
+        Annotated Python-style, not Cython-style: this is backed by a
+        shim rather than by a method on nix::Store, so there is no pxd
+        declaration to backfill the types from and a `str name` would
+        reach the codegen as Any."""
+        cdef string c_name = name.encode('utf-8')
+        cdef string c_data = data
+        cdef string c_method = method.encode('utf-8')
+        cdef string c_algo = hash_algo.encode('utf-8')
+        cdef CStore* store = self._get()
+        cdef CStorePath* out
+        with nogil:
+            out = add_to_store(deref(store), c_name, c_data, c_method, c_algo)
+        cdef StorePath sp = StorePath.__new__(StorePath)
+        sp._ptr = out
+        return sp
 
     def query_all_valid_paths(self) -> list[StorePath]:
         """Every path this store holds.

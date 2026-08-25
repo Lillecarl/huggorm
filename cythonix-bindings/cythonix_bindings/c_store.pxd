@@ -33,3 +33,6 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # A vector of POINTERS for the same reason, one level down: the
     # binding owns every element it takes out.
     vector[CStorePath *] query_all_valid_paths(CStore & store) except +translate_nix_error
+    # The enums arrive as the strings Nix parses, so the vocabulary -
+    # and the error for a wrong one - stays Nix's.
+    CStorePath * add_to_store(CStore & store, string name, string data, string method, string hash_algo) except +translate_nix_error

@@ -313,6 +313,29 @@ async def test_a_list_return_crosses_as_a_repeated_field(client: Any) -> None:
     await store.aclose()
 
 
+async def test_bytes_cross_as_bytes(client: Any, tmp_path: Any) -> None:
+    """File contents are not text and must not be encoded as if they
+    were.
+
+    A str field would round-trip a NAR into mojibake, and the hash
+    that names the store path would be a hash of the wrong thing. So
+    the schema gives `data` a protobuf `bytes` field, and the proof is
+    a payload that is not valid utf-8 arriving byte for byte - which
+    it does only if nothing tried to decode it on the way."""
+    store = await client.acquire("Store", str(tmp_path))
+    blob = bytes(range(256))
+    path = await store.add_to_store("blob", blob, "flat", "sha256")
+
+    # The name is the hash of exactly those bytes, so computing the
+    # same path locally is what proves they survived. Nothing here
+    # compares the payload to itself.
+    local = cythonix_bindings.Store(str(tmp_path))
+    assert path.to_string() == local.add_to_store(
+        "blob", blob, "flat", "sha256").to_string()
+    assert await store.is_valid_path(path)
+    await store.aclose()
+
+
 async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
     with pytest.raises(TypeError, match="threading policy"):
         await client.call_function("gc_release_thread")

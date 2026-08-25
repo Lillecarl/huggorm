@@ -20,6 +20,9 @@
 #include "nix/store/globals.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-open.hh"
+#include "nix/util/file-content-address.hh"
+#include "nix/util/hash.hh"
+#include "nix/util/serialise.hh"
 
 namespace cythonix {
 
@@ -82,6 +85,40 @@ inline nix::StorePath * parse_store_path(const nix::Store & store, const std::st
  * It is the ownership a vector of raw pointers cannot express: what is
  * already allocated has to go back if the next allocation throws.
  */
+/**
+ * Add one file's CONTENTS to the store.
+ *
+ * addToStoreFromDump takes a Source, which is an interface Cython has
+ * no declaration for, and four enums it has no spelling for either.
+ * The enums arrive here as the strings Nix itself parses - `flat`,
+ * `nar`, `git`, `text` for the method, `sha256` and friends for the
+ * algorithm - so the vocabulary stays Nix's and so does the error
+ * when a caller invents one.
+ *
+ * The dump is FLAT and this does not ask. `data` is the contents of a
+ * regular file, so that is the only serialisation it can be; a NAR
+ * would be a different argument with a different meaning. Nix
+ * enforces the rest - a hash method whose ingestion is not flat is
+ * refused, by libstore, with libstore's own message.
+ */
+inline nix::StorePath * add_to_store(
+    nix::Store & store,
+    const std::string & name,
+    const std::string & data,
+    const std::string & method,
+    const std::string & hash_algo)
+{
+    // An lvalue, so the string_view inside cannot dangle - which is
+    // the case StringSource deletes its rvalue constructor to stop.
+    nix::StringSource dump{data};
+    return new nix::StorePath(store.addToStoreFromDump(
+        dump,
+        name,
+        nix::FileSerialisationMethod::Flat,
+        nix::ContentAddressMethod::parse(method),
+        nix::parseHashAlgo(hash_algo)));
+}
+
 inline std::vector<nix::StorePath *> query_all_valid_paths(nix::Store & store)
 {
     std::vector<nix::StorePath *> out;
