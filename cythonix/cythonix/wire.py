@@ -45,6 +45,10 @@ class WireCodec:
                  bindings: ModuleType | None = None) -> None:
         self.manifest = manifest
         self._bindings: ModuleType | None = bindings
+        # String vocabularies. A member is a str, so these cross as
+        # scalars - the only thing this table changes is that a
+        # decoded value comes back TYPED rather than as a bare str.
+        self.enums: set[str] = set(manifest.get("enums", {}))
         self.kinds: dict[str, str] = {}
         self.fields: dict[str, list[list[str]]] = {}
         for group in ("wrappers", "returned_types"):
@@ -58,12 +62,25 @@ class WireCodec:
             self._bindings = importlib.import_module("cythonix_bindings")
         return self._bindings
 
+    def scalar(self, type_str: str) -> Callable[[Any], Any]:
+        """What turns a raw scalar into the declared type.
+
+        `str`, `int`, `bool` and `bytes` for the built-in ones, and the
+        enum CLASS for a string vocabulary - so a value read off the
+        wire arrives as ContentAddressMethod.FLAT rather than as
+        "flat", and one that is not a member raises here instead of
+        reaching libstore."""
+        if type_str in self.enums:
+            kls: Callable[[Any], Any] = getattr(self.bindings, type_str)
+            return kls
+        return _SCALARS[type_str]
+
     # -- classification ---------------------------------------------------
     def kind(self, type_str: str) -> str:
         """"none", "scalar", "map", "list", "value" or "proxy"."""
         if type_str == "None":
             return "none"
-        if type_str in SCALAR_NAMES:
+        if type_str in SCALAR_NAMES or type_str in self.enums:
             return "scalar"
         if map_value(type_str) is not None:
             return "map"
@@ -262,7 +279,9 @@ class WireCodec:
         if kind == "none":
             return
         if kind == "scalar":
-            setattr(container, field, _SCALARS[type_str](value))
+            # str() of a StrEnum member is its value, so an enum needs
+            # no special case going out.
+            setattr(container, field, self.scalar(type_str)(value))
         elif kind == "map":
             self.map_to_msg(type_str, value, getattr(container, field))
         elif kind == "list":
@@ -290,7 +309,9 @@ class WireCodec:
             return None
         raw = getattr(container, field)
         if kind == "scalar":
-            return None if optional and not raw else raw
+            if optional and not raw:
+                return None
+            return self.scalar(type_str)(raw)
         if kind == "map":
             return self.map_from_msg(type_str, raw)
         if kind == "list":

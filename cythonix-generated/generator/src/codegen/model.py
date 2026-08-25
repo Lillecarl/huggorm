@@ -482,6 +482,20 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
     return bad
 
 
+def extract_enum(cls: type) -> Proto:
+    """One string vocabulary, as the manifest carries it.
+
+    The values, so a reader can see what the surface accepts, and the
+    module, so a stub that NAMES the type can import it. Nothing about
+    how it crosses: a member is a str, and that is the whole answer."""
+    return {
+        "name": cls.__name__,
+        "module": cls.__module__,
+        "values": [str(m.value) for m in cls],  # type: ignore[var-annotated]
+        "doc": inspect.getdoc(cls) or "",
+    }
+
+
 def extract_errors(bindings: ModuleType) -> Proto:
     """The exception hierarchy a binding can raise, as the manifest
     carries it.

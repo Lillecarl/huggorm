@@ -11,6 +11,7 @@ import json
 import pathlib
 import shutil
 import sys
+from enum import Enum
 from types import ModuleType
 from typing import Any
 
@@ -33,6 +34,7 @@ from codegen.model import (
     check_error_contract,
     check_wire_contract,
     check_wrap_contract,
+    extract_enum,
     extract_errors,
     extract_free_function,
     extract_wrapper,
@@ -76,6 +78,33 @@ def _wrapper_classes(bindings_module: ModuleType) -> list[type]:
         if not hasattr(obj, "_threading"):
             continue
         out.append(obj)
+    return sorted(out, key=lambda c: c.__name__)
+
+
+def _enum_classes(bindings_module: ModuleType) -> list[type]:
+    """Every public string enum the bindings export.
+
+    Found by reflection, with no declaration of its own: a class that
+    subclasses both str and Enum IS a string vocabulary, and there is
+    nothing else it could be. That is the difference from the error
+    hierarchy, which needed `_errors_module` because an exception
+    class looks like any other class.
+
+    They are not wrappers - _wrapper_classes wants a _threading policy
+    and an enum has none - so nothing generates an async form for one.
+    A member is a str, so it crosses the wire as a str and the schema
+    needs no new field type."""
+    pkg = bindings_module.__name__
+    out = []
+    for name in dir(bindings_module):
+        obj = getattr(bindings_module, name)
+        if not isinstance(obj, type) or name.startswith("_"):
+            continue
+        mod = getattr(obj, "__module__", "")
+        if mod != pkg and not mod.startswith(pkg + "."):
+            continue
+        if issubclass(obj, str) and issubclass(obj, Enum):
+            out.append(obj)
     return sorted(out, key=lambda c: c.__name__)
 
 
@@ -334,12 +363,18 @@ def main(argv: list[str] | None = None) -> None:
             print(f"error contract: {c}", file=sys.stderr)
         sys.exit(1)
 
+    # String vocabularies libstore parses. A member is a str, so this
+    # table says only "this NAME is a scalar" - to the schema, to the
+    # codec, and to the stub generator, which needs to import it.
+    enums = {k.__name__: extract_enum(k) for k in _enum_classes(bindings)}
+
     manifest: Proto = {
         "schema": MANIFEST_SCHEMA,
         "wrappers": {p["name"]: p for p in protos},
         "returned_types": {p["name"]: p for p in returned_protos},
         "free_functions": {p["name"]: p for p in free_protos},
         "errors": errors,
+        "enums": enums,
     }
 
     # No silent Any may survive into the artifact: a method whose types
@@ -439,6 +474,11 @@ def main(argv: list[str] | None = None) -> None:
         order_of[p["name"]]))
     produced = {p["name"] for p in returned_protos}
     home = {p["name"]: p["module"] for p in all_protos}
+    # An enum is named in a signature and defined somewhere else, so
+    # the stub for the module that names it needs the import. `home`
+    # is where a stub learns that, and it held only wrapper and
+    # returned-type modules until now.
+    home.update({name: proto["module"] for name, proto in enums.items()})
     modules = sorted({p["module"] for p in all_protos}
                      | {p["module"] for p in free_protos})
     exported: dict[str, list[str]] = {}
@@ -462,8 +502,16 @@ def main(argv: list[str] | None = None) -> None:
         (stub_dir / f"{short}.pyi").write_text(ast.unparse(
             stub_module(module, mine, mine_free, produced, foreign)) + "\n")
         exported[module] = [p["name"] for p in mine] + [p["name"] for p in mine_free]
+    # The enums, re-exported from wherever they live. They get NO .pyi
+    # of their own and want none: they are plain Python, and `partial`
+    # in py.typed is exactly the instruction to read the real module
+    # for anything these stubs do not cover. Only __init__.pyi has to
+    # mention them, because it must re-export what the package does.
+    for name, proto in sorted(enums.items()):
+        exported.setdefault(proto["module"], []).append(name)
     (stub_dir / "__init__.pyi").write_text(
-        ast.unparse(stub_init_module(exported)) + "\n")
+        ast.unparse(stub_init_module(
+            {m: exported[m] for m in sorted(exported)})) + "\n")
     # PARTIAL, and the word is load-bearing. A stubs package normally
     # REPLACES the runtime one for a typechecker, so a hand-written
     # Python module in the bindings - errors.py - would vanish behind

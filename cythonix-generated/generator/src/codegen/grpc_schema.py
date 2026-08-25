@@ -239,13 +239,23 @@ def annotate(manifest: Proto) -> Proto:
 
 # -- schema ---------------------------------------------------------------
 
+ENUM = "enum"
+
+
 def _wire_kinds(manifest: Proto) -> dict[str, str]:
-    """Surface type name -> "value" | "proxy", across both groups."""
-    return {
+    """Surface type name -> "value" | "proxy" | "enum".
+
+    Every declared name and what it is on the wire. A string enum is
+    here because it is a declared NAME that is not a class the wire
+    knows - and it needs no policy of its own, because a StrEnum
+    member is a str and crosses as one."""
+    out = {
         name: proto["wire"]
         for group in ("wrappers", "returned_types")
         for name, proto in manifest[group].items()
     }
+    out.update({name: ENUM for name in manifest.get("enums", {})})
+    return out
 
 
 def _msg_arg_type(type_str: str,
@@ -256,6 +266,10 @@ def _msg_arg_type(type_str: str,
     if type_str in SCALARS:
         return _scalar_const(SCALARS[type_str]), None
     kind = kinds.get(type_str)
+    if kind == ENUM:
+        # A StrEnum member IS a str. Nothing about the transport
+        # changes; the type exists for the caller, not for the wire.
+        return _scalar_const(SCALARS["str"]), None
     if kind == "value":
         return None, value_msg_name(type_str)
     if kind == "proxy":
