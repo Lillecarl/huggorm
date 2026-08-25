@@ -40,7 +40,8 @@ Proto = dict[str, Any]
 PKG = "nixmock.v1"
 FILE = "nixmock/v1/api.proto"
 
-SCALARS = {"str": "string", "int": "sint64", "bool": "bool"}
+SCALARS = {"str": "string", "int": "sint64", "bool": "bool",
+           "bytes": "bytes"}
 assert set(SCALARS) == set(SCALAR_NAMES), "scalar tables disagree"
 
 HANDLE = "Handle"

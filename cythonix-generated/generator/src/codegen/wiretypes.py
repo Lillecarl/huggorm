@@ -36,7 +36,12 @@ def check_manifest(manifest: dict[str, object]) -> None:
 
 # The types that go in a field as themselves. The schema maps them to
 # proto types and the codec maps them to constructors; both start here.
-SCALAR_NAMES = ("str", "int", "bool")
+#
+# bytes is here because a store holds FILES. Their contents are not
+# text and must not be encoded as if they were: a str field would
+# round-trip a NAR into mojibake, and the hash that names the store
+# path would be a hash of the wrong thing.
+SCALAR_NAMES = ("str", "int", "bool", "bytes")
 
 # Every Nix attribute name is a string, so a map key is always one.
 # That is what makes an attribute set representable as a protobuf map

@@ -27,10 +27,15 @@ from typing import Any, ClassVar
 
 from cythonix_generated._wiretypes import SCALAR_NAMES, list_value, map_value
 
-# str/int/bool as a lookup. Annotated because the inferred value type is
-# the join of three unrelated classes, which is `type[object]` - and
-# object takes no constructor arguments.
-_SCALARS: dict[str, Callable[[Any], Any]] = {"str": str, "int": int, "bool": bool}
+# The scalars as a lookup. Annotated because the inferred value type is
+# the join of unrelated classes, which is `type[object]` - and object
+# takes no constructor arguments.
+#
+# bytes() is deliberately NOT a converter that accepts anything: given
+# a str it raises rather than guessing an encoding, which is the right
+# answer for file contents whose hash names a store path.
+_SCALARS: dict[str, Callable[[Any], Any]] = {
+    "str": str, "int": int, "bool": bool, "bytes": bytes}
 
 
 class WireCodec:
