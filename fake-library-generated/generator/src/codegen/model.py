@@ -13,6 +13,20 @@ _PRIMITIVES = {
     "string": "str",
     "int": "int",
     "long": "int",
+    "long long": "int",
+    "size_t": "int",
+    "ssize_t": "int",
+    # <stdint.h> spellings. c_eval.pxd already declares int64_t; without
+    # these the pxd return type went unmapped and the backfill fell back
+    # to whatever the live annotation happened to say.
+    "int8_t": "int",
+    "int16_t": "int",
+    "int32_t": "int",
+    "int64_t": "int",
+    "uint8_t": "int",
+    "uint16_t": "int",
+    "uint32_t": "int",
+    "uint64_t": "int",
     "double": "float",
     "float": "float",
     "bool": "bool",
@@ -81,13 +95,13 @@ def extract_method(func) -> dict:
     }
 
 
-def extract_wrapper(cls, api=None, bindings=None, hide=()) -> dict:
+def extract_wrapper(cls, api=None, bindings=None) -> dict:
     """
     Reflect the live Python surface across the fake_library MRO chain:
     every public method and property the bindings actually expose, with
     leaf definitions winning over inherited ones. This - not the pxd -
     is the contract users program against; the pxd only feeds type
-    policies elsewhere. `hide` drops names from the emitted surface.
+    policies elsewhere.
 
     Cython's `str arg` signature typing yields NO runtime annotation,
     so parameter types fall back to "Any"; when api+bindings are given,
@@ -105,8 +119,6 @@ def extract_wrapper(cls, api=None, bindings=None, hide=()) -> dict:
 
     methods = []
     for name, val in entries.items():
-        if name in hide:
-            continue
         if callable(val):
             methods.append(extract_method(val))
         elif hasattr(val, "__get__"):
@@ -192,12 +204,19 @@ def check_wire_contract(protos: list[dict]) -> list[str]:
 def _pxd_signature_table(cls, api: dict, bindings_module) -> dict:
     """method name -> {'params': [python type names], 'ret': python type
     name or None}, gathered from every fake_library base in the MRO,
-    using the pxd declarations."""
-    wanted = {"C" + k.__name__ for k in cls.__mro__
-              if getattr(k, "__module__", "").split(".")[0] == "fake_library"}
+    using the pxd declarations.
+
+    Walks the MRO, which is leaf-first, so an override wins over the
+    declaration it shadows. Iterating the pxd's own class order instead
+    let whichever class the file happened to declare first win - the
+    base, as it happens, which is the opposite of what extract_wrapper
+    promises."""
     out: dict[str, dict] = {}
-    for key, info in api["classes"].items():
-        if key not in wanted:
+    for k in cls.__mro__:
+        if getattr(k, "__module__", "").split(".")[0] != "fake_library":
+            continue
+        info = api["classes"].get("C" + k.__name__)
+        if info is None:
             continue
         for m in info["methods"]:
             try:

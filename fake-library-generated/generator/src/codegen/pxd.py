@@ -22,16 +22,8 @@ from Cython.Compiler import Parsing
 from Cython.Compiler.Scanning import PyrexScanner
 from Cython.Compiler.TreeFragment import StringParseContext, StringSourceDescriptor
 
-# C-level primitive -> Python annotation
-_PRIMITIVES = {
-    "string": "str",
-    "int": "int",
-    "long": "int",
-    "double": "float",
-    "float": "float",
-    "bool": "bool",
-    "void": "None",
-}
+# No type table here on purpose: this module reports the raw C names and
+# model.py owns the mapping, so the two cannot drift apart.
 
 
 def parse_pxd_module(name: str, text: str):
