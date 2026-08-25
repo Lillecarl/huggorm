@@ -52,7 +52,16 @@ cdef class Value:
     def __dealloc__(self):
         # Freeing the bridge drops the last visible reference; the
         # collector owns the value itself from birth to death.
+        #
+        # This runs on WHICHEVER thread drops the last Python reference,
+        # which is rarely the producing runner: the asyncio loop thread,
+        # a pool worker, or the server's reaper. GC_free takes the
+        # collector's lock and may have to cooperate with a collection,
+        # so the thread must be registered first. Reading a value needs
+        # no registration - the uncollectable cell keeps it reachable
+        # from anywhere - but freeing does.
         if self._cell != NULL:
+            gc_register_current_thread()
             GC_free(self._cell)
 
     def is_gc_managed(self) -> bint:
@@ -116,6 +125,9 @@ cdef class EvalState:
 
     def force(self, Value v) -> None:
         """Force a value in place. Idempotent."""
+        # Forcing mutates GC-resident memory, and the async layer may
+        # route this call through any worker of the state's runner.
+        gc_register_current_thread()
         self._ptr.force(v._cell[0])
 
 
