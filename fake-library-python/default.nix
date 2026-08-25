@@ -58,7 +58,9 @@ python3Packages.buildPythonPackage {
     echo "--- typecheck ---"
     zuban mypy --strict \
       --python-executable ${python3Packages.python.interpreter} \
-      fake_library_python test_remote.py test_lifecycle.py
+      fake_library_python test_remote.py test_lifecycle.py test_handles.py
+    echo "--- test_handles ---"
+    ${python3Packages.python.interpreter} test_handles.py
     echo "--- test_remote ---"
     ${python3Packages.python.interpreter} test_remote.py
     echo "--- test_lifecycle ---"

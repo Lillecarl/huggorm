@@ -21,6 +21,12 @@ Model (tasks/002):
   creators can exit entirely and their successors adopt the objects.
 - Share duplicates (copy) or moves (transfer) one lease onto another
   LIVE connection - the fork-handover primitive.
+- One handle per object per connection. Handing the same object to the
+  same connection twice returns the handle it already has and adds a
+  lease, instead of minting a second id. A message can carry the same
+  object many times (an attribute set holding one Value under a hundred
+  keys), and a handle per occurrence would make the client release a
+  hundred times to free one object.
 """
 
 import time
@@ -42,13 +48,16 @@ def _new_id() -> str:
 class Entry:
     """One live handle: the wrapper object plus its lease bookkeeping."""
 
-    __slots__ = ("children", "leases", "obj", "parents")
+    __slots__ = ("children", "leases", "obj", "parents", "tokens")
 
     def __init__(self, obj: Any) -> None:
         self.obj = obj
         self.leases = 0
         self.parents: set[str] = set()
         self.children: set[str] = set()
+        # Connection tokens whose object index points at this handle.
+        # Kept so a drop can clear every index it appears in.
+        self.tokens: set[str] = set()
 
 
 class Connection:
@@ -67,6 +76,9 @@ class HandleTable:
         self.entries: dict[str, Entry] = {}
         self.connections: dict[str, Connection] = {}
         self.escrow: dict[str, dict[str, int]] = {}
+        # token -> id(obj) -> handle. The entry holds a strong
+        # reference to obj, so id() stays valid while the handle lives.
+        self._by_obj: dict[str, dict[int, str]] = {}
         # Set by the transport layer: called with each wrapper object
         # as it drops, for async cleanup (runner shutdown etc).
         self.on_drop: Callable[[Any], None] | None = None
@@ -89,6 +101,8 @@ class HandleTable:
         # leaked for the life of the process.
         for hid, n in self.escrow.pop(token, {}).items():
             conn.leases[hid] = conn.leases.get(hid, 0) + n
+            if hid in self.entries:
+                self._index(token, hid)
         return token
 
     def _conn_for(self, token: str) -> Connection:
@@ -109,18 +123,47 @@ class HandleTable:
     # -- handles --------------------------------------------------------
     def put(self, obj: Any, holder_token: str,
             parents: Iterable[str] = ()) -> str:
-        """Register a wrapper and grant one lease to the holder."""
-        hid = _new_id()
-        entry = Entry(obj)
+        """Grant the holder one lease on this object, and return its
+        handle. The holder gets the handle it already has for this
+        object, or a new one."""
+        # Resolve every producer BEFORE touching anything: a KeyError
+        # halfway through used to leave earlier parents pointing at a
+        # child handle that never got registered, which stopped those
+        # parents from ever reaping.
+        producers = []
         for p in parents:
             pe = self.entries.get(p)
             if pe is None:
                 raise KeyError(f"producer handle {p!r} not found")
+            producers.append((p, pe))
+        key = holder_token or ANON
+        hid = self._by_obj.get(key, {}).get(id(obj))
+        if hid is None:
+            hid = _new_id()
+            self.entries[hid] = Entry(obj)
+        entry = self.entries[hid]
+        for p, pe in producers:
             entry.parents.add(p)
             pe.children.add(hid)
-        self.entries[hid] = entry
-        self._grant(holder_token, hid, 1)
+        self._grant(key, hid, 1)
+        self._index(key, hid)
         return hid
+
+    def _index(self, token: str, hid: str) -> None:
+        entry = self.entries[hid]
+        self._by_obj.setdefault(token, {})[id(entry.obj)] = hid
+        entry.tokens.add(token)
+
+    def _unindex(self, token: str, hid: str) -> None:
+        entry = self.entries.get(hid)
+        if entry is None:
+            return
+        bucket = self._by_obj.get(token)
+        if bucket is not None and bucket.get(id(entry.obj)) == hid:
+            del bucket[id(entry.obj)]
+            if not bucket:
+                del self._by_obj[token]
+        entry.tokens.discard(token)
 
     def get(self, hid: str) -> Any:
         return self.entries[hid].obj
@@ -165,6 +208,10 @@ class HandleTable:
         else:
             raise ValueError(f"unknown share mode {mode!r} (copy|transfer)")
         dst.leases[hid] = dst.leases.get(hid, 0) + 1
+        # The target now holds this object under this handle, so a
+        # later put() of the same object must reuse it rather than
+        # mint a second one.
+        self._index(to_token, hid)
 
     def detach(self, token: str, hid: str | None = None) -> int:
         """Move this connection's lease(s) into escrow. Returns the
@@ -221,6 +268,10 @@ class HandleTable:
                 conn = self.connections.pop(t)
                 for hid, n in conn.leases.items():
                     self.entries[hid].leases -= n
+                for hid in self._by_obj.pop(t, {}).values():
+                    entry = self.entries.get(hid)
+                    if entry is not None:
+                        entry.tokens.discard(t)
         return self._reap()
 
     def _reap(self) -> list[str]:
@@ -232,6 +283,8 @@ class HandleTable:
             progress = False
             for hid, entry in list(self.entries.items()):
                 if entry.leases == 0 and not entry.children:
+                    for t in list(entry.tokens):
+                        self._unindex(t, hid)
                     del self.entries[hid]
                     dropped.append(hid)
                     for p in entry.parents:
