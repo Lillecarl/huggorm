@@ -229,6 +229,44 @@ async def test_a_dict_return_crosses_as_a_map(client: Any) -> None:
     assert set(stats) == set(cythonix_bindings.gc_stats()), sorted(stats)
 
 
+async def test_a_list_return_crosses_as_a_repeated_field(client: Any) -> None:
+    """A repeated field, which is the other container proto3 gives.
+
+    Every element is a wire VALUE and crosses as its own message: a
+    list of proxies is refused, because one lease per element is not
+    something anything grants in bulk.
+
+    Order is the difference from a map: a repeated field has one, and
+    the client hands back what the server sent. It is the store's
+    order, not a helpful one - the mock keeps base names in a
+    std::set, exactly as nix::StorePathSet does, so the sequence is by
+    HASH and a caller who expects it by name is wrong."""
+    names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]
+
+    # Ground truth from the binding itself, in this process. Comparing
+    # one wire answer against another would prove nothing about order:
+    # both would come back through the same decode, sorted or not.
+    direct = cythonix_bindings.MockLocalStore()
+    for name in names:
+        direct.add_text_to_store(name, name)
+    expected = [p.to_string() for p in direct.query_all_valid_paths()]
+
+    store = await client.acquire("MockLocalStore")
+    assert await store.query_all_valid_paths() == []
+    for name in names:
+        await store.add_text_to_store(name, name)
+    paths = await store.query_all_valid_paths()
+
+    # Real local objects rebuilt from their parts, not handles.
+    assert all(type(p).__module__ == "cythonix_bindings.mock_store"
+               for p in paths), [type(p) for p in paths]
+    assert [p.to_string() for p in paths] == expected
+    # ...and that order is not the one by NAME, which is what makes a
+    # client that imposed its own ordering observable at all.
+    assert [p.name_part() for p in paths] != sorted(names), paths
+    await store.aclose()
+
+
 async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
     with pytest.raises(TypeError, match="threading policy"):
         await client.call_function("gc_release_thread")

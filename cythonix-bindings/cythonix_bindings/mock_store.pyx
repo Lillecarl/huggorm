@@ -31,6 +31,7 @@
 # the object needs a home thread (affine) OR its methods can block.
 
 from libcpp.string cimport string
+from libcpp.vector cimport vector
 from cython.operator cimport dereference as deref
 
 from cythonix_bindings.c_mock_store cimport (
@@ -128,6 +129,26 @@ cdef class MockStore:
 
     def is_valid_path(self, MockStorePath path) -> bool:
         return self._ptr.is_valid_path(deref(path._ptr))
+
+    def query_all_valid_paths(self) -> list[MockStorePath]:
+        """Every path this store holds.
+
+        The first method to hand back a LIST of anything, which is a
+        repeated field on the wire. MockStorePath is a wire value, so
+        each element crosses as its own message rather than as a
+        handle - a list of proxies is refused, because nothing grants
+        leases in bulk."""
+        cdef vector[CMockStorePath] found
+        cdef size_t i
+        cdef MockStorePath path
+        with nogil:
+            found = self._ptr.query_all_valid_paths()
+        out = []
+        for i in range(found.size()):
+            path = MockStorePath.__new__(MockStorePath)
+            path._ptr = new CMockStorePath(found[i])
+            out.append(path)
+        return out
 
     def add_text_to_store(self, str name, str contents) -> MockStorePath:
         cdef string c_name = name.encode('utf-8')

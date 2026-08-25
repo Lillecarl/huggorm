@@ -7,6 +7,7 @@
 
 from libcpp.memory cimport shared_ptr
 from libcpp.string cimport string
+from libcpp.vector cimport vector
 
 from cythonix_bindings.c_path cimport CStorePath, translate_nix_error
 
@@ -29,3 +30,6 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # Returns a pointer because nix::StorePath is not
     # default-constructible; see _cpp/store.hpp.
     CStorePath * parse_store_path(const CStore & store, string path) except +translate_nix_error
+    # A vector of POINTERS for the same reason, one level down: the
+    # binding owns every element it takes out.
+    vector[CStorePath *] query_all_valid_paths(CStore & store) except +translate_nix_error

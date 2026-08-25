@@ -6,6 +6,8 @@ openStore rather than a constructor. "dummy://" is in-memory and needs
 nothing on disk, which is what makes it testable in a build sandbox.
 """
 
+import pathlib
+
 import pytest
 
 from cythonix_bindings import Store, StorePath
@@ -46,6 +48,30 @@ def test_parsing_checks_the_store_directory(store: Store) -> None:
 
 def test_an_empty_store_holds_nothing(store: Store) -> None:
     assert store.is_valid_path(StorePath(HELLO)) is False
+
+
+def test_a_store_need_not_answer_for_all_its_paths(store: Store) -> None:
+    """nix::Store's own queryAllValidPaths raises rather than returning
+    nothing, and only the local and remote stores override it. That is
+    honest: a substituter has no such list to give, and an empty answer
+    would be a lie rather than a limitation."""
+    with pytest.raises(NixError, match="not supported by store"):
+        store.query_all_valid_paths()
+
+
+def test_a_local_store_answers_with_a_list(tmp_path: pathlib.Path) -> None:
+    """A chroot store: a real LocalStore rooted somewhere writable,
+    which is what makes a store that IMPLEMENTS the query runnable in a
+    build sandbox at all.
+
+    It is empty, and it stays empty: nothing in these bindings writes
+    to a store yet. So this covers the answer being a list rather than
+    an error, and the empty case that a repeated field cannot tell from
+    an unset one. It does NOT cover the loop that takes ownership of
+    each element: no store the sandbox can reach holds anything
+    (tasks/037)."""
+    store = Store(str(tmp_path))
+    assert store.query_all_valid_paths() == []
 
 
 def test_the_binding_initialises_libstore() -> None:

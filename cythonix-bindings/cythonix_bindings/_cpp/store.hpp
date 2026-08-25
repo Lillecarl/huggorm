@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "nix/store/globals.hh"
 #include "nix/store/store-api.hh"
@@ -68,6 +69,31 @@ inline std::string store_uri(const nix::Store & store)
 inline nix::StorePath * parse_store_path(const nix::Store & store, const std::string & path)
 {
     return new nix::StorePath(store.parseStorePath(path));
+}
+
+/**
+ * queryAllValidPaths answers with a StorePathSet, and the same
+ * restriction applies one level down: Cython declares a temporary to
+ * hold each element of a loop, and nix::StorePath cannot be declared
+ * without arguments. So the elements are heap pointers, and the
+ * binding takes ownership of every one.
+ *
+ * The catch is not error handling - the error goes back up untouched.
+ * It is the ownership a vector of raw pointers cannot express: what is
+ * already allocated has to go back if the next allocation throws.
+ */
+inline std::vector<nix::StorePath *> query_all_valid_paths(nix::Store & store)
+{
+    std::vector<nix::StorePath *> out;
+    try {
+        for (auto & path : store.queryAllValidPaths())
+            out.push_back(new nix::StorePath(path));
+    } catch (...) {
+        for (auto * path : out)
+            delete path;
+        throw;
+    }
+    return out;
 }
 
 }  // namespace cythonix

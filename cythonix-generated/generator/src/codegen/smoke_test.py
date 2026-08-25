@@ -588,7 +588,8 @@ async def test_behavior() -> None:
     assert issubclass(AsyncMockRemoteStore, flg.AsyncMockStore)
     guaranteed = {m["name"] for m in manifest["wrappers"]["MockStore"]["methods"]}
     assert guaranteed == {"get_uri", "is_valid_path", "add_text_to_store",
-                          "build_derivation"}, sorted(guaranteed)
+                          "build_derivation",
+                          "query_all_valid_paths"}, sorted(guaranteed)
     assert manifest["wrappers"]["MockLocalStore"]["methods"] == []
     assert [m["name"] for m in manifest["wrappers"]["MockRemoteStore"]["methods"]] \
         == ["query_derivation"]

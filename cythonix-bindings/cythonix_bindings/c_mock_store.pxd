@@ -8,6 +8,7 @@
 # the pyx documents. `except +` propagates C++ exceptions.
 
 from libcpp.string cimport string
+from libcpp.vector cimport vector
 
 cdef extern from "fake_library/store.hpp" nogil:
     cdef cppclass CMockStorePath "fake_library::StorePath":
@@ -39,6 +40,12 @@ cdef extern from "fake_library/store.hpp" nogil:
     cdef cppclass CMockStore "fake_library::Store":
         string get_uri() const
         bint is_valid_path(const CMockStorePath & path) const
+        # By value, which the mock's StorePath allows: it is
+        # default-constructible, so Cython can declare the
+        # temporary a loop over one needs. The real
+        # nix::StorePath is not, which is why c_store.pxd
+        # declares a vector of POINTERS instead.
+        vector[CMockStorePath] query_all_valid_paths() except + nogil
         CMockStorePath add_text_to_store(string name, string contents) except + nogil
         CMockStorePath build_derivation(const CMockDerivedPath & request) except + nogil
         CMockDerivation query_derivation(const CMockStorePath & drv_path) except + nogil

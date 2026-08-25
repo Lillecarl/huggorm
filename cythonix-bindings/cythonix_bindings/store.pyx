@@ -10,6 +10,7 @@
 from cython.operator cimport dereference as deref
 from libcpp.memory cimport shared_ptr
 from libcpp.string cimport string
+from libcpp.vector cimport vector
 
 from cythonix_bindings.c_path cimport CStorePath
 from cythonix_bindings.c_store cimport (
@@ -17,6 +18,7 @@ from cythonix_bindings.c_store cimport (
     init_libstore,
     open_store,
     parse_store_path,
+    query_all_valid_paths,
     store_uri,
 )
 from cythonix_bindings.path cimport StorePath
@@ -75,6 +77,38 @@ cdef class Store:
         cdef bint out
         with nogil:
             out = store.is_valid_path(deref(p))
+        return out
+
+    def query_all_valid_paths(self) -> list[StorePath]:
+        """Every path this store holds.
+
+        Not every store answers it. nix::Store's own implementation
+        raises "not supported by store", and only the local and remote
+        stores override it - which is honest, because a substituter has
+        no such list to give.
+
+        Each element arrives as a pointer this binding owns, so the
+        loop hands ownership to a wrapper and blanks the slot. Whatever
+        never reached a wrapper is freed on the way out."""
+        cdef CStore* store = self._get()
+        cdef vector[CStorePath *] found
+        cdef CStorePath* leftover
+        cdef size_t i
+        cdef StorePath path
+        with nogil:
+            found = query_all_valid_paths(deref(store))
+        out = []
+        try:
+            for i in range(found.size()):
+                path = StorePath.__new__(StorePath)
+                path._ptr = found[i]
+                found[i] = NULL
+                out.append(path)
+        finally:
+            for i in range(found.size()):
+                leftover = found[i]
+                if leftover is not NULL:
+                    del leftover
         return out
 
     def print_store_path(self, StorePath path) -> str:

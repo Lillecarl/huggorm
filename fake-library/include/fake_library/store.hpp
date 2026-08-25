@@ -20,6 +20,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace fake_library {
 
@@ -99,6 +100,11 @@ public:
     virtual std::string get_uri() const = 0;
 
     bool is_valid_path(const StorePath & path) const;
+
+    // Every path this store holds. The real nix::Store answers the
+    // same question with a StorePathSet; a vector is the same answer
+    // in the order a repeated protobuf field keeps.
+    std::vector<StorePath> query_all_valid_paths() const;
 
     // Deliberately slow: hashes and registers. Safe to call with the GIL
     // released. Returns the new store path.

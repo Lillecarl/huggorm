@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace fake_library {
 
@@ -127,6 +128,16 @@ bool Store::lookup(const std::string & base_name) const
 bool Store::is_valid_path(const StorePath & path) const
 {
     return lookup(path.to_string());
+}
+
+std::vector<StorePath> Store::query_all_valid_paths() const
+{
+    std::lock_guard<std::mutex> guard(*static_cast<std::mutex *>(lock_));
+    std::vector<StorePath> out;
+    out.reserve(valid_.size());
+    for (const auto & base_name : valid_)
+        out.emplace_back(base_name);
+    return out;
 }
 
 StorePath Store::add_text_to_store(std::string name, std::string contents) const

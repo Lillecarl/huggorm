@@ -271,15 +271,49 @@ than left to accrete:
   not: anything that computes, decides or holds state is a binding
   written in the wrong language.
 
-### Still to bind: queryAllValidPaths
+### queryAllValidPaths, and the repeated field it needed
 
-Simple in C++ and not simple on the wire. It returns a `StorePathSet`,
-so the Python surface is `list[StorePath]` - and a method returning a
-list has no schema representation yet. `_msg_arg_type` raises rather
-than reporting, so declaring it today fails the build outright.
+Simple in C++ and not simple anywhere above it. It returns a
+`StorePathSet`, so the Python surface is `list[StorePath]` - and a
+method returning a list had no schema representation.
 
-Repeated fields are the answer and they are small: `_add_field` emits a
-repeated field for `list[T]`, the codec grows the encode/decode pair
-beside the map one, and `wiretypes` grows a `list_value()` beside
-`map_value()`. A list of PROXIES stays refused, for the same reason a
-map of them is.
+Repeated fields were the answer and they were small. `wiretypes` grew
+`list_value()` beside `map_value()`, and both got stricter at once:
+proto3 nests NEITHER container inside the other, so `list[list[T]]`
+and `dict[str, list[T]]` are refused with the reason rather than
+accepted and exploded at the first call. `_add_field` emits a repeated
+field, the codec grew the encode/decode pair, and `map_c_type` learned
+that `vector[T]` is `list[T]` - element first, so a pointer element
+maps like a value one. A list of PROXIES stays refused, for the same
+reason a map of them is: one lease per element, and nothing grants
+leases in bulk.
+
+Two things fell out. `names_in` existed in THREE copies - model,
+emitter, and nowhere at all for the stub generator, which read the
+head of an annotation and so would have missed the `StorePath` inside
+`list[StorePath]`. It is one function in `wiretypes` now, which is
+where the reading of an annotation belongs. And
+`returned_types_from_api` read the return type as one name, so a type
+that only ever appeared inside a container would not have been
+discovered as a returned type.
+
+### What the real one is NOT tested on
+
+`Store.query_all_valid_paths` is covered for the answer being a list,
+for the empty case, and for the store that refuses it - `dummy://`
+raises "not supported by store", which is nix::Store's own default and
+is honest, because a substituter has no such list to give.
+
+It is NOT covered on a store that holds anything. Two things are
+missing and neither is small. Nothing in these bindings WRITES to a
+store yet. And the suite runs in the build sandbox, which has no db to
+read and no daemon to ask - so the loop that takes ownership of each
+element never runs there. By hand against the ambient store it answers
+23163 paths, twice, with a full free in between.
+
+That second half is not specific to this method, and it gets worse
+from here: an evaluator needs a store to substitute from. tasks/037
+holds it.
+
+The mock covers the multi-element path end to end, over a real socket,
+which is what it is for.
