@@ -81,9 +81,12 @@ async def main():
     v = await state.eval_expr('"hello nix"')
     print(f"eval: {await v.string_value()!r} (type {await v.type_name()})")
 
-    import fake_library
-    await asyncio.to_thread(fake_library.collect_garbage)
-    stats = fake_library.gc_stats()
+    # Module-level binding functions get generated wrappers too, so the
+    # hand-written asyncio.to_thread hop is gone.
+    from fake_library_generated import collect_garbage, describe, gc_stats
+
+    await collect_garbage()
+    stats = await gc_stats()
     print(f"after 2x full GC: {await v.string_value()!r}")
     print(f"gc: {stats['collections']} collections, heap {stats['heap_size'] >> 10} KiB,"
           f" value in GC heap: {await v.is_gc_managed()}")
@@ -104,6 +107,10 @@ async def main():
     await v.aclose()
     await thunk.aclose()
     await state.aclose()
+
+    print("\n=== free functions (C++ virtual dispatch through a wrapper) ===")
+    print("describe(local): ", await describe(local))
+    print("describe(remote):", await describe(remote))
 
     print("\n=== policy enforcement ===")
     print("AsyncLocalStore exposes query_derivation:", hasattr(local, "query_derivation"),

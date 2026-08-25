@@ -194,6 +194,30 @@ class NixClient:
         await self._rpc(f"/{schema.PKG}.Session/Release", req, "Handle")
         obj.handle_id = None
 
+    async def call_function(self, name, *args):
+        """Call one of the bindings' module-level functions remotely.
+
+        No handle: a free function has no instance. Otherwise identical
+        to a method call, same codec and same policies."""
+        proto = self.manifest.get("free_functions", {}).get(name)
+        if proto is None:
+            raise ValueError(
+                f"{name!r} is not a binding function; the manifest offers "
+                f"{sorted(self.manifest.get('free_functions', {}))}")
+        if "rpc" not in proto:
+            raise TypeError(
+                f"{name!r} has no RPC surface: "
+                + "; ".join(proto["wire_blockers"]))
+
+        req = self.msg(proto["rpc"]["req"])()
+        for p, val in zip(proto["params"], args):
+            self.codec.encode(req, p["name"], p["type"], val,
+                              lambda obj: obj.handle_id)
+        resp = await self._rpc(proto["rpc"]["path"], req, proto["rpc"]["resp"])
+        return self.codec.decode(
+            resp, "result", proto["return_type"],
+            lambda hid: RemoteObj(self, proto["return_type"], hid))
+
     async def invoke(self, cls_name, m, handle_id, args):
         req = self.msg(m["rpc"]["req"])()
         req.self.id = handle_id

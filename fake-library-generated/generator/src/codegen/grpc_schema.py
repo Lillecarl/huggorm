@@ -80,6 +80,28 @@ def method_path(cls_name: str, method: str) -> str:
 # and it type-checked neither the name nor the absent arguments.
 ACQUIRE = "Acquire"
 
+# Free functions have no instance, so they cannot hang off a class's
+# service. They share one.
+FREE_SERVICE = "Functions"
+
+
+def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
+    """Why this type cannot cross the wire, or None if it can.
+
+    Reported rather than raised, so a function that is unrepresentable
+    today still gets its in-process wrapper and the build says exactly
+    what is missing."""
+    try:
+        _msg_arg_type(type_str, kinds)
+    except TypeError:
+        if type_str in ("dict", "list", "tuple", "set"):
+            return (f"{type_str} has no wire representation; the schema has "
+                    f"no map or struct type yet")
+        return (f"{type_str} is not in the manifest, so it has no wire "
+                f"policy (an excluded base class, most likely - see "
+                f"tasks/018)")
+    return None
+
 
 def annotate(manifest: dict) -> dict:
     """Stamp the wire names onto the manifest, in place.
@@ -104,6 +126,23 @@ def annotate(manifest: dict) -> dict:
                     "req": req_name(cls_name, m["name"]),
                     "resp": resp_name(cls_name, m["name"]),
                 }
+
+    kinds = _wire_kinds(manifest)
+    for fname, proto in manifest.get("free_functions", {}).items():
+        blockers = [
+            f"parameter {p['name']!r}: {why}"
+            for p in proto["params"]
+            if (why := wire_blocker(p["type"], kinds))
+        ]
+        if (why := wire_blocker(proto["return_type"], kinds)):
+            blockers.append(f"return type: {why}")
+        proto["wire_blockers"] = blockers
+        if not blockers:
+            proto["rpc"] = {
+                "path": method_path(FREE_SERVICE, fname),
+                "req": req_name(FREE_SERVICE, fname),
+                "resp": resp_name(FREE_SERVICE, fname),
+            }
     return manifest
 
 
@@ -248,6 +287,39 @@ def _add_session(f):
     rel.output_type = f".{PKG}.{HANDLE}"
 
 
+def _add_free_service(file_dp, manifest, kinds):
+    """One service for every free function the wire can represent."""
+    wired = {n: p for n, p in manifest.get("free_functions", {}).items()
+             if "rpc" in p}
+    if not wired:
+        return
+    svc = file_dp.service.add()
+    # Through service_name, like every other service: method_path()
+    # already appends "Service", so declaring the bare name here left
+    # the descriptor calling it Functions while dispatch routed
+    # FunctionsService. Reflection would list it and no call could
+    # reach it.
+    svc.name = service_name(FREE_SERVICE)
+    for fname, proto in wired.items():
+        rpc = svc.method.add()
+        rpc.name = fname
+
+        req = file_dp.message_type.add()
+        req.name = proto["rpc"]["req"]
+        # No `self` field: there is no instance to address.
+        for n, p in enumerate(proto["params"], start=1):
+            pt, msg = _msg_arg_type(p["type"], kinds)
+            _field(req, p["name"], n, proto_type=pt, type_name=msg)
+        rpc.input_type = f".{PKG}.{req.name}"
+
+        resp = file_dp.message_type.add()
+        resp.name = proto["rpc"]["resp"]
+        rt, rmsg = _msg_arg_type(proto["return_type"], kinds)
+        if rt is not None or rmsg is not None:
+            _field(resp, "result", 1, proto_type=rt, type_name=rmsg)
+        rpc.output_type = f".{PKG}.{resp.name}"
+
+
 def build_fdset(manifest: dict) -> bytes:
     fds = descriptor_pb2.FileDescriptorSet()
     f = fds.file.add()
@@ -263,4 +335,5 @@ def build_fdset(manifest: dict) -> bytes:
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
             _add_service(f, cls_name, proto, kinds)
+    _add_free_service(f, manifest, kinds)
     return fds.SerializeToString()

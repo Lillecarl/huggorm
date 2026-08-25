@@ -1,0 +1,100 @@
+# Free functions and module-level bindings have no generated surface
+
+Found in the 2026-08-25 review.
+
+## Problem
+
+The stated goal is complete surface coverage generated from the
+binding specifications. Free functions are outside it entirely.
+
+pxd.py appears to parse `describe_store` into api["free_functions"],
+and generate.py reads only api["classes"]. So the parse result looked
+like dead data.
+
+CORRECTION (2026-08-25): it was never parsed at all. A free function
+inside `cdef extern from ...:` arrives as a CVarDefNode carrying a
+CFuncDeclaratorNode - the same shape a class method has, one level up.
+extract_api looked for a CFuncDefNode, which never matched, so the
+list was silently always empty. Two bugs stacked: nothing produced the
+data, and nothing consumed it, so neither was visible.
+
+Three module-level bindings have no async wrapper, no manifest entry
+and no RPC surface: `describe(obj)` (the C++ virtual-dispatch
+trampoline demo), `gc_stats()` and `collect_garbage()`. A remote
+client cannot ask the server for collector counters or trigger a
+collection - the two things a long-lived evaluation server (016) most
+obviously needs.
+
+## Why it matters
+
+Real libstore and libexpr are full of free functions: openStore,
+parseStorePath, computeFSClosure. If free functions stay outside the
+generator, a large part of the real surface is hand-written forever,
+which is exactly what this design exists to avoid.
+
+## Direction
+
+- A module-level function needs the same policy markers a class
+  carries. Function attributes work in Python
+  (`collect_garbage._threading = "pool"`) but read badly. Consider a
+  module-level registry in the pyx, or a decorator the codegen reads.
+- collect_garbage is process-global and blocking, not a method on
+  anything. Its threading policy is "pool", and the async wrapper
+  should be a module-level coroutine, not a class.
+- gRPC has no free functions: they need a service to live on. A
+  per-module service (`fake_libraryService`) is the obvious shape.
+- describe(obj) takes a proxy argument and returns a scalar. The
+  existing WireCodec handles that unchanged.
+
+Blocks nothing today; 016 will want gc_stats over the wire.
+
+## Done 2026-08-25, except for two named blockers
+
+Module-level functions opt in by declaring `_threading`, the same
+marker a class carries - and the marker is what opts them in, so a
+helper the module happens to export stays out of the surface. "pool"
+is the only policy allowed: a free function has no instance and
+therefore no thread to be affine to. Anything else is rejected by
+name.
+
+They introspect FAR better than cdef classes - real signatures, real
+annotations, real docstrings, a settable __dict__ - so the live
+function supplies nearly everything and the pxd fills only what Cython
+drops. `describe(obj)` is untyped in the pyx and `const CStore&` in
+the pxd, so the emitted wrapper says `obj: Store`.
+
+The pyx name and the pxd name differ (describe vs describe_store), so
+free functions carry `_binds` too, exactly like classes (020).
+Claiming a name the pxd does not declare fails the build.
+
+Emitted as module-level coroutines in free_functions.py, hopping
+through the shared pool via a new runtime helper. The hand-written
+`asyncio.to_thread(fake_library.collect_garbage)` in the smoke test and
+the demo is gone.
+
+RPC: one shared FunctionsService, since a free function has no
+instance to hang off. Requests carry no `self` handle - the only
+structural difference from a method. Everything else is the existing
+codec.
+
+## The two blockers, now named by the build
+
+Only collect_garbage crosses the wire today. The generator prints why
+the others cannot, and the manifest records it per function in
+`wire_blockers`, so the client refuses them with the reason rather
+than failing obscurely:
+
+    warning: describe has no RPC surface - parameter 'obj': Store is
+      not in the manifest, so it has no wire policy (an excluded base
+      class, most likely - see tasks/018)
+    warning: gc_stats has no RPC surface - return type: dict has no
+      wire representation; the schema has no map or struct type yet
+
+So describe is blocked on 018 - Store is abstract and excluded from
+generation, so there is no name for "any store" on the wire, nor for
+"any async store" in the in-process annotation either. That is the
+same missing base 018 exists to add, arrived at from a second
+direction.
+
+gc_stats needs a map or struct wire type. Worth doing when 016 wants
+collector counters remotely; not before.

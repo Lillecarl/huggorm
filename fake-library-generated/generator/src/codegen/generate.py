@@ -12,11 +12,18 @@ import pathlib
 import shutil
 import sys
 
-from codegen.emitter import wrapper_module, returned_module, init_module
+from codegen.emitter import (
+    FREE_MODULE,
+    free_function_module,
+    init_module,
+    returned_module,
+    wrapper_module,
+)
 from codegen.model import (
     binding_map,
     check_binding_map,
     check_wire_contract,
+    extract_free_function,
     extract_wrapper,
     returned_types_from_api,
     unbound_pxd_classes,
@@ -57,6 +64,24 @@ def _wrapper_classes(bindings_module) -> list[type]:
     return sorted(out, key=lambda c: c.__name__)
 
 
+def _free_functions(bindings_module) -> list:
+    """Module-level functions that opted into the surface by declaring
+    _threading. Sorted for deterministic output."""
+    pkg = bindings_module.__name__
+    out = []
+    for name in sorted(dir(bindings_module)):
+        obj = getattr(bindings_module, name)
+        if name.startswith("_") or isinstance(obj, type) or not callable(obj):
+            continue
+        mod = getattr(obj, "__module__", "")
+        if mod != pkg and not mod.startswith(pkg + "."):
+            continue
+        if getattr(obj, "_threading", None) is None:
+            continue
+        out.append(obj)
+    return out
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="output directory for fake_library_generated")
@@ -70,11 +95,14 @@ def main(argv=None):
 
     bindings = _load_bindings_module()
 
-    api = {"classes": {}}
+    api = {"classes": {}, "free_functions": []}
     for path_str in args.pxd:
         part = extract_api(pathlib.Path(path_str).read_text())
         api["classes"].update(part["classes"])
-        print(f"parsed pxd: {len(part['classes'])} classes from {path_str}")
+        # Free functions used to be parsed here and dropped on the floor.
+        api["free_functions"] += part["free_functions"]
+        print(f"parsed pxd: {len(part['classes'])} classes, "
+              f"{len(part['free_functions'])} free function(s) from {path_str}")
 
     # The pxd and the pyx are the two hand-written files, and _binds is
     # the only thing joining them. Check the join before trusting either.
@@ -136,8 +164,18 @@ def main(argv=None):
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for {proto['name']} ({proto['threading']}, {len(proto['methods'])} methods)")
 
+    free_protos = [extract_free_function(fn, api, mapping)
+                   for fn in _free_functions(bindings)]
+    free_names = [p["name"] for p in free_protos]
+    if free_protos:
+        code = ast.unparse(free_function_module(free_protos, async_types))
+        (out / f"{FREE_MODULE}.py").write_text(code + "\n")
+        print(f"generated {FREE_MODULE}.py for {len(free_protos)} free "
+              f"function(s): {', '.join(free_names)}")
+
     all_names = [p["name"] for p in returned_protos] + [p["name"] for p in protos]
-    (out / "__init__.py").write_text(ast.unparse(init_module(all_names)) + "\n")
+    (out / "__init__.py").write_text(
+        ast.unparse(init_module(all_names, free_names)) + "\n")
 
     # The wire policy and the serialization contract must agree before
     # anything downstream trusts either. Loud, at build time.
@@ -154,6 +192,7 @@ def main(argv=None):
         "schema": 1,
         "wrappers": {p["name"]: p for p in protos},
         "returned_types": {p["name"]: p for p in returned_protos},
+        "free_functions": {p["name"]: p for p in free_protos},
     }
 
     # No silent Any may survive into the artifact: a method whose types
@@ -161,6 +200,12 @@ def main(argv=None):
     # locally. Fail the build naming every offender; an explicit escape
     # hatch can be added when a legitimate case first appears.
     unresolved = []
+    for fname, proto in manifest["free_functions"].items():
+        for p in proto["params"]:
+            if p["type"] == "Any":
+                unresolved.append(f"{fname} param {p['name']!r}")
+        if proto["return_type"] == "Any":
+            unresolved.append(f"{fname} return type")
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
             for p in proto.get("ctor", ()):
@@ -190,6 +235,10 @@ def main(argv=None):
         f"wrote manifest ({len(protos)} wrappers, {len(returned_protos)} returned types) "
         f"to {out / 'manifest.json'}"
     )
+
+    for fname, proto in manifest["free_functions"].items():
+        for why in proto["wire_blockers"]:
+            print(f"warning: {fname} has no RPC surface - {why}")
 
     (out / "grpc_schema.pb").write_bytes(build_fdset(manifest))
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")

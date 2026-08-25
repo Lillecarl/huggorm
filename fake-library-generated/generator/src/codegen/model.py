@@ -280,6 +280,54 @@ def constructor_signature(cls, api: dict, mapping: dict[str, str]) -> list[dict]
     ]
 
 
+def extract_free_function(fn, api: dict, mapping: dict[str, str]) -> dict:
+    """Protocol dict for a module-level binding function.
+
+    Free functions introspect FAR better than cdef classes: real
+    signatures, real annotations, real docstrings, and a settable
+    __dict__. So the live function supplies almost everything, and the
+    pxd fills only what Cython drops - untyped parameters, exactly as
+    it does for methods.
+
+    Threading is checked, not merely read. A free function has no
+    instance and therefore no home thread, so "pool" is the only policy
+    that means anything; anything else is a mistake worth naming."""
+    policy = getattr(fn, "_threading", None)
+    if policy != "pool":
+        raise ValueError(
+            f"{fn.__name__}: free functions must declare _threading = "
+            f"'pool' (got {policy!r}). They have no instance, so there is "
+            f"no thread for them to be affine to.")
+
+    sig = inspect.signature(fn)
+    hints = getattr(fn, "__annotations__", {})
+    params = [
+        {"name": p.name,
+         "type": _normalize(_annotation_name(hints.get(p.name, p.annotation)))}
+        for p in sig.parameters.values()
+    ]
+    declared = {f["name"]: f for f in api.get("free_functions", [])}
+    c_name = getattr(fn, "_binds", fn.__name__)
+    known = declared.get(c_name)
+    if known is None and hasattr(fn, "_binds"):
+        raise ValueError(
+            f"{fn.__name__}._binds = {c_name!r}: no free function of that "
+            f"name in the pxd (declared: {sorted(declared)})")
+    if known is not None:
+        for i, p in enumerate(params):
+            if p["type"] == "Any" and i < len(known["params"]):
+                p["type"] = map_c_type(known["params"][i][1], mapping)
+
+    return {
+        "name": fn.__name__,
+        "module": fn.__module__,
+        "threading": policy,
+        "params": params,
+        "return_type": _normalize(_annotation_name(hints.get("return", sig.return_annotation))),
+        "doc": inspect.getdoc(fn) or "",
+    }
+
+
 def check_wire_contract(protos: list[dict]) -> list[str]:
     """The wire policy and the serialization contract must agree.
 

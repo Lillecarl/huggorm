@@ -153,3 +153,10 @@ def collect_garbage() -> None:
     (asyncio.to_thread)."""
     gc_register_current_thread()
     gc_collect()
+
+
+# See store.pyx: the marker opts a module-level function into the
+# generated surface, and "pool" is the only policy a free function can
+# have.
+gc_stats._threading = "pool"
+collect_garbage._threading = "pool"

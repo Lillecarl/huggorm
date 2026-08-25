@@ -279,6 +279,25 @@ async def test_behavior():
     assert isinstance(v, AsyncValue)
     assert await v.string_value() == "hello nix"
 
+    # Free functions have generated wrappers too: module-level
+    # coroutines on the shared pool, with the pxd filling in the
+    # parameter type Cython dropped (describe's `obj` is untyped in the
+    # pyx and CStore& in the pxd).
+    import fake_library_generated as flg
+
+    assert await flg.describe(local) == "store(local)"
+    assert await flg.describe(remote) == "store(uds://daemon)"
+    free = manifest["free_functions"]
+    assert free["describe"]["params"] == [{"name": "obj", "type": "Store"}], (
+        free["describe"]["params"]
+    )
+    assert free["collect_garbage"]["return_type"] == "None"
+    # ...and each one records whether the wire can carry it, with the
+    # reason when it cannot. describe takes an excluded base class,
+    # gc_stats returns a dict.
+    assert not free["collect_garbage"]["wire_blockers"]
+    assert free["describe"]["wire_blockers"] and free["gc_stats"]["wire_blockers"]
+
     # Boehm GC proof, in two layers. First the counters bound straight
     # from gc.h prove the collector is ACTIVE and that this exact value
     # lives inside a GC-allocated block. A no-op integration could not
@@ -293,10 +312,10 @@ async def test_behavior():
     # so it is dispatched off the loop thread - which also exercises
     # thread registration from a fresh pool thread.
     collections_before = stats["collections"]
-    await asyncio.to_thread(fake_library.collect_garbage)
+    await flg.collect_garbage()
     assert fake_library.gc_stats()["collections"] >= collections_before + 2
     assert await v.string_value() == "hello nix"
-    await asyncio.to_thread(fake_library.collect_garbage)
+    await flg.collect_garbage()
     # Forced state persists through collection...
     assert await thunk.type_name() == "int"
     assert await thunk.integer() == 42
@@ -311,11 +330,11 @@ async def test_behavior():
     # points at the value, so the collector reclaims it while the state
     # stays alive.
     kept = [await state.parse_expr(f'"{"p" * 200}-{i}"') for i in range(200)]
-    await asyncio.to_thread(fake_library.collect_garbage)
+    await flg.collect_garbage()
     kept_used = fake_library.gc_stats()["used_bytes"]
 
     del kept
-    await asyncio.to_thread(fake_library.collect_garbage)
+    await flg.collect_garbage()
     dropped_used = fake_library.gc_stats()["used_bytes"]
     # Counters are page-granular; any strict decrease proves values died
     # on non-reachability. Under the old arena design this could never

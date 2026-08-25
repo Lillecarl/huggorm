@@ -230,6 +230,27 @@ async def main():
         check("unknown handle fails typed",
               threw is not None and threw["cause_type"] == "KeyError", threw)
 
+        # ---- free functions over the wire --------------------------------
+        # No handle: a module-level function has no instance. Only the
+        # ones the wire can represent are offered, and the others say
+        # why (describe takes the excluded Store base, gc_stats returns
+        # a dict the schema has no type for).
+        check("free function crosses the wire",
+              await client.call_function("collect_garbage") is None)
+        threw = None
+        try:
+            await client.call_function("gc_stats")
+        except TypeError as e:
+            threw = str(e)
+        check("unrepresentable free function says why",
+              threw is not None and "dict" in threw, threw)
+        threw = None
+        try:
+            await client.call_function("nope")
+        except ValueError as e:
+            threw = str(e)
+        check("unknown free function fails typed", threw is not None, threw)
+
         # ---- external tool via reflection -------------------------------
         if not grpcurl_bin:
             print("[SKIP] grpcurl not found")
@@ -238,7 +259,8 @@ async def main():
             if not out.strip():
                 print(f"[WARN] grpcurl list empty; rc={rc} err={err!r}")
             for svc in ("Session", "LocalStoreService", "EvalStateService",
-                        "ValueService", "DerivationService"):
+                        "ValueService", "DerivationService",
+                        "FunctionsService"):
                 check(f"reflection lists {svc}", f"nixmock.v1.{svc}" in out,
                       f"rc={rc} out={out[:120]!r} err={err[:120]!r}")
 
@@ -256,6 +278,15 @@ async def main():
                 payload='{"store_uri":"local"}')
             check("grpcurl Acquire takes constructor arguments",
                   len(json.loads(out).get("id", "")) == 32, out[:120])
+
+            # A free function through the external tool: the descriptor
+            # name and the dispatch path must agree, which they did not
+            # when the service was declared under its bare name.
+            rc, out, err = await run_tool(
+                grpcurl_bin, symbol="nixmock.v1.FunctionsService/collect_garbage",
+                payload='{}')
+            check("grpcurl calls a free function", rc == 0,
+                  f"rc={rc} out={out[:80]!r} err={err[:120]!r}")
 
             rc, out, err = await run_tool(
                 grpcurl_bin,

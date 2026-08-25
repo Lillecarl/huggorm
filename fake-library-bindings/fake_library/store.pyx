@@ -326,3 +326,16 @@ def describe(obj) -> str:
         raise TypeError(f"describe() expects a Store, got {type(obj)}")
     cdef string res = describe_store(deref((<Store>obj)._ptr))
     return res.decode('utf-8')
+
+
+# Module-level functions carry the same marker their classes do, and it
+# is what OPTS THEM IN: the codegen wraps only what is marked, so a
+# helper the module happens to export stays out of the surface.
+#
+# "pool" is the only policy available. A free function has no instance
+# and therefore no home thread to be affine to; the codegen rejects
+# anything else.
+describe._threading = "pool"
+# Same marker a class carries, for the same reason: the Python name and
+# the pxd name differ, and nothing else joins them.
+describe._binds = "describe_store"

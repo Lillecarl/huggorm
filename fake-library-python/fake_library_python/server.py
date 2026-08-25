@@ -43,6 +43,7 @@ class Dispatcher:
         for group in ("wrappers", "returned_types"):
             for cls_name, proto in manifest[group].items():
                 self._service(cls_name, proto)
+        self._free_service()
 
     @staticmethod
     def _on_drop(obj):
@@ -66,31 +67,29 @@ class Dispatcher:
         return self.table.get(hid)
 
     # -- handler construction ----------------------------------------------
-    def _service(self, cls_name, proto):
+    @staticmethod
+    def _wrap(handler, label):
+        """Every failure crosses the wire as a typed JSON payload in the
+        gRPC status message: WrapperErrors as themselves, everything
+        else wrapped in InternalError - so unknown handles and bugs
+        arrive debuggable, not anonymous."""
         from fake_library_generated._runtime import InternalError, WrapperError
 
-        def wrap(errors, method):
-            """Every failure crosses the wire as a typed JSON payload in
-            the gRPC status message: WrapperErrors as themselves,
-            everything else wrapped in InternalError - so unknown
-            handles and bugs arrive debuggable, not anonymous."""
-            async def guard(stream):
-                try:
-                    await errors(stream)
-                except WrapperError as e:
-                    raise grpclib.exceptions.GRPCError(
-                        grpclib.const.Status.UNKNOWN,
-                        json.dumps(e.to_dict()))
-                except Exception as e:
-                    internal = InternalError(f"{cls_name}.{method} failed",
-                                             cause=e)
-                    raise grpclib.exceptions.GRPCError(
-                        grpclib.const.Status.UNKNOWN,
-                        json.dumps(internal.to_dict()))
-            return guard
+        async def guard(stream):
+            try:
+                await handler(stream)
+            except WrapperError as e:
+                raise grpclib.exceptions.GRPCError(
+                    grpclib.const.Status.UNKNOWN, json.dumps(e.to_dict()))
+            except Exception as e:
+                internal = InternalError(f"{label} failed", cause=e)
+                raise grpclib.exceptions.GRPCError(
+                    grpclib.const.Status.UNKNOWN, json.dumps(internal.to_dict()))
+        return guard
 
+    def _service(self, cls_name, proto):
         if "acquire" in proto:
-            self._acquire(cls_name, proto, wrap)
+            self._acquire(cls_name, proto)
 
         for m in proto["methods"]:
             req_cls = self.msg(m["rpc"]["req"])
@@ -112,10 +111,10 @@ class Dispatcher:
                 await stream.send_message(resp)
 
             self.mapping[m["rpc"]["path"]] = grpclib.const.Handler(
-                wrap(handler, m["name"]), grpclib.const.Cardinality.UNARY_UNARY,
-                req_cls, resp_cls)
+                self._wrap(handler, f"{cls_name}.{m['name']}"),
+                grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
 
-    def _acquire(self, cls_name, proto, wrap):
+    def _acquire(self, cls_name, proto):
         """Construct one instance, from typed constructor arguments.
 
         The old Session/Acquire took a class NAME and nothing else, so
@@ -141,8 +140,39 @@ class Dispatcher:
             await stream.send_message(resp)
 
         self.mapping[proto["acquire"]["path"]] = grpclib.const.Handler(
-            wrap(handler, "Acquire"), grpclib.const.Cardinality.UNARY_UNARY,
-            req_cls, handle_cls)
+            self._wrap(handler, f"{cls_name}.Acquire"),
+            grpclib.const.Cardinality.UNARY_UNARY, req_cls, handle_cls)
+
+    def _free_service(self):
+        """Module-level functions, on one shared service.
+
+        They have no instance, so their requests carry no `self` handle
+        - the only structural difference from a method. Functions whose
+        parameters or return type the wire cannot represent are absent
+        from the schema; the generator names them and why at build
+        time."""
+        import fake_library_generated as flg
+
+        for fname, proto in self.manifest.get("free_functions", {}).items():
+            if "rpc" not in proto:
+                continue
+            fn = getattr(flg, fname)
+            req_cls = self.msg(proto["rpc"]["req"])
+            resp_cls = self.msg(proto["rpc"]["resp"])
+
+            async def handler(stream, fn=fn, proto=proto, resp_cls=resp_cls):
+                req = await stream.recv_message()
+                args = [self.codec.decode(req, p["name"], p["type"], self.get)
+                        for p in proto["params"]]
+                result = await fn(*args)
+                resp = resp_cls()
+                self.codec.encode(resp, "result", proto["return_type"], result,
+                                  lambda obj: self.put(obj, _tok(stream)))
+                await stream.send_message(resp)
+
+            self.mapping[proto["rpc"]["path"]] = grpclib.const.Handler(
+                self._wrap(handler, f"Functions.{fname}"),
+                grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
 
     def _session(self):
         from fake_library_generated._runtime import InternalError

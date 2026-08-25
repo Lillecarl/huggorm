@@ -247,6 +247,27 @@ class AttachedRunner(BaseRunner):
         self._obj = None
 
 
+async def call_function(fn, args: list):
+    """Run a module-level binding function on the shared pool.
+
+    Free functions have no instance, so there is no runner to own them
+    and no lazy construction to do - only the executor hop and the same
+    error policy every wrapped call gets. Arguments still go through
+    unwrap_arg: a caller holding an async wrapper passes it here exactly
+    as it would to a method."""
+    loop = asyncio.get_running_loop()
+
+    def invoke():
+        try:
+            return fn(*[unwrap_arg(a) for a in args])
+        except Exception as e:
+            if hasattr(e, "to_dict"):
+                raise  # typed wrapper error - pass through untouched
+            raise InternalError(f"{fn.__name__} failed", cause=e) from e
+
+    return await loop.run_in_executor(_shared_pool(), invoke)
+
+
 def attach_runner(obj, parent: BaseRunner, policy: str) -> BaseRunner:
     """Pick a runner for a returned object based on its declared policy."""
     if policy == "affine":

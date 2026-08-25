@@ -15,7 +15,8 @@ RUNNER_BY_THREADING = {
 # Annotation atoms that never need an import. Everything else must be
 # imported from fake_library, or get_type_hints raises NameError -
 # invisible on Python 3.14 (PEP 649 lazy annotations), fatal below.
-_BUILTIN_TYPES = {"None", "Any", "str", "int", "float", "bool", "bytes", "object"}
+_BUILTIN_TYPES = {"None", "Any", "str", "int", "float", "bool", "bytes",
+                  "object", "dict", "list", "tuple", "set"}
 
 
 def _names_in(type_str: str) -> set[str]:
@@ -486,7 +487,67 @@ def _aclose_method() -> ast.AsyncFunctionDef:
     )
 
 
-def init_module(all_names: list[str]) -> ast.Module:
+FREE_MODULE = "free_functions"
+
+
+def free_function_module(protos: list[dict], async_types: set[str]) -> ast.Module:
+    """Emit module-level coroutines for the bindings' free functions.
+
+    They have no instance, so there is no runner to hop through and no
+    handle to hold - just the shared pool, which is what "pool" means
+    everywhere else. The sync function is imported under an underscore
+    alias so the coroutine can take its plain name.
+    """
+    mod = ast.Module(body=[], type_ignores=[])
+    mod.body.append(ast.Expr(value=ast.Constant(
+        value="Generated async wrappers for the bindings' module-level "
+              "functions - do not edit. Built via ast at Nix build time.")))
+
+    annotations = []
+    for proto in protos:
+        annotations += [_param_ann(p["type"], async_types) for p in proto["params"]]
+        annotations.append(proto["return_type"])
+    used = _annotation_names(annotations)
+    mod.body.extend(_sibling_imports(used))
+    ann_import = _fake_library_import(used)
+    if ann_import is not None:
+        mod.body.append(ann_import)
+    mod.body.append(ast.ImportFrom(
+        module="fake_library",
+        names=[ast.alias(name=p["name"], asname="_" + p["name"])
+               for p in sorted(protos, key=lambda x: x["name"])],
+        level=0))
+    mod.body.append(ast.ImportFrom(
+        module="_runtime", names=[ast.alias(name="call_function")], level=1))
+
+    for proto in protos:
+        body: list[ast.stmt] = []
+        if proto["doc"]:
+            body.append(ast.Expr(value=ast.Constant(value=proto["doc"])))
+        body.append(ast.Return(value=ast.Await(value=ast.Call(
+            func=ast.Name(id="call_function"),
+            args=[ast.Name(id="_" + proto["name"]),
+                  ast.List(elts=[ast.Name(id=p["name"]) for p in proto["params"]])],
+            keywords=[]))))
+        mod.body.append(ast.AsyncFunctionDef(
+            name=proto["name"],
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg=p["name"],
+                              annotation=_ann(_param_ann(p["type"], async_types),
+                                              f"{proto['name']}:{p['name']}"))
+                      for p in proto["params"]],
+                vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
+            body=body,
+            decorator_list=[],
+            returns=_ann(proto["return_type"], proto["name"]),
+            type_params=[]))
+
+    ast.fix_missing_locations(mod)
+    return mod
+
+
+def init_module(all_names: list[str], free_names: list[str] | None = None) -> ast.Module:
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(
         ast.Expr(
@@ -498,11 +559,18 @@ def init_module(all_names: list[str]) -> ast.Module:
     for name in all_names:
         fname = f"async_{name.lower()}"
         mod.body.append(ast.ImportFrom(module=fname, names=[ast.alias(name=f"Async{name}")], level=1))
+    free_names = free_names or []
+    if free_names:
+        mod.body.append(ast.ImportFrom(
+            module=FREE_MODULE,
+            names=[ast.alias(name=n) for n in free_names],
+            level=1))
     mod.body.append(
         ast.Assign(
             targets=[ast.Name(id="__all__")],
             value=ast.List(
                 elts=[ast.Constant(value=f"Async{n}") for n in all_names]
+                + [ast.Constant(value=n) for n in free_names]
             ),
         )
     )
