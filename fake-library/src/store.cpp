@@ -105,6 +105,8 @@ const std::string & DerivedPath::output_name() const { return output_; }
 
 bool DerivedPath::is_built() const { return built_; }
 
+Store::Store() : lock_(new std::mutex()) {}
+
 Store::~Store()
 {
     delete static_cast<std::mutex *>(lock_);
@@ -112,16 +114,12 @@ Store::~Store()
 
 void Store::register_(const std::string & base_name) const
 {
-    if (!lock_)
-        lock_ = new std::mutex();
     std::lock_guard<std::mutex> guard(*static_cast<std::mutex *>(lock_));
     valid_.insert(base_name);
 }
 
 bool Store::lookup(const std::string & base_name) const
 {
-    if (!lock_)
-        return false;
     std::lock_guard<std::mutex> guard(*static_cast<std::mutex *>(lock_));
     return valid_.count(base_name) > 0;
 }

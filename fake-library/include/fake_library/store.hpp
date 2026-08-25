@@ -93,6 +93,7 @@ private:
 // mutex-guarded table, so multi-threaded use is legitimate for them.
 class Store {
 public:
+    Store();
     virtual ~Store();
 
     virtual std::string get_uri() const = 0;
@@ -117,7 +118,11 @@ protected:
 
 private:
     mutable std::set<std::string> valid_;
-    mutable void * lock_ = nullptr;  // std::mutex*, pimpl'd to keep the header light
+    // std::mutex*, pimpl'd to keep the header light. The CONSTRUCTOR
+    // creates it. Lazy creation on first use was a data race: two
+    // threads adding to the same store both saw a null pointer and both
+    // allocated, leaving two mutexes guarding one set.
+    void * lock_ = nullptr;
 };
 
 class LocalStore : public Store {
