@@ -1,0 +1,44 @@
+# Escrow claim double-counted its lease
+
+Found in the 2026-08-25 review, one day after 002 landed. Recorded
+because the SUITE WAS GREEN.
+
+## Problem
+
+Detach deliberately does not decrement entry.leases - leaving the
+count untouched is what keeps an ownerless handle alive with no
+holder. Bind, adopting those leases back out of escrow, incremented
+it. So one lease became two.
+
+Detach -> claim -> release therefore left the entry at 1, forever. The
+sweeper could not take it either: a handle with leases is by
+definition held. Every detach/claim round trip leaked its handle for
+the life of the process - the exact pattern the evaluation server
+(016) is built around.
+
+## Why the tests missed it
+
+test_lifecycle claimed escrowed handles and called them. It never
+RELEASED after claiming, so the count never had to reach zero. All
+seventeen checks passed over a permanent leak.
+
+## Fix
+
+Bind moves the escrowed lease onto the connection instead of adding
+one.
+
+HandleTable.audit() now states the invariant the whole model rests on:
+entry.leases equals what connections plus escrow hold, because every
+operation is a MOVE between those three places. A randomized loop over
+put/release/share/detach/claim/sweep holds it across 300 trials; the
+old code fails it on the second step.
+
+test_lifecycle gained the missing wire-level check: releasing a
+claimed lease must drop the handle.
+
+## Lesson worth keeping
+
+The bug was a counter that only ever went up. Every check asserted
+that something still WORKED; none asserted that something had stopped.
+Reachability tests pass over leaks by construction - see 012 for the
+property test this argues for.

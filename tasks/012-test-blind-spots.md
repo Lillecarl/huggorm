@@ -1,13 +1,31 @@
 # Test blind spots
 
-Review finding 14. Known gaps:
+Review finding 14.
 
-- smoke_test's query_derivation manifest assertion compares a string
-  against a list of dicts - vacuous (only the hasattr check works).
-- Nothing tests: unknown handle/class errors, Release invalidating a
-  handle, bint/Any-typed methods over gRPC, concurrent first-calls on
-  one handle, annotation resolution.
-- RemoteObj.__getattr__ uses next() without default: missing methods
-  raise StopIteration instead of AttributeError.
+## Closed 2026-08-25
 
-Fix alongside 001/003/004 so the new behavior is pinned by tests.
+- smoke_test's query_derivation manifest assertion compared a string
+  against a list of dicts. Vacuous. Fixed, plus the missing control
+  (RemoteStore must KEEP the method).
+- RemoteObj.__getattr__ used next() with no default, so a missing
+  method raised StopIteration. Now AttributeError, naming what the
+  manifest does offer. Dunder lookups short-circuit instead of walking
+  into manifest resolution.
+- The double-release check tested the wrong handle: release() blanks
+  handle_id, so the second call sent an empty id and the test asserted
+  that releasing "" fails. It now releases the same id through a fresh
+  object and asserts the id appears in the error.
+- Neither suite ran in any build. Both run in fake-library-python's
+  checkPhase now, grpcurl included. A green suite finally says
+  something about the last commit.
+
+## Still open
+
+- Concurrent first-calls on ONE handle over the wire. smoke_test
+  covers PoolRunner directly; nothing drives it through the server.
+- Unknown CLASS on Acquire (unknown handle is covered).
+- The invariant HandleTable.audit() checks is only driven by an ad-hoc
+  randomized loop, not by anything committed. Worth a small property
+  test over put/release/share/detach/claim/sweep: that loop is what
+  would have caught the escrow double count immediately.
+- Transitive policy enforcement has no case to test (see 008).

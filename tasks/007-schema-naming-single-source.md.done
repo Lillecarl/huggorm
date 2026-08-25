@@ -1,0 +1,24 @@
+# Schema naming: single source of truth
+
+Review finding 7. _resp() exists in three copies (grpc_schema.py,
+server.py, remote.py); a rename breaks dispatch only at first RPC.
+StrMsg/Int64Msg/BoolMsg are declared but never referenced; server
+decode's scalar branch applies message-shaped conversion to plain
+scalars (works by coincidence).
+
+Fix: grpc_schema owns all naming and the type->message map; server and
+client import it; delete unused messages.
+
+## Done 2026-08-25
+
+Closed alongside the wire-codec unification, which needed the same
+thing.
+
+grpc_schema now holds one function per naming rule (service_name,
+req_name, resp_name, method_path, value_msg_name), and annotate()
+stamps the results INTO the manifest before it is written. server and
+remote read `m["rpc"]["path"|"req"|"resp"]`; neither rebuilds a name.
+A rename now reaches both sides at build time.
+
+StrMsg/BoolMsg/Int64Msg are gone. The scalar branch is gone with them:
+WireCodec classifies by manifest policy rather than by message shape.

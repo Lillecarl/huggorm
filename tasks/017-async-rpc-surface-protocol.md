@@ -39,3 +39,24 @@ and a gRPC handle with no branching.
 
 Acceptance: one demo/test function typed against the protocol runs
 the same calls against both an in-process wrapper and a remote handle.
+
+## Update 2026-08-25
+
+Two things moved in this task's favour.
+
+Parameter annotations are honest now. They used to name the sync
+binding type alone (`is_valid_path(path: StorePath)`) while every
+in-process caller passed the wrapper. They read
+`StorePath | AsyncStorePath`, which is what unwrap_arg actually
+accepts. A protocol written against the emitted surface will now
+typecheck against real call sites.
+
+The manifest gained the names a protocol layer needs: per class a
+`service` and, for wire-values, a `message`; per method an `rpc` block
+with path/req/resp. Return-type divergence is still the open design
+question, unchanged.
+
+Note for the emission-home question: emitted modules now import
+sibling wrappers for parameter annotations. Nothing cycles today, but
+A-takes-B plus B-takes-A would deadlock the module imports. Protocols
+emitted per class will hit this sooner than the wrappers did.

@@ -1,0 +1,40 @@
+# GC build agreement: explicit, not luck
+
+Review findings 9 + 10. ODR safety currently rests on __has_include
+agreeing across TUs; the no-GC fallback branch is unreachable dead
+code in this build graph (c_eval.pxd includes gc/gc.h
+unconditionally). Also: EvalState.force and Value accessors skip
+gc_register_current_thread - safe only transitively today, unsafe when
+forcing a value produced by another state's runner.
+
+Fix: pass -DFAKE_LIBRARY_USE_BOEHMGC=1 explicitly from bindings
+setup.py (or #error on disagreement); register in force + Value
+accessors; delete or consciously keep the fallback branch.
+
+## Done 2026-08-25
+
+FAKE_LIBRARY_USE_BOEHMGC is now mandatory. gc-env.hpp `#error`s when
+it is undefined, meson.build and setup.py both pass it, and bdw-gc
+became a required meson dependency. __has_include detection is gone:
+it made ODR agreement depend on every TU happening to see the same
+include path, which held by luck and would have broken silently.
+
+The no-GC fallback branch is DELETED rather than kept. It could never
+compile in this build graph - c_eval.pxd includes gc/gc.h and binds
+GC_malloc_uncollectable directly - so keeping it preserved the
+appearance of a tested path that had never been built. Real Nix does
+support a no-GC build; restoring one here means building and testing
+it.
+
+Registration: added to EvalState.force, and to Value.__dealloc__ -
+which the task did not name and which was the worse of the two.
+__dealloc__ runs on whichever thread drops the last Python reference,
+rarely the producing runner: the asyncio loop, a pool worker, the
+server's handle reaper. GC_free takes the collector lock and may have
+to cooperate with a collection.
+
+DELIBERATELY NOT added to the Value accessors. Reading a value needs
+no registration: the uncollectable bridge cell keeps it reachable from
+any thread, so an unscanned stack cannot lose it. The header says so,
+since the asymmetry reads as an oversight otherwise. Revisit if an
+accessor ever allocates.

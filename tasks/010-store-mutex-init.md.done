@@ -5,3 +5,10 @@ void* lock_ unsynchronized; two concurrent pool adds is C++ UB and can
 create two mutexes over one set.
 
 Fix: initialize the mutex in the Store constructor or use std::once_flag.
+
+## Done 2026-08-25
+
+Store now has a declared constructor that creates the mutex, so no
+call site ever sees a null pointer. lookup drops its null branch with
+it. std::once_flag was the alternative; a constructor is simpler and
+the header stays free of <mutex> either way.

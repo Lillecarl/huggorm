@@ -1,0 +1,70 @@
+# Wire contract declared in the bindings, not the layers above
+
+Found and fixed in the 2026-08-25 review. Recorded because it is a
+design decision, not just a fix.
+
+## Problem
+
+The sentence "StorePath and DerivedPath serialize, Value and
+Derivation do not" was written out four times, by hand, in four
+layers: grpc_schema._msg_arg_type, server.decode, server.encode and
+remote.invoke. Each carried its own list of type names.
+
+Adding a class meant editing all four. Forgetting one did not fail the
+build: the schema fell through to Handle, the codec fell through to a
+scalar table, and the first RPC touching the type died with a KeyError
+from inside the server. The manifest already carried the `wire`
+policy - the layers just did not use it.
+
+That is the exact inverse of the goal: knowledge sitting at the top of
+the stack, duplicated, instead of at the bottom, once.
+
+## What the bindings declare now
+
+    cdef class StorePath:
+        _wire = "value"
+        _wire_fields = (("base_name", "str"),)
+        # plus _parts() / _from_parts()
+
+    cdef class DerivedPath:
+        _wire = "value"
+        _wire_fields = (("path", "StorePath"), ("output", "str?"))
+
+A field type may name another wire-value, which nests its message and
+makes the codec recurse. A trailing "?" marks a field proto3 cannot
+tell apart from its default - previously an `or None` hardcoded in two
+places.
+
+## What derives from it
+
+- grpc_schema builds every value message from the declared fields. No
+  type name appears in the module.
+- ONE WireCodec, in fake_library_python/wire.py, serves both sides. It
+  reads the manifest and nothing else. The two sides differ in exactly
+  one respect - what a proxy handle means - so that is the one thing
+  each passes in as a callback.
+- server.py and remote.py name no domain type at all. A check in
+  test_remote parses them and fails if one appears.
+
+## Enforcement
+
+The codegen refuses to ship a contradiction: a wire-value with no
+fields, missing round-trip helpers, an unknown field type, a proxy
+carrying fields, or a wire-value declared affine. That last one is the
+interesting invariant - a value that may not leave its thread cannot
+be serialized off it.
+
+## Verification
+
+Renaming `output` to `output_name` in store.pyx ALONE moved the proto
+message, the server and the client together, suites green, no edit
+above the bindings. Emptying _wire_fields failed the build with the
+type named.
+
+## Left for later
+
+Method NAMING is generated (grpc_schema.annotate stamps req/resp/
+service/path into the manifest), but Session's own rpcs are still
+hand-built in grpc_schema. That is defensible - they are protocol, not
+surface - but it means Session message shapes live in exactly the kind
+of hand-written list this task removed elsewhere.
