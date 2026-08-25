@@ -69,6 +69,17 @@ class Unsupported(NixError):
     store, and cannot fall back from a genuine error."""
 
 
+class InvalidPath(NixError):
+    """nix::InvalidPath - the store has no such path.
+
+    Different from BadStorePath, and the pair is worth keeping apart:
+    BadStorePath means the STRING is not a store path, this means the
+    string is a fine store path and the store does not hold it. One is
+    a caller's mistake and the other is a fact about the store, so a
+    caller can substitute or build after this and cannot after the
+    other."""
+
+
 class BadStorePath(NixError):
     """nix::BadStorePath - not a store path."""
 

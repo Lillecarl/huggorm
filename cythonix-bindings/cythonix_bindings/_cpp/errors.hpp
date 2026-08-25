@@ -88,6 +88,10 @@ inline void translate_nix_error()
         // The wider class, so nix::SysError and nix::WinError land
         // here too rather than falling through to NixError.
         raise_as("SysError", e);
+    } catch (const nix::InvalidPath & e) {
+        // The store does not hold that path. A fact about the store,
+        // like Unsupported, rather than a malformed argument.
+        raise_as("InvalidPath", e);
     } catch (const nix::Unsupported & e) {
         // A statement about the store, not about the call. Straight
         // off nix::Error, so it sits beside SystemError rather than
