@@ -335,6 +335,26 @@ async def test_behavior():
 
     assert await flg.describe(local) == "store(local)"
     assert await flg.describe(remote) == "store(uds://daemon)"
+
+    # An affine wrapper is usable as an argument from the FIRST call.
+    # It used to depend on call order: ensure() refuses to build a
+    # dedicated-thread object off-home (rightly), so a store nobody had
+    # touched yet could not be passed anywhere. Both stores above had
+    # been called already, which is why this went unseen. The runner
+    # now constructs on its own thread before the argument is unwrapped.
+    fresh = AsyncRemoteStore()
+    assert fresh._runner._obj is None, "expected an unconstructed wrapper"
+    assert await flg.describe(fresh) == "store(uds://daemon)"
+    assert fresh._runner.born_thread_name.startswith("flg-affine"), (
+        f"argument construction must stay on its own thread, not "
+        f"{fresh._runner.born_thread_name}")
+    # ...and as a method argument too, not only a free-function one.
+    untouched = AsyncEvalState("local")
+    thunk_arg = await state.parse_expr("1")
+    await untouched.force(thunk_arg)
+    assert await thunk_arg.integer() == 1
+    await untouched.aclose()
+    await fresh.aclose()
     free = manifest["free_functions"]
     assert free["describe"]["params"] == [{"name": "obj", "type": "Store"}], (
         free["describe"]["params"]

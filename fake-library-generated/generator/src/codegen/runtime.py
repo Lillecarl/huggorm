@@ -103,6 +103,19 @@ def unwrap_arg(x):
     return obj
 
 
+async def _materialize_args(args: list):
+    """Give every wrapper argument something to unwrap.
+
+    Each one constructs on ITS OWN thread, one at a time, before the
+    call hops to the callee's thread. No runner's thread is held while
+    this runs, so an affine callee waiting on an affine argument cannot
+    deadlock."""
+    for a in args:
+        r = getattr(a, "_runner", None)
+        if r is not None and r._obj is None:
+            await r.materialize()
+
+
 class BaseRunner:
     # Dedicated-thread runners (affine/attached) may only construct on
     # their own thread; pool runners may construct anywhere.
@@ -187,7 +200,27 @@ class BaseRunner:
     def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         raise NotImplementedError
 
+    async def materialize(self):
+        """Construct the target on this runner's OWN thread.
+
+        ensure() refuses to build a dedicated-thread object, because it
+        runs off-home by definition. That is right, and it left a hole:
+        an affine wrapper could not be passed as an argument until
+        something else had happened to construct it. So describe(store)
+        worked or failed depending on whether the caller had touched
+        the store first - in process and over the wire alike.
+
+        The fix is not to relax the refusal but to satisfy it. This
+        hops to the runner's own executor and constructs there, exactly
+        as a real call would, so by the time unwrap_arg sees the
+        wrapper there is an object to take."""
+        if self._obj is not None:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor(), self._resolve)
+
     async def call(self, method: str, args: list):
+        await _materialize_args(args)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor(), lambda: self._invoke(method, args))
 
@@ -274,6 +307,7 @@ async def call_function(fn, args: list):
     error policy every wrapped call gets. Arguments still go through
     unwrap_arg: a caller holding an async wrapper passes it here exactly
     as it would to a method."""
+    await _materialize_args(args)
     loop = asyncio.get_running_loop()
 
     def invoke():

@@ -294,6 +294,24 @@ async def main():
               await client.call_function("describe", store) == "store(local)")
         check("...for either implementation",
               await client.call_function("describe", rstore) == "store(uds://daemon)")
+        # A handle is resolvable as an ARGUMENT from the moment it
+        # exists. The server resolves it to a wrapper whose affine
+        # target may not be built yet; that used to refuse, so passing
+        # an untouched RemoteStore anywhere failed. Both handles above
+        # had been called already, which hid it.
+        untouched = await client.acquire("RemoteStore")
+        check("an untouched affine handle resolves as an argument",
+              await client.call_function("describe", untouched)
+              == "store(uds://daemon)")
+        await untouched.aclose()
+        # Same for a method argument: a proxy produced by one object
+        # resolves server-side when passed to another.
+        other_state = await client.acquire("EvalState", "local")
+        loose = await state.parse_expr("7")
+        await other_state.force(loose)
+        check("proxy arg resolves against a different remote object",
+              await loose.integer() == 7)
+        await other_state.aclose()
         threw = None
         try:
             await client.call_function("gc_stats")
