@@ -80,3 +80,11 @@ of the generator.
 so this needs real Nix or a mock primop table built to match. A mock
 version is worth it: the threading and lifetime rules above are what
 need proving, and none of them need real Nix to be wrong.
+
+## Dual of tasks/034
+
+034 is the same boundary from the other side: a Nix function called
+from Python. The threading rules are opposite and neither can borrow
+the other's shape. A primop runs inside evaluation, so it is SYNC and
+must not await. Applying a Nix function hops onto the evaluator's
+thread, so it is ASYNC and must not be anything else.

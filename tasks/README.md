@@ -33,6 +33,11 @@ Findings reference two architectural reviews, 2026-08-23 and
   twice: free-function requests number their fields positionally too,
   and the manifest's "schema": 1 is written by the generator and read
   by nobody.
+- 034 (functions as values) is the other half of what a value can be.
+  It needs no wire work - a function already crosses as a proxy,
+  because the tree walk leaves any kind it cannot name where it is -
+  and the question it answers is what Python type makes one callable
+  and introspectable. inspect.Signature, built from the formals.
 - 032 (log callbacks) and 033 (primops in Python) are the two places
   the flow reverses: C++ calling into Python, on Nix's schedule and
   Nix's thread. Neither can be generated from a binding declaration,
