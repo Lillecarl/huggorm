@@ -21,6 +21,7 @@ RemoteObj and reads ids back off one.
 """
 
 import importlib
+from types import ModuleType
 from typing import Any, Callable
 
 # str/int/bool as a lookup. Annotated because the inferred value type is
@@ -32,9 +33,10 @@ _SCALARS: dict[str, Callable[[Any], Any]] = {"str": str, "int": int, "bool": boo
 class WireCodec:
     """Reads the manifest; encodes and decodes rpc fields."""
 
-    def __init__(self, manifest, bindings=None):
+    def __init__(self, manifest: dict[str, Any],
+                 bindings: ModuleType | None = None) -> None:
         self.manifest = manifest
-        self._bindings = bindings
+        self._bindings: ModuleType | None = bindings
         self.kinds: dict[str, str] = {}
         self.fields: dict[str, list[list[str]]] = {}
         for group in ("wrappers", "returned_types"):
@@ -43,7 +45,7 @@ class WireCodec:
                 self.fields[name] = proto["wire_fields"]
 
     @property
-    def bindings(self):
+    def bindings(self) -> ModuleType:
         if self._bindings is None:
             self._bindings = importlib.import_module("fake_library")
         return self._bindings
@@ -64,7 +66,7 @@ class WireCodec:
 
     # -- wire-values ------------------------------------------------------
     @staticmethod
-    def _sync(obj):
+    def _sync(obj: Any) -> Any:
         """The sync binding object behind a possibly-async wrapper.
 
         The server holds generated wrappers, the client holds sync
@@ -76,7 +78,7 @@ class WireCodec:
         from fake_library_generated._runtime import unwrap_arg
         return unwrap_arg(obj)
 
-    def value_to_msg(self, type_str: str, obj, msg) -> None:
+    def value_to_msg(self, type_str: str, obj: Any, msg: Any) -> None:
         """Fill msg from obj, one declared field at a time."""
         parts = self._sync(obj)._parts()
         declared = self.fields[type_str]
@@ -96,7 +98,7 @@ class WireCodec:
             else:
                 setattr(msg, fname, val)
 
-    def value_from_msg(self, type_str: str, msg):
+    def value_from_msg(self, type_str: str, msg: Any) -> Any:
         """Rebuild a sync binding object from its message."""
         args = []
         for fname, ftype in self.fields[type_str]:
@@ -112,7 +114,8 @@ class WireCodec:
         return getattr(self.bindings, type_str)._from_parts(*args)
 
     # -- rpc fields -------------------------------------------------------
-    def encode(self, container, field: str, type_str: str, value, proxy_id) -> None:
+    def encode(self, container: Any, field: str, type_str: str, value: Any,
+               proxy_id: Callable[[Any], str]) -> None:
         """Put `value` into `container.field`. proxy_id(value) -> handle
         id, called only for proxy types."""
         kind = self.kind(type_str)
@@ -125,8 +128,9 @@ class WireCodec:
         else:
             getattr(container, field).id = proxy_id(value)
 
-    def decode(self, container, field: str, type_str: str, proxy_obj,
-               optional: bool = False):
+    def decode(self, container: Any, field: str, type_str: str,
+               proxy_obj: Callable[[str], Any],
+               optional: bool = False) -> Any:
         """Read `container.field`. proxy_obj(handle_id) -> object,
         called only for proxy types.
 

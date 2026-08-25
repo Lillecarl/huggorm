@@ -24,6 +24,7 @@ location.
 import asyncio
 import threading
 import weakref
+from typing import Any, Callable
 
 import grpclib
 import grpclib.client
@@ -38,7 +39,7 @@ from .wire import WireCodec
 
 
 class NixClient:
-    def __init__(self, host="127.0.0.1", port=50051):
+    def __init__(self, host: str = "127.0.0.1", port: int = 50051) -> None:
         self.pool = schema.load_pool()
         self.manifest = schema.load_manifest()
         self.codec = WireCodec(self.manifest)
@@ -54,13 +55,13 @@ class NixClient:
         self._dropped: list[str] = []
         self._ref_lock = threading.Lock()
 
-        def msg(name):
+        def msg(name: str) -> Any:
             return message_factory.GetMessageClass(
                 self.pool.FindMessageTypeByName(f"{schema.PKG}.{name}"))
 
-        self.msg = msg
+        self.msg: Callable[[str], Any] = msg
 
-    def proxy(self, cls_name: str, handle_id: str):
+    def proxy(self, cls_name: str, handle_id: str) -> Any:
         """A client-side object for one remote handle.
 
         The class is generated - one per class in the manifest, with
@@ -86,7 +87,7 @@ class NixClient:
         return obj
 
     # -- dropped handles ------------------------------------------------
-    def _track(self, obj, handle_id: str) -> None:
+    def _track(self, obj: Any, handle_id: str) -> None:
         with self._ref_lock:
             self._refs[handle_id] = self._refs.get(handle_id, 0) + 1
         weakref.finalize(obj, self._forget, handle_id)
@@ -135,7 +136,7 @@ class NixClient:
         # protobuf fields are Any; the schema says what this one is.
         return int(resp.released)
 
-    async def _rpc(self, path, req, reply_name):
+    async def _rpc(self, path: str, req: Any, reply_name: str) -> Any:
         from fake_library_generated._runtime import WrapperError
 
         Reply = self.msg(reply_name)
@@ -182,7 +183,7 @@ class NixClient:
             self._pinger = asyncio.create_task(self._ping_loop(interval))
         return str(resp.token)
 
-    async def _ping_loop(self, interval=10.0):
+    async def _ping_loop(self, interval: float = 10.0) -> None:
         while True:
             await asyncio.sleep(interval)
             try:
@@ -196,18 +197,19 @@ class NixClient:
             except Exception:
                 pass  # keep trying; the server sweeps us if we stay silent
 
-    def stop_pinging(self):
+    def stop_pinging(self) -> None:
         if self._pinger is not None:
             self._pinger.cancel()
             self._pinger = None
 
-    async def share(self, obj, to_token: str, mode="copy"):
+    async def share(self, obj: Any, to_token: str,
+                    mode: str = "copy") -> None:
         req = self.msg("ShareReq")(mode=mode)
         req.handle.id = obj.handle_id
         req.to_token = to_token
         await self._rpc(f"/{schema.PKG}.Session/Share", req, "AckResp")
 
-    async def detach(self, obj=None, all=False) -> bool:
+    async def detach(self, obj: Any = None, all: bool = False) -> bool:
         """Hand our claim back as escrow under our own token. With no
         target and all=True, detaches every lease we hold."""
         req = self.msg("DetachReq")(all=all)
@@ -216,7 +218,7 @@ class NixClient:
         resp = await self._rpc(f"/{schema.PKG}.Session/Detach", req, "AckResp")
         return bool(resp.ok)
 
-    async def acquire(self, cls_name, *args):
+    async def acquire(self, cls_name: str, *args: Any) -> Any:
         """Construct one instance remotely, from typed constructor
         arguments. The arguments cross exactly like method arguments -
         same codec, same wire policies - because they are declared the
@@ -247,7 +249,7 @@ class NixClient:
         resp = await self._rpc(proto["acquire"]["path"], req, "Handle")
         return self.proxy(cls_name, resp.id)
 
-    async def release(self, obj):
+    async def release(self, obj: Any) -> None:
         if obj.handle_id is None:
             # Releasing twice through the same object used to send an
             # empty id: protobuf drops a None string, so the server
@@ -259,7 +261,7 @@ class NixClient:
         self._untrack(obj.handle_id)
         obj.handle_id = None
 
-    async def call_function(self, name, *args):
+    async def call_function(self, name: str, *args: Any) -> Any:
         """Call one of the bindings' module-level functions remotely.
 
         No handle: a free function has no instance. Otherwise identical
@@ -283,11 +285,18 @@ class NixClient:
             resp, "result", proto["return_type"],
             lambda hid: self.proxy(proto["return_type"], hid))
 
-    async def invoke(self, m, handle_id, args):
+    async def invoke(self, m: dict[str, Any], handle_id: str | None,
+                     args: list[Any]) -> Any:
         """Make one call. `m` is the call spec a generated method
         carries: the manifest's own entry for that method, minus the
         docstring. Nothing is resolved here - the build already did
         it."""
+        if handle_id is None:
+            # release() blanks the id, so a call through a spent proxy
+            # arrives here as None. Protobuf would refuse it with a
+            # message about a str field; this says what happened.
+            raise ValueError(
+                f"{m['name']}: this handle was already released")
         req = self.msg(m["rpc"]["req"])()
         req.self.id = handle_id
 
@@ -308,7 +317,8 @@ class NixClient:
             lambda hid: self.proxy(m["return_type"], hid))
 
 
-async def connect(host="127.0.0.1", port=50051, claim=None) -> NixClient:
+async def connect(host: str = "127.0.0.1", port: int = 50051,
+                  claim: str | None = None) -> NixClient:
     """Connect and bind a connection identity (claiming escrow when a
     detached session's token is presented)."""
     client = NixClient(host, port)

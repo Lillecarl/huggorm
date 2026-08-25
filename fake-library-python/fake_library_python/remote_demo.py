@@ -13,7 +13,7 @@ import asyncio
 from fake_library_python import remote
 
 
-async def main():
+async def main() -> None:
     client = await remote.connect()
 
     local = await client.acquire("LocalStore")

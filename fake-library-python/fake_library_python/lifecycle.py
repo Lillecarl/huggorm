@@ -25,7 +25,7 @@ Model (tasks/002):
 
 import time
 import uuid
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 ANON = "\x00anon"
 
@@ -43,7 +43,7 @@ class Entry:
 
     __slots__ = ("obj", "leases", "parents", "children")
 
-    def __init__(self, obj):
+    def __init__(self, obj: Any) -> None:
         self.obj = obj
         self.leases = 0
         self.parents: set[str] = set()
@@ -53,7 +53,7 @@ class Entry:
 class Connection:
     __slots__ = ("leases", "last_seen")
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.leases: dict[str, int] = {}
         self.last_seen = time.monotonic()
 
@@ -106,7 +106,8 @@ class HandleTable:
         return conn
 
     # -- handles --------------------------------------------------------
-    def put(self, obj, holder_token: str, parents=()) -> str:
+    def put(self, obj: Any, holder_token: str,
+            parents: Iterable[str] = ()) -> str:
         """Register a wrapper and grant one lease to the holder."""
         hid = _new_id()
         entry = Entry(obj)
@@ -120,7 +121,7 @@ class HandleTable:
         self._grant(holder_token, hid, 1)
         return hid
 
-    def get(self, hid: str):
+    def get(self, hid: str) -> Any:
         return self.entries[hid].obj
 
     def _grant(self, token: str, hid: str, n: int) -> None:

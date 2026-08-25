@@ -34,7 +34,7 @@ class MyCache(Store):
         return "https://my-cache.example.com"
 
 
-def demo():
+def demo() -> None:
     local = LocalStore()
     remote = RemoteStore()
     loud = LoudLocal()

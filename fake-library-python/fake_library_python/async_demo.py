@@ -14,7 +14,7 @@ from fake_library_generated import (
 from fake_library_generated._runtime import InternalError
 
 
-async def main():
+async def main() -> None:
     local = AsyncLocalStore()
     remote = AsyncRemoteStore()
 

@@ -11,7 +11,8 @@ hand-written per method.
 
 import asyncio
 import json
-from typing import Any
+from collections.abc import Awaitable, Iterable
+from typing import Any, Callable
 
 import grpclib
 import grpclib.const
@@ -25,7 +26,11 @@ from .lifecycle import TOKEN_HEADER, HandleTable
 from .wire import WireCodec
 
 
-def _tok(stream) -> str:
+# One grpclib handler: it reads the stream and answers on it.
+Handler = Callable[[Any], Awaitable[None]]
+
+
+def _tok(stream: Any) -> str:
     """The connection token presented with this request ('' if none)."""
     md: dict[str, Any] = stream.metadata or {}
     value = md.get(TOKEN_HEADER, "")
@@ -33,7 +38,8 @@ def _tok(stream) -> str:
 
 
 class Dispatcher:
-    def __init__(self, pool, manifest, lease_ttl=120.0):
+    def __init__(self, pool: Any, manifest: dict[str, Any],
+                 lease_ttl: float = 120.0) -> None:
         self.pool = pool
         self.manifest = manifest
         self.table = HandleTable(ttl=lease_ttl)
@@ -52,36 +58,37 @@ class Dispatcher:
         self._free_service()
 
     @staticmethod
-    def _on_drop(obj):
+    def _on_drop(obj: Any) -> None:
         # Fire-and-forget runner shutdown; sweep runs on the loop.
-        async def _close():
+        async def _close() -> None:
             try:
                 await obj.aclose()
             except Exception:
                 pass
         asyncio.ensure_future(_close())
 
-    def msg(self, name):
+    def msg(self, name: str) -> Any:
         return message_factory.GetMessageClass(
             self.pool.FindMessageTypeByName(f"{schema.PKG}.{name}"))
 
     # -- handles ---------------------------------------------------------
-    def put(self, obj, token, parents=()) -> str:
+    def put(self, obj: Any, token: str,
+            parents: Iterable[str] = ()) -> str:
         return self.table.put(obj, token, parents)
 
-    def get(self, hid: str):
+    def get(self, hid: str) -> Any:
         return self.table.get(hid)
 
     # -- handler construction ----------------------------------------------
     @staticmethod
-    def _wrap(handler, label):
+    def _wrap(handler: Handler, label: str) -> Handler:
         """Every failure crosses the wire as a typed JSON payload in the
         gRPC status message: WrapperErrors as themselves, everything
         else wrapped in InternalError - so unknown handles and bugs
         arrive debuggable, not anonymous."""
         from fake_library_generated._runtime import InternalError, WrapperError
 
-        async def guard(stream):
+        async def guard(stream: Any) -> None:
             try:
                 await handler(stream)
             except WrapperError as e:
@@ -93,7 +100,7 @@ class Dispatcher:
                     grpclib.const.Status.UNKNOWN, json.dumps(internal.to_dict()))
         return guard
 
-    def _service(self, cls_name, proto):
+    def _service(self, cls_name: str, proto: dict[str, Any]) -> None:
         if "acquire" in proto:
             self._acquire(cls_name, proto)
 
@@ -101,7 +108,8 @@ class Dispatcher:
             req_cls = self.msg(m["rpc"]["req"])
             resp_cls = self.msg(m["rpc"]["resp"])
 
-            async def handler(stream, m=m, resp_cls=resp_cls):
+            async def handler(stream: Any, m: dict[str, Any] = m,
+                              resp_cls: Any = resp_cls) -> None:
                 req = await stream.recv_message()
                 target = self.get(req.self.id)
                 args = [self.codec.decode(req, p["name"], p["type"], self.get)
@@ -120,7 +128,7 @@ class Dispatcher:
                 self._wrap(handler, f"{cls_name}.{m['name']}"),
                 grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
 
-    def _acquire(self, cls_name, proto):
+    def _acquire(self, cls_name: str, proto: dict[str, Any]) -> None:
         """Construct one instance, from typed constructor arguments.
 
         The old Session/Acquire took a class NAME and nothing else, so
@@ -135,8 +143,9 @@ class Dispatcher:
         req_cls = self.msg(proto["acquire"]["req"])
         handle_cls = self.msg("Handle")
 
-        async def handler(stream, wrapper_cls=wrapper_cls, proto=proto,
-                          handle_cls=handle_cls):
+        async def handler(stream: Any, wrapper_cls: Any = wrapper_cls,
+                          proto: dict[str, Any] = proto,
+                          handle_cls: Any = handle_cls) -> None:
             req = await stream.recv_message()
             args = [self.codec.decode(req, p["name"], p["type"], self.get,
                                       optional=p["optional"])
@@ -149,7 +158,7 @@ class Dispatcher:
             self._wrap(handler, f"{cls_name}.Acquire"),
             grpclib.const.Cardinality.UNARY_UNARY, req_cls, handle_cls)
 
-    def _free_service(self):
+    def _free_service(self) -> None:
         """Module-level functions, on one shared service.
 
         They have no instance, so their requests carry no `self` handle
@@ -166,7 +175,9 @@ class Dispatcher:
             req_cls = self.msg(proto["rpc"]["req"])
             resp_cls = self.msg(proto["rpc"]["resp"])
 
-            async def handler(stream, fn=fn, proto=proto, resp_cls=resp_cls):
+            async def handler(stream: Any, fn: Any = fn,
+                              proto: dict[str, Any] = proto,
+                              resp_cls: Any = resp_cls) -> None:
                 req = await stream.recv_message()
                 args = [self.codec.decode(req, p["name"], p["type"], self.get)
                         for p in proto["params"]]
@@ -180,14 +191,14 @@ class Dispatcher:
                 self._wrap(handler, f"Functions.{fname}"),
                 grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
 
-    def _session(self):
+    def _session(self) -> None:
         from fake_library_generated._runtime import InternalError
 
-        def guard_untyped(fn):
+        def guard_untyped(fn: Handler) -> Handler:
             """Session rpcs raise plain KeyError/ValueError from the
             lifecycle core; give them the same typed-JSON contract as
             the service handlers."""
-            async def guarded(stream):
+            async def guarded(stream: Any) -> None:
                 try:
                     await fn(stream)
                 except Exception as e:
@@ -197,7 +208,7 @@ class Dispatcher:
                         json.dumps(internal.to_dict()))
             return guarded
 
-        async def release_many(stream):
+        async def release_many(stream: Any) -> None:
             """Best-effort batch release for handles the client dropped.
 
             Per-handle tolerance is the point. The client queues an id
@@ -219,13 +230,13 @@ class Dispatcher:
             resp.released, resp.unknown = released, unknown
             await stream.send_message(resp)
 
-        async def release(stream):
+        async def release(stream: Any) -> None:
             req = await stream.recv_message()
             self.table.release(_tok(stream),
                                req.self.id if hasattr(req, "self") else req.id)
             await stream.send_message(self.msg("Handle")())
 
-        async def bind(stream):
+        async def bind(stream: Any) -> None:
             req = await stream.recv_message()
             claim = getattr(req, "claim_token") or None
             resp = self.msg("ConnResp")()
@@ -233,14 +244,14 @@ class Dispatcher:
             resp.lease_ttl = self.table.ttl or 0.0
             await stream.send_message(resp)
 
-        async def ping(stream):
+        async def ping(stream: Any) -> None:
             req = await stream.recv_message()
             self.table._conn_for(getattr(req, "token"))
             ack = self.msg("AckResp")()
             ack.ok = True
             await stream.send_message(ack)
 
-        async def share(stream):
+        async def share(stream: Any) -> None:
             req = await stream.recv_message()
             self.table.share(_tok(stream), getattr(req, "to_token"),
                              req.handle.id, mode=getattr(req, "mode") or "copy")
@@ -248,7 +259,7 @@ class Dispatcher:
             ack.ok = True
             await stream.send_message(ack)
 
-        async def detach(stream):
+        async def detach(stream: Any) -> None:
             req = await stream.recv_message()
             token = _tok(stream)
             hid = req.target.id if req.HasField("target") else None
@@ -274,14 +285,15 @@ class Dispatcher:
                 req_cls, resp_cls)
 
 
-async def serve(host="127.0.0.1", port=50051, lease_ttl=120.0):
+async def serve(host: str = "127.0.0.1", port: int = 50051,
+                lease_ttl: float = 120.0) -> None:
     pool = schema.load_pool()
     dispatcher = Dispatcher(pool, schema.load_manifest(), lease_ttl=lease_ttl)
 
     # Connection liveness: transports never report death; the sweeper
     # notices silence past the TTL and releases what the dead
     # connection held (tasks/002).
-    async def sweeper():
+    async def sweeper() -> None:
         interval = max(0.5, min(lease_ttl / 4 if lease_ttl else 5, 5))
         while True:
             await asyncio.sleep(interval)
@@ -302,7 +314,9 @@ async def serve(host="127.0.0.1", port=50051, lease_ttl=120.0):
         grouped.setdefault(svc_name, {})[path] = h
     for subset in grouped.values():
         class Servable:
-            def __mapping__(self, _subset=subset):
+            def __mapping__(
+                self, _subset: dict[str, grpclib.const.Handler] = subset
+            ) -> dict[str, grpclib.const.Handler]:
                 return _subset
         services.append(Servable())
     # A new name: extend() hands back reflection's own servable type,
