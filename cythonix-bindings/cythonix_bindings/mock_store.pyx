@@ -44,6 +44,10 @@ from cythonix_bindings.c_mock_store cimport (
     describe_store,
 )
 
+# See eval.pyx: a free function declares itself with a decorator,
+# because unlike a cdef class it can take one.
+from cythonix_bindings._declare import binds, threading
+
 # --- Trampoline: C++ class that forwards virtuals to Python ---
 cdef extern from *:
     """
@@ -360,6 +364,8 @@ cdef class MockDerivedPath:
         return (p, out)
 
 
+@threading("pool")
+@binds("describe_store")
 def describe(obj) -> str:
     """C++ free function describe_store(const MockStore&) - goes through C++
     virtual dispatch. Sees get_uri overrides on trampoline subclasses
@@ -370,15 +376,3 @@ def describe(obj) -> str:
     cdef string res = describe_store(deref((<MockStore>obj)._ptr))
     return res.decode('utf-8')
 
-
-# Module-level functions carry the same marker their classes do, and it
-# is what OPTS THEM IN: the codegen wraps only what is marked, so a
-# helper the module happens to export stays out of the surface.
-#
-# "pool" is the only policy available. A free function has no instance
-# and therefore no home thread to be affine to; the codegen rejects
-# anything else.
-describe._threading = "pool"
-# Same marker a class carries, for the same reason: the Python name and
-# the pxd name differ, and nothing else joins them.
-describe._binds = "describe_store"

@@ -29,6 +29,11 @@ from cythonix_bindings.c_eval cimport (
     gc_collect,
 )
 
+# The declaration goes ON the function. A cdef class cannot take a
+# decorator at all - Cython allows exactly two - so a class declares
+# itself in its body and a free function declares itself here.
+from cythonix_bindings._declare import threading
+
 # Register this thread with the collector (and initialize it) before any
 # value can exist.
 gc_init()
@@ -261,6 +266,7 @@ cdef class EvalState:
         self._ptr.attrs_set(target._cell[0], c_name, item._cell[0])
 
 
+@threading("pool")
 def gc_stats() -> dict[str, int]:
     """Live collector counters, bound straight from gc.h. These prove
     the collector is ACTIVE: a no-op integration cannot fake them."""
@@ -273,6 +279,7 @@ def gc_stats() -> dict[str, int]:
     }
 
 
+@threading("pool")
 def collect_garbage() -> None:
     """Run a full stop-the-world collection (twice). No-op without
     Boehm GC. Global process state, mirroring libgc: not a method on
@@ -285,10 +292,11 @@ def collect_garbage() -> None:
 def gc_release_thread() -> None:
     """Take the CURRENT thread off the collector's list.
 
-    Runtime plumbing, not domain surface: it carries no _threading
-    marker, so the codegen leaves it alone and it has no async or RPC
-    form. A thread that registered must call this as its last GC
-    action before it exits.
+    Runtime plumbing, not domain surface: it carries no @threading,
+    so the codegen leaves it alone and it has no async or RPC form.
+    The absence is the declaration, and it is visible here rather than
+    as a missing line somewhere else. A thread that registered must
+    call this as its last GC action before it exits.
 
     Boehm stops the world by signalling every registered thread and
     waiting for each to answer. A thread that exits while still
@@ -297,9 +305,3 @@ def gc_release_thread() -> None:
     wrapper is closed."""
     gc_unregister_current_thread()
 
-
-# See store.pyx: the marker opts a module-level function into the
-# generated surface, and "pool" is the only policy a free function can
-# have.
-gc_stats._threading = "pool"
-collect_garbage._threading = "pool"

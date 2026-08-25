@@ -121,10 +121,29 @@ the same knowledge by hand. The generator reads all of them:
     _abstract    True for a generated base       inheritance   (018)
     _blocking    False if no method can wait     wrap or not   (025)
 
-Module-level functions declare `_threading` and `_binds`. Every public
-one is in the manifest either way; the policy decides only whether it
-gets an async form and an rpc, and "pool" is the only legal one - no
-instance, so no thread to be affine to (021).
+A class declares itself in its BODY, and that is forced rather than
+chosen. Cython refuses any decorator on a cdef class but
+`functools.total_ordering` and `dataclasses.dataclass` - "Cdef
+functions/classes cannot take arbitrary decorators" - and setting the
+attribute afterwards fails too, because an extension type is
+immutable.
+
+Module-level functions declare the same two things with DECORATORS,
+which a `def` can take:
+
+    @threading("pool")            execution policy
+    @binds("describe_store")      the pxd name, when it differs
+
+They set the same attributes, so the generator reads one thing either
+way. They return the function itself and never a wrapper: the
+generator reads the signature off what the module exports, and a
+wrapper would turn every parameter into Any - which the unresolved-type
+gate catches.
+
+Every public function is in the manifest either way; the policy
+decides only whether it gets an async form and an rpc, and "pool" is
+the only legal one - no instance, so no thread to be affine to (021).
+An undecorated function says exactly that by carrying no decorator.
 
 Constructor signatures come from the pxd, which is the only place they
 exist at all - Cython exposes no signature for __cinit__ (019).
