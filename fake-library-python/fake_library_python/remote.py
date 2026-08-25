@@ -19,6 +19,7 @@ from google.protobuf import message_factory
 
 from . import grpc_pb as schema
 from .lifecycle import TOKEN_HEADER
+from .wire import WireCodec
 
 
 class RemoteObj:
@@ -27,14 +28,35 @@ class RemoteObj:
         self._cls = cls_name
         self.handle_id = handle_id
 
+    def _proto(self) -> dict:
+        mft = self._client.manifest
+        try:
+            return mft["wrappers"].get(self._cls) or mft["returned_types"][self._cls]
+        except KeyError:
+            raise AttributeError(
+                f"{self._cls!r} is not a class in the manifest") from None
+
     @property
     def wire(self) -> str:
-        return self._client.manifest["wrappers"].get(self._cls, {}).get("wire", "proxy")
+        # Both groups, not just wrappers: a returned type used to fall
+        # through to the "proxy" default and answer correctly only
+        # because every returned proxy happens to be one.
+        return self._proto()["wire"]
 
     def __getattr__(self, method):
-        mft = self._client.manifest
-        proto = mft["wrappers"].get(self._cls) or mft["returned_types"][self._cls]
-        m = next(m for m in proto["methods"] if m["name"] == method)
+        if method.startswith("_"):
+            # Never let a dunder lookup (copy, pickle, repr helpers) walk
+            # into manifest resolution and come back as a coroutine.
+            raise AttributeError(method)
+        proto = self._proto()
+        m = next((m for m in proto["methods"] if m["name"] == method), None)
+        if m is None:
+            # next() with no default raised StopIteration here, which
+            # neither reads as a missing attribute nor survives inside a
+            # coroutine.
+            raise AttributeError(
+                f"{self._cls!r} has no remote method {method!r}; the manifest "
+                f"offers {sorted(x['name'] for x in proto['methods'])}")
 
         async def call(*args):
             return await self._client.invoke(self._cls, m, self.handle_id, args)
@@ -46,6 +68,7 @@ class NixClient:
     def __init__(self, host="127.0.0.1", port=50051):
         self.pool = schema.load_pool()
         self.manifest = schema.load_manifest()
+        self.codec = WireCodec(self.manifest)
         self.channel = grpclib.client.Channel(host, port)
         self.token: str | None = None
         self._pinger: asyncio.Task | None = None
@@ -145,47 +168,24 @@ class NixClient:
         obj.handle_id = None
 
     async def invoke(self, cls_name, m, handle_id, args):
-        Req = self.msg(f"{cls_name}_{m['name']}Req")
-        RespName = _resp(cls_name, m)
-        req = Req()
+        req = self.msg(m["rpc"]["req"])()
         req.self.id = handle_id
 
+        # Wire names and wire policies both come out of the manifest, so
+        # this method mentions no concrete type: a proxy arg contributes
+        # its handle id, a wire-value serializes through its declared
+        # parts, a scalar goes in as itself.
         for p, val in zip(m["params"], args):
-            field = getattr(req, p["name"])
-            t = p["type"]
-            if t == "StorePath":
-                field.base_name = val.to_string()          # sync value -> msg
-            elif t == "DerivedPath":
-                base, out = val._parts()
-                field.path.base_name = base
-                if out:
-                    field.output = out
-            elif t in ("Value", "Derivation"):
-                field.id = val.handle_id                    # proxy arg = handle
-            else:
-                setattr(req, p["name"], val)
+            self.codec.encode(req, p["name"], p["type"], val,
+                              lambda obj: obj.handle_id)
 
-        resp = await self._rpc(
-            f"/{schema.PKG}.{cls_name}Service/{m['name']}", req, RespName)
+        resp = await self._rpc(m["rpc"]["path"], req, m["rpc"]["resp"])
 
-        rt = m["return_type"]
-        if rt in ("Value", "Derivation"):
-            return RemoteObj(self, rt, resp.result.id)      # proxy stays remote
-        if rt == "StorePath":
-            import fake_library as fl
-            return fl.StorePath._from_base_name(resp.result.base_name)
-        if rt == "DerivedPath":
-            import fake_library as fl
-            return fl.DerivedPath._from_parts(
-                fl.StorePath._from_base_name(resp.result.path.base_name),
-                resp.result.output or None)
-        if rt == "None":
-            return None
-        return getattr(resp, "result")                      # scalars
-
-
-def _resp(cls_name, m):
-    return f"{cls_name}_{m['name'].title().replace('_', '')}Resp"
+        # Proxies stay remote behind a handle; values come back as real
+        # local objects.
+        return self.codec.decode(
+            resp, "result", m["return_type"],
+            lambda hid: RemoteObj(self, m["return_type"], hid))
 
 
 async def connect(host="127.0.0.1", port=50051, claim=None) -> NixClient:

@@ -15,6 +15,7 @@ import asyncio
 import glob
 import json
 import os
+import pathlib
 import shutil
 import socket
 import sys
@@ -83,6 +84,35 @@ async def drain(stream, sink):
         sink.append(line.decode(errors="replace"))
 
 
+def check_no_hardcoded_domain_types():
+    """No layer above the bindings may name a domain type.
+
+    Wire policy is declared next to the binding and reaches the schema,
+    the server and the client through the manifest. A type name written
+    into any of them is the duplication this design exists to remove:
+    it means adding a class needs edits in four places, and forgetting
+    one fails at the first call that touches it, not at build time."""
+    import ast
+
+    from fake_library_python import grpc_pb
+
+    manifest = grpc_pb.load_manifest()
+    domain = {
+        name
+        for group in ("wrappers", "returned_types")
+        for name in manifest[group]
+    }
+    here = pathlib.Path(__file__).parent / "fake_library_python"
+    offenders = []
+    for mod in ("server.py", "remote.py", "wire.py", "lifecycle.py", "grpc_pb.py"):
+        tree = ast.parse((here / mod).read_text(), filename=mod)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value in domain:
+                offenders.append(f"{mod}:{node.lineno}: {node.value!r}")
+    check("no domain type names above the bindings", not offenders,
+          "; ".join(offenders))
+
+
 async def main():
     global PORT
     PORT = free_port()
@@ -101,6 +131,8 @@ async def main():
         from fake_library import DerivedPath
         from fake_library_generated._runtime import InternalError
         from fake_library_python import remote
+
+        check_no_hardcoded_domain_types()
 
         client = await asyncio.wait_for(remote.connect(HOST, PORT), 10)
 

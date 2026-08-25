@@ -165,6 +165,12 @@ cdef class StorePath:
     # Immutable value: safe to serialize across a wire, so it crosses
     # wrapper boundaries as a copy.
     _wire = "value"
+    # Serialization contract for every wire-value type, read by the
+    # codegen. The field list IS the proto message shape; a field type
+    # naming another wire-value nests that type's message. _parts()
+    # returns the values in this order and _from_parts() rebuilds from
+    # them, so no layer above this file knows what a StorePath contains.
+    _wire_fields = (("base_name", "str"),)
 
     cdef CStorePath* _ptr
 
@@ -190,13 +196,18 @@ cdef class StorePath:
         return self._ptr.hash().decode('utf-8')
 
     @classmethod
-    def _from_base_name(cls, str base):
+    def _from_parts(cls, str base_name):
         """Wire-deserialization helper (private, never surfaced by the
         codegen): rebuild a produced value from its '<hash>-<name>'.
         Parsing and validation live in C++, mirroring real Nix."""
         cdef StorePath s = StorePath.__new__(StorePath)
-        s._ptr = new CStorePath(base.encode('utf-8'))
+        s._ptr = new CStorePath(base_name.encode('utf-8'))
         return s
+
+    def _parts(self):
+        """Wire-serialization helper (private): one value per
+        _wire_fields entry, in order."""
+        return (self._ptr.to_string().decode('utf-8'),)
 
     def name_part(self) -> str:
         return self._ptr.name().decode('utf-8')
@@ -234,6 +245,12 @@ cdef class DerivedPath:
     _threading = "pool"
     # Immutable build request: wire-value.
     _wire = "value"
+    # A wire-value field may name another wire-value type: the emitted
+    # message nests StorePathMsg and the codec recurses into it.
+    # A trailing "?" marks an optional field: proto3 cannot tell an
+    # unset string from an empty one, so the contract says which way to
+    # read it back. Opaque requests carry no output.
+    _wire_fields = (("path", "StorePath"), ("output", "str?"))
 
     cdef CDerivedPath* _ptr
 
@@ -280,11 +297,15 @@ cdef class DerivedPath:
         return d
 
     def _parts(self):
-        """Wire-serialization helper (private): (base_name, output|None)."""
+        """Wire-serialization helper (private): (StorePath, output|None).
+        The first element is a real StorePath, matching the declared
+        _wire_fields type - the codec serializes it in turn."""
         cdef str out = None
         if self._ptr.is_built():
             out = self._ptr.output_name().decode('utf-8')
-        return (self._ptr.path().to_string().decode('utf-8'), out)
+        cdef StorePath p = StorePath.__new__(StorePath)
+        p._ptr = new CStorePath(self._ptr.path())
+        return (p, out)
 
 
 def describe(obj) -> str:

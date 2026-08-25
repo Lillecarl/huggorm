@@ -1,0 +1,133 @@
+"""
+Manifest-driven wire codec, shared by the server and the client.
+
+This module knows the SHAPE of the problem - scalars go in fields,
+wire-values decompose into their declared parts, proxies travel as
+handles - and nothing about the types. Every type name it acts on comes
+out of the manifest, which got it from a `_wire` / `_wire_fields`
+declaration next to the binding itself.
+
+That is the point. Before this existed, the four layers above the
+bindings each carried their own copy of the sentence "StorePath and
+DerivedPath serialize, Value and Derivation do not": the schema builder,
+the server's decode, the server's encode and the client's invoke.
+Adding a type meant editing all four, and forgetting one produced a
+KeyError on the first call that touched it.
+
+The two sides differ in exactly one respect, so it is the one thing
+they pass in: what a proxy handle means. The server resolves an id to a
+live wrapper and registers new ones; the client turns an id into a
+RemoteObj and reads ids back off one.
+"""
+
+import importlib
+
+
+class WireCodec:
+    """Reads the manifest; encodes and decodes rpc fields."""
+
+    def __init__(self, manifest, bindings=None):
+        self.manifest = manifest
+        self._bindings = bindings
+        self.kinds: dict[str, str] = {}
+        self.fields: dict[str, list] = {}
+        for group in ("wrappers", "returned_types"):
+            for name, proto in manifest[group].items():
+                self.kinds[name] = proto["wire"]
+                self.fields[name] = proto["wire_fields"]
+
+    @property
+    def bindings(self):
+        if self._bindings is None:
+            self._bindings = importlib.import_module("fake_library")
+        return self._bindings
+
+    # -- classification ---------------------------------------------------
+    def kind(self, type_str: str) -> str:
+        """"none", "scalar", "value" or "proxy"."""
+        if type_str == "None":
+            return "none"
+        if type_str in ("str", "int", "bool"):
+            return "scalar"
+        try:
+            return self.kinds[type_str]
+        except KeyError:
+            raise TypeError(
+                f"{type_str!r} has no wire policy: it is neither a scalar nor "
+                f"a class in the manifest") from None
+
+    # -- wire-values ------------------------------------------------------
+    @staticmethod
+    def _sync(obj):
+        """The sync binding object behind a possibly-async wrapper.
+
+        The server holds generated wrappers, the client holds sync
+        objects; the round-trip helpers live only on the sync class.
+        Wire-values are always pool-threaded (the codegen enforces it),
+        so unwrapping is safe from whichever thread we are on."""
+        if getattr(obj, "_runner", None) is None:
+            return obj
+        from fake_library_generated._runtime import unwrap_arg
+        return unwrap_arg(obj)
+
+    def value_to_msg(self, type_str: str, obj, msg) -> None:
+        """Fill msg from obj, one declared field at a time."""
+        parts = self._sync(obj)._parts()
+        declared = self.fields[type_str]
+        if len(parts) != len(declared):
+            raise TypeError(
+                f"{type_str}._parts() returned {len(parts)} value(s) for "
+                f"{len(declared)} declared _wire_fields")
+        for (fname, ftype), val in zip(declared, parts):
+            optional = ftype.endswith("?")
+            ftype = ftype.removesuffix("?")
+            if val is None:
+                if not optional:
+                    raise TypeError(f"{type_str}.{fname} is not optional")
+                continue  # proto3 default stands in for "unset"
+            if self.kind(ftype) == "value":
+                self.value_to_msg(ftype, val, getattr(msg, fname))
+            else:
+                setattr(msg, fname, val)
+
+    def value_from_msg(self, type_str: str, msg):
+        """Rebuild a sync binding object from its message."""
+        args = []
+        for fname, ftype in self.fields[type_str]:
+            optional = ftype.endswith("?")
+            ftype = ftype.removesuffix("?")
+            raw = getattr(msg, fname)
+            if self.kind(ftype) == "value":
+                args.append(self.value_from_msg(ftype, raw))
+            else:
+                # proto3 cannot distinguish unset from default, so the
+                # "?" marker decides how to read an empty one back.
+                args.append(None if optional and not raw else raw)
+        return getattr(self.bindings, type_str)._from_parts(*args)
+
+    # -- rpc fields -------------------------------------------------------
+    def encode(self, container, field: str, type_str: str, value, proxy_id) -> None:
+        """Put `value` into `container.field`. proxy_id(value) -> handle
+        id, called only for proxy types."""
+        kind = self.kind(type_str)
+        if kind == "none":
+            return
+        if kind == "scalar":
+            setattr(container, field, {"str": str, "int": int, "bool": bool}[type_str](value))
+        elif kind == "value":
+            self.value_to_msg(type_str, value, getattr(container, field))
+        else:
+            getattr(container, field).id = proxy_id(value)
+
+    def decode(self, container, field: str, type_str: str, proxy_obj):
+        """Read `container.field`. proxy_obj(handle_id) -> object,
+        called only for proxy types."""
+        kind = self.kind(type_str)
+        if kind == "none":
+            return None
+        raw = getattr(container, field)
+        if kind == "scalar":
+            return raw
+        if kind == "value":
+            return self.value_from_msg(type_str, raw)
+        return proxy_obj(raw.id)

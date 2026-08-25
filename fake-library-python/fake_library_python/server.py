@@ -22,6 +22,7 @@ from grpclib.reflection.service import ServerReflection
 
 from . import grpc_pb as schema
 from .lifecycle import TOKEN_HEADER, HandleTable
+from .wire import WireCodec
 
 
 def _tok(stream) -> str:
@@ -37,6 +38,7 @@ class Dispatcher:
         self.manifest = manifest
         self.table = HandleTable(ttl=lease_ttl)
         self.table.on_drop = self._on_drop
+        self.codec = WireCodec(manifest)
         self.classes = _acquire_able(manifest)
         self.mapping = {}
         self._session()
@@ -52,7 +54,6 @@ class Dispatcher:
                 await obj.aclose()
             except Exception:
                 pass
-        import asyncio
         asyncio.ensure_future(_close())
 
     def msg(self, name):
@@ -65,35 +66,6 @@ class Dispatcher:
 
     def get(self, hid: str):
         return self.table.get(hid)
-
-    # -- wire-value codec -------------------------------------------------
-    def decode(self, type_str, msg):
-        import fake_library as fl
-        if type_str == "StorePath":
-            return fl.StorePath._from_base_name(msg.base_name)
-        if type_str == "DerivedPath":
-            path = fl.StorePath._from_base_name(msg.path.base_name)
-            return fl.DerivedPath._from_parts(path, msg.output or None)
-        if type_str in ("Value", "Derivation"):
-            return self.get(msg.id)
-        return {"str": str, "int": int, "bool": bool}[type_str](msg)
-
-    async def encode(self, resp, field, type_str, result):
-        if type_str == "str":
-            setattr(resp, field, str(result))
-        elif type_str == "int":
-            setattr(resp, field, int(result))
-        elif type_str == "bool":
-            setattr(resp, field, bool(result))
-        elif type_str == "StorePath":
-            getattr(resp, field).base_name = await result.to_string()
-        elif type_str == "DerivedPath":
-            base, out = result._parts()
-            getattr(resp, field).path.base_name = base
-            if out:
-                getattr(resp, field).output = out
-        else:
-            raise TypeError(f"cannot encode {type_str}")
 
     # -- handler construction ----------------------------------------------
     def _service(self, cls_name, proto):
@@ -120,31 +92,27 @@ class Dispatcher:
             return guard
 
         for m in proto["methods"]:
-            req_cls = self.msg(f"{cls_name}_{m['name']}Req")
-            resp_cls = self.msg(_resp(cls_name, m))
+            req_cls = self.msg(m["rpc"]["req"])
+            resp_cls = self.msg(m["rpc"]["resp"])
 
-            async def handler(stream, m=m, req_cls=req_cls, resp_cls=resp_cls,
-                              cls_name=cls_name):
+            async def handler(stream, m=m, resp_cls=resp_cls):
                 req = await stream.recv_message()
                 target = self.get(req.self.id)
-                args = [self.decode(p["type"], getattr(req, p["name"]))
+                args = [self.codec.decode(req, p["name"], p["type"], self.get)
                         for p in m["params"]]
                 result = await getattr(target, m["name"])(*args)
                 resp = resp_cls()
-                rt = m["return_type"]
-                if rt in ("Value", "Derivation"):
-                    # Proxy return: the produced object pins its producer
-                    # (parents=[self]) and leases to the CALLER's connection.
-                    resp.result.id = self.put(result, _tok(stream),
-                                              parents=[req.self.id])
-                elif rt != "None":
-                    await self.encode(resp, "result", rt, result)
+                # Proxy returns pin their producer (parents=[self]) and
+                # lease to the CALLER's connection; everything else is
+                # serialized by the manifest-driven codec.
+                self.codec.encode(
+                    resp, "result", m["return_type"], result,
+                    lambda obj: self.put(obj, _tok(stream), parents=[req.self.id]))
                 await stream.send_message(resp)
 
-            self.mapping[f"/{schema.PKG}.{cls_name}Service/{m['name']}"] = \
-                grpclib.const.Handler(
-                    wrap(handler, m["name"]), grpclib.const.Cardinality.UNARY_UNARY,
-                    req_cls, resp_cls)
+            self.mapping[m["rpc"]["path"]] = grpclib.const.Handler(
+                wrap(handler, m["name"]), grpclib.const.Cardinality.UNARY_UNARY,
+                req_cls, resp_cls)
 
     def _session(self):
         from fake_library_generated._runtime import InternalError
@@ -231,10 +199,6 @@ class Dispatcher:
             self.mapping[f"/{schema.PKG}.Session/{name}"] = grpclib.const.Handler(
                 guard_untyped(fn), grpclib.const.Cardinality.UNARY_UNARY,
                 req_cls, resp_cls)
-
-
-def _resp(cls_name, m):
-    return f"{cls_name}_{m['name'].title().replace('_', '')}Resp"
 
 
 def _acquire_able(manifest) -> dict:

@@ -138,8 +138,55 @@ def extract_wrapper(cls, api=None, bindings=None, hide=()) -> dict:
         # and travel serialized (locally emulated as copies). Default is
         # the safe one: stateful until proven immutable.
         "wire": getattr(cls, "_wire", "proxy"),
+        # Serialization contract for wire-values: [[field, type], ...].
+        # The proto message shape and both codecs derive from this, so
+        # adding a wire-value type means editing the pyx and nothing
+        # else. Empty for proxies, which travel as handles.
+        "wire_fields": [list(f) for f in getattr(cls, "_wire_fields", ())],
+        # Private round-trip helpers present on the class. Not part of
+        # the surface; the contract check reads them.
+        "_helpers": sorted(h for h in ("_parts", "_from_parts") if hasattr(cls, h)),
         "methods": methods,
     }
+
+
+def check_wire_contract(protos: list[dict]) -> list[str]:
+    """The wire policy and the serialization contract must agree.
+
+    A "value" type promises the RPC layer it can be rebuilt from its
+    parts; a "proxy" promises it cannot and must stay behind a handle.
+    A value with no _wire_fields, or missing round-trip helpers, used to
+    surface as a KeyError deep inside the server on the first call that
+    touched it. Fail the build instead, naming the type.
+
+    Returns a list of complaints; empty means the contract holds."""
+    known = {p["name"] for p in protos}
+    bad = []
+    for proto in protos:
+        name, fields = proto["name"], proto["wire_fields"]
+        if proto["wire"] == "proxy":
+            if fields:
+                bad.append(f"{name}: proxy types travel as handles, drop _wire_fields")
+            continue
+        if proto["wire"] != "value":
+            bad.append(f"{name}: unknown _wire {proto['wire']!r} (value|proxy)")
+            continue
+        if not fields:
+            bad.append(f"{name}: wire-value needs _wire_fields describing its message")
+        if proto["threading"] != "pool":
+            # A value that may not leave its thread cannot be serialised
+            # off it; the two policies contradict each other.
+            bad.append(
+                f"{name}: wire-value must be threading 'pool', not "
+                f"{proto['threading']!r}")
+        for fname, ftype in fields:
+            ftype = ftype.removesuffix("?")
+            if ftype not in _PRIMITIVES.values() and ftype not in known:
+                bad.append(f"{name}._wire_fields {fname!r}: unknown field type {ftype!r}")
+        for helper in ("_parts", "_from_parts"):
+            if helper not in proto["_helpers"]:
+                bad.append(f"{name}: wire-value needs a {helper} round-trip helper")
+    return bad
 
 
 def _pxd_signature_table(cls, api: dict, bindings_module) -> dict:
