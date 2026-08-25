@@ -190,7 +190,80 @@ async def main():
         check("pinging client survives the sweeper",
               await alive.get_uri() == "local")
 
-        for cli in (b, c):
+        # ---- a dropped client object releases its lease (tasks/028) --
+        # Which is exactly why the control above needs care: a pinging
+        # connection is immune to the sweeper, so before this the only
+        # way it ever gave a handle back was an explicit release. Every
+        # proxy it was ever granted stayed alive for the life of the
+        # connection.
+        import gc
+
+        d = await remote.connect("127.0.0.1", port)
+        state = await d.acquire("EvalState", "local")
+        ids = []
+        for i in range(10):
+            v = await state.eval_expr(f'"v{i}"')
+            ids.append(v.handle_id)
+            del v
+        gc.collect()
+        check("dropping the last reference queues a release",
+              len(d._dropped) == 10, d._dropped)
+        check("flush releases the whole batch in one rpc",
+              await d.flush_dropped() == 10)
+        still = 0
+        for hid in ids:
+            try:
+                await d.proxy("Value", hid).string_value()
+                still += 1
+            except InternalError:
+                pass
+        check("dropped handles are gone server-side", still == 0, still)
+
+        # Two client objects, ONE handle: the first drop must not pull
+        # the lease out from under the second. Forging a proxy from a
+        # raw id is public API, and this file does it seven times above.
+        v = await state.eval_expr('"shared"')
+        shared_id = v.handle_id
+        twin = d.proxy("Value", shared_id)
+        del v
+        gc.collect()
+        await d.flush_dropped()
+        check("one of two holders dropped: handle survives",
+              await twin.string_value() == "shared")
+        del twin
+        gc.collect()
+        await d.flush_dropped()
+        threw = None
+        try:
+            await d.proxy("Value", shared_id).string_value()
+        except InternalError as e:
+            threw = e.to_dict()
+        check("last holder dropped: handle released", threw is not None)
+
+        # Queued, then used again before the flush. Releasing it there
+        # would take the lease from a live object.
+        v = await state.eval_expr('"resurrected"')
+        res_id = v.handle_id
+        del v
+        gc.collect()
+        again = d.proxy("Value", res_id)
+        check("re-acquired before the flush is not released",
+              await d.flush_dropped() == 0 and
+              await again.string_value() == "resurrected")
+        await again.aclose()
+
+        # An explicitly closed handle must not be queued a second time
+        # when its object is later collected.
+        v = await state.eval_expr('"closed"')
+        await v.aclose()
+        del v
+        gc.collect()
+        check("explicit close does not queue a second release",
+              d._dropped == [], d._dropped)
+        await state.aclose()
+        d.stop_pinging()
+
+        for cli in (b, c, d):
             cli.stop_pinging()
         print("\nALL LIFECYCLE CHECKS PASSED")
     finally:

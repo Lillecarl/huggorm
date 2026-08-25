@@ -22,6 +22,8 @@ location.
 """
 
 import asyncio
+import threading
+import weakref
 
 import grpclib
 import grpclib.client
@@ -43,6 +45,14 @@ class NixClient:
         self.channel = grpclib.client.Channel(host, port)
         self.token: str | None = None
         self._pinger: asyncio.Task | None = None
+        # How many live client objects point at each handle, and which
+        # handles have lost their last one. A finalizer runs on
+        # whichever thread dropped the reference - possibly during
+        # interpreter shutdown - and cannot await, so it only takes the
+        # lock and appends; the flush does the rpc (tasks/028).
+        self._refs: dict[str, int] = {}
+        self._dropped: list[str] = []
+        self._ref_lock = threading.Lock()
 
         def msg(name):
             return message_factory.GetMessageClass(
@@ -55,7 +65,14 @@ class NixClient:
 
         The class is generated - one per class in the manifest, with
         the same inheritance - so this is a lookup and a constructor,
-        and this module names nothing."""
+        and this module names nothing.
+
+        The object is TRACKED: when the last one pointing at a handle
+        goes away, the handle is queued for release. Two objects can
+        name one handle (this method is public, and the lifecycle tests
+        forge duplicates), so the count is per handle, not per object -
+        otherwise the first drop would release a lease the second
+        object is still using."""
         from fake_library_generated.rpc import RPC_CLASSES
 
         try:
@@ -64,7 +81,58 @@ class NixClient:
             raise TypeError(
                 f"{cls_name!r} has no generated client class; the build "
                 f"offers {sorted(RPC_CLASSES)}") from None
-        return cls(self, handle_id)
+        obj = cls(self, handle_id)
+        self._track(obj, handle_id)
+        return obj
+
+    # -- dropped handles ------------------------------------------------
+    def _track(self, obj, handle_id: str) -> None:
+        with self._ref_lock:
+            self._refs[handle_id] = self._refs.get(handle_id, 0) + 1
+        weakref.finalize(obj, self._forget, handle_id)
+
+    def _forget(self, handle_id: str) -> None:
+        """One client object for this handle is gone. Runs from a
+        finalizer: no awaiting, no rpc, no assumptions about the
+        thread. Queue it and return."""
+        with self._ref_lock:
+            n = self._refs.get(handle_id)
+            if n is None:
+                # Released explicitly already, and untracked there. The
+                # finalizer still fires when the object dies; queueing
+                # here would send the server an id it has forgotten.
+                return
+            if n > 1:
+                self._refs[handle_id] = n - 1
+                return
+            del self._refs[handle_id]
+            self._dropped.append(handle_id)
+
+    def _untrack(self, handle_id: str) -> None:
+        """Forget a handle released explicitly, so the finalizer that
+        fires later does not queue an id the server no longer knows."""
+        with self._ref_lock:
+            self._refs.pop(handle_id, None)
+            self._dropped[:] = [h for h in self._dropped if h != handle_id]
+
+    async def flush_dropped(self) -> int:
+        """Release every handle whose last client object went away.
+
+        A handle re-acquired between the drop and this flush is skipped:
+        _refs having an entry again means something is using it, and
+        releasing it here would pull the lease out from under a live
+        object."""
+        with self._ref_lock:
+            queued = [h for h in self._dropped if h not in self._refs]
+            self._dropped.clear()
+        if not queued:
+            return 0
+        req = self.msg("ReleaseManyReq")()
+        for hid in queued:
+            req.handles.add().id = hid
+        resp = await self._rpc(
+            f"/{schema.PKG}.Session/ReleaseMany", req, "ReleaseManyResp")
+        return resp.released
 
     async def _rpc(self, path, req, reply_name):
         from fake_library_generated._runtime import WrapperError
@@ -120,6 +188,10 @@ class NixClient:
                 req = self.msg("PingReq")(token=self.token)
                 await asyncio.wait_for(
                     self._rpc(f"/{schema.PKG}.Session/Ping", req, "AckResp"), 5)
+                # The ping loop is the flush's home: it already runs on
+                # the event loop on a timer, which is exactly what a
+                # finalizer cannot do.
+                await asyncio.wait_for(self.flush_dropped(), 5)
             except Exception:
                 pass  # keep trying; the server sweeps us if we stay silent
 
@@ -183,6 +255,7 @@ class NixClient:
             raise ValueError("handle already released through this object")
         req = self.msg("Handle")(id=obj.handle_id)
         await self._rpc(f"/{schema.PKG}.Session/Release", req, "Handle")
+        self._untrack(obj.handle_id)
         obj.handle_id = None
 
     async def call_function(self, name, *args):
