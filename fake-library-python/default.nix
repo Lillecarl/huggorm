@@ -5,6 +5,7 @@
   fake-library-bindings,
   fake-library-generated,
   grpcurl,
+  ruff,
   zuban,
   ...
 }:
@@ -45,12 +46,15 @@ python3Packages.buildPythonPackage {
   # passes while proving nothing (tasks/027).
   nativeCheckInputs = [
     grpcurl
+    ruff
     zuban
   ];
 
   checkPhase = ''
     runHook preCheck
     export HOME=$TMPDIR
+    echo "--- lint ---"
+    ruff check --no-cache --config ${../ruff.toml} .
     echo "--- typecheck ---"
     zuban mypy --strict \
       --python-executable ${python3Packages.python.interpreter} \

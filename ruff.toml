@@ -8,7 +8,11 @@
 # docstring on every module and class, signatures agreeing across the
 # three surfaces) and which a linter cannot express.
 
-line-length = 88
+# 100, not the default 88. The prose in this repo wraps at about 72
+# and the code sits comfortably under 100; setting 88 would report
+# thirty-odd lines that are fine and teach everyone to ignore E501.
+# At 100 it only fires on a line that has genuinely run away.
+line-length = 100
 target-version = "py314"
 
 [lint]
@@ -35,8 +39,11 @@ select = [
 [lint.per-file-ignores]
 # The demos print a narrative and are read top to bottom; an import
 # next to the section it belongs to is clearer than one at the top.
-"fake-library-python/fake_library_python/*_demo.py" = ["E402", "PLC0415"]
-"fake-library-python/fake_library_python/run_remote.py" = ["E402"]
+# Position-independent globs: these run from the repo root by hand and
+# from the package root in the build, so an anchored path matches in
+# only one of the two.
+"**/*_demo.py" = ["E402"]
+"**/run_remote.py" = ["E402"]
 
 [lint.isort]
 known-first-party = ["codegen", "fake_library", "fake_library_generated", "fake_library_python"]
