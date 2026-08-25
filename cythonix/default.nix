@@ -68,8 +68,13 @@ python3Packages.buildPythonPackage {
     zuban mypy --strict \
       --python-executable ${python3Packages.python.interpreter} \
       cythonix tests
-    echo "--- pytest ---"
-    pytest
+    echo "--- pytest (hermetic only) ---"
+    # -m "not live": a build sandbox has no daemon, no db and no
+    # writable store, so a test that needs one cannot run here. The
+    # rest of the suite runs on every build, as it always has. The
+    # live half runs from the devshell: nix run --file . test
+    # (tasks/037).
+    pytest -m "not live"
     runHook postCheck
   '';
 

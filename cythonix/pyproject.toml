@@ -24,3 +24,16 @@ anyio_mode = "auto"
 # crash that took a thread with it. Fail instead of waiting.
 timeout = 180
 addopts = "-q --strict-markers --strict-config"
+# Which tests need the machine, and which need nothing.
+#
+# The marker names the REQUIREMENT, not the venue, and the default is
+# hermetic on purpose. Forgetting to mark a live test makes it fail in
+# the build, loudly, and someone fixes it that afternoon. The other
+# polarity - marking the hermetic ones - fails by SILENCE: an unmarked
+# test drops out of the build gate and nobody finds out.
+#
+# So a bare `pytest` runs everything, which is what a devshell wants,
+# and the sandboxed build passes `-m "not live"` (tasks/037).
+markers = [
+    "live: needs the machine's own Nix store - a daemon, a db, or a path that exists. Cannot run in a build sandbox",
+]

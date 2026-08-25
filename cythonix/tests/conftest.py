@@ -36,6 +36,19 @@ from anyio.streams.text import TextReceiveStream
 
 HOST = "127.0.0.1"
 
+
+@pytest.fixture(scope="session")
+def ambient_store() -> Any:
+    """The machine's OWN store, for tests marked `live`.
+
+    "auto" is whatever the ambient configuration says - usually the
+    daemon. A build sandbox has none of that, which is the whole
+    reason the marker exists (tasks/037). Session-scoped: opening a
+    store is a connection, and one is enough."""
+    from cythonix_bindings import Store
+
+    return Store("auto")
+
 # The lifetime suite waits out a sweep. Short enough to be quick, long
 # enough that a slow machine does not reap a connection mid-test.
 SHORT_TTL = 3.0

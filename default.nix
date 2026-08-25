@@ -72,6 +72,30 @@ rec {
     '';
   };
 
+  # nix run --file . test -- [pytest args]
+  #
+  # The WHOLE suite, outside the sandbox. A build has no daemon, no db
+  # and no writable store, so anything that touches a real store cannot
+  # be a build check - and that half will only grow (tasks/037). The
+  # build runs `pytest -m "not live"`; this runs everything.
+  #
+  # PYTHONPATH puts the working tree's cythonix ahead of the installed
+  # copy, so an edit is testable without a rebuild. cythonix_bindings
+  # and cythonix_generated still come from the store: one is compiled
+  # and the other is generated, so neither exists in the tree.
+  test = pkgs.writeShellApplication {
+    name = "test";
+    runtimeInputs = [
+      pkgs.grpcurl
+      ourPython
+    ];
+    text = ''
+      cd "''${CYTHONIX_ROOT:-.}/cythonix"
+      export PYTHONPATH="$PWD''${PYTHONPATH:+:$PYTHONPATH}"
+      exec pytest "$@"
+    '';
+  };
+
   shell = pkgs.mkShell {
     packages = [
       ourPython
