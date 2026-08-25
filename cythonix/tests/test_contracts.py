@@ -112,3 +112,33 @@ def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
 
     # ...and a built-in scalar still resolves to the builtin.
     assert codec.scalar("bytes") is bytes
+
+
+def test_a_method_with_no_wire_form_is_absent_everywhere(
+        manifest: dict[str, Any]) -> None:
+    """A method the wire cannot carry leaves three places at once.
+
+    Not everything a binding offers is a remote call. Store.real_path
+    answers with a filesystem path on the machine the store runs on,
+    and pathlib.Path is not a wire type - so the schema has no message
+    for it, the server publishes no handler, and the protocol cannot
+    promise it because a protocol is what BOTH implementations satisfy.
+
+    What it does NOT lose is the in-process wrapper. That is the whole
+    distinction: local and remote are different surfaces, and this is
+    the machinery that lets them differ without either one lying."""
+    from cythonix_generated import AsyncStore
+    from cythonix_generated.rpc import RPCStore
+
+    store = manifest["wrappers"]["Store"]
+    blocked = {m["name"]: m for m in store["methods"] if m["wire_blockers"]}
+    assert "real_path" in blocked, sorted(blocked)
+
+    for name, m in blocked.items():
+        assert "rpc" not in m, f"{name} is blocked and still has an rpc"
+        # A wire blocker is a protocol blocker: the remote surface
+        # cannot offer it, so the shared one cannot declare it.
+        assert m["protocol_blockers"], name
+        assert hasattr(AsyncStore, name), f"{name} lost its wrapper too"
+        assert not hasattr(RPCStore, name), f"{name} is on the rpc client"
+        assert name not in RPCStore._rpc, f"{name} has a call spec"

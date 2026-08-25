@@ -860,12 +860,18 @@ def test_conformance(out: pathlib.Path) -> None:
     speaks_for = {proto["protocol"]: name for name, proto in wrapped.items()}
     found = _emitted_classes(out)
 
-    def blocked_over_chain(name: str | None) -> set[str]:
+    def blocked_over_chain(name: str | None, key: str) -> set[str]:
+        """The methods `key` blocks, leaf definitions winning.
+
+        Two keys, and they nest. wire_blockers means the RPC client
+        cannot offer the method at all; protocol_blockers means the
+        protocol cannot declare it, and every wire blocker is one of
+        those - a protocol is what both implementations satisfy."""
         out_: dict[str, list[str]] = {}
         while name is not None:
             proto = wrapped[name]
             for m in proto["methods"]:
-                out_.setdefault(m["name"], m["protocol_blockers"])
+                out_.setdefault(m["name"], m[key])
             name = proto.get("async_base")
         return {n for n, why in out_.items() if why}
 
@@ -874,13 +880,22 @@ def test_conformance(out: pathlib.Path) -> None:
         P = _resolved(found, proto["protocol"])
         A = _resolved(found, proto["async_class"])
         R = _resolved(found, proto["rpc_class"])
-        blocked = blocked_over_chain(cls_name)
+        blocked = blocked_over_chain(cls_name, "protocol_blockers")
+        no_wire = blocked_over_chain(cls_name, "wire_blockers")
 
-        if set(A) != set(R):
+        if set(R) != set(A) - no_wire:
+            # The in-process surface is the larger one: a method the
+            # wire cannot carry keeps its wrapper and is absent from
+            # the client. Anything else is drift.
             failures.append(
                 f"{cls_name}: in-process offers {sorted(set(A) - set(R))} "
                 f"the rpc client does not, and {sorted(set(R) - set(A))} "
-                f"the other way")
+                f"the other way; the manifest blocks {sorted(no_wire)} "
+                f"from the wire")
+        if not no_wire <= blocked:
+            failures.append(
+                f"{cls_name}: {sorted(no_wire - blocked)} cannot cross the "
+                f"wire and is still on the protocol")
         if set(P) != set(A) - blocked:
             failures.append(
                 f"{cls_name}: {proto['protocol']} offers {sorted(P)}; the "
@@ -931,9 +946,12 @@ def test_conformance(out: pathlib.Path) -> None:
     assert checked >= 3 * len(wrapped), (
         f"conformance checked only {checked} method(s) across "
         f"{len(wrapped)} classes")
-    assert any(blocked_over_chain(n) for n in wrapped), (
-        "no method is blocked from any protocol; either the rule stopped "
-        "working or the surface changed and this gate now proves nothing")
+    for key, what in (("protocol_blockers", "protocol"),
+                      ("wire_blockers", "wire")):
+        assert any(blocked_over_chain(n, key) for n in wrapped), (
+            f"no method is blocked from the {what}; either the rule "
+            f"stopped working or the surface changed and this gate now "
+            f"proves nothing")
 
 
 def test_stubs(out: pathlib.Path) -> None:

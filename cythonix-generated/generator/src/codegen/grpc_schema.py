@@ -180,6 +180,18 @@ def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
     return None
 
 
+def _method_blockers(m: Proto, kinds: dict[str, str]) -> list[str]:
+    """Why this method has no RPC, or [] when it has one."""
+    out = [
+        f"parameter {p['name']!r}: {why}"
+        for p in m["params"]
+        if (why := wire_blocker(p["type"], kinds))
+    ]
+    if (why := wire_blocker(m["return_type"], kinds)):
+        out.append(f"return type: {why}")
+    return out
+
+
 def annotate(manifest: Proto) -> Proto:
     """Stamp the wire names onto the manifest, in place.
 
@@ -203,14 +215,28 @@ def annotate(manifest: Proto) -> Proto:
                     "path": method_path(cls_name, ACQUIRE),
                     "req": req_name(cls_name, ACQUIRE),
                 }
+
+    kinds = _wire_kinds(manifest)
+    for group in ("wrappers", "returned_types"):
+        for cls_name, proto in manifest[group].items():
+            if not proto["wrapped"]:
+                continue
+            # A METHOD gets the same treatment a free function has
+            # always had: say why it cannot cross, rather than raise
+            # while building the schema. Not everything a binding
+            # offers is a remote call - Store.real_path answers with a
+            # path on the machine the store runs on - and such a
+            # method still deserves its in-process wrapper.
             for m in proto["methods"]:
+                m["wire_blockers"] = _method_blockers(m, kinds)
+                if m["wire_blockers"]:
+                    continue
                 m["rpc"] = {
                     "path": method_path(cls_name, m["name"]),
                     "req": req_name(cls_name, m["name"]),
                     "resp": resp_name(cls_name, m["name"]),
                 }
 
-    kinds = _wire_kinds(manifest)
     for fname, proto in manifest.get("free_functions", {}).items():
         if not proto["wrapped"]:
             # No policy, so no wrapper and nothing to call remotely.
@@ -220,13 +246,7 @@ def annotate(manifest: Proto) -> Proto:
                 "no threading policy, so the function has no async form "
                 "for a server to call"]
             continue
-        blockers = [
-            f"parameter {p['name']!r}: {why}"
-            for p in proto["params"]
-            if (why := wire_blocker(p["type"], kinds))
-        ]
-        if (why := wire_blocker(proto["return_type"], kinds)):
-            blockers.append(f"return type: {why}")
+        blockers = _method_blockers(proto, kinds)
         proto["wire_blockers"] = blockers
         if not blockers:
             proto["rpc"] = {
@@ -350,6 +370,8 @@ def _add_service(file_dp: Any, cls_name: str, proto: Proto,
         rpc.output_type = f".{PKG}.{HANDLE}"
 
     for m in proto["methods"]:
+        if "rpc" not in m:
+            continue  # no wire representation; annotate() said why
         rpc = svc.method.add()
         rpc.name = m["name"]
 

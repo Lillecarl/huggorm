@@ -54,6 +54,20 @@ MAP_KEY = "str"
 CONTAINERS = ("dict", "list")
 
 
+# Modules an annotation may name directly. A declared type is normally
+# a builtin or a binding class; `pathlib.Path` is neither. It is a
+# dotted name whose head is a module, and an emitted module that
+# annotates with it needs a plain `import pathlib`.
+#
+# These are NOT wire types, and that is the point. A method annotated
+# with one gets no rpc - the schema builder says so, and the manifest
+# records it - so this exists purely so the IN-PROCESS surface can
+# still say what it returns. Store.real_path answers with a path on the
+# machine the store runs on, which is a real method and not a remote
+# call.
+FOREIGN_MODULES = ("pathlib",)
+
+
 def head(type_str: str) -> str | None:
     """The head of an annotation string.
 

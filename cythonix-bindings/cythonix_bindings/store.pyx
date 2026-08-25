@@ -7,6 +7,8 @@
 # "dummy://" is an in-memory store and needs nothing on disk, which is
 # what makes this testable in a build sandbox.
 
+import pathlib
+
 from cython.operator cimport dereference as deref
 from libcpp.memory cimport shared_ptr
 from libcpp.string cimport string
@@ -21,6 +23,7 @@ from cythonix_bindings.c_store cimport (
     open_store,
     parse_store_path,
     query_all_valid_paths,
+    real_path,
     store_uri,
 )
 from cythonix_bindings.path cimport StorePath
@@ -207,6 +210,40 @@ cdef class Store:
                 if leftover is not NULL:
                     del leftover
         return out
+
+    def real_path(self, path: StorePath) -> pathlib.Path:
+        """Where this store object's files really are.
+
+        A different question from `print_store_path`, which joins the
+        store DIRECTORY onto the path. A chroot store keeps /nix/store
+        as its store directory and puts the files under <root>/nix/store,
+        so its printed path does not exist and this one does.
+
+        Not every store has an answer. libstore puts toRealPath on
+        LocalFSStore rather than on Store, because a binary cache or an
+        ssh-ng store has no directory on this filesystem - so this
+        raises Unsupported for one that does not, the same way
+        query_all_valid_paths does.
+
+        A pathlib.Path, so the result is a thing to open and walk
+        rather than a string to join by hand. It is a path on the
+        machine the STORE runs on: in process that is this one, and
+        over RPC it is the server's (tasks/040).
+
+        `path` is annotated Python-style, so the codegen can read the
+        type: this method is backed by a shim rather than declared on
+        nix::Store, so there is no pxd method to backfill from. A
+        Cython-style `StorePath path` would type the argument here and
+        say nothing to the generator. The cdef assignment below does
+        the conversion, and its runtime check is the one the signature
+        would have done."""
+        cdef StorePath sp = path
+        cdef CStore* store = self._get()
+        cdef CStorePath* p = sp._get()
+        cdef string out
+        with nogil:
+            out = real_path(deref(store), deref(p))
+        return pathlib.Path(out.decode('utf-8'))
 
     def print_store_path(self, StorePath path) -> str:
         """The path as an absolute filesystem path in this store."""

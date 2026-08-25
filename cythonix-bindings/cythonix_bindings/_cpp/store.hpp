@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "nix/store/globals.hh"
+#include "nix/store/local-fs-store.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-open.hh"
 #include "nix/util/file-content-address.hh"
@@ -153,6 +154,30 @@ inline nix::StorePath * add_path_to_store(
         source,
         nix::ContentAddressMethod::parse(method),
         nix::parseHashAlgo(hash_algo)));
+}
+
+/**
+ * Where a store object's files really are on this filesystem.
+ *
+ * printStorePath answers with the store DIRECTORY joined onto the
+ * path, which is not the same question. A chroot store keeps
+ * /nix/store as its store directory and puts the files under
+ * <root>/nix/store, so its printed path does not exist.
+ *
+ * toRealPath is on LocalFSStore, not on Store, and upstream is right
+ * about that: a binary cache or an ssh-ng store has no directory here
+ * at all. So this asks whether the store IS one, and throws the same
+ * exception nix::Store throws for a method it cannot answer - the
+ * message shape included, because it is the same kind of answer.
+ */
+inline std::string real_path(nix::Store & store, const nix::StorePath & path)
+{
+    auto * fs = dynamic_cast<nix::LocalFSStore *>(&store);
+    if (fs == nullptr)
+        throw nix::Unsupported(
+            "operation 'real_path' is not supported by store '%s'",
+            store.config.getHumanReadableURI());
+    return fs->toRealPath(path).string();
 }
 
 inline std::vector<nix::StorePath *> query_all_valid_paths(nix::Store & store)

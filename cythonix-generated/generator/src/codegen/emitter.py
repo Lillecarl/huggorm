@@ -8,7 +8,7 @@ emitter needs arrives in the dict produced by model.extract_wrapper.
 import ast
 from typing import Any
 
-from codegen.wiretypes import names_in
+from codegen.wiretypes import FOREIGN_MODULES, names_in
 
 # One class, method or function as a plain dict. See model.Proto.
 Proto = dict[str, Any]
@@ -127,11 +127,26 @@ def _annotation_names(annotations: list[str]) -> set[str]:
     return out
 
 
+def _foreign_imports(annotations: list[str]) -> list[ast.Import]:
+    """`import pathlib` for every foreign module an emitted module
+    annotates with.
+
+    A plain import, not a from-import: the annotation is written
+    dotted, `pathlib.Path`, so the module name is what has to be
+    bound."""
+    named = {n for a in annotations for n in names_in(a)}
+    return [ast.Import(names=[ast.alias(name=m)])
+            for m in FOREIGN_MODULES if m in named]
+
+
 def _cythonix_bindings_import(names: set[str]) -> ast.ImportFrom | None:
     """Import the SYNC binding types an emitted module annotates with.
-    Async* names are excluded: those come from sibling modules."""
+    Async* names are excluded: those come from sibling modules, and so
+    are foreign modules, which are imported as themselves."""
     usable = sorted(
-        n for n in names if n not in _BUILTIN_TYPES and not n.startswith("Async")
+        n for n in names
+        if n not in _BUILTIN_TYPES and n not in FOREIGN_MODULES
+        and not n.startswith("Async")
     )
     if not usable:
         return None
@@ -209,6 +224,7 @@ def returned_module(proto: Proto,
     # A value that produces values names its OWN async class, which is
     # defined right here: importing it would be a self-import.
     mod.body.extend(_sibling_imports(used - {f"Async{svc}"}))
+    mod.body.extend(_foreign_imports(annotations))
     ann_import = _cythonix_bindings_import(used)
     if ann_import is not None:
         mod.body.append(ann_import)
@@ -421,6 +437,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     if proto.get("async_base"):
         used_types.add(f"Async{proto['async_base']}")
     mod.body.extend(_sibling_imports(used_types - {f"Async{svc}"}))
+    mod.body.extend(_foreign_imports(annotations))
 
     # An abstract base constructs nothing, so it imports neither the
     # sync target nor a runner class. It still annotates with the target
@@ -622,7 +639,8 @@ def _sync_imports(annotations: list[str], defined_here: set[str]) -> ast.ImportF
 
     Unlike the per-class wrappers there are no siblings to import from:
     everything else the module names, it defines."""
-    used = _annotation_names(annotations) - _BUILTIN_TYPES - defined_here
+    used = (_annotation_names(annotations) - _BUILTIN_TYPES
+            - set(FOREIGN_MODULES) - defined_here)
     if not used:
         return None
     return ast.ImportFrom(module="cythonix_bindings",
@@ -676,6 +694,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
         module="typing",
         names=[ast.alias(name="Protocol"), ast.alias(name="runtime_checkable")],
         level=0))
+    mod.body.extend(_foreign_imports(annotations))
     sync = _sync_imports(annotations, defined)
     if sync is not None:
         mod.body.append(sync)
@@ -743,7 +762,7 @@ def _spec(m: Proto) -> ast.expr:
     spec describes is present - carrying a default here would suggest
     the runtime fills one in, and it never does."""
     spec = {k: v for k, v in m.items()
-            if k not in ("doc", "protocol_blockers")}
+            if k not in ("doc", "protocol_blockers", "wire_blockers")}
     spec["params"] = [{k: v for k, v in p.items() if k != "default"}
                       for p in m["params"]]
     return ast.parse(repr(spec), mode="eval").body
@@ -778,7 +797,9 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
 
     annotations = ["str"]
     for proto in ordered:
-        for m in proto["methods"]:
+        # The methods this module will WRITE, so a type named only by a
+        # method with no rpc does not become an unused import.
+        for m in (m for m in proto["methods"] if "rpc" in m):
             annotations += [ann.get(p["type"], p["type"]) for p in m["params"]]
             annotations += _default_names(m["params"])
             annotations.append(ann.get(m["return_type"], m["return_type"]))
@@ -794,6 +815,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         module="typing",
         names=[ast.alias(name="Any"), ast.alias(name="Protocol"),
                ast.alias(name="cast")], level=0))
+    mod.body.extend(_foreign_imports(annotations))
     sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL})
     if sync is not None:
         mod.body.append(sync)
@@ -858,10 +880,14 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         # base's too: an attribute shadows rather than merges, and an
         # inherited method's body reads self._rpc. One that adds none
         # inherits the whole map untouched.
-        if proto["methods"] or base is None:
+        # Only the methods that HAVE an rpc. A method the wire cannot
+        # carry keeps its in-process wrapper and is simply absent here;
+        # the manifest says why, and the protocol drops it too.
+        callable_ = [m for m in proto["methods"] if "rpc" in m]
+        if callable_ or base is None:
             specs = ast.Dict(
-                keys=[ast.Constant(value=m["name"]) for m in proto["methods"]],
-                values=[_spec(m) for m in proto["methods"]])
+                keys=[ast.Constant(value=m["name"]) for m in callable_],
+                values=[_spec(m) for m in callable_])
             if base:
                 specs = ast.Dict(
                     keys=[None, *specs.keys],
@@ -900,7 +926,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
                 decorator_list=[], returns=_ann("None", f"{name}.__init__"),
                 type_params=[]))
 
-        for m in proto["methods"]:
+        for m in callable_:
             body: list[ast.stmt] = []
             if m["doc"]:
                 body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
@@ -992,6 +1018,7 @@ def free_function_module(protos: list[Proto],
         mod.body.append(ast.ImportFrom(
             module="typing", names=[ast.alias(name="cast")], level=0))
     mod.body.extend(_sibling_imports(used))
+    mod.body.extend(_foreign_imports(annotations))
     ann_import = _cythonix_bindings_import(used)
     if ann_import is not None:
         mod.body.append(ann_import)
@@ -1079,6 +1106,16 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     if any(p["name"] in produced for p in protos):
         mod.body.append(ast.ImportFrom(
             module="typing", names=[ast.alias(name="NoReturn")], level=0))
+    # A stub describes the SYNC surface unfiltered, so it names every
+    # type the bindings do - a foreign module included, whether or not
+    # the method that returns one has an rpc.
+    written = [p["type"] for pr in protos for m in pr["methods"]
+               for p in m["params"]]
+    written += [m["return_type"] for pr in protos for m in pr["methods"]]
+    written += [p["type"] for pr in protos for p in pr["ctor"]]
+    written += [p["type"] for pr in free_protos for p in pr["params"]]
+    written += [pr["return_type"] for pr in free_protos]
+    mod.body.extend(_foreign_imports(written))
     for name, other in sorted(foreign.items()):
         mod.body.append(ast.ImportFrom(
             module=other.rsplit(".", 1)[-1],

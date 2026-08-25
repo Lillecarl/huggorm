@@ -83,20 +83,6 @@ def test_a_local_store_answers_with_a_list(tmp_path: pathlib.Path) -> None:
     assert store.query_all_valid_paths() == []
 
 
-def chroot_dir(root: pathlib.Path, store: Store,
-               path: StorePath) -> pathlib.Path:
-    """Where a chroot store really put one path.
-
-    printStorePath answers with the VIRTUAL location - a chroot store
-    keeps /nix/store as its store directory - so reading the files back
-    means joining the root onto it.
-
-    `root` is passed in, not read from the store. get_uri answers
-    "local", which is what upstream means by calling it human readable:
-    it is not a store reference and it does not round-trip."""
-    return root / store.print_store_path(path).lstrip("/")
-
-
 @pytest.fixture
 def chroot(tmp_path: pathlib.Path) -> Store:
     """A real LocalStore rooted somewhere writable.
@@ -167,8 +153,7 @@ def source(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def test_a_store_takes_a_path_and_reads_it(
-        chroot: Store, source: pathlib.Path,
-        tmp_path: pathlib.Path) -> None:
+        chroot: Store, source: pathlib.Path) -> None:
     """add_path_to_store, on a DIRECTORY.
 
     The reason this overload exists. A directory has no contents to
@@ -183,7 +168,7 @@ def test_a_store_takes_a_path_and_reads_it(
     assert path.name() == "tree"
     assert chroot.is_valid_path(path)
 
-    real = chroot_dir(tmp_path, chroot, path)
+    real = chroot.real_path(path)
     assert sorted(p.name for p in real.iterdir()) == ["a.txt", "sub"]
     assert (real / "sub" / "b.txt").read_text() == "world\n"
 
@@ -202,6 +187,40 @@ def test_the_two_overloads_agree_about_one_file(
         by_bytes = chroot.add_to_store(
             "one", b"hello\n", method, HashAlgorithm.SHA256)
         assert by_path.to_string() == by_bytes.to_string(), method
+
+
+def test_a_store_says_where_its_files_really_are(
+        chroot: Store, source: pathlib.Path,
+        tmp_path: pathlib.Path) -> None:
+    """real_path, and why it is not print_store_path.
+
+    A chroot store keeps /nix/store as its store DIRECTORY and puts
+    the files under <root>/nix/store. So the printed path is the same
+    string a full-system store would print and does not exist here,
+    while the real one does. Asserting both is the point: one of them
+    is a location and the other is a name."""
+    path = chroot.add_path_to_store("tree", str(source))
+
+    printed = chroot.print_store_path(path)
+    assert printed == f"/nix/store/{path.to_string()}"
+
+    real = chroot.real_path(path)
+    assert isinstance(real, pathlib.Path)
+    assert real == tmp_path / "nix/store" / path.to_string()
+    assert real.is_dir() and (real / "a.txt").read_text() == "hello\n"
+    assert not pathlib.Path(printed).exists()
+
+
+def test_a_store_with_no_filesystem_has_no_real_path(store: Store) -> None:
+    """Unsupported, and it comes from where the answer would be.
+
+    libstore puts toRealPath on LocalFSStore rather than on Store,
+    because a binary cache or an ssh-ng store has no directory here at
+    all. The dummy store is one of those, so the shim asks whether the
+    store IS a LocalFSStore and refuses in libstore's own words when
+    it is not."""
+    with pytest.raises(Unsupported, match="not supported by store"):
+        store.real_path(StorePath(HELLO))
 
 
 def test_a_missing_path_is_libstores_error(

@@ -552,6 +552,15 @@ def main(argv: list[str] | None = None) -> None:
     for fname, proto in manifest["free_functions"].items():
         for why in proto["wire_blockers"]:
             print(f"warning: {fname} has no RPC surface - {why}")
+    # The same for methods. A method with no rpc keeps its in-process
+    # wrapper and leaves the protocol, which is a quiet change if the
+    # build does not say it out loud.
+    for group in ("wrappers", "returned_types"):
+        for cls_name, proto in manifest[group].items():
+            for m in proto["methods"]:
+                for why in m.get("wire_blockers", ()):
+                    print(f"warning: {cls_name}.{m['name']} has no RPC "
+                          f"surface - {why}")
 
     (out / "grpc_schema.pb").write_bytes(build_fdset(manifest))
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")

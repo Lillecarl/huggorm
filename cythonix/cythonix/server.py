@@ -264,6 +264,12 @@ class Dispatcher:
             self._acquire(cls_name, proto)
 
         for m in proto["methods"]:
+            if "rpc" not in m:
+                # No wire representation, so no handler. The generator
+                # names it and why at build time, the same as for a
+                # free function - and the in-process wrapper still has
+                # the method.
+                continue
             req_cls = self.msg(m["rpc"]["req"])
             resp_cls = self.msg(m["rpc"]["resp"])
 

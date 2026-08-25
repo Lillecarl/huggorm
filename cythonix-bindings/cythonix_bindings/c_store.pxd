@@ -39,3 +39,6 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # The other overload: a path on the filesystem the store reads,
     # through a nix::SourcePath the shim builds.
     CStorePath * add_path_to_store(CStore & store, string name, string path, string method, string hash_algo) except +translate_nix_error
+    # Where the files really are. Only a LocalFSStore has an answer,
+    # so the shim asks and refuses like libstore itself.
+    string real_path(CStore & store, const CStorePath & path) except +translate_nix_error

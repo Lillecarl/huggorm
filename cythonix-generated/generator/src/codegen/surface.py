@@ -70,7 +70,19 @@ def wrapped_names(manifest: Proto) -> set[str]:
 
 
 def protocol_blockers(method: Proto, wrapped: set[str]) -> list[str]:
-    """Why this method cannot appear on the protocol, or [] if it can."""
+    """Why this method cannot appear on the protocol, or [] if it can.
+
+    Two reasons, and they arrive from different places.
+
+    A proxy PARAMETER, decided here: parameters are contravariant, so
+    an implementation must accept everything the protocol promises,
+    and neither implementation can.
+
+    No wire representation, decided by grpc_schema and read back here.
+    A protocol is what BOTH implementations satisfy, so a method the
+    RPC client cannot offer is not one the protocol can declare. The
+    in-process wrapper keeps it - Store.real_path is a real method
+    that is simply not a remote call."""
     return [
         f"parameter {p['name']!r}: {p['type']} travels as a proxy, so the "
         f"in-process surface takes a local wrapper and the remote surface "
@@ -78,6 +90,9 @@ def protocol_blockers(method: Proto, wrapped: set[str]) -> list[str]:
         f"single type describes both."
         for p in method["params"]
         if p["type"] in wrapped
+    ] + [
+        f"no rpc, so the remote surface cannot offer it: {why}"
+        for why in method.get("wire_blockers", ())
     ]
 
 
