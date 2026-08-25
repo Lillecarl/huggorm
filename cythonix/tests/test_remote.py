@@ -14,11 +14,15 @@ import pytest
 
 import cythonix_bindings
 from cythonix_bindings import MockDerivedPath
+from cythonix_bindings.errors import BadStorePath
 from cythonix_generated import RPC_CLASSES, RPCMockDerivation
 from cythonix_generated._runtime import InternalError
 
 
 async def typed_failure(coro: Any) -> dict[str, str]:
+    """What a failed call said about itself: the wrapper's own fields
+    plus the approximated cause. The typed cause, when there is one,
+    is on __cause__ instead - see the error-fidelity tests."""
     try:
         await coro
     except InternalError as e:
@@ -116,6 +120,48 @@ async def test_a_decoded_cause_survives_the_wire(client: Any) -> None:
     """A C++ failure crosses as a rebuilt InternalError whose cause
     survives: __cause__ must be the original ValueError, not None -
     the regression guard for `raise ... from None`."""
+    rstore = await client.acquire("MockRemoteStore")
+    bad_path = await rstore.add_text_to_store("plain.txt", "x")
+    with pytest.raises(InternalError) as caught:
+        await rstore.query_derivation(bad_path)
+    assert type(caught.value.__cause__) is ValueError
+    assert caught.value.to_dict()["cause_type"] == "ValueError"
+    await rstore.aclose()
+
+
+async def test_a_nix_error_keeps_its_type_and_its_colour(client: Any) -> None:
+    """A remote failure has the same shape as an in-process one.
+
+    In process, a binding failure is an InternalError whose __cause__
+    is the real error. Over the wire the cause used to be approximated
+    by NAME against a map of five builtins, so a BadStorePath arrived
+    as a plain Exception and `except BadStorePath` caught nothing. The
+    colour was gone entirely, which is the field that exists for the
+    caller's terminal - and the caller with a terminal is usually the
+    remote one (tasks/036)."""
+    store = await client.acquire("Store", "dummy://")
+    with pytest.raises(InternalError) as caught:
+        await store.parse_store_path("/somewhere/else/x")
+
+    cause = caught.value.__cause__
+    assert isinstance(cause, BadStorePath), type(cause)
+    # ...the LEAF class, not a base it happens to derive from.
+    assert type(cause) is BadStorePath, type(cause)
+    assert "is not in the Nix store" in str(cause)
+    # The plain message stays plain, and the coloured one is what
+    # libstore actually wrote.
+    assert "\x1b[" not in str(cause), repr(str(cause))
+    assert "\x1b[" in cause.colored, repr(cause.colored)
+    await store.aclose()
+
+
+async def test_an_undeclared_cause_still_approximates(client: Any) -> None:
+    """Rebuilding is for what the manifest DECLARES, and nothing else.
+
+    The mock raises std::invalid_argument, which the binding surfaces
+    as a plain ValueError - not a nix error, so it carries no declared
+    parts and comes back the way it always did. Failing to rebuild an
+    error must never replace it with a different one."""
     rstore = await client.acquire("MockRemoteStore")
     bad_path = await rstore.add_text_to_store("plain.txt", "x")
     with pytest.raises(InternalError) as caught:

@@ -20,11 +20,66 @@ def test_no_hardcoded_domain_types(manifest: dict[str, Any]) -> None:
         for group in ("wrappers", "returned_types")
         for name in manifest[group]
     }
+    # Exception classes are domain types too, and the same rule holds
+    # for the same reason: which errors exist is the bindings' to
+    # declare, so no layer above them may carry a list of them
+    # (tasks/036). The builtins this layer raises ITSELF - KeyError for
+    # an unknown handle - are not in that set and are not the subject.
+    domain |= set((manifest.get("errors") or {}).get("classes", {}))
     here = pathlib.Path(__file__).resolve().parent.parent / "cythonix"
     offenders = []
-    for mod in ("server.py", "remote.py", "wire.py", "lifecycle.py", "grpc_pb.py"):
+    for mod in ("server.py", "remote.py", "wire.py", "faults.py",
+                "lifecycle.py", "grpc_pb.py"):
         tree = ast.parse((here / mod).read_text(), filename=mod)
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and node.value in domain:
                 offenders.append(f"{mod}:{node.lineno}: {node.value!r}")
     assert not offenders, "; ".join(offenders)
+
+
+def test_a_declared_error_crosses_as_its_own_message(
+        manifest: dict[str, Any]) -> None:
+    """The class identity is the MESSAGE TYPE, not a name to look up.
+
+    That is the whole reason a fault travels in the status details
+    rather than as text: an Any carries the type name of a message,
+    the far side resolves it in the schema pool, and a name it cannot
+    resolve resolves to nothing. Nothing has to decide whether a class
+    name is safe to construct, because no class name crosses on its
+    own (tasks/036).
+
+    Needs no server: this is what the server would put on the wire."""
+    from cythonix.faults import FaultCodec
+    from cythonix.grpc_pb import PKG, load_pool
+    from cythonix_bindings.errors import BadStorePath
+    from cythonix_generated._runtime import InternalError
+
+    codec = FaultCodec(manifest, load_pool())
+    failed = InternalError("Store.parse_store_path failed",
+                           cause=BadStorePath("plain", "coloured"))
+    names = [d.DESCRIPTOR.full_name for d in codec.details(failed)]
+    assert names == [f"{PKG}.Fault", f"{PKG}.BadStorePathFault"], names
+
+    # An UNDECLARED cause carries no message of its own, so the far
+    # side gets the Fault and nothing to resolve.
+    plain = InternalError("something else failed", cause=ValueError("nope"))
+    assert [d.DESCRIPTOR.full_name for d in codec.details(plain)] \
+        == [f"{PKG}.Fault"]
+
+
+def test_every_declared_error_has_a_message(manifest: dict[str, Any]) -> None:
+    """One message per declared class, emitted from the manifest.
+
+    The schema builder loops the error table; it names no class. So
+    adding an error to the bindings adds its message here, and this
+    holds the two in step."""
+    from cythonix.grpc_pb import PKG, load_pool
+
+    pool = load_pool()
+    declared = (manifest.get("errors") or {}).get("classes", {})
+    assert declared, "the bindings declare no errors at all"
+    for name, proto in declared.items():
+        desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+            f"{PKG}.{name}Fault")
+        assert [f.name for f in desc.fields] == [
+            fname for fname, _ in proto["wire_fields"]], name

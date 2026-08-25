@@ -1,0 +1,76 @@
+# A typed error has to survive the wire
+
+Carl, 2026-08-25: "We need to build some kind of conversion that
+converts exceptions to something that can travel over gRPC."
+
+## Where it stands
+
+In-process, a Nix failure is now typed and clean: `BadStorePathName`
+under `BadStorePath` under `NixError`, with `str(e)` stripped and
+`e.colored` holding what libstore wrote (tasks/015).
+
+None of that survives a round trip. The path an error takes today:
+
+- the server catches anything that is not a `WrapperError` and wraps
+  it in `InternalError(message, cause=e)`;
+- `InternalError.to_dict()` writes `cause_type` (the class NAME) and
+  `cause_message` into JSON, which crosses in the gRPC status;
+- `WrapperError.from_dict()` rebuilds the cause by looking that name
+  up in a hard-coded map of five builtins - ValueError, TypeError,
+  RuntimeError, KeyError, OSError - and falls back to `Exception`.
+
+So a `BadStorePath` arrives as a plain `Exception` carrying the right
+message and the wrong type, and `except BadStorePath` on the client
+catches nothing. `e.colored` is gone entirely.
+
+## What it is now
+
+Both halves changed, because the first one made the second obvious.
+
+**The hierarchy is declared, not listed.** `cythonix_bindings/__init__.py`
+declares `_errors_module`; the codegen reflects it and writes the class
+names, their bases and their `_wire_fields` into the manifest. Adding a
+Nix error means adding it to `errors.py` and nothing else. A build-time
+check builds one of each from its declared parts and reads them back,
+so a class whose `__init__` reorders or renames a part fails the BUILD
+rather than the first remote failure.
+
+**A failure travels as messages.** Carl: "You're saying that we should
+use JSON inside protobuf? Sounds like an antipattern to me."
+
+He was right, and the answer was not to defend the JSON. It was not
+inside a protobuf message - a failed unary call carries no message at
+all - it was in the status MESSAGE, the human-readable field. Structure
+in a text field is the wrong shape, and gRPC has the right one:
+`grpc-status-details-bin`, a `google.rpc.Status` whose `details` is a
+repeated `Any`.
+
+So `grpc_schema` emits a `Fault` message plus one message per declared
+error class, from the same manifest table. A failure sends the `Fault`
+always, and the cause as its OWN message when the bindings declare its
+class. The status message goes back to being what a human reads.
+
+That last part is what makes the third direction better than the
+second, which this file used to rank below it. The `Any`'s type name is
+the class identity, and the far side resolves it in the schema pool or
+not at all. There is no name to decide whether it is safe to construct,
+because no class name crosses on its own.
+
+`_runtime.from_dict` is gone. It was the map of five builtins, in the
+one module emitted beside the wrappers that must not know which library
+it wraps.
+
+## What is left
+
+One hand-written list survives, in `faults.py`: the builtins a cause is
+approximated as when nothing declares it - ValueError, TypeError,
+RuntimeError, KeyError, OSError. It is not duplicated binding
+knowledge. Most of it is this layer's OWN vocabulary: the lifecycle
+core raises KeyError for an unknown handle, and no binding is involved.
+
+The part that IS binding knowledge is Cython's automatic mapping -
+`std::invalid_argument` surfaces as ValueError with nothing declaring
+it. The way to remove that is to declare what a binding raises, not to
+grow the map. Until then the approximation is confined to the case it
+is actually for, and `test_contracts` holds the line: no layer above
+the bindings may name a DECLARED error class.

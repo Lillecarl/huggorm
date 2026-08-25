@@ -21,9 +21,13 @@ python3Packages.buildPythonPackage {
   # cythonix sees cythonix_generated in their environment.
   # grpclib: asyncio gRPC transport for the remote layer. protobuf
   # runtime feeds the manifest-built descriptor schema.
+  # googleapis-common-protos: google.rpc.Status, which is the message
+  # gRPC puts in grpc-status-details-bin - the only place a FAILED
+  # call can carry a typed answer (tasks/036).
   propagatedBuildInputs = [
     cythonix-bindings
     cythonix-generated
+    python3Packages.googleapis-common-protos
     python3Packages.grpclib
     python3Packages.protobuf
   ];

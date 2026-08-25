@@ -40,9 +40,11 @@ Findings reference two architectural reviews, 2026-08-23 and
   libstore, and crossing the wire. The next questions are typed errors
   (done: typed, plain, and the colour kept as a field) and which type
   comes next.
-- 036 (errors over the wire) is the half of that which is left: a
-  typed nix error arrives as a plain Exception, because the client
-  rebuilds a cause by name from a map of five builtins. Building function values into
+- 036 (errors over the wire) is done. A nix error keeps its class and
+  its colour across the wire: the hierarchy is declared in the
+  bindings and reflected into the manifest, and a failure travels as
+  typed messages in grpc-status-details-bin rather than as JSON in the
+  status text. Building function values into
   the mock was the point where mock fidelity stopped paying: it was
   reimplementing libexpr to prove things libexpr already does.
 - 037 (tests outside the sandbox) is the cost of binding real Nix

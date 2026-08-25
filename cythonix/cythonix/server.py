@@ -11,7 +11,6 @@ hand-written per method.
 
 import asyncio
 import contextlib
-import json
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -23,6 +22,7 @@ from google.protobuf import message_factory
 from grpclib.reflection.service import ServerReflection
 
 from . import grpc_pb as schema
+from .faults import FaultCodec, SchemaStatusDetails
 from .lifecycle import TOKEN_HEADER, HandleTable
 from .wire import WireCodec
 
@@ -131,6 +131,10 @@ class Dispatcher:
         self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
         self.codec = WireCodec(manifest)
+        # A failure crosses the same way a value does: as messages, by
+        # what the manifest declares, never by a type this file names
+        # (tasks/036).
+        self.faults = FaultCodec(manifest, schema.load_pool())
         # Which classes are value TREES, and how to walk one. Declared
         # next to the binding; this module names none of them.
         self.trees: dict[str, dict[str, Any]] = {
@@ -201,27 +205,39 @@ class Dispatcher:
         self.table.touch(token, hid)
         return self.table.get(hid)
 
+    def _fault(self, wrapper: Any) -> grpclib.exceptions.GRPCError:
+        """One failure, as the status a failed call can carry.
+
+        The message stays human-readable - it is the field a human
+        reads in a log - and the structure goes where structure goes,
+        in the typed details beside it."""
+        return grpclib.exceptions.GRPCError(
+            grpclib.const.Status.UNKNOWN,
+            wrapper.message,
+            self.faults.details(wrapper))
+
     # -- handler construction ----------------------------------------------
-    @staticmethod
-    def _wrap(handler: Handler, label: str) -> Handler:
+    def _wrap(self, handler: Handler, label: str) -> Handler:
         """Every failure crosses the wire as a typed JSON payload in the
         gRPC status message: WrapperErrors as themselves, everything
         else wrapped in InternalError - so unknown handles and bugs
-        arrive debuggable, not anonymous."""
+        arrive debuggable, not anonymous.
+
+        A cause the manifest DECLARES also crosses as its parts, so the
+        far side rebuilds the class rather than approximating it by
+        name. That is what makes the remote shape the same as the
+        in-process one: an InternalError whose __cause__ is the real
+        error, colour and all (tasks/036)."""
         from cythonix_generated._runtime import InternalError, WrapperError
 
         async def guard(stream: Any) -> None:
             try:
                 await handler(stream)
             except WrapperError as e:
-                raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.UNKNOWN,
-                    json.dumps(e.to_dict())) from e
+                raise self._fault(e) from e
             except Exception as e:
-                internal = InternalError(f"{label} failed", cause=e)
-                raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.UNKNOWN,
-                    json.dumps(internal.to_dict())) from e
+                raise self._fault(
+                    InternalError(f"{label} failed", cause=e)) from e
         return guard
 
     def adopt(self, obj: Any, parent: Any) -> Any:
@@ -353,10 +369,8 @@ class Dispatcher:
                 try:
                     await fn(stream)
                 except Exception as e:
-                    internal = InternalError(f"Session/{fn.__name__} failed", cause=e)
-                    raise grpclib.exceptions.GRPCError(
-                        grpclib.const.Status.UNKNOWN,
-                        json.dumps(internal.to_dict())) from e
+                    raise self._fault(InternalError(
+                        f"Session/{fn.__name__} failed", cause=e)) from e
             return guarded
 
         async def release_many(stream: Any) -> None:
@@ -512,7 +526,12 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     # A new name: extend() hands back reflection's own servable type,
     # not the list that went in.
     reflected = ServerReflection.extend(services, pool=pool)
-    server = grpclib.server.Server(reflected)
+    # Typed failures ride in grpc-status-details-bin, resolved
+    # against this pool rather than protobuf's default symbol
+    # database - these descriptors were built at import from
+    # grpc_schema.pb and are in no global registry (tasks/036).
+    server = grpclib.server.Server(
+        reflected, status_details_codec=SchemaStatusDetails(pool))
     await server.start(host, port)
     print(f"nixmock gRPC server listening on {host}:{port} "
           f"(lease ttl: {lease_ttl if lease_ttl else 'off'})")

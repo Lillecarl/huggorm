@@ -108,6 +108,14 @@ def value_msg_name(cls_name: str) -> str:
     return f"{cls_name}Msg"
 
 
+def fault_msg_name(cls_name: str) -> str:
+    """The message one declared exception class travels as.
+
+    Its own suffix, not "Msg": an error class and a wire-value class
+    could share a name, and two top-level messages in one file cannot."""
+    return f"{cls_name}Fault"
+
+
 def service_name(cls_name: str) -> str:
     return f"{cls_name}Service"
 
@@ -254,6 +262,43 @@ def _msg_arg_type(type_str: str,
     raise TypeError(
         f"cannot put {type_str!r} on the wire: it is neither a scalar nor a "
         f"class carrying a _wire policy. Declare _wire on the binding.")
+
+
+FAULT = "Fault"
+
+
+def _add_faults(file_dp: Any, manifest: Proto) -> None:
+    """How a failure describes itself, in the status details.
+
+    A failed call carries no response message - only a status - so this
+    is the only place a typed answer can go. gRPC's own channel for it
+    is `grpc-status-details-bin`: a google.rpc.Status whose `details`
+    is a repeated Any. So the fault travels as messages, the way
+    everything else here does.
+
+    Two of them. `Fault` is what the wrapper always said - a code, a
+    message, and the cause approximated by name - and every peer
+    understands it. The cause ALSO rides as a message of its own class
+    when the bindings declare that class, and then the Any's type name
+    IS the identity: the far side resolves it in the schema pool or it
+    does not resolve at all. Nothing has to trust a class name, because
+    no class name crosses on its own."""
+    fault = file_dp.message_type.add()
+    fault.name = FAULT
+    _field(fault, "code", 1, proto_type=_scalar_const("string"))
+    _field(fault, "message", 2, proto_type=_scalar_const("string"))
+    # The approximation, kept: a peer that cannot resolve the typed
+    # detail still learns what failed and what it said.
+    _field(fault, "cause_type", 3, proto_type=_scalar_const("string"))
+    _field(fault, "cause_message", 4, proto_type=_scalar_const("string"))
+
+    errors: Proto = manifest.get("errors") or {}
+    kinds = _wire_kinds(manifest)
+    for cls_name, proto in errors.get("classes", {}).items():
+        m = file_dp.message_type.add()
+        m.name = fault_msg_name(cls_name)
+        for n, (fname, ftype) in enumerate(proto["wire_fields"], start=1):
+            _add_field(m, fname, n, ftype.removesuffix("?"), kinds)
 
 
 def _add_common(file_dp: Any, manifest: Proto) -> None:
@@ -511,6 +556,7 @@ def build_fdset(manifest: Proto) -> bytes:
     f.package = PKG
     f.syntax = "proto3"
     _add_common(f, manifest)
+    _add_faults(f, manifest)
     _add_session(f)
 
     kinds = _wire_kinds(manifest)

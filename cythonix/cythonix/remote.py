@@ -22,7 +22,6 @@ location.
 """
 
 import asyncio
-import json
 import threading
 import weakref
 from collections.abc import Callable
@@ -35,6 +34,7 @@ import grpclib.exceptions
 from google.protobuf import message_factory
 
 from . import grpc_pb as schema
+from .faults import FaultCodec, SchemaStatusDetails
 from .lifecycle import TOKEN_HEADER
 from .wire import WireCodec
 
@@ -44,7 +44,12 @@ class NixClient:
         self.pool = schema.load_pool()
         self.manifest = schema.load_manifest()
         self.codec = WireCodec(self.manifest)
-        self.channel = grpclib.client.Channel(host, port)
+        # Rebuilds a declared error from the status details, so a
+        # remote failure has the same shape as an in-process one: an
+        # InternalError whose __cause__ is the real error (tasks/036).
+        self.faults = FaultCodec(self.manifest, self.pool)
+        self.channel = grpclib.client.Channel(
+            host, port, status_details_codec=SchemaStatusDetails(self.pool))
         self.token: str | None = None
         self._pinger: asyncio.Task[None] | None = None
         # How many live client objects point at each handle, and which
@@ -139,8 +144,6 @@ class NixClient:
         return int(resp.released)
 
     async def _rpc(self, path: str, req: Any, reply_name: str) -> Any:
-        from cythonix_generated._runtime import WrapperError
-
         Reply = self.msg(reply_name)
         metadata = {TOKEN_HEADER: self.token} if self.token else None
         stream = self.channel.request(
@@ -152,18 +155,18 @@ class NixClient:
                 await s.end()
                 return await s.recv_message()
         except grpclib.exceptions.GRPCError as e:
-            # Typed wrapper errors cross as JSON in the status message.
-            # Decoding lives HERE so every rpc - Session lifecycle
-            # included - rebuilds real errors instead of leaking
-            # transport exceptions. No `from` clause: the rebuilt error
-            # keeps the decoded cause as __cause__; the GRPCError stays
-            # visible as __context__.
-            try:
-                d = json.loads(e.message or "")
-                if isinstance(d, dict) and "code" in d:
-                    raise WrapperError.from_dict(d)
-            except (ValueError, TypeError):
-                pass
+            # A typed failure crosses in the status DETAILS. Decoding
+            # lives HERE so every rpc - Session lifecycle included -
+            # rebuilds real errors instead of leaking transport
+            # exceptions. No `from` clause: the rebuilt error keeps the
+            # decoded cause as __cause__; the GRPCError stays visible
+            # as __context__.
+            rebuilt = self.faults.rebuild(e.details)
+            if rebuilt is not None:
+                # No `from`: the rebuilt error already carries the
+                # decoded cause as __cause__, and Python sets the
+                # GRPCError as __context__, so both stay visible.
+                raise rebuilt  # noqa: B904
             raise
 
     # -- connection lifecycle -----------------------------------------

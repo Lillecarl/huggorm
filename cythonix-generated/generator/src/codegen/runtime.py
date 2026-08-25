@@ -45,21 +45,12 @@ class WrapperError(Exception):
     def to_dict(self) -> dict[str, str]:
         return {"code": self.code, "message": self.message}
 
-    @classmethod
-    def from_dict(cls, d: dict[str, str]) -> WrapperError:
-        """Rebuild a wrapper error from to_dict() output - used at RPC
-        boundaries so typed errors survive the wire. A dict carrying a
-        cause is by definition an InternalError; the original cause
-        type is approximated by name."""
-        known: dict[str, type[BaseException]] = {
-                 "ValueError": ValueError, "TypeError": TypeError,
-                 "RuntimeError": RuntimeError, "KeyError": KeyError,
-                 "OSError": OSError}
-        if "cause_type" not in d:
-            return WrapperError(d.get("message", ""))
-        cause_cls = known.get(d["cause_type"], Exception)
-        cause = cause_cls(d.get("cause_message", ""))
-        return InternalError(d.get("message", ""), cause=cause)
+    # No from_dict. Rebuilding an error is a WIRE concern and it lives
+    # at the wire, where the manifest says which classes exist. The
+    # version that lived here approximated the cause from a hard-coded
+    # map of five builtins - a list of library knowledge in the one
+    # module that is emitted beside the wrappers and must not know
+    # which library it wraps (tasks/036).
 
 
 class InternalError(WrapperError):
