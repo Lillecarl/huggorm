@@ -274,7 +274,7 @@ def main(argv: list[str] | None = None) -> None:
         if not proto["wrapped"]:
             continue
         fname = f"async_{proto['name'].lower()}.py"
-        code = ast.unparse(returned_module(proto, async_types))
+        code = ast.unparse(returned_module(proto, async_types, returned_policies))
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for returned type {proto['name']} ({proto['threading']})")
 

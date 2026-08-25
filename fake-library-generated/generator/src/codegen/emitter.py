@@ -128,21 +128,27 @@ def _ann(type_str: str, context: str) -> ast.expr:
 
 
 def returned_module(proto: Proto,
-                    async_types: set[str] | None = None) -> ast.Module:
+                    async_types: set[str] | None = None,
+                    bound_policies: dict[str, str] | None = None) -> ast.Module:
     """
     Emit Async<Bound> for a returned value type (e.g. Poop).
 
     Constructed with (obj, runner): the object was already produced on
     the producer's thread; attach_runner picks the right execution
     strategy from the type's declared policy.
+
+    bound_policies is what a wrapper module gets too: a returned type
+    can produce another one (a Value holds Values), and such a return
+    has to be adopted rather than handed back as a bare binding object.
     """
     svc = proto["name"]
     policy = proto["threading"]
     policy_wire = proto["wire"]
     async_types = async_types or set()
+    bound_policies = bound_policies or {}
 
     mod = ast.Module(body=[], type_ignores=[])
-    annotations = _emitted_annotations(proto, async_types, {})
+    annotations = _emitted_annotations(proto, async_types, bound_policies)
     used = _annotation_names(annotations)
     mod.body.append(
         ast.Expr(
@@ -165,7 +171,9 @@ def returned_module(proto: Proto,
         module="_runtime",
         names=[ast.alias(name="BaseRunner"), ast.alias(name="attach_runner")],
         level=1))
-    mod.body.extend(_sibling_imports(used))
+    # A value that produces values names its OWN async class, which is
+    # defined right here: importing it would be a self-import.
+    mod.body.extend(_sibling_imports(used - {f"Async{svc}"}))
     ann_import = _fake_library_import(used)
     if ann_import is not None:
         mod.body.append(ann_import)
@@ -229,42 +237,21 @@ def returned_module(proto: Proto,
     )
 
     mod.body.append(cls)
-    _append_methods_and_aclose(cls, proto, svc, async_types)
+    _append_methods_and_aclose(cls, proto, svc, async_types, bound_policies)
     ast.fix_missing_locations(mod)
     return mod
 
 
 def _append_methods_and_aclose(cls: ast.ClassDef, proto: Proto, svc: str,
-                               async_types: set[str]) -> None:
+                               async_types: set[str],
+                               bound_policies: dict[str, str]) -> None:
+    # Same emission as a wrapper's methods, adoption included. It used
+    # to be a second copy of the hop body without the adoption branch,
+    # so a returned type producing another one handed back the bare
+    # binding object - alive in process, and a type error everywhere
+    # else, because every other surface says AsyncX.
     for m in proto["methods"]:
-        params = [ast.arg(arg="self")] + [
-            ast.arg(arg=p["name"],
-                    annotation=_ann(_param_ann(p["type"], async_types),
-                                    f"{svc}.{m['name']}:{p['name']}"))
-            for p in m["params"]
-        ]
-        body: list[ast.stmt] = []
-        if m["doc"]:
-            body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
-        body.append(_hop_return(m["name"], m["params"], m["return_type"]))
-        cls.body.append(
-            ast.AsyncFunctionDef(
-                name=m["name"],
-                args=ast.arguments(
-                    posonlyargs=[],
-                    args=params,
-                    vararg=None,
-                    kwonlyargs=[],
-                    kw_defaults=[],
-                    kwarg=None,
-                    defaults=[],
-                ),
-                body=body,
-                decorator_list=[],
-                returns=_ann(m["return_type"], f"{svc}.{m['name']}"),
-                type_params=[],
-            )
-        )
+        _append_hop_method(cls, proto, m, svc, async_types, bound_policies)
     cls.body.append(_aclose_method())
 
 
