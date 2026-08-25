@@ -1,27 +1,29 @@
 #pragma once
-// GC environment for the evaluation side, mirroring Nix's eval-gc.hh:
-// a compile-time switch with dummy aliases so the rest of the code has
-// no #ifdefs.
+// GC environment for the evaluation side, mirroring Nix's eval-gc.hh.
 //
-// The switch AUTO-DETECTS boehmgc via __has_include. This is not a
-// convenience: the allocator alias appears in EvalState's layout, and
-// implicit member functions get instantiated in EVERY TU that includes
-// this header. If TUs disagreed on the alias, one would free GC-allocated
-// arena nodes with plain free(). Every consumer of this header therefore
-// needs gc/gc.h on its include path (and links libgc).
+// EVERY consumer must define FAKE_LIBRARY_USE_BOEHMGC=1 on the command
+// line, and this header refuses to compile without it. The reason is
+// ODR, not taste: gc_base appears in Value's layout, and implicit member
+// functions get instantiated in every TU that includes this header. Two
+// TUs that disagreed on the base would produce two incompatible Values,
+// and one of them would free GC memory with plain free().
+//
+// The build files carry the flag: meson.build for the library,
+// setup.py for the Cython extensions.
+//
+// This used to AUTO-DETECT boehmgc through __has_include, with a no-GC
+// fallback branch behind it. Both are gone. Detection made ODR agreement
+// depend on every TU seeing the same include path - true here by luck,
+// silent when it stopped being true. The fallback could never compile in
+// this build graph either, because c_eval.pxd includes gc/gc.h and binds
+// GC_malloc_uncollectable directly. Real Nix does support a no-GC build;
+// reintroducing one here means building and testing it, not restoring a
+// branch nothing ever compiled.
 
 #include <cstddef>
 
 #if !defined(FAKE_LIBRARY_USE_BOEHMGC)
-#  if defined(__has_include)
-#    if __has_include(<gc/gc.h>)
-#      define FAKE_LIBRARY_USE_BOEHMGC 1
-#    endif
-#  endif
-#endif
-
-#ifndef FAKE_LIBRARY_USE_BOEHMGC
-#  define FAKE_LIBRARY_USE_BOEHMGC 0
+#  error "define FAKE_LIBRARY_USE_BOEHMGC=1 when compiling any TU that includes fake_library headers"
 #endif
 
 #if FAKE_LIBRARY_USE_BOEHMGC
@@ -80,28 +82,5 @@ inline void collect()
 }  // namespace fake_library::gcenv
 
 #else
-
-#  include <memory>
-
-template<typename T>
-using gc_allocator = std::allocator<T>;
-
-// Mirrors the enabled branch's `using gc_base = gc;`: an empty base so
-// consumers can derive unconditionally.
-struct gc_base {};
-
-namespace fake_library::gcenv {
-
-inline void init() {}
-inline void register_current_thread() {}
-inline void collect() {}
-
-inline size_t heap_size() { return 0; }
-inline size_t total_bytes() { return 0; }
-inline size_t bytes_since_gc() { return 0; }
-inline unsigned long collection_count() { return 0; }
-inline bool is_gc_managed(const void *) { return false; }
-
-}  // namespace fake_library::gcenv
-
+#  error "FAKE_LIBRARY_USE_BOEHMGC must be 1: this build has no no-GC path"
 #endif

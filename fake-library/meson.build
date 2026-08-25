@@ -5,18 +5,16 @@ project('fake-library', 'cpp',
 
 inc = include_directories('include')
 
-gc_dep = dependency('bdw-gc', required: false)
-gc_args = []
-if gc_dep.found()
-  gc_args = ['-DFAKE_LIBRARY_USE_BOEHMGC=1']
-endif
+# Required, not optional: gc-env.hpp has no no-GC path, and every
+# consumer TU must define the same flag or the ODR agreement breaks.
+gc_dep = dependency('bdw-gc', required: true)
 
 lib = library('fake_library',
   'src/store.cpp',
   'src/eval.cpp',
   include_directories : inc,
-  cpp_args : gc_args,
-  dependencies : gc_dep.found() ? [gc_dep] : [],
+  cpp_args : ['-DFAKE_LIBRARY_USE_BOEHMGC=1'],
+  dependencies : [gc_dep],
   install : true,
 )
 

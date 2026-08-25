@@ -16,7 +16,7 @@ ext = Extension(
     include_dirs=[os.path.join(fake_lib, "include")],
     library_dirs=[os.path.join(fake_lib, "lib")],
     libraries=["fake_library"],
-    extra_compile_args=["-std=c++23"],
+    extra_compile_args=["-std=c++23", "-DFAKE_LIBRARY_USE_BOEHMGC=1"],
     extra_link_args=[f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
 )
 
@@ -27,7 +27,7 @@ ext_eval = Extension(
     include_dirs=[os.path.join(fake_lib, "include")],
     library_dirs=[os.path.join(fake_lib, "lib")],
     libraries=["fake_library"],
-    extra_compile_args=["-std=c++23"],
+    extra_compile_args=["-std=c++23", "-DFAKE_LIBRARY_USE_BOEHMGC=1"],
     extra_link_args=[f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
 )
 
