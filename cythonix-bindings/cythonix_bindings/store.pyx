@@ -10,7 +10,7 @@
 # - ONE cdef class Store holds Store* and declares every wrapped method
 #   exactly once. LocalStore/RemoteStore are constructor-only subclasses
 #   picking which C++ object to allocate.
-# - Value types (StorePath, Derivation, DerivedPath) are produced by store
+# - Value types (MockStorePath, Derivation, DerivedPath) are produced by store
 #   methods, never constructed directly.
 #
 # Threading policies (`_threading`, consumed by the async codegen):
@@ -18,7 +18,7 @@
 #   concurrent use from several threads is legitimate.
 # - RemoteStore "affine": a connection-bound store owns its IO thread;
 #   operations serialize there. This is the experiment's affine exemplar.
-# - StorePath/DerivedPath "pool": immutable values.
+# - MockStorePath/DerivedPath "pool": immutable values.
 # - Derivation "affine": mutable builder state; ops stay on the producer's
 #   thread (the returned-value attachment rule makes this enforceable).
 # `_abstract = True` marks Store as a generated BASE: wrapped and
@@ -35,7 +35,7 @@ from cython.operator cimport dereference as deref
 
 from cythonix_bindings.c_store cimport (
     CStore,
-    CStorePath,
+    CMockStorePath,
     CDerivation,
     CDerivedPath,
     CLocalStore,
@@ -126,25 +126,25 @@ cdef class Store:
     def get_uri(self) -> str:
         return self._ptr.get_uri().decode('utf-8')
 
-    def is_valid_path(self, StorePath path) -> bool:
+    def is_valid_path(self, MockStorePath path) -> bool:
         return self._ptr.is_valid_path(deref(path._ptr))
 
-    def add_text_to_store(self, str name, str contents) -> StorePath:
+    def add_text_to_store(self, str name, str contents) -> MockStorePath:
         cdef string c_name = name.encode('utf-8')
         cdef string c_contents = contents.encode('utf-8')
-        cdef StorePath result = StorePath.__new__(StorePath)
+        cdef MockStorePath result = MockStorePath.__new__(MockStorePath)
         with nogil:
-            result._ptr = new CStorePath(self._ptr.add_text_to_store(c_name, c_contents))
+            result._ptr = new CMockStorePath(self._ptr.add_text_to_store(c_name, c_contents))
         return result
 
-    def build_derivation(self, DerivedPath request) -> StorePath:
+    def build_derivation(self, DerivedPath request) -> MockStorePath:
         cdef CDerivedPath* c_req = request._ptr
-        cdef StorePath result = StorePath.__new__(StorePath)
+        cdef MockStorePath result = MockStorePath.__new__(MockStorePath)
         with nogil:
-            result._ptr = new CStorePath(self._ptr.build_derivation(deref(c_req)))
+            result._ptr = new CMockStorePath(self._ptr.build_derivation(deref(c_req)))
         return result
 
-    def query_derivation(self, StorePath drv_path) -> Derivation:
+    def query_derivation(self, MockStorePath drv_path) -> Derivation:
         """Parse a .drv previously added to this store. The returned
         derivation carries mutable state: callers must keep invoking it
         on this store's thread (the async layer enforces that)."""
@@ -179,36 +179,36 @@ cdef class RemoteStore(Store):
 # via __new__ (which skips __init__). The _threading marker tells the
 # codegen how returned instances may be accessed.
 
-cdef class StorePath:
+cdef class MockStorePath:
     _threading = "pool"
     # Immutable value: safe to serialize across a wire, so it crosses
     # wrapper boundaries as a copy.
     _wire = "value"
-    _binds = "CStorePath"
+    _binds = "CMockStorePath"
     # Nothing here allocates, does IO or waits: every accessor reads a
     # substring of the one string this object holds. So there is no
     # thread to hop to and no GIL to release, and the codegen emits no
-    # async wrapper - a StorePath is handed back as itself, on both
+    # async wrapper - a MockStorePath is handed back as itself, on both
     # sides of the wire (tasks/025).
     _blocking = False
     # Serialization contract for every wire-value type, read by the
     # codegen. The field list IS the proto message shape; a field type
     # naming another wire-value nests that type's message. _parts()
     # returns the values in this order and _from_parts() rebuilds from
-    # them, so no layer above this file knows what a StorePath contains.
+    # them, so no layer above this file knows what a MockStorePath contains.
     _wire_fields = (("base_name", "str"),)
 
-    cdef CStorePath* _ptr
+    cdef CMockStorePath* _ptr
 
     def __init__(self):
-        raise TypeError("StorePath instances are produced by stores, not constructed")
+        raise TypeError("MockStorePath instances are produced by stores, not constructed")
 
     def __dealloc__(self):
         del self._ptr
 
     def __copy__(self):
-        cdef StorePath c = StorePath.__new__(StorePath)
-        c._ptr = new CStorePath(deref(self._ptr))
+        cdef MockStorePath c = MockStorePath.__new__(MockStorePath)
+        c._ptr = new CMockStorePath(deref(self._ptr))
         return c
 
     def __deepcopy__(self, memo):
@@ -226,8 +226,8 @@ cdef class StorePath:
         """Wire-deserialization helper (private, never surfaced by the
         codegen): rebuild a produced value from its '<hash>-<name>'.
         Parsing and validation live in C++, mirroring real Nix."""
-        cdef StorePath s = StorePath.__new__(StorePath)
-        s._ptr = new CStorePath(base_name.encode('utf-8'))
+        cdef MockStorePath s = MockStorePath.__new__(MockStorePath)
+        s._ptr = new CMockStorePath(base_name.encode('utf-8'))
         return s
 
     def _parts(self):
@@ -273,19 +273,19 @@ cdef class DerivedPath:
     # Immutable build request: wire-value.
     _wire = "value"
     _binds = "CDerivedPath"
-    # Same as StorePath: a self-contained request object whose only
+    # Same as MockStorePath: a self-contained request object whose only
     # method formats its own fields. No wrapper.
     _blocking = False
     # A wire-value field may name another wire-value type: the emitted
-    # message nests StorePathMsg and the codec recurses into it.
+    # message nests MockStorePathMsg and the codec recurses into it.
     # A trailing "?" marks an optional field: proto3 cannot tell an
     # unset string from an empty one, so the contract says which way to
     # read it back. Opaque requests carry no output.
-    _wire_fields = (("path", "StorePath"), ("output", "str?"))
+    _wire_fields = (("path", "MockStorePath"), ("output", "str?"))
 
     cdef CDerivedPath* _ptr
 
-    def __cinit__(self, StorePath path=None, str output=None):
+    def __cinit__(self, MockStorePath path=None, str output=None):
         # Optional args exist only so __copy__ can allocate via __new__
         # (tp_new always runs __cinit__); real construction validates
         # in __init__ below.
@@ -293,13 +293,13 @@ cdef class DerivedPath:
             self._ptr = NULL
             return
         if output is None:
-            self._ptr = new CDerivedPath(deref((<StorePath>path)._ptr))
+            self._ptr = new CDerivedPath(deref((<MockStorePath>path)._ptr))
         else:
-            self._ptr = new CDerivedPath(deref((<StorePath>path)._ptr), output.encode('utf-8'))
+            self._ptr = new CDerivedPath(deref((<MockStorePath>path)._ptr), output.encode('utf-8'))
 
-    def __init__(self, StorePath path=None, str output=None):
+    def __init__(self, MockStorePath path=None, str output=None):
         if path is None:
-            raise TypeError("DerivedPath requires a StorePath")
+            raise TypeError("DerivedPath requires a MockStorePath")
 
     def __dealloc__(self):
         if self._ptr != NULL:
@@ -318,7 +318,7 @@ cdef class DerivedPath:
         return self._ptr.describe().decode('utf-8')
 
     @classmethod
-    def _from_parts(cls, StorePath path, str output):
+    def _from_parts(cls, MockStorePath path, str output):
         """Wire-deserialization helper (private)."""
         cdef DerivedPath d = DerivedPath.__new__(DerivedPath)
         if output is None:
@@ -328,14 +328,14 @@ cdef class DerivedPath:
         return d
 
     def _parts(self):
-        """Wire-serialization helper (private): (StorePath, output|None).
-        The first element is a real StorePath, matching the declared
+        """Wire-serialization helper (private): (MockStorePath, output|None).
+        The first element is a real MockStorePath, matching the declared
         _wire_fields type - the codec serializes it in turn."""
         cdef str out = None
         if self._ptr.is_built():
             out = self._ptr.output_name().decode('utf-8')
-        cdef StorePath p = StorePath.__new__(StorePath)
-        p._ptr = new CStorePath(self._ptr.path())
+        cdef MockStorePath p = MockStorePath.__new__(MockStorePath)
+        p._ptr = new CMockStorePath(self._ptr.path())
         return (p, out)
 
 

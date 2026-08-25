@@ -1,11 +1,12 @@
 from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
+from .path import StorePath
 from .store import (
     Derivation,
     DerivedPath,
     LocalStore,
+    MockStorePath,
     RemoteStore,
     Store,
-    StorePath,
     describe,
 )
 
@@ -14,6 +15,7 @@ __all__ = [
     "DerivedPath",
     "EvalState",
     "LocalStore",
+    "MockStorePath",
     "RemoteStore",
     "Store",
     "StorePath",

@@ -108,3 +108,80 @@ C++-in-Cython problem gets solved rather than routed around:
 `StorePath() = delete` needs a produced-value shape that does not
 default-construct, `except +` stays, and a template type in a pxd
 renders as itself and maps to nothing until something maps it.
+
+## Done 2026-08-25: nix::StorePath is bound
+
+It parses, validates, and crosses the wire. `StorePath(
+"7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1")` gives the base name,
+the name part and the 32-character hash; `"not-a-store-path"` raises
+with libstore's own message. The whole generator chain ran over it
+unchanged: a manifest entry, a `StorePathMsg` wire message, a typed
+constructor, and PEP 561 stubs carrying its docstrings.
+
+### The predicted problems, and which were real
+
+- **`StorePath() = delete` breaks the produced-value pattern.** NOT
+  real. The pattern is `__new__` then assign a POINTER; nothing ever
+  default-constructs the C++ object. Declaring a default constructor
+  in the pxd would have been the mistake, and not declaring one costs
+  nothing.
+- **Accessors return views into a member.** Real, and handled: one
+  `_view()` helper copies, and nothing that leaves the binding is a
+  view. A view outliving its owner is a dangling pointer, not an
+  exception, so there is no second chance to notice.
+- **The pxd parser could not render the declarations.** NOT real.
+  `string_view`, the `"hashPart"` C-name rename and the copy
+  constructor all parse; the parser even drops the copy constructor
+  from the constructor list on its own. One line was needed:
+  `string_view` maps to `str`, because a binding copies.
+
+### What actually bit
+
+`__cinit__` runs on EVERY `__new__`, including the argument-less one a
+copy needs, so it cannot also be where construction happens. The real
+constructor lives in `__init__`, and a `_get()` guard raises rather
+than dereferencing NULL for an object that was `__new__`ed and never
+initialised. The mock never hit this because its `__init__` refuses:
+it is produced, never constructed.
+
+### Linking
+
+Against the SPLIT components, not the `nix` package (Carl,
+2026-08-25): `nix.libs.nix-{util,store,expr,fetchers,flake}`. `nix`
+itself is the CLI and drags its closure - 158.6 MiB against 143.1 MiB
+for nix-store alone, and only the libraries are ever loaded.
+
+setup.py reads pkg-config rather than joining `include` and `lib` onto
+a prefix. That is not a style choice: nix-store.pc carries
+`-std=c++23`, a `Requires` chain into nix-util and nlohmann_json, and
+a private link line nobody should reconstruct by hand. rpath comes
+from the same place, because Nix has no global library path to fall
+back on.
+
+### Naming
+
+Carl: "Let's not prefix everything with Nix when we're just getting
+started, naming is important and a PITA to change later."
+
+So the REAL type takes the real name and the mock yields it. Each mock
+class gets its `Mock` prefix exactly when its real counterpart lands,
+and the prefix disappears when the mock does. `StorePath` is real now;
+`MockStorePath` is the mock's, and `CMockStorePath` its pxd alias.
+
+Modules mirror Nix's own header layout rather than inventing one:
+`nix/store/path.hh` is bound by `path.pyx` and declared by
+`c_path.pxd`. When the mock leaves, `store.pyx` and `eval.pyx` are
+free for `nix/store/store-api.hh` and `nix/expr/eval.hh`.
+
+### Two things to decide before the next type
+
+- **A nix::Error arrives in Python as RuntimeError.** Cython's
+  `except +` maps anything that is not a std exception it knows onto
+  RuntimeError, so `BadStorePath` loses its type on the way. The typed
+  error path this repo already has (WrapperError.to_dict) wants a
+  `except +translate_nix_error` handler instead, which is the
+  documented Cython hook for exactly this.
+- **The message carries ANSI escapes.** libstore formats errors with
+  colour, so the RuntimeError string holds `\x1b[31;1merror:\x1b[0m`.
+  That is wrong in a Python traceback and wrong over the wire. Nix has
+  a setting for it; find it before the errors start mattering.

@@ -123,7 +123,7 @@ def test_runtime_contract(out: pathlib.Path) -> None:
 
 async def test_behavior() -> None:
     import cythonix_bindings
-    from cythonix_bindings import DerivedPath, StorePath
+    from cythonix_bindings import DerivedPath, MockStorePath
     from cythonix_generated import (
         AsyncDerivation,
         AsyncEvalState,
@@ -148,10 +148,10 @@ async def test_behavior() -> None:
     )
     elapsed = asyncio.get_running_loop().time() - t0
     assert elapsed < 0.18, f"expected overlapped adds, took {elapsed:.2f}s"
-    # StorePath is pool AND non-blocking, so it has no wrapper: an
+    # MockStorePath is pool AND non-blocking, so it has no wrapper: an
     # awaited store method hands back the binding object itself, and
     # reading it is a plain call (tasks/025).
-    assert type(p1) is StorePath
+    assert type(p1) is MockStorePath
     assert len({p1.to_string(), p2.to_string()}) == 2
     assert await local.is_valid_path(p1) is True
 
@@ -320,7 +320,7 @@ async def test_behavior() -> None:
 
     # Returned pool values are free to use any thread.
     spool = await local.add_text_to_store("x", "y")
-    assert isinstance(spool, StorePath)
+    assert isinstance(spool, MockStorePath)
     assert isinstance(drv, AsyncDerivation)
     assert isinstance(drv_req, DerivedPath)
 
@@ -342,7 +342,7 @@ async def test_behavior() -> None:
     # Wire policy lands in the manifest (the future RPC IDL) and on
     # generated classes: immutable types are wire-values, everything
     # else proxies.
-    assert manifest["returned_types"]["StorePath"]["wire"] == "value"
+    assert manifest["returned_types"]["MockStorePath"]["wire"] == "value"
     assert manifest["returned_types"]["Derivation"]["wire"] == "proxy"
     assert manifest["wrappers"]["DerivedPath"]["wire"] == "value"
     assert manifest["wrappers"]["EvalState"]["wire"] == "proxy"
@@ -350,11 +350,11 @@ async def test_behavior() -> None:
 
     # Wrapping is a SEPARATE axis from wire policy, and the rule is:
     # wrap when the object needs a home thread (affine) or its methods
-    # can block. StorePath and DerivedPath are pool and declare
+    # can block. MockStorePath and DerivedPath are pool and declare
     # _blocking = False, so they cross every layer as themselves -
     # no await in front of a substring read (tasks/025).
     import cythonix_generated as flg_names
-    for group, name in (("returned_types", "StorePath"),
+    for group, name in (("returned_types", "MockStorePath"),
                         ("wrappers", "DerivedPath")):
         proto = manifest[group][name]
         assert proto["blocking"] is False and proto["wrapped"] is False, proto
@@ -455,12 +455,12 @@ async def test_behavior() -> None:
     # representable.
     from codegen.grpc_schema import wire_blocker
 
-    kinds = {"Value": "proxy", "StorePath": "value"}
+    kinds = {"Value": "proxy", "MockStorePath": "value"}
     for shape in ("dict", "dict[int, str]", "dict[str, dict[str, int]]",
                   "dict[str, Value]", "list", "Nowhere"):
         assert wire_blocker(shape, kinds), f"{shape} should be blocked"
-    for shape in ("str", "int", "Value", "StorePath", "dict[str, int]",
-                  "dict[str, StorePath]"):
+    for shape in ("str", "int", "Value", "MockStorePath", "dict[str, int]",
+                  "dict[str, MockStorePath]"):
         assert not wire_blocker(shape, kinds), (shape, wire_blocker(shape, kinds))
 
     # Closing an affine wrapper shuts its dedicated thread down, and

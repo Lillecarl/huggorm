@@ -20,6 +20,11 @@ Api = dict[str, Any]
 
 _PRIMITIVES = {
     "string": "str",
+    # Real Nix returns views into an object's own storage. A binding
+    # copies before anything reaches Python - a view outliving its
+    # owner is a dangling pointer, not an exception - so by the time a
+    # type reaches this table it is a str (tasks/015).
+    "string_view": "str",
     "int": "int",
     "long": "int",
     "long long": "int",

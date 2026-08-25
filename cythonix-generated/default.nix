@@ -71,7 +71,7 @@ python3Packages.buildPythonPackage {
     cythonix-bindings
   ];
 
-  env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_store.pxd ${cythonix-bindings.src}/cythonix_bindings/c_eval.pxd";
+  env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_store.pxd ${cythonix-bindings.src}/cythonix_bindings/c_eval.pxd ${cythonix-bindings.src}/cythonix_bindings/c_path.pxd";
 
   propagatedBuildInputs = [ cythonix-bindings ];
 

@@ -13,9 +13,9 @@
 from cythonix_bindings import (
     DerivedPath,
     LocalStore,
+    MockStorePath,
     RemoteStore,
     Store,
-    StorePath,
     describe,
 )
 
@@ -77,9 +77,9 @@ def demo() -> None:
     except TypeError as e:
         print(f"\nStore() correctly raises: {e}")
     try:
-        StorePath()
+        MockStorePath()
     except TypeError as e:
-        print(f"StorePath() correctly raises: {e}")
+        print(f"MockStorePath() correctly raises: {e}")
 
 
 if __name__ == "__main__":

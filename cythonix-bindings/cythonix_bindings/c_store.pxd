@@ -10,11 +10,11 @@
 from libcpp.string cimport string
 
 cdef extern from "fake_library/store.hpp" nogil:
-    cdef cppclass CStorePath "fake_library::StorePath":
-        CStorePath() except +
-        CStorePath(string hash, string name) except +
-        CStorePath(string base_name) except +
-        CStorePath(const CStorePath & other)
+    cdef cppclass CMockStorePath "fake_library::StorePath":
+        CMockStorePath() except +
+        CMockStorePath(string hash, string name) except +
+        CMockStorePath(string base_name) except +
+        CMockStorePath(const CMockStorePath & other)
         string to_string() const
         string hash() const
         string name() const
@@ -28,20 +28,20 @@ cdef extern from "fake_library/store.hpp" nogil:
         int queries() const
 
     cdef cppclass CDerivedPath "fake_library::DerivedPath":
-        CDerivedPath(CStorePath path)
-        CDerivedPath(CStorePath drv_path, string output)
+        CDerivedPath(CMockStorePath path)
+        CDerivedPath(CMockStorePath drv_path, string output)
         CDerivedPath(const CDerivedPath & other)
         string describe() const
         bint is_built() const
-        const CStorePath& path() const
+        const CMockStorePath& path() const
         const string& output_name() const
 
     cdef cppclass CStore "fake_library::Store":
         string get_uri() const
-        bint is_valid_path(const CStorePath & path) const
-        CStorePath add_text_to_store(string name, string contents) except + nogil
-        CStorePath build_derivation(const CDerivedPath & request) except + nogil
-        CDerivation query_derivation(const CStorePath & drv_path) except + nogil
+        bint is_valid_path(const CMockStorePath & path) const
+        CMockStorePath add_text_to_store(string name, string contents) except + nogil
+        CMockStorePath build_derivation(const CDerivedPath & request) except + nogil
+        CDerivation query_derivation(const CMockStorePath & drv_path) except + nogil
 
     cdef cppclass CLocalStore "fake_library::LocalStore" (CStore):
         pass
