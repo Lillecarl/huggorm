@@ -111,6 +111,27 @@ def test_a_store_takes_bytes_and_names_the_result(chroot: Store) -> None:
     assert flat.to_string() != path.to_string()
 
 
+def test_the_defaults_are_libstores_own(chroot: Store) -> None:
+    """A short call is the call Nix itself would have made.
+
+    addToStoreFromDump declares `hashMethod = NixArchive` and
+    `hashAlgo = SHA256`, and this binding repeats them rather than
+    picking. So the two-argument call is not a shorthand for something
+    invented here - it lands on the same path as spelling both out.
+
+    The second half is what makes that worth asserting: a DIFFERENT
+    method gives a different path. Without it, "the default matches
+    NAR" would also pass if the argument were ignored."""
+    short = chroot.add_to_store("greeting", b"hello world\n")
+    spelled = chroot.add_to_store(
+        "greeting", b"hello world\n", CA.NAR, HashAlgorithm.SHA256)
+    assert short.to_string() == spelled.to_string()
+
+    flat = chroot.add_to_store(
+        "greeting", b"hello world\n", CA.FLAT, HashAlgorithm.SHA256)
+    assert flat.to_string() != short.to_string()
+
+
 def test_a_store_hands_back_every_path_it_holds(chroot: Store) -> None:
     """query_all_valid_paths, on a store that HOLDS something.
 

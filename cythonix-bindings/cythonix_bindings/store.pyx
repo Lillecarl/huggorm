@@ -89,8 +89,9 @@ cdef class Store:
         return out
 
     def add_to_store(self, name: str, data: bytes,
-                     method: ContentAddressMethod,
-                     hash_algo: HashAlgorithm) -> StorePath:
+                     method: ContentAddressMethod = ContentAddressMethod.NAR,
+                     hash_algo: HashAlgorithm = HashAlgorithm.SHA256
+                     ) -> StorePath:
         """Add one file's contents to the store, and name the result.
 
         `data` is a regular file's CONTENTS - bytes, not text, because
@@ -106,12 +107,17 @@ cdef class Store:
         experimental features, and "disabled" is a different answer
         from "unknown".
 
-        Neither has a default. A default would exist on this method
-        and on no generated wrapper - the codegen carries a parameter's
-        type and not its default - so the local surface and the remote
-        one would disagree about what a two-argument call means. These
-        two decide the resulting path, which is the last place to want
-        a silent answer.
+        Both defaults are libstore's own, read off addToStoreFromDump:
+        `hashMethod = NixArchive` and `hashAlgo = SHA256`. They are not
+        a judgement made here, so a caller who omits them gets what Nix
+        itself would have done - which is also what `nix-store --add`
+        does.
+
+        `nar` and a flat dump are not in conflict. The dump says how
+        these bytes arrive, and this binding takes a file's contents,
+        so it is always flat; the method says how the hash that names
+        the path is computed, and Nix serialises the file into a NAR to
+        compute it.
 
         Annotated Python-style, not Cython-style: this is backed by a
         shim rather than by a method on nix::Store, so there is no pxd

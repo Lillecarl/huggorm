@@ -338,6 +338,28 @@ async def test_bytes_cross_as_bytes(client: Any, tmp_path: Any) -> None:
     await store.aclose()
 
 
+async def test_a_default_means_the_same_thing_remotely(
+        client: Any, tmp_path: Any) -> None:
+    """The short call answers the same on both sides of the socket.
+
+    A default is a fact about the SIGNATURE, so the generated RPC
+    client fills it in before the call leaves - and the request that
+    crosses carries every argument. That is why the wire needs no way
+    to say "absent": there is no absence by the time it gets there.
+
+    Proven against a LOCAL call with nothing omitted, not against
+    another remote one. Two remote calls that both dropped the
+    arguments would agree with each other perfectly."""
+    store = await client.acquire("Store", str(tmp_path))
+    path = await store.add_to_store("greeting", b"hello world\n")
+
+    local = cythonix_bindings.Store(str(tmp_path))
+    assert path.to_string() == local.add_to_store(
+        "greeting", b"hello world\n",
+        CA.NAR, HashAlgorithm.SHA256).to_string()
+    await store.aclose()
+
+
 async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
     with pytest.raises(TypeError, match="threading policy"):
         await client.call_function("gc_release_thread")
