@@ -304,13 +304,19 @@ def extract_free_function(fn, api: dict, mapping: dict[str, str]) -> dict:
 
     Threading is checked, not merely read. A free function has no
     instance and therefore no home thread, so "pool" is the only policy
-    that means anything; anything else is a mistake worth naming."""
+    that means anything; anything else is a mistake worth naming.
+
+    A function with NO policy is still described here. It gets no async
+    form and no rpc - that is what declaring nothing means - but it is
+    part of the module's public surface, so anything that describes
+    that surface (the stubs, 027) has to know its signature. Leaving it
+    out would make a stub package that silently hides a real name."""
     policy = getattr(fn, "_threading", None)
-    if policy != "pool":
+    if policy is not None and policy != "pool":
         raise ValueError(
-            f"{fn.__name__}: free functions must declare _threading = "
-            f"'pool' (got {policy!r}). They have no instance, so there is "
-            f"no thread for them to be affine to.")
+            f"{fn.__name__}: a free function may only declare _threading = "
+            f"'pool' (got {policy!r}). It has no instance, so there is "
+            f"no thread for it to be affine to.")
 
     sig = inspect.signature(fn)
     hints = getattr(fn, "__annotations__", {})
@@ -335,6 +341,9 @@ def extract_free_function(fn, api: dict, mapping: dict[str, str]) -> dict:
         "name": fn.__name__,
         "module": fn.__module__,
         "threading": policy,
+        # No policy means no wrapper: the function is surface, not
+        # something the codegen hops a thread for.
+        "wrapped": policy is not None,
         "params": params,
         "return_type": _normalize(_annotation_name(hints.get("return", sig.return_annotation))),
         "doc": inspect.getdoc(fn) or "",

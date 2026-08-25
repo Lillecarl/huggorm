@@ -135,6 +135,14 @@ def annotate(manifest: dict) -> dict:
 
     kinds = _wire_kinds(manifest)
     for fname, proto in manifest.get("free_functions", {}).items():
+        if not proto["wrapped"]:
+            # No policy, so no wrapper and nothing to call remotely.
+            # It is in the manifest to describe the module, not to be
+            # published.
+            proto["wire_blockers"] = [
+                "no threading policy, so the function has no async form "
+                "for a server to call"]
+            continue
         blockers = [
             f"parameter {p['name']!r}: {why}"
             for p in proto["params"]

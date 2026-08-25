@@ -68,8 +68,13 @@ def _wrapper_classes(bindings_module) -> list[type]:
 
 
 def _free_functions(bindings_module) -> list:
-    """Module-level functions that opted into the surface by declaring
-    _threading. Sorted for deterministic output."""
+    """Every public module-level function in the bindings, sorted.
+
+    All of them, not only the ones declaring _threading. The policy
+    decides whether a function gets an async wrapper and an rpc; it
+    does not decide whether the function EXISTS. A stub package that
+    described only the opted-in ones would hide the rest from a
+    typechecker while the module still exports them."""
     pkg = bindings_module.__name__
     out = []
     for name in sorted(dir(bindings_module)):
@@ -78,8 +83,6 @@ def _free_functions(bindings_module) -> list:
             continue
         mod = getattr(obj, "__module__", "")
         if mod != pkg and not mod.startswith(pkg + "."):
-            continue
-        if getattr(obj, "_threading", None) is None:
             continue
         out.append(obj)
     return out
@@ -268,11 +271,16 @@ def main(argv=None):
 
     free_protos = [extract_free_function(fn, api, mapping)
                    for fn in _free_functions(bindings)]
-    free_names = [p["name"] for p in free_protos]
-    if free_protos:
-        code = ast.unparse(free_function_module(free_protos, async_types))
+    wrapped_free = [p for p in free_protos if p["wrapped"]]
+    unwrapped_free = [p["name"] for p in free_protos if not p["wrapped"]]
+    if unwrapped_free:
+        print(f"free functions with no threading policy, so no wrapper: "
+              f"{', '.join(unwrapped_free)}")
+    free_names = [p["name"] for p in wrapped_free]
+    if wrapped_free:
+        code = ast.unparse(free_function_module(wrapped_free, async_types))
         (out / f"{FREE_MODULE}.py").write_text(code + "\n")
-        print(f"generated {FREE_MODULE}.py for {len(free_protos)} free "
+        print(f"generated {FREE_MODULE}.py for {len(wrapped_free)} free "
               f"function(s): {', '.join(free_names)}")
 
     # The wire policy and the serialization contract must agree before

@@ -156,7 +156,7 @@ def collect_garbage() -> None:
     gc_collect()
 
 
-def gc_release_thread():
+def gc_release_thread() -> None:
     """Take the CURRENT thread off the collector's list.
 
     Runtime plumbing, not domain surface: it carries no _threading
