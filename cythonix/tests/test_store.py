@@ -8,13 +8,15 @@ nothing on disk, which is what makes it testable in a build sandbox.
 
 import gc
 import pathlib
+import sys
 
 import pytest
 
 from cythonix_bindings import ContentAddressMethod as CA
-from cythonix_bindings import HashAlgorithm, Store, StorePath
+from cythonix_bindings import HashAlgorithm, PathInfo, Store, StorePath
 from cythonix_bindings.errors import (
     BadStorePath,
+    InvalidPath,
     NixError,
     Unsupported,
     UsageError,
@@ -223,6 +225,56 @@ def test_a_store_with_no_filesystem_has_no_real_path(store: Store) -> None:
         store.real_path(StorePath(HELLO))
 
 
+def test_a_store_answers_for_a_path_it_holds(
+        chroot: Store, source: pathlib.Path) -> None:
+    """query_path_info, on a path this store just took.
+
+    Every field comes from the store's own database rather than from
+    the call that added it, so this is what the store BELIEVES, not an
+    echo. The NAR size is the assertion that proves that: nothing here
+    told it a size, and it is not the size of the bytes on disk."""
+    path = chroot.add_path_to_store("tree", str(source))
+    info = chroot.query_path_info(path)
+
+    assert info.path().to_string() == path.to_string()
+    assert info.nar_hash().startswith("sha256:")
+    assert info.nar_size() > 0
+
+    # Added, not built, so nothing derived it - and None is the answer
+    # rather than a gap.
+    assert info.deriver() is None
+    assert info.ultimate() is False
+
+    # Zero, and that is Nix's answer rather than a missing field: an
+    # added path gets no registration time stamped on it. The live
+    # test below is where a real one shows up.
+    assert info.registration_time() == 0
+
+
+def test_a_path_info_is_produced_not_constructed(chroot: Store) -> None:
+    """Every field comes from the store's database, so there is
+    nothing a caller could correctly build one from.
+
+    The binding says so with _produced, and the stub says NoReturn -
+    which is what turns this from a runtime surprise into an error at
+    the call site."""
+    with pytest.raises(TypeError, match="not from a constructor"):
+        PathInfo()  # type: ignore[call-arg]
+
+
+def test_a_store_refuses_a_path_it_does_not_hold(chroot: Store) -> None:
+    """InvalidPath, and it is a different answer from BadStorePath.
+
+    One says the string is not a store path; this says the string is a
+    perfectly good store path and this store does not have it. A
+    caller can substitute or build after hearing this, and cannot
+    after the other."""
+    with pytest.raises(InvalidPath):
+        chroot.query_path_info(StorePath(HELLO))
+    with pytest.raises(BadStorePath):
+        chroot.query_path_info(chroot.parse_store_path("/somewhere/else/x"))
+
+
 def test_a_missing_path_is_libstores_error(
         chroot: Store, tmp_path: pathlib.Path) -> None:
     """The shim canonicalises weakly, which does not require the path
@@ -366,6 +418,34 @@ def test_a_populated_store_hands_over_every_path(ambient_store: Store) -> None:
     gc.collect()
     assert [p.to_string() for p in ambient_store.query_all_valid_paths()] \
         == names
+
+
+@pytest.mark.live
+def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
+    """The fields a chroot store cannot show.
+
+    A path that was ADDED has no deriver and no registration time -
+    nothing built it and Nix stamps no time on it - so the hermetic
+    test can only prove those two are readable. A path the daemon
+    holds because something BUILT it has both, and that is the answer
+    the surface exists to give.
+
+    The environment running this is such a path, which is what makes
+    the test need no fixture and no name written down. sys.prefix
+    rather than sys.executable: the executable lives INSIDE a store
+    path and parse_store_path takes the path itself. Asking which
+    store path CONTAINS a file is a different call - nix::Store has
+    toStorePath - and this binding does not offer it yet."""
+    path = ambient_store.parse_store_path(sys.prefix)
+    info = ambient_store.query_path_info(path)
+
+    assert info.nar_size() > 0
+    assert info.nar_hash().startswith("sha256:")
+    assert info.registration_time() > 0, "a real store stamps a time"
+
+    deriver = info.deriver()
+    assert deriver is not None, "the interpreter was built, not added"
+    assert deriver.is_derivation(), deriver.to_string()
 
 
 def test_the_binding_initialises_libstore() -> None:

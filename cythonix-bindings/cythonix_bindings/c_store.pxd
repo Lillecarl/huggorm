@@ -5,6 +5,7 @@
 # there is no constructor to declare. openStore is the factory, and the
 # binding says so with _ctor_from.
 
+from libc.stdint cimport int64_t, uint64_t
 from libcpp.memory cimport shared_ptr
 from libcpp.string cimport string
 from libcpp.vector cimport vector
@@ -42,3 +43,14 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # Where the files really are. Only a LocalFSStore has an answer,
     # so the shim asks and refuses like libstore itself.
     string real_path(CStore & store, const CStorePath & path) except +translate_nix_error
+    # A POD, so Cython can hold one by value. nix::ValidPathInfo cannot
+    # be declared here at all - see _cpp/store.hpp for why the crossing
+    # point is flattened.
+    cdef struct CPathInfo "cythonix::PathInfoParts":
+        string path
+        string nar_hash
+        uint64_t nar_size
+        string deriver
+        int64_t registration_time
+        bint ultimate
+    CPathInfo path_info(CStore & store, const CStorePath & path) except +translate_nix_error

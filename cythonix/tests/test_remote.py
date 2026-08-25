@@ -389,6 +389,39 @@ async def test_a_path_is_read_on_the_store_side(
     await store.aclose()
 
 
+async def test_a_path_info_crosses_as_a_value(
+        client: Any, tmp_path: Any) -> None:
+    """A PathInfo is what the store SAID, so it crosses as a copy.
+
+    No handle, no lease, no second round trip: a caller reads every
+    field off a real local object. That is the whole point of the
+    value policy, and it is why this type has no async form on either
+    side.
+
+    `deriver` is the sharp part. It is an optional nested VALUE, and a
+    protobuf message field has real presence - so an absent one must
+    read back as None rather than as a StorePath rebuilt from an empty
+    base name, which raises."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello\n")
+
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    path = await store.add_path_to_store("tree", str(src))
+    info = await store.query_path_info(path)
+
+    assert isinstance(info, cythonix_bindings.PathInfo)
+    assert info.path().to_string() == path.to_string()
+    assert info.deriver() is None
+
+    local = cythonix_bindings.Store(str(tmp_path / "store"))
+    same = local.query_path_info(local.parse_store_path(
+        local.print_store_path(path)))
+    assert info.nar_hash() == same.nar_hash()
+    assert info.nar_size() == same.nar_size()
+    await store.aclose()
+
+
 async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
     with pytest.raises(TypeError, match="threading policy"):
         await client.call_function("gc_release_thread")

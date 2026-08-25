@@ -53,7 +53,7 @@ from .mock_store import (
     describe,
 )
 from .path import StorePath
-from .store import Store
+from .store import PathInfo, Store
 
 # Where the exception hierarchy lives. A declaration, like _binds or
 # _wire, and for the same reason: the codegen must not know a module
@@ -87,6 +87,7 @@ __all__ = [
     "MockRemoteStore",
     "MockStore",
     "MockStorePath",
+    "PathInfo",
     "Store",
     "StorePath",
     "Value",

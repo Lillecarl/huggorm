@@ -21,6 +21,7 @@
 #include "nix/store/globals.hh"
 #include "nix/store/local-fs-store.hh"
 #include "nix/store/store-api.hh"
+#include "nix/store/path-info.hh"
 #include "nix/store/store-open.hh"
 #include "nix/util/file-content-address.hh"
 #include "nix/util/hash.hh"
@@ -170,6 +171,52 @@ inline nix::StorePath * add_path_to_store(
  * exception nix::Store throws for a method it cannot answer - the
  * message shape included, because it is the same kind of answer.
  */
+/**
+ * What a store knows about one path it holds, flattened.
+ *
+ * nix::ValidPathInfo is not default-constructible, holds a nix::Hash
+ * and a std::optional<StorePath>, and arrives behind a ref<const T>.
+ * Cython can declare none of those. So the crossing point is a POD of
+ * already-converted fields: it default-constructs, every member has a
+ * pxd spelling, and the conversions happen once, here, next to the
+ * types they convert.
+ *
+ * That is a translation rather than a thin binding, and it is the
+ * honest place for one. The alternative is a pointer-owning wrapper
+ * over ValidPathInfo plus a from-parts constructor in C++, which is
+ * more machinery for a struct nobody mutates.
+ *
+ * An absent deriver is the empty string. Nix has no store path whose
+ * base name is empty - parseStorePath refuses one - so the two cannot
+ * be confused, and the binding turns it back into None.
+ *
+ * Nix32, because that is what `nix path-info` and a .narinfo print:
+ * `sha256:<base32>`. The algorithm travels with the digest, so a
+ * caller never has to be told separately which one it is.
+ */
+struct PathInfoParts
+{
+    std::string path;
+    std::string nar_hash;
+    uint64_t nar_size;
+    std::string deriver;
+    int64_t registration_time;
+    bool ultimate;
+};
+
+inline PathInfoParts path_info(nix::Store & store, const nix::StorePath & path)
+{
+    auto info = store.queryPathInfo(path);
+    return PathInfoParts{
+        std::string(info->path.to_string()),
+        info->narHash.to_string(nix::HashFormat::Nix32, /*includeAlgo=*/true),
+        info->narSize,
+        info->deriver ? std::string(info->deriver->to_string()) : std::string(),
+        static_cast<int64_t>(info->registrationTime),
+        info->ultimate,
+    };
+}
+
 inline std::string real_path(nix::Store & store, const nix::StorePath & path)
 {
     auto * fs = dynamic_cast<nix::LocalFSStore *>(&store);

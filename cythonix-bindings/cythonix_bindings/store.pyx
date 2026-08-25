@@ -21,7 +21,9 @@ from cythonix_bindings.c_store cimport (
     add_to_store,
     init_libstore,
     open_store,
+    CPathInfo,
     parse_store_path,
+    path_info,
     query_all_valid_paths,
     real_path,
     store_uri,
@@ -40,6 +42,105 @@ from cythonix_bindings.content_address import (
 # moment that can happen, and libstore aborts rather than raises if it
 # has not - so there is no later point that would still be safe.
 init_libstore()
+
+
+cdef class PathInfo:
+    """What a store knows about one path it holds.
+
+    A VALUE, not a handle: it is what the store said at the moment it
+    was asked, so it crosses the wire as a copy and nothing about it
+    can go stale in a way a caller could act on.
+
+    Produced, never constructed. Every field comes from the store's
+    own database, so there is nothing a caller could correctly build
+    one from - which `_produced` says out loud rather than leaving to
+    an inference elsewhere."""
+
+    _threading = "pool"
+    # Six reads of memory this object already owns. Nothing blocks, so
+    # there is no thread to hop to and the codegen emits no async
+    # wrapper: a PathInfo is handed back as itself on both sides.
+    _blocking = False
+    _wire = "value"
+    # Its __init__ raises, so no surface may offer a constructor.
+    # Declared rather than inferred: today a produced class is one the
+    # pxd names as a method return type, which is a proxy for this
+    # fact and true of the others by coincidence.
+    _produced = True
+    # No _binds. nix::ValidPathInfo has no pxd spelling - see
+    # _cpp/store.hpp - so this class binds the flattened struct rather
+    # than the C++ type, and there is no declaration to link to.
+    #
+    # `deriver` is optional and says so with `?`: most paths have one
+    # and a path added straight to the store has none.
+    _wire_fields = (
+        ("path", "StorePath"),
+        ("nar_hash", "str"),
+        ("nar_size", "int"),
+        ("deriver", "StorePath?"),
+        ("registration_time", "int"),
+        ("ultimate", "bool"),
+    )
+
+    cdef object _path
+    cdef object _nar_hash
+    cdef object _nar_size
+    cdef object _deriver
+    cdef object _registration_time
+    cdef object _ultimate
+
+    def __init__(self):
+        raise TypeError(
+            "PathInfo objects come from Store.query_path_info, not from a "
+            "constructor")
+
+    def path(self) -> StorePath:
+        """The path this describes."""
+        return self._path
+
+    def nar_hash(self) -> str:
+        """The hash of the path's NAR serialisation, algorithm first:
+        `sha256:<base32>`, the same spelling `nix path-info` prints."""
+        return self._nar_hash
+
+    def nar_size(self) -> int:
+        """The size of that NAR in bytes. Not the size on disk."""
+        return self._nar_size
+
+    def deriver(self) -> StorePath:
+        """The .drv that built this, or None.
+
+        None is a real answer, not a gap: a path added straight to the
+        store was not built by anything."""
+        return self._deriver
+
+    def registration_time(self) -> int:
+        """When the store learnt about this path, as a Unix time."""
+        return self._registration_time
+
+    def ultimate(self) -> bint:
+        """Whether this store built it itself, as opposed to receiving
+        it from a substituter or an import."""
+        return self._ultimate
+
+    @classmethod
+    def _from_parts(cls, path, nar_hash, nar_size, deriver,
+                    registration_time, ultimate):
+        """Wire-deserialization helper (private, never surfaced)."""
+        cdef PathInfo info = PathInfo.__new__(PathInfo)
+        info._path = path
+        info._nar_hash = nar_hash
+        info._nar_size = nar_size
+        info._deriver = deriver
+        info._registration_time = registration_time
+        info._ultimate = ultimate
+        return info
+
+    def _parts(self):
+        """Wire-serialization helper (private): one value per
+        _wire_fields entry, in order."""
+        return (self._path, self._nar_hash, self._nar_size, self._deriver,
+                self._registration_time, self._ultimate)
 
 
 cdef class Store:
@@ -244,6 +345,33 @@ cdef class Store:
         with nogil:
             out = real_path(deref(store), deref(p))
         return pathlib.Path(out.decode('utf-8'))
+
+    def query_path_info(self, path: StorePath) -> PathInfo:
+        """What this store knows about one path it holds.
+
+        Raises InvalidPath when it does not hold it, which is a
+        different answer from a malformed name: BadStorePath means the
+        string is not a store path at all.
+
+        The result is a VALUE - what the store said when asked - so it
+        crosses the wire as a copy and a caller reads it without
+        another round trip."""
+        cdef StorePath sp = path
+        cdef CStore* store = self._get()
+        cdef CStorePath* p = sp._get()
+        cdef CPathInfo out
+        with nogil:
+            out = path_info(deref(store), deref(p))
+        cdef object deriver = None
+        if not out.deriver.empty():
+            deriver = StorePath(out.deriver.decode('utf-8'))
+        return PathInfo._from_parts(
+            StorePath(out.path.decode('utf-8')),
+            out.nar_hash.decode('utf-8'),
+            out.nar_size,
+            deriver,
+            out.registration_time,
+            out.ultimate)
 
     def print_store_path(self, StorePath path) -> str:
         """The path as an absolute filesystem path in this store."""
