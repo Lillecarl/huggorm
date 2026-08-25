@@ -15,7 +15,6 @@ from fake_library import (
     LocalStore,
     RemoteStore,
     StorePath,
-    Derivation,
     DerivedPath,
     describe,
 )
