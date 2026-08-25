@@ -54,20 +54,6 @@ MAP_KEY = "str"
 CONTAINERS = ("dict", "list")
 
 
-# Modules an annotation may name directly. A declared type is normally
-# a builtin or a binding class; `pathlib.Path` is neither. It is a
-# dotted name whose head is a module, and an emitted module that
-# annotates with it needs a plain `import pathlib`.
-#
-# These are NOT wire types, and that is the point. A method annotated
-# with one gets no rpc - the schema builder says so, and the manifest
-# records it - so this exists purely so the IN-PROCESS surface can
-# still say what it returns. Store.real_path answers with a path on the
-# machine the store runs on, which is a real method and not a remote
-# call.
-FOREIGN_MODULES = ("pathlib",)
-
-
 def head(type_str: str) -> str | None:
     """The head of an annotation string.
 
@@ -90,6 +76,29 @@ def names_in(type_str: str) -> set[str]:
     needs, and which types a contract check has to look at."""
     node = ast.parse(type_str, mode="eval").body
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def dotted_heads(type_str: str) -> set[str]:
+    """The module every DOTTED name in one annotation comes from.
+
+    `pathlib` for `pathlib.Path`, nothing for `str` or
+    `list[StorePath]`. A declared type is normally a builtin or a
+    binding class; a dotted one names its own home, and an emitted
+    module that annotates with it needs a plain `import pathlib`.
+
+    Derived, not listed. The head of a dotted annotation IS the module
+    by construction, so nothing has to be kept in step - the
+    alternative was a tuple of module names sitting above the bindings,
+    which is exactly the knowledge this repo pushes downwards. The
+    build checks each one imports, so a dotted name that is not a
+    module fails there rather than in a generated file.
+
+    None of this is about the wire. A dotted type is not a scalar, so
+    a method returning one gets no rpc and the manifest says why; this
+    exists so the IN-PROCESS surface can still state what it returns."""
+    node = ast.parse(type_str, mode="eval").body
+    return {n.value.id for n in ast.walk(node)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)}
 
 
 def _parameters(type_str: str, container: str) -> list[str] | None:

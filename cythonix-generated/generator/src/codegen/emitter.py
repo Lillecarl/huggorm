@@ -8,7 +8,7 @@ emitter needs arrives in the dict produced by model.extract_wrapper.
 import ast
 from typing import Any
 
-from codegen.wiretypes import FOREIGN_MODULES, names_in
+from codegen.wiretypes import dotted_heads, names_in
 
 # One class, method or function as a plain dict. See model.Proto.
 Proto = dict[str, Any]
@@ -114,39 +114,61 @@ def _emitted_annotations(proto: Proto, async_types: set[str],
     out = [_param_ann(p["type"], async_types) for p in proto.get("ctor", ())]
     for m in proto["methods"]:
         out += [_param_ann(p["type"], async_types) for p in m["params"]]
-        out += _default_names(m["params"])
         rt = m["return_type"]
         out.append(f"Async{rt}" if rt in bound_policies else rt)
     return out
 
 
+def _emitted_defaults(proto: Proto) -> list[str]:
+    """The default expressions the emitter will write. Kept apart from
+    the annotations because only one of the two may be read for module
+    heads - see _annotation_names."""
+    return [d for m in proto["methods"] for d in _default_names(m["params"])]
+
+
 def _annotation_names(annotations: list[str]) -> set[str]:
+    """Every name an annotation list mentions, module heads excluded.
+
+    Two dotted things reach the emitter and only one is a module. An
+    annotation `pathlib.Path` names a type in a module, imported as
+    itself. A default `ContentAddressMethod.NAR` names an attribute on
+    a CLASS, which has to come from cythonix_bindings like any other -
+    which is why the two lists stay apart and only annotations are
+    asked for their heads."""
     out: set[str] = set()
     for a in annotations:
         out |= names_in(a)
-    return out
+    return out - _module_heads(annotations)
+
+
+def _module_heads(annotations: list[str]) -> set[str]:
+    """The modules an ANNOTATION list names by a dotted type.
+
+    Pass annotations only. A default's dotted head is a class, and
+    calling this on one would import a module that does not exist."""
+    return {h for a in annotations for h in dotted_heads(a)}
 
 
 def _foreign_imports(annotations: list[str]) -> list[ast.Import]:
-    """`import pathlib` for every foreign module an emitted module
-    annotates with.
+    """`import pathlib` for every module an emitted module annotates
+    with by a dotted name.
 
     A plain import, not a from-import: the annotation is written
     dotted, `pathlib.Path`, so the module name is what has to be
-    bound."""
-    named = {n for a in annotations for n in names_in(a)}
+    bound. Which modules those are is read off the annotations rather
+    than listed anywhere."""
     return [ast.Import(names=[ast.alias(name=m)])
-            for m in FOREIGN_MODULES if m in named]
+            for m in sorted(_module_heads(annotations))]
 
 
 def _cythonix_bindings_import(names: set[str]) -> ast.ImportFrom | None:
     """Import the SYNC binding types an emitted module annotates with.
-    Async* names are excluded: those come from sibling modules, and so
-    are foreign modules, which are imported as themselves."""
+    Async* names are excluded: those come from sibling modules. So are
+    dotted module heads, which _annotation_names already drops - they
+    are imported as themselves."""
     usable = sorted(
         n for n in names
-        if n not in _BUILTIN_TYPES and n not in FOREIGN_MODULES
-        and not n.startswith("Async")
+        if n not in _BUILTIN_TYPES and not n.startswith("Async")
     )
     if not usable:
         return None
@@ -199,7 +221,8 @@ def returned_module(proto: Proto,
 
     mod = ast.Module(body=[], type_ignores=[])
     annotations = _emitted_annotations(proto, async_types, bound_policies)
-    used = _annotation_names(annotations)
+    defaults = _emitted_defaults(proto)
+    used = _annotation_names(annotations) | _annotation_names(defaults)
     mod.body.append(
         ast.Expr(
             value=ast.Constant(
@@ -419,7 +442,9 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     )
 
     annotations = _emitted_annotations(proto, async_types, bound_policies)
-    used_types = _annotation_names(annotations) | {"None"}  # None: aclose
+    used_types = (_annotation_names(annotations)
+                  | _annotation_names(_emitted_defaults(proto))
+                  | {"None"})  # None: aclose
     typing_names = {"Any"} if "Any" in used_types else set()
     if proto["abstract"]:
         typing_names.add("Any")  # the refusing __init__ takes *args/**kwargs
@@ -634,13 +659,15 @@ def _future_annotations() -> ast.ImportFrom:
                           names=[ast.alias(name="annotations")], level=0)
 
 
-def _sync_imports(annotations: list[str], defined_here: set[str]) -> ast.ImportFrom | None:
+def _sync_imports(annotations: list[str], defined_here: set[str],
+                  defaults: list[str] | None = None) -> ast.ImportFrom | None:
     """Import the binding types an all-in-one module annotates with.
 
     Unlike the per-class wrappers there are no siblings to import from:
     everything else the module names, it defines."""
-    used = (_annotation_names(annotations) - _BUILTIN_TYPES
-            - set(FOREIGN_MODULES) - defined_here)
+    used = ((_annotation_names(annotations)
+             | _annotation_names(defaults or []))
+            - _BUILTIN_TYPES - defined_here)
     if not used:
         return None
     return ast.ImportFrom(module="cythonix_bindings",
@@ -674,13 +701,14 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
     def ret_ann(rt: str) -> str:
         return protocol_name(rt) if rt in adoptable else rt
 
-    annotations = []
+    annotations: list[str] = []
+    defaults: list[str] = []
     for proto in ordered:
         for m in proto["methods"]:
             if m["protocol_blockers"]:
                 continue
             annotations += [p["type"] for p in m["params"]]
-            annotations += _default_names(m["params"])
+            defaults += _default_names(m["params"])
             annotations.append(ret_ann(m["return_type"]))
 
     mod = ast.Module(body=[], type_ignores=[])
@@ -695,7 +723,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
         names=[ast.alias(name="Protocol"), ast.alias(name="runtime_checkable")],
         level=0))
     mod.body.extend(_foreign_imports(annotations))
-    sync = _sync_imports(annotations, defined)
+    sync = _sync_imports(annotations, defined, defaults)
     if sync is not None:
         mod.body.append(sync)
 
@@ -796,12 +824,13 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     ann = {n: rpc_class_name(n) for n in wrapped}
 
     annotations = ["str"]
+    defaults: list[str] = []
     for proto in ordered:
         # The methods this module will WRITE, so a type named only by a
         # method with no rpc does not become an unused import.
         for m in (m for m in proto["methods"] if "rpc" in m):
             annotations += [ann.get(p["type"], p["type"]) for p in m["params"]]
-            annotations += _default_names(m["params"])
+            defaults += _default_names(m["params"])
             annotations.append(ann.get(m["return_type"], m["return_type"]))
 
     mod = ast.Module(body=[], type_ignores=[])
@@ -816,7 +845,8 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         names=[ast.alias(name="Any"), ast.alias(name="Protocol"),
                ast.alias(name="cast")], level=0))
     mod.body.extend(_foreign_imports(annotations))
-    sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL})
+    sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL},
+                         defaults)
     if sync is not None:
         mod.body.append(sync)
 
@@ -1008,12 +1038,13 @@ def free_function_module(protos: list[Proto],
         value="Generated async wrappers for the bindings' module-level "
               "functions - do not edit. Built via ast at Nix build time.")))
 
-    annotations = []
+    annotations: list[str] = []
+    defaults: list[str] = []
     for proto in protos:
         annotations += [_param_ann(p["type"], async_types) for p in proto["params"]]
-        annotations += _default_names(proto["params"])
+        defaults += _default_names(proto["params"])
         annotations.append(proto["return_type"])
-    used = _annotation_names(annotations)
+    used = _annotation_names(annotations) | _annotation_names(defaults)
     if any(p["return_type"] != "None" for p in protos):
         mod.body.append(ast.ImportFrom(
             module="typing", names=[ast.alias(name="cast")], level=0))
