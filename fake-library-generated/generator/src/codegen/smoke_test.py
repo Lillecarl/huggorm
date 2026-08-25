@@ -202,8 +202,16 @@ async def test_behavior():
 
     # Policy enforcement: the pool LocalStore may not expose an
     # affine-returning method, so the generator dropped it.
-    assert "query_derivation" not in manifest["wrappers"]["LocalStore"]["methods"], (
-        "affine-returning method must be dropped from pool wrapper"
+    # methods is a list of dicts, so a bare `"name" not in methods` is
+    # vacuously true and asserted nothing. Compare against the names.
+    local_methods = {m["name"] for m in manifest["wrappers"]["LocalStore"]["methods"]}
+    assert "query_derivation" not in local_methods, (
+        f"affine-returning method must be dropped from pool wrapper: {sorted(local_methods)}"
+    )
+    # ...and the control: the affine store that MAY return it still does.
+    remote_methods = {m["name"] for m in manifest["wrappers"]["RemoteStore"]["methods"]}
+    assert "query_derivation" in remote_methods, (
+        f"affine wrapper must keep its affine-returning method: {sorted(remote_methods)}"
     )
     assert not hasattr(local, "query_derivation")
 

@@ -129,6 +129,9 @@ def main(argv=None):
         for c in complaints:
             print(f"wire contract: {c}", file=sys.stderr)
         sys.exit(1)
+    # The helper probe exists for that check only; it is not surface.
+    for proto in protos + returned_protos:
+        proto.pop("_helpers", None)
 
     manifest = {
         "schema": 1,
