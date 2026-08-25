@@ -74,6 +74,13 @@ def method_path(cls_name: str, method: str) -> str:
     return f"/{PKG}.{service_name(cls_name)}/{method}"
 
 
+# Construction is an rpc on the class's OWN service, not a string-keyed
+# call on Session. Session/Acquire took a class name and no arguments,
+# so it could only ever build things whose constructor takes nothing -
+# and it type-checked neither the name nor the absent arguments.
+ACQUIRE = "Acquire"
+
+
 def annotate(manifest: dict) -> dict:
     """Stamp the wire names onto the manifest, in place.
 
@@ -86,6 +93,11 @@ def annotate(manifest: dict) -> dict:
             proto["service"] = service_name(cls_name)
             if proto["wire"] == "value":
                 proto["message"] = value_msg_name(cls_name)
+            if group == "wrappers":
+                proto["acquire"] = {
+                    "path": method_path(cls_name, ACQUIRE),
+                    "req": req_name(cls_name, ACQUIRE),
+                }
             for m in proto["methods"]:
                 m["rpc"] = {
                     "path": method_path(cls_name, m["name"]),
@@ -144,6 +156,18 @@ def _add_common(file_dp, manifest):
 def _add_service(file_dp, cls_name, proto, kinds):
     svc = file_dp.service.add()
     svc.name = proto["service"]
+
+    if "acquire" in proto:
+        req = file_dp.message_type.add()
+        req.name = proto["acquire"]["req"]
+        for n, param in enumerate(proto["ctor"], start=1):
+            pt, msg = _msg_arg_type(param["type"], kinds)
+            _field(req, param["name"], n, proto_type=pt, type_name=msg)
+        rpc = svc.method.add()
+        rpc.name = ACQUIRE
+        rpc.input_type = f".{PKG}.{req.name}"
+        rpc.output_type = f".{PKG}.{HANDLE}"
+
     for m in proto["methods"]:
         rpc = svc.method.add()
         rpc.name = m["name"]
@@ -169,13 +193,10 @@ def _add_service(file_dp, cls_name, proto, kinds):
 def _add_session(f):
     sess = f.service.add()
     sess.name = "Session"
-    acquire_req = f.message_type.add()
-    acquire_req.name = "AcquireReq"
-    _field(acquire_req, "class", 1, proto_type=_scalar_const("string"))
-    acq = sess.method.add()
-    acq.name = "Acquire"
-    acq.input_type = f".{PKG}.AcquireReq"
-    acq.output_type = f".{PKG}.{HANDLE}"
+
+    # Session keeps only what is genuinely protocol: connection identity
+    # and handle lifetime. Construction moved onto each class's own
+    # service, where it can carry typed arguments.
 
     # Connection lifecycle (tasks/002). The connection token travels in
     # gRPC metadata on every request; these rpcs manage it.

@@ -173,7 +173,7 @@ async def main():
               _env_count(after_desc) == _env_count(before_desc) + 1,
               f"{before_desc!r} -> {after_desc!r}")
 
-        state = await client.acquire("EvalState")
+        state = await client.acquire("EvalState", "local")
         thunk = await state.parse_expr("42")
         threw = False
         try:
@@ -242,11 +242,20 @@ async def main():
                 check(f"reflection lists {svc}", f"nixmock.v1.{svc}" in out,
                       f"rc={rc} out={out[:120]!r} err={err[:120]!r}")
 
+            # Construction is a typed rpc on the class's own service now,
+            # so an external tool sees the constructor's parameters in
+            # reflection instead of a free-text class name.
             rc, out, err = await run_tool(
-                grpcurl_bin, symbol="nixmock.v1.Session/Acquire",
-                payload='{"class":"LocalStore"}')
+                grpcurl_bin, symbol="nixmock.v1.LocalStoreService/Acquire",
+                payload='{}')
             handle = json.loads(out)["id"]
-            check("grpcurl Acquire parses as JSON", len(handle) == 32, handle[:8])
+            check("grpcurl typed Acquire parses as JSON", len(handle) == 32, handle[:8])
+
+            rc, out, err = await run_tool(
+                grpcurl_bin, symbol="nixmock.v1.EvalStateService/Acquire",
+                payload='{"store_uri":"local"}')
+            check("grpcurl Acquire takes constructor arguments",
+                  len(json.loads(out).get("id", "")) == 32, out[:120])
 
             rc, out, err = await run_tool(
                 grpcurl_bin,

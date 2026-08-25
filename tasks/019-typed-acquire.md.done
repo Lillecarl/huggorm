@@ -1,0 +1,99 @@
+# Acquire should take typed constructor arguments
+
+Found in the 2026-08-25 review.
+
+## Problem
+
+server._acquire_able guesses constructibility from
+`inspect.signature(cls.__init__)` and admits any class with no
+required positional parameters. Two things go wrong.
+
+Cython cdef classes put real construction in __cinit__, and __init__
+may be a validating stub. DerivedPath declares
+`__init__(self, StorePath path=None, str output=None)` and raises when
+path is None, so the guess says "constructible with no arguments" and
+`Acquire("DerivedPath")` hands back a handle whose EVERY call fails
+with an InternalError about the constructor. Alive-looking, useless.
+
+EvalState is worse in the other direction: it takes a store_uri with a
+default, so Acquire always builds the "local" one and no client can
+ever ask for a different store.
+
+## Why it matters for real Nix
+
+This is not a mock-shaped problem. Real stores come from
+`openStore(uri)` and real eval states take a store plus search paths.
+Argument-less Acquire cannot express any of that, so the RPC layer
+would be able to construct nothing worth constructing.
+
+## Direction
+
+Acquire carries typed constructor arguments, derived the same way
+method arguments already are: the constructor's declared parameter
+types reach the manifest, grpc_schema emits an AcquireReq per class
+(or a oneof), and WireCodec decodes them with the machinery that
+already exists for method params.
+
+Open: the pxd declares C++ constructors, the pyx declares the Python
+ones, and they differ (StorePath is constructible in C++, forbidden in
+Python). The pyx wins - it is the surface - so __cinit__ signatures
+need the same pxd backfill treatment methods already get.
+
+Depends on nothing. Synergizes with 018 (a Store ABC wants a uri
+argument) and blocks 015 in practice.
+
+## Done 2026-08-25
+
+The design fork the task worried about - is the constructor surface
+__cinit__ or __init__ - turned out not to exist. NEITHER is visible.
+Cython puts nothing in __dict__, sets no __text_signature__, and
+inspect.signature reports `(self, /, *args, **kwargs)` for every
+binding class alike. So _acquire_able was not an imprecise check; it
+was a constant True wearing a disguise, and could never have been
+anything else.
+
+That settles it: the pxd is the only source, and constructors had to
+stop being dropped at parse time (see the commit for why dropping them
+was never the right response to the __cinit__ allocation hazard).
+
+C++ overload set -> one Python signature by type-prefix
+compatibility. Parameters past the shortest overload are optional;
+non-reconciling overloads raise, naming the class. Only constructible
+classes get a signature - returned types would otherwise ship a
+plausible lie.
+
+What it bought:
+
+- Generated wrappers state their constructors:
+  `AsyncDerivedPath(drv_path: StorePath | AsyncStorePath,
+  output: str | None = None)`. Wrong arity fails at the call site
+  rather than inside a lazy factory on a worker thread.
+- Acquire moved off Session onto each class's own service, typed.
+  `Session` keeps only what is genuinely protocol - connection
+  identity and handle lifetime.
+- Both bugs the task named are gone. DerivedPath is acquirable WITH
+  its required StorePath, and EvalState can be asked for a store other
+  than "local".
+- grpcurl now constructs through the typed rpc, so an external tool
+  sees constructor parameters in reflection instead of a free-text
+  class name.
+
+The smoke gate changed shape with it. The old check pinned that
+**kwargs was replayed through unwrap_arg; typed parameters make that
+hazard structurally impossible, so it now pins that the emitted
+signature MATCHES the manifest and unwraps every declared parameter.
+
+## Sharp edge left behind
+
+Type-prefix compatibility accepts an overload set that is
+semantically distinct: CStorePath(string) means a base name while
+CStorePath(string, string) means hash-plus-name, and they would merge
+into one wrong pair of optional strings. StorePath dodges it only by
+not being constructible from Python. The first constructible class
+with that shape needs an explicit constructor declaration in the pyx -
+which is when to add one, not before.
+
+Optional SCALAR constructor arguments inherit proto3's blindness: an
+absent string and an empty one are the same bytes. Message-typed
+arguments are exact (HasField). Same limitation _wire_fields marks
+with "?", same place to fix it if it ever matters.

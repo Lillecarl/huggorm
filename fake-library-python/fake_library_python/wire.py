@@ -119,15 +119,24 @@ class WireCodec:
         else:
             getattr(container, field).id = proxy_id(value)
 
-    def decode(self, container, field: str, type_str: str, proxy_obj):
+    def decode(self, container, field: str, type_str: str, proxy_obj,
+               optional: bool = False):
         """Read `container.field`. proxy_obj(handle_id) -> object,
-        called only for proxy types."""
+        called only for proxy types.
+
+        `optional` means an absent field reads back as None rather than
+        as its default. proto3 tracks presence for message fields, so
+        those are exact; a scalar cannot tell an unset string from an
+        empty one, which is the same limitation _wire_fields marks with
+        a trailing "?"."""
         kind = self.kind(type_str)
         if kind == "none":
             return None
+        if optional and kind in ("value", "proxy") and not container.HasField(field):
+            return None
         raw = getattr(container, field)
         if kind == "scalar":
-            return raw
+            return None if optional and not raw else raw
         if kind == "value":
             return self.value_from_msg(type_str, raw)
         return proxy_obj(raw.id)

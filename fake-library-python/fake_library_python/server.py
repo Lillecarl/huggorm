@@ -10,7 +10,6 @@ hand-written per method.
 """
 
 import asyncio
-import inspect
 import json
 
 import grpclib
@@ -39,7 +38,6 @@ class Dispatcher:
         self.table = HandleTable(ttl=lease_ttl)
         self.table.on_drop = self._on_drop
         self.codec = WireCodec(manifest)
-        self.classes = _acquire_able(manifest)
         self.mapping = {}
         self._session()
         for group in ("wrappers", "returned_types"):
@@ -91,6 +89,9 @@ class Dispatcher:
                         json.dumps(internal.to_dict()))
             return guard
 
+        if "acquire" in proto:
+            self._acquire(cls_name, proto, wrap)
+
         for m in proto["methods"]:
             req_cls = self.msg(m["rpc"]["req"])
             resp_cls = self.msg(m["rpc"]["resp"])
@@ -114,6 +115,35 @@ class Dispatcher:
                 wrap(handler, m["name"]), grpclib.const.Cardinality.UNARY_UNARY,
                 req_cls, resp_cls)
 
+    def _acquire(self, cls_name, proto, wrap):
+        """Construct one instance, from typed constructor arguments.
+
+        The old Session/Acquire took a class NAME and nothing else, so
+        it could only build things whose constructor needs no arguments
+        - and it decided which those were by inspecting __init__, which
+        reports (self, /, *args, **kwargs) for every Cython class alike.
+        The check was a constant True. Construction now lives on the
+        class's own service with its declared parameters."""
+        import fake_library_generated as flg
+
+        wrapper_cls = getattr(flg, "Async" + cls_name)
+        req_cls = self.msg(proto["acquire"]["req"])
+        handle_cls = self.msg("Handle")
+
+        async def handler(stream, wrapper_cls=wrapper_cls, proto=proto,
+                          handle_cls=handle_cls):
+            req = await stream.recv_message()
+            args = [self.codec.decode(req, p["name"], p["type"], self.get,
+                                      optional=p["optional"])
+                    for p in proto["ctor"]]
+            resp = handle_cls()
+            resp.id = self.put(wrapper_cls(*args), _tok(stream))
+            await stream.send_message(resp)
+
+        self.mapping[proto["acquire"]["path"]] = grpclib.const.Handler(
+            wrap(handler, "Acquire"), grpclib.const.Cardinality.UNARY_UNARY,
+            req_cls, handle_cls)
+
     def _session(self):
         from fake_library_generated._runtime import InternalError
 
@@ -130,21 +160,6 @@ class Dispatcher:
                         grpclib.const.Status.UNKNOWN,
                         json.dumps(internal.to_dict()))
             return guarded
-
-        async def acquire(stream):
-            req = await stream.recv_message()
-            try:
-                obj = self.classes[getattr(req, "class")]()
-            except Exception as e:
-                # Unknown class or failed constructor: same typed JSON
-                # contract as the service handlers.
-                internal = InternalError("Acquire failed", cause=e)
-                raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.UNKNOWN,
-                    json.dumps(internal.to_dict()))
-            resp = self.msg("Handle")()
-            resp.id = self.put(obj, _tok(stream))
-            await stream.send_message(resp)
 
         async def release(stream):
             req = await stream.recv_message()
@@ -187,9 +202,7 @@ class Dispatcher:
             await stream.send_message(ack)
 
         Handle = self.msg("Handle")
-        AcqReq = self.msg("AcquireReq")
         for name, fn, req_cls, resp_cls in (
-            ("Acquire", acquire, AcqReq, Handle),
             ("Release", release, Handle, Handle),
             ("Bind", bind, self.msg("BindReq"), self.msg("ConnResp")),
             ("Ping", ping, self.msg("PingReq"), self.msg("AckResp")),
@@ -199,26 +212,6 @@ class Dispatcher:
             self.mapping[f"/{schema.PKG}.Session/{name}"] = grpclib.const.Handler(
                 guard_untyped(fn), grpclib.const.Cardinality.UNARY_UNARY,
                 req_cls, resp_cls)
-
-
-def _acquire_able(manifest) -> dict:
-    """Constructible classes whose constructor takes no required args."""
-    import fake_library as fl
-    import fake_library_generated as flg
-
-    out = {}
-    for cls_name in manifest["wrappers"]:
-        try:
-            sig = inspect.signature(getattr(fl, cls_name).__init__)
-            params = list(sig.parameters.values())[1:]
-        except Exception:
-            params = []
-        required = [p for p in params
-                    if p.default is p.empty and p.kind in
-                    (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-        if not required:
-            out[cls_name] = getattr(flg, "Async" + cls_name)
-    return out
 
 
 async def serve(host="127.0.0.1", port=50051, lease_ttl=120.0):

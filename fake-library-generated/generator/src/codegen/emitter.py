@@ -34,13 +34,45 @@ def _param_ann(type_str: str, async_types: set[str]) -> str:
     return f"{type_str} | Async{type_str}" if type_str in async_types else type_str
 
 
+def _ctor_args(proto: dict, async_types: set[str]) -> ast.arguments:
+    """Typed __init__ parameters from the declared constructor.
+
+    This used to be `*args, **kwargs` forwarded blind, because nothing
+    knew the constructor's shape. It does now (see model.constructor_
+    signature), so the wrapper states it: wrong arity fails at the call
+    site instead of inside a lazy factory on some worker thread, and a
+    typechecker can see it."""
+    args = [ast.arg(arg="self")]
+    defaults = []
+    for p in proto["ctor"]:
+        ann = _param_ann(p["type"], async_types)
+        if p["optional"]:
+            # Spell the None out. `output: str = None` is implicit
+            # Optional, which strict typecheckers reject and which
+            # misdescribes the default the emitter itself writes.
+            ann += " | None"
+        args.append(ast.arg(
+            arg=p["name"],
+            annotation=_ann(ann, f"{proto['name']}.__init__:{p['name']}")))
+        if p["optional"]:
+            defaults.append(ast.Constant(value=None))
+        elif defaults:
+            # sorted-by-arity overloads cannot produce this, but a future
+            # explicit declaration could.
+            raise ValueError(
+                f"{proto['name']}.__init__: required parameter {p['name']!r} "
+                f"follows an optional one")
+    return ast.arguments(posonlyargs=[], args=args, vararg=None, kwonlyargs=[],
+                         kw_defaults=[], kwarg=None, defaults=defaults)
+
+
 def _emitted_annotations(proto: dict, async_types: set[str],
                          bound_policies: dict[str, str]) -> list[str]:
     """The annotation strings the emitter will actually write. Import
     collection reads THIS, not the raw protocol types: a return type
     that gets adopted is written as AsyncX and must not drag the sync X
     into the module as an unused import."""
-    out = []
+    out = [_param_ann(p["type"], async_types) for p in proto.get("ctor", ())]
     for m in proto["methods"]:
         out += [_param_ann(p["type"], async_types) for p in m["params"]]
         rt = m["return_type"]
@@ -280,9 +312,12 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
     mod.body.append(
         ast.ImportFrom(module="_runtime", names=[ast.alias(name=runner)], level=1)
     )
-    mod.body.append(
-        ast.ImportFrom(module="_runtime", names=[ast.alias(name="unwrap_arg")], level=1)
-    )
+    if proto["ctor"]:
+        # Only the factory calls it, so a constructor taking nothing
+        # leaves the import unused - which the smoke gate rejects.
+        mod.body.append(
+            ast.ImportFrom(module="_runtime", names=[ast.alias(name="unwrap_arg")], level=1)
+        )
 
     cls = ast.ClassDef(
         name=f"Async{svc}",
@@ -312,15 +347,7 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
     cls.body.append(
         ast.FunctionDef(
             name="__init__",
-            args=ast.arguments(
-                posonlyargs=[],
-                args=[ast.arg(arg="self")],
-                vararg=ast.arg(arg="args"),
-                kwonlyargs=[],
-                kw_defaults=[],
-                kwarg=ast.arg(arg="kwargs"),
-                defaults=[],
-            ),
+            args=_ctor_args(proto, async_types),
             body=[
                 ast.Assign(
                     targets=[ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
@@ -328,7 +355,12 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
                         func=ast.Name(id=runner),
                         args=[
                             # Zero-arg lambda closing over this __init__'s
-                            # args/kwargs: lambda: RemoteCat(*args, **kwargs)
+                            # parameters, so the target is built on the
+                            # runner's own thread, not the caller's:
+                            #   lambda: DerivedPath(unwrap_arg(drv_path), ...)
+                            # Each argument goes through unwrap_arg, so a
+                            # wrapper passed in contributes its target
+                            # object rather than the async shell.
                             ast.Lambda(
                                 args=ast.arguments(
                                     posonlyargs=[],
@@ -342,62 +374,14 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
                                 body=ast.Call(
                                     func=ast.Name(id=svc),
                                     args=[
-                                        # Replay constructor args through
-                                        # unwrap_arg: a wrapper argument
-                                        # contributes its target object.
-                                        ast.Starred(
-                                            value=ast.ListComp(
-                                                elt=ast.Call(
-                                                    func=ast.Name(id="unwrap_arg"),
-                                                    args=[ast.Name(id="a")],
-                                                    keywords=[],
-                                                ),
-                                                generators=[
-                                                    ast.comprehension(
-                                                        target=ast.Name(id="a"),
-                                                        iter=ast.Name(id="args"),
-                                                        ifs=[],
-                                                        is_async=0,
-                                                    )
-                                                ],
-                                            )
+                                        ast.Call(
+                                            func=ast.Name(id="unwrap_arg"),
+                                            args=[ast.Name(id=p["name"])],
+                                            keywords=[],
                                         )
+                                        for p in proto["ctor"]
                                     ],
-                                    keywords=[
-                                        # Replay constructor kwargs through
-                                        # unwrap_arg too: a wrapper passed
-                                        # as kwarg contributes its target
-                                        # object, not the async shell.
-                                        ast.keyword(
-                                            arg=None,
-                                            value=ast.DictComp(
-                                                key=ast.Name(id="k"),
-                                                value=ast.Call(
-                                                    func=ast.Name(id="unwrap_arg"),
-                                                    args=[ast.Name(id="v")],
-                                                    keywords=[],
-                                                ),
-                                                generators=[
-                                                    ast.comprehension(
-                                                        target=ast.Tuple(
-                                                            elts=[ast.Name(id="k"), ast.Name(id="v")],
-                                                            ctx=ast.Load(),
-                                                        ),
-                                                        iter=ast.Call(
-                                                            func=ast.Attribute(
-                                                                value=ast.Name(id="kwargs"),
-                                                                attr="items",
-                                                            ),
-                                                            args=[],
-                                                            keywords=[],
-                                                        ),
-                                                        ifs=[],
-                                                        is_async=0,
-                                                    )
-                                                ],
-                                            ),
-                                        )
-                                    ],
+                                    keywords=[],
                                 ),
                             )
                         ],
@@ -406,7 +390,7 @@ def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
                 )
             ],
             decorator_list=[],
-            returns=None,
+            returns=_ann("None", f"{svc}.__init__"),
             type_params=[],
         )
     )

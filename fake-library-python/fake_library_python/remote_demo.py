@@ -14,7 +14,7 @@ async def main():
 
     local = await client.acquire("LocalStore")
     remote_store = await client.acquire("RemoteStore")
-    state = await client.acquire("EvalState")
+    state = await client.acquire("EvalState", "local")
 
     print("=== wire-value returns are real local objects ===")
     p = await local.add_text_to_store("hello.txt", "world")

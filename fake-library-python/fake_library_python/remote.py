@@ -156,10 +156,31 @@ class NixClient:
         resp = await self._rpc(f"/{schema.PKG}.Session/Detach", req, "AckResp")
         return resp.ok
 
-    async def acquire(self, cls_name) -> RemoteObj:
-        req = self.msg("AcquireReq")()
-        setattr(req, "class", cls_name)
-        resp = await self._rpc(f"/{schema.PKG}.Session/Acquire", req, "Handle")
+    async def acquire(self, cls_name, *args) -> RemoteObj:
+        """Construct one instance remotely, from typed constructor
+        arguments. The arguments cross exactly like method arguments -
+        same codec, same wire policies - because they are declared the
+        same way."""
+        try:
+            proto = self.manifest["wrappers"][cls_name]
+        except KeyError:
+            raise ValueError(
+                f"{cls_name!r} is not constructible; the manifest offers "
+                f"{sorted(self.manifest['wrappers'])}") from None
+        ctor = proto["ctor"]
+        required = [p["name"] for p in ctor if not p["optional"]]
+        if len(args) < len(required) or len(args) > len(ctor):
+            raise TypeError(
+                f"{cls_name} takes {len(required)}..{len(ctor)} argument(s) "
+                f"({', '.join(p['name'] for p in ctor)}), got {len(args)}")
+
+        req = self.msg(proto["acquire"]["req"])()
+        for p, val in zip(ctor, args):
+            if val is None:
+                continue  # optional, left at the proto3 default
+            self.codec.encode(req, p["name"], p["type"], val,
+                              lambda obj: obj.handle_id)
+        resp = await self._rpc(proto["acquire"]["path"], req, "Handle")
         return RemoteObj(self, cls_name, resp.id)
 
     async def release(self, obj: RemoteObj):

@@ -127,7 +127,7 @@ async def main():
               threw is not None and threw["cause_type"] == "KeyError", threw)
 
         # ---- detach to escrow, claim from a later connection ---------
-        state = await a.acquire("EvalState")
+        state = await a.acquire("EvalState", "local")
         thunk = await state.parse_expr("42")
         await state.force(thunk)
         hid_thunk = thunk.handle_id

@@ -142,26 +142,49 @@ async def test_behavior():
     pool_shell = _shell(_runtime.PoolRunner(lambda: {"ok": True}))
     assert _runtime.unwrap_arg(pool_shell) == {"ok": True}
 
-    # Every emitted wrapper factory must replay kwargs through
-    # unwrap_arg: a raw **kwargs forward would hand the async shell to
-    # the sync constructor.
+    # Every emitted wrapper __init__ must state its declared constructor
+    # parameters, and pass every one through unwrap_arg.
+    #
+    # This replaces the old kwargs guard. That one checked a **kwargs
+    # forward replayed through unwrap_arg, because a wrapper passed as a
+    # keyword argument would otherwise hand the async shell to the sync
+    # constructor. Typed parameters make that hazard structurally
+    # impossible - there is no **kwargs to forward - so the check moves
+    # to what can still go wrong: a parameter the emitter forgot to
+    # unwrap, or a signature that drifted from the manifest.
     checked_ctors = 0
-    for py in sorted(pkg_dir.glob("async_*.py")):
+    for cls_name, proto in manifest["wrappers"].items():
+        py = pkg_dir / f"async_{cls_name.lower()}.py"
         tree = ast.parse(py.read_text(), filename=str(py.name))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "__init__" and node.args.kwarg:
-                unwraps_kwargs = any(
-                    isinstance(n, ast.DictComp)
-                    and any(
-                        isinstance(c, ast.Call) and getattr(c.func, "id", "") == "unwrap_arg"
-                        for c in ast.walk(n)
-                    )
-                    for n in ast.walk(node)
-                )
-                assert unwraps_kwargs, (
-                    f"{py.name}.__init__ must replay kwargs through unwrap_arg"
-                )
-                checked_ctors += 1
+        init = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "__init__"
+        )
+        assert init.args.vararg is None and init.args.kwarg is None, (
+            f"{py.name}.__init__ still takes *args/**kwargs"
+        )
+        declared = [p["name"] for p in proto["ctor"]]
+        emitted = [a.arg for a in init.args.args[1:]]  # drop self
+        assert emitted == declared, (
+            f"{py.name}.__init__ takes {emitted}, manifest declares {declared}"
+        )
+        unwrapped = {
+            c.args[0].id
+            for c in ast.walk(init)
+            if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "unwrap_arg"
+            and c.args and isinstance(c.args[0], ast.Name)
+        }
+        assert unwrapped == set(declared), (
+            f"{py.name}.__init__ unwraps {sorted(unwrapped)}, "
+            f"must unwrap every declared parameter {declared}"
+        )
+        # Optional parameters must actually be optional.
+        n_optional = sum(1 for p in proto["ctor"] if p["optional"])
+        assert len(init.args.defaults) == n_optional, (
+            f"{py.name}.__init__ has {len(init.args.defaults)} default(s), "
+            f"manifest declares {n_optional} optional parameter(s)"
+        )
+        checked_ctors += 1
     assert checked_ctors == len(manifest["wrappers"]), (
         f"checked {checked_ctors} wrapper ctors, expected {len(manifest['wrappers'])}"
     )
@@ -323,15 +346,27 @@ async def test_behavior():
     await thunk.aclose()
     await state.aclose()
 
-    # Construction failures are cached and re-raised identically.
-    # Wrappers construct lazily, so the bad argument fails on first call.
-    bad = AsyncRemoteStore("unexpected-arg")
-    for _ in range(2):
-        try:
-            await bad.get_uri()
-            raise AssertionError("expected construction failure")
-        except InternalError as e:
-            assert type(e.__cause__) is TypeError
+    # Wrong arity fails AT THE CALL SITE now. It used to sail through
+    # __init__(*args, **kwargs) and surface as an InternalError raised
+    # from inside the lazy factory, on a worker thread, at the first
+    # method call - far from the line that caused it.
+    #
+    # Caching of a GENUINE factory failure is covered directly above,
+    # via PoolRunner(bad_factory); that guarantee is unchanged.
+    try:
+        AsyncRemoteStore("unexpected-arg")
+        raise AssertionError("wrong arity must fail at construction")
+    except TypeError:
+        pass
+
+    # A declared required parameter is required, and a declared optional
+    # one is optional.
+    try:
+        AsyncEvalState()
+        raise AssertionError("missing required store_uri must fail")
+    except TypeError:
+        pass
+    assert await AsyncDerivedPath(p1).describe() == f"opaque {await p1.to_string()}"
 
     await drv.aclose()
     await remote.aclose()

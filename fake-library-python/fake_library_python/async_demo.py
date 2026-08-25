@@ -116,15 +116,20 @@ async def main():
     except InternalError as e:
         print("caught InternalError:", e.to_dict())
 
-    print("\n=== construction failure is cached, not retried ===")
-    # Wrappers construct lazily: the bad argument fails on first call.
-    bad = AsyncRemoteStore("unexpected-arg")
-    for i in range(3):
-        try:
-            await bad.get_uri()
-            print("should not happen")
-        except InternalError as e:
-            print(f"attempt {i + 1}: InternalError <- {type(e.__cause__).__name__}: {e.__cause__}")
+    print("\n=== constructors are typed, so arity fails at the call site ===")
+    # The wrapper states its constructor parameters, taken from the pxd.
+    # A wrong call used to sail through __init__(*args) and surface much
+    # later, from inside the lazy factory on a worker thread.
+    try:
+        AsyncRemoteStore("unexpected-arg")
+        print("should not happen")
+    except TypeError as e:
+        print(f"AsyncRemoteStore('unexpected-arg') -> TypeError: {e}")
+    try:
+        AsyncEvalState()
+        print("should not happen")
+    except TypeError as e:
+        print(f"AsyncEvalState() -> TypeError: {e}")
 
     await drv.aclose()
     await remote.aclose()
