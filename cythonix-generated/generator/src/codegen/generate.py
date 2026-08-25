@@ -323,11 +323,17 @@ def main(argv: list[str] | None = None) -> None:
     # the emitter widens their annotations accordingly.
     async_types = {p["name"] for p in returned_protos + protos if p["wrapped"]}
 
+    # The async spelling of a type, when the bindings declare one. Read
+    # here rather than off the manifest because the wrappers are
+    # emitted before the manifest is assembled.
+    async_twins: dict[str, str] = dict(getattr(bindings, "_async_twins", {}))
+
     for proto in returned_protos:
         if not proto["wrapped"]:
             continue
         fname = f"async_{proto['name'].lower()}.py"
-        code = ast.unparse(returned_module(proto, async_types, returned_policies))
+        code = ast.unparse(returned_module(proto, async_types, returned_policies,
+                                           async_twins))
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for returned type {proto['name']} ({proto['threading']})")
 
@@ -335,7 +341,8 @@ def main(argv: list[str] | None = None) -> None:
         if not proto["wrapped"]:
             continue
         fname = f"async_{proto['name'].lower()}.py"
-        code = ast.unparse(wrapper_module(proto, returned_policies, async_types))
+        code = ast.unparse(wrapper_module(proto, returned_policies,
+                                          async_twins, async_types))
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for {proto['name']} "
               f"({proto['threading']}, {len(proto['methods'])} methods)")
@@ -387,6 +394,10 @@ def main(argv: list[str] | None = None) -> None:
         "free_functions": {p["name"]: p for p in free_protos},
         "errors": errors,
         "enums": enums,
+        # The async spelling of a type, when it has one. Declared by
+        # the bindings; the emitter turns it into one annotation and
+        # one constructor call.
+        "async_twins": async_twins,
     }
 
     # No silent Any may survive into the artifact: a method whose types

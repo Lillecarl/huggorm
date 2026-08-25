@@ -377,3 +377,32 @@ def test_the_binding_initialises_libstore() -> None:
     import cythonix_bindings.store
 
     assert cythonix_bindings.store.Store is Store
+
+
+async def test_the_async_wrapper_hands_back_an_anyio_path(
+        tmp_path: pathlib.Path, source: pathlib.Path) -> None:
+    """Same location, awaitable.
+
+    The binding returns a pathlib.Path and says nothing about threads.
+    The wrapper hands back an anyio.Path, because a caller who is
+    already in an event loop wants to read the file without blocking
+    it - and anyio.Path is a wrapper around the same value, so the two
+    name the same place.
+
+    Declared by the bindings, in _async_twins, not known by the
+    codegen. Nothing about the wire changes: pathlib.Path has no
+    protobuf field either way, so this is one annotation and one
+    constructor call in the in-process wrapper."""
+    import anyio
+
+    from cythonix_generated import AsyncStore
+
+    store = AsyncStore(str(tmp_path))
+    path = await store.add_path_to_store("tree", str(source))
+    real = await store.real_path(path)
+
+    assert isinstance(real, anyio.Path)
+    # The same place the sync binding names, and really readable.
+    assert str(real) == str(Store(str(tmp_path)).real_path(path))
+    assert await (real / "a.txt").read_text() == "hello\n"
+    await store.aclose()

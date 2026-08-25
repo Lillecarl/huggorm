@@ -896,6 +896,7 @@ def test_conformance(out: pathlib.Path) -> None:
     # protocol name -> the class it speaks for, so a protocol-typed
     # return can be checked against each implementation's own form.
     speaks_for = {proto["protocol"]: name for name, proto in wrapped.items()}
+    twins: dict[str, str] = manifest.get("async_twins") or {}
     found = _emitted_classes(out)
 
     def blocked_over_chain(name: str | None, key: str) -> set[str]:
@@ -972,6 +973,14 @@ def test_conformance(out: pathlib.Path) -> None:
                     other = wrapped[speaks_for[expected]]
                     expected = other["async_class"] if label == "in-process" \
                         else other["rpc_class"]
+                elif label == "in-process":
+                    # A declared async twin is the same value in the
+                    # other spelling - anyio.Path wraps a pathlib.Path
+                    # to give it awaitable methods - so the in-process
+                    # wrapper hands back the twin and that is not
+                    # drift. The remote client keeps the plain one: it
+                    # has no local file either way.
+                    expected = twins.get(expected, expected)
                 if sig["returns"] != expected:
                     failures.append(
                         f"{cls_name}.{m}: {label} returns {sig['returns']}, "

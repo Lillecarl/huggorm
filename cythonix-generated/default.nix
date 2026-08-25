@@ -69,11 +69,16 @@ python3Packages.buildPythonPackage {
     python3Packages.protobuf
     codegen
     cythonix-bindings
+    python3Packages.anyio
   ];
 
   env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_mock_store.pxd ${cythonix-bindings.src}/cythonix_bindings/c_eval.pxd ${cythonix-bindings.src}/cythonix_bindings/c_path.pxd ${cythonix-bindings.src}/cythonix_bindings/c_store.pxd";
 
-  propagatedBuildInputs = [ cythonix-bindings ];
+  # anyio because a generated wrapper hands back the async spelling of
+  # a type when the bindings declare one: Store.real_path returns a
+  # pathlib.Path in process and an anyio.Path from the wrapper, so the
+  # emitted module imports anyio (tasks/040).
+  propagatedBuildInputs = [ cythonix-bindings python3Packages.anyio ];
 
   # The emitted package and the stubs, checked as a pair. This is the
   # claim tasks/017 and tasks/027 make - that a consumer can be

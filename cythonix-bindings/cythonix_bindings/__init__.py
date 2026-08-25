@@ -62,6 +62,21 @@ from .store import Store
 # set has to come from here (tasks/036).
 _errors_module = "cythonix_bindings.errors"
 
+# A type whose ASYNC surface is spelled differently. Same value, and a
+# wrapper that gives it awaitable methods: anyio.Path wraps a
+# pathlib.Path so a caller who is already in an event loop can read
+# the file without blocking it.
+#
+# Declared here rather than known by the codegen, like every other
+# marker. A binding returns the sync type and says nothing about
+# threads; this is the one place that says the async wrapper hands
+# back the other spelling, and the generator does the rest.
+#
+# It never reaches the wire. A type with a twin has no protobuf field
+# either way, so this decides one annotation and one constructor call
+# in the in-process wrapper and nothing else.
+_async_twins = {"pathlib.Path": "anyio.Path"}
+
 __all__ = [
     "ContentAddressMethod",
     "EvalState",

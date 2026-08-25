@@ -105,8 +105,21 @@ def _ctor_args(proto: Proto, async_types: set[str]) -> ast.arguments:
                          kw_defaults=[], kwarg=None, defaults=defaults)
 
 
+def _return_ann(rt: str, bound_policies: dict[str, str],
+                twins: dict[str, str]) -> str:
+    """What the IN-PROCESS wrapper declares it returns.
+
+    Three answers. A proxy is adopted into its Async form. A type with
+    a declared async twin is handed back as the twin - same value,
+    awaitable methods. Everything else is itself."""
+    if rt in bound_policies:
+        return f"Async{rt}"
+    return twins.get(rt, rt)
+
+
 def _emitted_annotations(proto: Proto, async_types: set[str],
-                         bound_policies: dict[str, str]) -> list[str]:
+                         bound_policies: dict[str, str],
+                         twins: dict[str, str]) -> list[str]:
     """The annotation strings the emitter will actually write. Import
     collection reads THIS, not the raw protocol types: a return type
     that gets adopted is written as AsyncX and must not drag the sync X
@@ -114,8 +127,7 @@ def _emitted_annotations(proto: Proto, async_types: set[str],
     out = [_param_ann(p["type"], async_types) for p in proto.get("ctor", ())]
     for m in proto["methods"]:
         out += [_param_ann(p["type"], async_types) for p in m["params"]]
-        rt = m["return_type"]
-        out.append(f"Async{rt}" if rt in bound_policies else rt)
+        out.append(_return_ann(m["return_type"], bound_policies, twins))
     return out
 
 
@@ -201,7 +213,8 @@ def _ann(type_str: str, context: str) -> ast.expr:
 
 def returned_module(proto: Proto,
                     async_types: set[str] | None = None,
-                    bound_policies: dict[str, str] | None = None) -> ast.Module:
+                    bound_policies: dict[str, str] | None = None,
+                    twins: dict[str, str] | None = None) -> ast.Module:
     """
     Emit Async<Bound> for a returned value type (e.g. Poop).
 
@@ -218,9 +231,10 @@ def returned_module(proto: Proto,
     policy_wire = proto["wire"]
     async_types = async_types or set()
     bound_policies = bound_policies or {}
+    twins = twins or {}
 
     mod = ast.Module(body=[], type_ignores=[])
-    annotations = _emitted_annotations(proto, async_types, bound_policies)
+    annotations = _emitted_annotations(proto, async_types, bound_policies, twins)
     defaults = _emitted_defaults(proto)
     used = _annotation_names(annotations) | _annotation_names(defaults)
     mod.body.append(
@@ -311,21 +325,24 @@ def returned_module(proto: Proto,
     )
 
     mod.body.append(cls)
-    _append_methods_and_aclose(cls, proto, svc, async_types, bound_policies)
+    _append_methods_and_aclose(cls, proto, svc, async_types, bound_policies,
+                               twins)
     ast.fix_missing_locations(mod)
     return mod
 
 
 def _append_methods_and_aclose(cls: ast.ClassDef, proto: Proto, svc: str,
                                async_types: set[str],
-                               bound_policies: dict[str, str]) -> None:
+                               bound_policies: dict[str, str],
+                               twins: dict[str, str]) -> None:
     # Same emission as a wrapper's methods, adoption included. It used
     # to be a second copy of the hop body without the adoption branch,
     # so a returned type producing another one handed back the bare
     # binding object - alive in process, and a type error everywhere
     # else, because every other surface says AsyncX.
     for m in proto["methods"]:
-        _append_hop_method(cls, proto, m, svc, async_types, bound_policies)
+        _append_hop_method(cls, proto, m, svc, async_types, bound_policies,
+                           twins)
     cls.body.append(_aclose_method())
 
 
@@ -378,7 +395,8 @@ def _runner_decl() -> ast.AnnAssign:
 
 def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
                        async_types: set[str],
-                       bound_policies: dict[str, str]) -> None:
+                       bound_policies: dict[str, str],
+                       twins: dict[str, str]) -> None:
     """One `async def` that hops to the runner. Shared by the abstract
     base and its subclasses: the body is identical either way, which is
     exactly why a base can carry it - the runner comes from whichever
@@ -401,6 +419,14 @@ def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
             args=[ast.Name(id="result"),
                   ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
             keywords=[])))
+    elif rt in twins:
+        # Same value, other spelling. anyio.Path takes any path-like,
+        # so the wrapper constructs one rather than casting: a cast
+        # would claim the awaitable methods without adding them.
+        body.append(ast.Return(value=ast.Call(
+            func=_ann(twins[rt], f"{svc}.{m['name']}"),
+            args=[ast.Await(value=_hop_call(m["name"], m["params"]))],
+            keywords=[])))
     else:
         body.append(_hop_return(m["name"], m["params"], rt))
     cls.body.append(ast.AsyncFunctionDef(
@@ -408,12 +434,13 @@ def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
         args=params,
         body=body,
         decorator_list=[],
-        returns=(_ann(f"Async{rt}", f"{svc}.{m['name']}") if rt in bound_policies
-                 else _ann(rt, f"{svc}.{m['name']}")),
+        returns=_ann(_return_ann(rt, bound_policies, twins),
+                     f"{svc}.{m['name']}"),
         type_params=[]))
 
 
 def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
+                   twins: dict[str, str] | None = None,
                    async_types: set[str] | None = None) -> ast.Module:
     """Emit Async<Svc>. bound_policies maps returned-type names to their
     declared threading policy; those methods adopt the produced object
@@ -422,6 +449,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     svc = proto["name"]
     bound_policies = bound_policies or {}
     async_types = async_types or set()
+    twins = twins or {}
     runner = RUNNER_BY_THREADING[proto["threading"]]
 
     mod = ast.Module(body=[], type_ignores=[])
@@ -441,7 +469,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
         )
     )
 
-    annotations = _emitted_annotations(proto, async_types, bound_policies)
+    annotations = _emitted_annotations(proto, async_types, bound_policies, twins)
     used_types = (_annotation_names(annotations)
                   | _annotation_names(_emitted_defaults(proto))
                   | {"None"})  # None: aclose
@@ -550,7 +578,8 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
             decorator_list=[], returns=_ann("None", f"{svc}.__init__"),
             type_params=[]))
         for m in proto["methods"]:
-            _append_hop_method(cls, proto, m, svc, async_types, bound_policies)
+            _append_hop_method(cls, proto, m, svc, async_types, bound_policies,
+                           twins)
         cls.body.append(_aclose_method())
         mod.body.append(cls)
         ast.fix_missing_locations(mod)
@@ -608,7 +637,8 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     )
 
     for m in proto["methods"]:
-        _append_hop_method(cls, proto, m, svc, async_types, bound_policies)
+        _append_hop_method(cls, proto, m, svc, async_types, bound_policies,
+                           twins)
 
     cls.body.append(_aclose_method())
     mod.body.append(cls)
