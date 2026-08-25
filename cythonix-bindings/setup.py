@@ -43,8 +43,8 @@ if not fake_lib:
         "FAKE_LIBRARY=/path/to/fake-library")
 
 ext = Extension(
-    "cythonix_bindings.store",
-    sources=["cythonix_bindings/store.pyx"],
+    "cythonix_bindings.mock_store",
+    sources=["cythonix_bindings/mock_store.pyx"],
     language="c++",
     include_dirs=[os.path.join(fake_lib, "include")],
     library_dirs=[os.path.join(fake_lib, "lib")],

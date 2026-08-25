@@ -1,6 +1,6 @@
 # cython: language_level=3
 # Declaration of the C++ evaluation API (include/fake_library/eval.hpp).
-# Parsed alongside c_store.pxd by the codegen; EvalState and Value are
+# Parsed alongside c_mock_store.pxd by the codegen; EvalState and Value are
 # the affine exemplars of the service and returned-value roles.
 
 from libcpp.string cimport string

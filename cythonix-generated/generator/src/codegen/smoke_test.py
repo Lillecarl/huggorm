@@ -144,12 +144,12 @@ def test_runtime_contract(out: pathlib.Path) -> None:
 
 async def test_behavior() -> None:
     import cythonix_bindings
-    from cythonix_bindings import DerivedPath, MockStorePath
+    from cythonix_bindings import MockDerivedPath, MockStorePath
     from cythonix_generated import (
-        AsyncDerivation,
         AsyncEvalState,
-        AsyncLocalStore,
-        AsyncRemoteStore,
+        AsyncMockDerivation,
+        AsyncMockLocalStore,
+        AsyncMockRemoteStore,
         AsyncValue,
     )
     from cythonix_generated._runtime import InternalError
@@ -160,7 +160,7 @@ async def test_behavior() -> None:
     manifest = json.loads((pkg_dir / "manifest.json").read_text())
 
     # Pool store: concurrent adds genuinely overlap.
-    local = AsyncLocalStore()
+    local = AsyncMockLocalStore()
     assert await local.get_uri() == "local"
     t0 = asyncio.get_running_loop().time()
     p1, p2 = await asyncio.gather(
@@ -312,17 +312,17 @@ async def test_behavior() -> None:
     assert not_wrapped, "expected at least one unwrapped class in the surface"
 
     # Opaque and built derived paths.
-    req = DerivedPath(p1)
+    req = MockDerivedPath(p1)
     out_opaque = await local.build_derivation(req)
     assert out_opaque.to_string() == p1.to_string()
-    drv_req = DerivedPath(p2, "out")
+    drv_req = MockDerivedPath(p2, "out")
     out_built = await local.build_derivation(drv_req)
     assert out_built.name_part().endswith("-out")
     assert await local.is_valid_path(out_built) is True
 
     # Affine store: everything pinned to one dedicated thread, including
     # a slow add.
-    remote = AsyncRemoteStore()
+    remote = AsyncMockRemoteStore()
     assert await remote.get_uri() == "uds://daemon"
     await remote.is_valid_path(p1)
     await remote.add_text_to_store("slow.drv", "DrvFoobar")
@@ -342,19 +342,19 @@ async def test_behavior() -> None:
     # Returned pool values are free to use any thread.
     spool = await local.add_text_to_store("x", "y")
     assert isinstance(spool, MockStorePath)
-    assert isinstance(drv, AsyncDerivation)
-    assert isinstance(drv_req, DerivedPath)
+    assert isinstance(drv, AsyncMockDerivation)
+    assert isinstance(drv_req, MockDerivedPath)
 
-    # Policy enforcement: the pool LocalStore may not expose an
+    # Policy enforcement: the pool MockLocalStore may not expose an
     # affine-returning method, so the generator dropped it.
     # methods is a list of dicts, so a bare `"name" not in methods` is
     # vacuously true and asserted nothing. Compare against the names.
-    local_methods = {m["name"] for m in manifest["wrappers"]["LocalStore"]["methods"]}
+    local_methods = {m["name"] for m in manifest["wrappers"]["MockLocalStore"]["methods"]}
     assert "query_derivation" not in local_methods, (
         f"affine-returning method must be dropped from pool wrapper: {sorted(local_methods)}"
     )
     # ...and the control: the affine store that MAY return it still does.
-    remote_methods = {m["name"] for m in manifest["wrappers"]["RemoteStore"]["methods"]}
+    remote_methods = {m["name"] for m in manifest["wrappers"]["MockRemoteStore"]["methods"]}
     assert "query_derivation" in remote_methods, (
         f"affine wrapper must keep its affine-returning method: {sorted(remote_methods)}"
     )
@@ -364,19 +364,19 @@ async def test_behavior() -> None:
     # generated classes: immutable types are wire-values, everything
     # else proxies.
     assert manifest["returned_types"]["MockStorePath"]["wire"] == "value"
-    assert manifest["returned_types"]["Derivation"]["wire"] == "proxy"
-    assert manifest["wrappers"]["DerivedPath"]["wire"] == "value"
+    assert manifest["returned_types"]["MockDerivation"]["wire"] == "proxy"
+    assert manifest["wrappers"]["MockDerivedPath"]["wire"] == "value"
     assert manifest["wrappers"]["EvalState"]["wire"] == "proxy"
     assert local._wire == "proxy" and spool._wire == "value"
 
     # Wrapping is a SEPARATE axis from wire policy, and the rule is:
     # wrap when the object needs a home thread (affine) or its methods
-    # can block. MockStorePath and DerivedPath are pool and declare
+    # can block. MockStorePath and MockDerivedPath are pool and declare
     # _blocking = False, so they cross every layer as themselves -
     # no await in front of a substring read (tasks/025).
     import cythonix_generated as flg_names
     for group, name in (("returned_types", "MockStorePath"),
-                        ("wrappers", "DerivedPath")):
+                        ("wrappers", "MockDerivedPath")):
         proto = manifest[group][name]
         assert proto["blocking"] is False and proto["wrapped"] is False, proto
         assert not hasattr(flg_names, f"Async{name}"), (
@@ -390,7 +390,7 @@ async def test_behavior() -> None:
     # The control: an affine class and a blocking pool class both stay
     # wrapped, so the rule is doing work rather than switching nothing.
     assert manifest["returned_types"]["Value"]["wrapped"] is True
-    assert manifest["wrappers"]["LocalStore"]["wrapped"] is True
+    assert manifest["wrappers"]["MockLocalStore"]["wrapped"] is True
 
     # C++ exceptions surface as InternalError with the cause attached.
     try:
@@ -427,7 +427,7 @@ async def test_behavior() -> None:
     # Free functions have generated wrappers too: module-level
     # coroutines on the shared pool, with the pxd filling in the
     # parameter type Cython dropped (describe's `obj` is untyped in the
-    # pyx and CStore& in the pxd).
+    # pyx and CMockStore& in the pxd).
     import cythonix_generated as flg
 
     assert await flg.describe(local) == "store(local)"
@@ -439,7 +439,7 @@ async def test_behavior() -> None:
     # touched yet could not be passed anywhere. Both stores above had
     # been called already, which is why this went unseen. The runner
     # now constructs on its own thread before the argument is unwrapped.
-    untouched_store = AsyncRemoteStore()
+    untouched_store = AsyncMockRemoteStore()
     assert untouched_store._runner._obj is None, "expected an unconstructed wrapper"
     assert await flg.describe(untouched_store) == "store(uds://daemon)"
     born = untouched_store._runner.born_thread_name
@@ -453,13 +453,13 @@ async def test_behavior() -> None:
     await untouched.aclose()
     await untouched_store.aclose()
     free = manifest["free_functions"]
-    assert free["describe"]["params"] == [{"name": "obj", "type": "Store"}], (
+    assert free["describe"]["params"] == [{"name": "obj", "type": "MockStore"}], (
         free["describe"]["params"]
     )
     assert free["collect_garbage"]["return_type"] == "None"
     # ...and each one records whether the wire can carry it, with the
-    # reason when it cannot. describe takes a Store, which used to be
-    # excluded from generation and so had no wire policy; now that Store
+    # reason when it cannot. describe takes a MockStore, which used to be
+    # excluded from generation and so had no wire policy; now that MockStore
     # is a generated base it crosses like any other proxy. gc_stats
     # returns dict[str, int], which is a protobuf map now that the
     # declaration says what the entries hold (tasks/030).
@@ -566,22 +566,22 @@ async def test_behavior() -> None:
 
     # The hierarchy: the base guarantees what every subclass keeps, and
     # a caller holding one need not know which it has. query_derivation
-    # is NOT guaranteed - the pool policy drops it from LocalStore - so
-    # it lives on RemoteStore alone rather than being shadow-dropped.
-    assert issubclass(AsyncLocalStore, flg.AsyncStore)
-    assert issubclass(AsyncRemoteStore, flg.AsyncStore)
-    guaranteed = {m["name"] for m in manifest["wrappers"]["Store"]["methods"]}
+    # is NOT guaranteed - the pool policy drops it from MockLocalStore - so
+    # it lives on MockRemoteStore alone rather than being shadow-dropped.
+    assert issubclass(AsyncMockLocalStore, flg.AsyncMockStore)
+    assert issubclass(AsyncMockRemoteStore, flg.AsyncMockStore)
+    guaranteed = {m["name"] for m in manifest["wrappers"]["MockStore"]["methods"]}
     assert guaranteed == {"get_uri", "is_valid_path", "add_text_to_store",
                           "build_derivation"}, sorted(guaranteed)
-    assert manifest["wrappers"]["LocalStore"]["methods"] == []
-    assert [m["name"] for m in manifest["wrappers"]["RemoteStore"]["methods"]] \
+    assert manifest["wrappers"]["MockLocalStore"]["methods"] == []
+    assert [m["name"] for m in manifest["wrappers"]["MockRemoteStore"]["methods"]] \
         == ["query_derivation"]
-    assert not hasattr(AsyncLocalStore, "query_derivation")
-    assert hasattr(AsyncRemoteStore, "query_derivation")
+    assert not hasattr(AsyncMockLocalStore, "query_derivation")
+    assert hasattr(AsyncMockRemoteStore, "query_derivation")
 
     # One function, either implementation, no branching. This is the
     # point of the base existing.
-    async def uri_of(store: flg.AsyncStore) -> str:
+    async def uri_of(store: flg.AsyncMockStore) -> str:
         return await store.get_uri()
 
     assert await uri_of(local) == "local"
@@ -590,7 +590,7 @@ async def test_behavior() -> None:
     # The base itself refuses construction: it is a surface, not an
     # implementation.
     try:
-        flg.AsyncStore()
+        flg.AsyncMockStore()
         raise AssertionError("abstract base must refuse construction")
     except TypeError:
         pass
@@ -669,7 +669,7 @@ async def test_behavior() -> None:
     # Caching of a GENUINE factory failure is covered directly above,
     # via PoolRunner(bad_factory); that guarantee is unchanged.
     try:
-        AsyncRemoteStore("unexpected-arg")  # type: ignore[call-arg]
+        AsyncMockRemoteStore("unexpected-arg")  # type: ignore[call-arg]
         raise AssertionError("wrong arity must fail at construction")
     except TypeError:
         pass
@@ -681,7 +681,7 @@ async def test_behavior() -> None:
         raise AssertionError("missing required store_uri must fail")
     except TypeError:
         pass
-    assert DerivedPath(p1).describe() == f"opaque {p1.to_string()}"
+    assert MockDerivedPath(p1).describe() == f"opaque {p1.to_string()}"
 
     await drv.aclose()
     await remote.aclose()
@@ -691,8 +691,8 @@ async def test_behavior() -> None:
 def test_no_unused_imports(out: pathlib.Path) -> None:
     """Emitted modules must import exactly what they use. An import the
     emitter adds but never references means the import list is derived
-    from the wrong set - which is how the sync Derivation kept arriving
-    in wrappers that only ever annotate AsyncDerivation. Generated code
+    from the wrong set - which is how the sync MockDerivation kept arriving
+    in wrappers that only ever annotate AsyncMockDerivation. Generated code
     gets no linter, so the gate lives here."""
     offenders = []
     for py in sorted(out.glob("*.py")):

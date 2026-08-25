@@ -5,23 +5,23 @@
 #
 # Layout mirrors the real domain:
 # - PyStore trampoline (verbatim C++ via extern-from-*): forwards the pure
-#   virtual get_uri() to Python so subclasses of Store are visible to C++
+#   virtual get_uri() to Python so subclasses of MockStore are visible to C++
 #   dispatch (describe_store).
-# - ONE cdef class Store holds Store* and declares every wrapped method
-#   exactly once. LocalStore/RemoteStore are constructor-only subclasses
+# - ONE cdef class MockStore holds MockStore* and declares every wrapped method
+#   exactly once. MockLocalStore/MockRemoteStore are constructor-only subclasses
 #   picking which C++ object to allocate.
-# - Value types (MockStorePath, Derivation, DerivedPath) are produced by store
+# - Value types (MockStorePath, MockDerivation, MockDerivedPath) are produced by store
 #   methods, never constructed directly.
 #
 # Threading policies (`_threading`, consumed by the async codegen):
-# - LocalStore "pool": real stores are shared objects guarded by locks;
+# - MockLocalStore "pool": real stores are shared objects guarded by locks;
 #   concurrent use from several threads is legitimate.
-# - RemoteStore "affine": a connection-bound store owns its IO thread;
+# - MockRemoteStore "affine": a connection-bound store owns its IO thread;
 #   operations serialize there. This is the experiment's affine exemplar.
-# - MockStorePath/DerivedPath "pool": immutable values.
-# - Derivation "affine": mutable builder state; ops stay on the producer's
+# - MockStorePath/MockDerivedPath "pool": immutable values.
+# - MockDerivation "affine": mutable builder state; ops stay on the producer's
 #   thread (the returned-value attachment rule makes this enforceable).
-# `_abstract = True` marks Store as a generated BASE: wrapped and
+# `_abstract = True` marks MockStore as a generated BASE: wrapped and
 # wire-addressable, but never constructed.
 #
 # `_blocking = False` says the opposite thing about a class: none of its
@@ -33,13 +33,13 @@
 from libcpp.string cimport string
 from cython.operator cimport dereference as deref
 
-from cythonix_bindings.c_store cimport (
-    CStore,
+from cythonix_bindings.c_mock_store cimport (
+    CMockStore,
     CMockStorePath,
-    CDerivation,
-    CDerivedPath,
-    CLocalStore,
-    CRemoteStore,
+    CMockDerivation,
+    CMockDerivedPath,
+    CMockLocalStore,
+    CMockRemoteStore,
     describe_store,
 )
 
@@ -51,7 +51,7 @@ cdef extern from *:
     #include <string>
 
     // Lives only in the binding. Lets Python classes that inherit from
-    // Store override get_uri() and have C++ code see the override.
+    // MockStore override get_uri() and have C++ code see the override.
     struct PyStore : public fake_library::Store {
         PyObject* py_self;
         explicit PyStore(PyObject* self) : py_self(self) {
@@ -81,7 +81,7 @@ cdef extern from *:
         }
     };
     """
-    cdef cppclass PyStore(CStore):
+    cdef cppclass PyStore(CMockStore):
         PyStore(object self)
 
 
@@ -90,24 +90,24 @@ cdef extern from *:
 # - A base __cinit__ ALWAYS runs before the leaf's and cannot be skipped,
 #   so the base must not allocate here. Leaves allocate their own C++
 #   object in their own __cinit__; the base stays leaf-agnostic.
-# - Python subclasses of Store have no allocating __cinit__, so _ptr is
+# - Python subclasses of MockStore have no allocating __cinit__, so _ptr is
 #   still NULL by __init__ time; the base __init__ then installs the
 #   trampoline. Dealloc and init paths are NULL-guarded.
-cdef class Store:
-    cdef CStore* _ptr
+cdef class MockStore:
+    cdef CMockStore* _ptr
 
     _threading = "pool"
-    # Abstract, and GENERATED. Store is the type real callers hold most
+    # Abstract, and GENERATED. MockStore is the type real callers hold most
     # of the time - you ask for a store and use it without caring which
     # implementation answered - so it needs an async wrapper and a wire
     # identity of its own. What it does not need is construction: a bare
-    # Store() is a trampoline whose get_uri calls a Python method that
+    # MockStore() is a trampoline whose get_uri calls a Python method that
     # does not exist. Subclasses construct; this one is a base.
     _abstract = True
     # The C++ declaration this class binds. Declared per class, never
-    # inherited: the codegen reads __dict__, so LocalStore must name its
+    # inherited: the codegen reads __dict__, so MockLocalStore must name its
     # own. This is the ONLY link between the pxd and the pyx.
-    _binds = "CStore"
+    _binds = "CMockStore"
 
     def __init__(self):
         if self._ptr == NULL:
@@ -137,20 +137,20 @@ cdef class Store:
             result._ptr = new CMockStorePath(self._ptr.add_text_to_store(c_name, c_contents))
         return result
 
-    def build_derivation(self, DerivedPath request) -> MockStorePath:
-        cdef CDerivedPath* c_req = request._ptr
+    def build_derivation(self, MockDerivedPath request) -> MockStorePath:
+        cdef CMockDerivedPath* c_req = request._ptr
         cdef MockStorePath result = MockStorePath.__new__(MockStorePath)
         with nogil:
             result._ptr = new CMockStorePath(self._ptr.build_derivation(deref(c_req)))
         return result
 
-    def query_derivation(self, MockStorePath drv_path) -> Derivation:
+    def query_derivation(self, MockStorePath drv_path) -> MockDerivation:
         """Parse a .drv previously added to this store. The returned
         derivation carries mutable state: callers must keep invoking it
         on this store's thread (the async layer enforces that)."""
-        cdef Derivation drv = Derivation.__new__(Derivation)
+        cdef MockDerivation drv = MockDerivation.__new__(MockDerivation)
         with nogil:
-            drv._ptr = new CDerivation(self._ptr.query_derivation(deref(drv_path._ptr)))
+            drv._ptr = new CMockDerivation(self._ptr.query_derivation(deref(drv_path._ptr)))
         return drv
 
 
@@ -158,20 +158,20 @@ cdef class Store:
 # Each leaf allocates its own C++ object in its own __cinit__. The base
 # contributes nothing to the chain.
 
-cdef class LocalStore(Store):
+cdef class MockLocalStore(MockStore):
     _threading = "pool"
-    _binds = "CLocalStore"
+    _binds = "CMockLocalStore"
 
     def __cinit__(self):
-        self._ptr = new CLocalStore()
+        self._ptr = new CMockLocalStore()
 
 
-cdef class RemoteStore(Store):
+cdef class MockRemoteStore(MockStore):
     _threading = "affine"
-    _binds = "CRemoteStore"
+    _binds = "CMockRemoteStore"
 
     def __cinit__(self):
-        self._ptr = new CRemoteStore()
+        self._ptr = new CMockRemoteStore()
 
 
 # --- Value types ---
@@ -239,18 +239,18 @@ cdef class MockStorePath:
         return self._ptr.name().decode('utf-8')
 
 
-cdef class Derivation:
+cdef class MockDerivation:
     _threading = "affine"
-    _binds = "CDerivation"
+    _binds = "CMockDerivation"
     # The instructive wire case: looks like a value, but set_env and the
     # access counter mutate it - so despite being a plain data holder it
     # must travel as a proxy. Mutability forces proxy, always.
     _wire = "proxy"
 
-    cdef CDerivation* _ptr
+    cdef CMockDerivation* _ptr
 
     def __init__(self):
-        raise TypeError("Derivation instances come from query_derivation")
+        raise TypeError("MockDerivation instances come from query_derivation")
 
     def __dealloc__(self):
         del self._ptr
@@ -268,11 +268,11 @@ cdef class Derivation:
         return self._ptr.queries()
 
 
-cdef class DerivedPath:
+cdef class MockDerivedPath:
     _threading = "pool"
     # Immutable build request: wire-value.
     _wire = "value"
-    _binds = "CDerivedPath"
+    _binds = "CMockDerivedPath"
     # Same as MockStorePath: a self-contained request object whose only
     # method formats its own fields. No wrapper.
     _blocking = False
@@ -283,7 +283,7 @@ cdef class DerivedPath:
     # read it back. Opaque requests carry no output.
     _wire_fields = (("path", "MockStorePath"), ("output", "str?"))
 
-    cdef CDerivedPath* _ptr
+    cdef CMockDerivedPath* _ptr
 
     def __cinit__(self, MockStorePath path=None, str output=None):
         # Optional args exist only so __copy__ can allocate via __new__
@@ -293,21 +293,21 @@ cdef class DerivedPath:
             self._ptr = NULL
             return
         if output is None:
-            self._ptr = new CDerivedPath(deref((<MockStorePath>path)._ptr))
+            self._ptr = new CMockDerivedPath(deref((<MockStorePath>path)._ptr))
         else:
-            self._ptr = new CDerivedPath(deref((<MockStorePath>path)._ptr), output.encode('utf-8'))
+            self._ptr = new CMockDerivedPath(deref((<MockStorePath>path)._ptr), output.encode('utf-8'))
 
     def __init__(self, MockStorePath path=None, str output=None):
         if path is None:
-            raise TypeError("DerivedPath requires a MockStorePath")
+            raise TypeError("MockDerivedPath requires a MockStorePath")
 
     def __dealloc__(self):
         if self._ptr != NULL:
             del self._ptr
 
     def __copy__(self):
-        cdef DerivedPath c = DerivedPath.__new__(DerivedPath)
-        c._ptr = new CDerivedPath(deref(self._ptr))
+        cdef MockDerivedPath c = MockDerivedPath.__new__(MockDerivedPath)
+        c._ptr = new CMockDerivedPath(deref(self._ptr))
         return c
 
     def __deepcopy__(self, memo):
@@ -320,11 +320,11 @@ cdef class DerivedPath:
     @classmethod
     def _from_parts(cls, MockStorePath path, str output):
         """Wire-deserialization helper (private)."""
-        cdef DerivedPath d = DerivedPath.__new__(DerivedPath)
+        cdef MockDerivedPath d = MockDerivedPath.__new__(MockDerivedPath)
         if output is None:
-            d._ptr = new CDerivedPath(deref(path._ptr))
+            d._ptr = new CMockDerivedPath(deref(path._ptr))
         else:
-            d._ptr = new CDerivedPath(deref(path._ptr), output.encode('utf-8'))
+            d._ptr = new CMockDerivedPath(deref(path._ptr), output.encode('utf-8'))
         return d
 
     def _parts(self):
@@ -340,13 +340,13 @@ cdef class DerivedPath:
 
 
 def describe(obj) -> str:
-    """C++ free function describe_store(const Store&) - goes through C++
+    """C++ free function describe_store(const MockStore&) - goes through C++
     virtual dispatch. Sees get_uri overrides on trampoline subclasses
-    (Python subclasses of Store), not on plain-Python overrides of
-    LocalStore/RemoteStore."""
-    if not isinstance(obj, Store):
-        raise TypeError(f"describe() expects a Store, got {type(obj)}")
-    cdef string res = describe_store(deref((<Store>obj)._ptr))
+    (Python subclasses of MockStore), not on plain-Python overrides of
+    MockLocalStore/MockRemoteStore."""
+    if not isinstance(obj, MockStore):
+        raise TypeError(f"describe() expects a MockStore, got {type(obj)}")
+    cdef string res = describe_store(deref((<MockStore>obj)._ptr))
     return res.decode('utf-8')
 
 

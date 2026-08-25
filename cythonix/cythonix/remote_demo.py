@@ -16,8 +16,8 @@ from cythonix import remote
 async def main() -> None:
     client = await remote.connect()
 
-    local = await client.acquire("LocalStore")
-    remote_store = await client.acquire("RemoteStore")
+    local = await client.acquire("MockLocalStore")
+    remote_store = await client.acquire("MockRemoteStore")
     state = await client.acquire("EvalState", "local")
 
     print("=== wire-value returns are real local objects ===")
@@ -26,9 +26,9 @@ async def main() -> None:
     print("valid:", await local.is_valid_path(p))
 
     print("\n=== wire-value args cross as copies ===")
-    from cythonix_bindings import DerivedPath
+    from cythonix_bindings import MockDerivedPath
     drv_path = await local.add_text_to_store("mysite.drv", "DrvMine")
-    req = DerivedPath(drv_path, "out")
+    req = MockDerivedPath(drv_path, "out")
     built = await local.build_derivation(req)
     print(f"built: {built.to_string()} valid: {await local.is_valid_path(built)}")
 
@@ -55,16 +55,16 @@ async def main() -> None:
     # Typed against the generated protocol. It never asks whether the
     # store answering is in this process or on the far side of the
     # socket - and a typechecker sees the whole surface either way.
-    from cythonix_generated import StoreLike
+    from cythonix_generated import MockStoreLike
 
-    async def report(store: StoreLike) -> str:
+    async def report(store: MockStoreLike) -> str:
         path = await store.add_text_to_store("shared.txt", "either location")
         return f"{await store.get_uri()}: {path.to_string()}"
 
     print(" remote:", await report(local))
 
-    from cythonix_generated import AsyncLocalStore
-    in_process = AsyncLocalStore()
+    from cythonix_generated import AsyncMockLocalStore
+    in_process = AsyncMockLocalStore()
     print(" local: ", await report(in_process))
     await in_process.aclose()
 

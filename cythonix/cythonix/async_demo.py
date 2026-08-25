@@ -4,19 +4,19 @@
 
 import asyncio
 
-from cythonix_bindings import DerivedPath
+from cythonix_bindings import MockDerivedPath
 from cythonix_generated import (
     AsyncEvalState,
-    AsyncLocalStore,
-    AsyncRemoteStore,
-    AsyncStore,
+    AsyncMockLocalStore,
+    AsyncMockRemoteStore,
+    AsyncMockStore,
 )
 from cythonix_generated._runtime import InternalError
 
 
 async def main() -> None:
-    local = AsyncLocalStore()
-    remote = AsyncRemoteStore()
+    local = AsyncMockLocalStore()
+    remote = AsyncMockRemoteStore()
 
     print("=== sequential awaits ===")
     p = await local.add_text_to_store("hello.txt", "world")
@@ -34,7 +34,7 @@ async def main() -> None:
     elapsed = asyncio.get_running_loop().time() - t0
     print(f"2x add_text_to_store gathered: {elapsed * 1000:.0f}ms (parallel if << 200)")
 
-    print("\n=== thread affinity (RemoteStore, affine) ===")
+    print("\n=== thread affinity (MockRemoteStore, affine) ===")
     await remote.get_uri()
     await remote.is_valid_path(a)
     await remote.add_text_to_store("slow.drv", "DrvSlow")
@@ -42,7 +42,7 @@ async def main() -> None:
     print(f"last call: {remote._runner.last_worker_name}")
     print(f"workers seen: {sorted(remote._runner.workers_seen)}  <- must be exactly 1")
 
-    print("\n=== thread pool (LocalStore, pool) ===")
+    print("\n=== thread pool (MockLocalStore, pool) ===")
     results = await asyncio.gather(
         local.get_uri(),
         local.add_text_to_store("c.txt", "ccc"),
@@ -66,7 +66,7 @@ async def main() -> None:
           f"(store's: {sorted(remote._runner.workers_seen)})")
     print(f"queries: {await drv.queries()}")
 
-    out = await local.build_derivation(DerivedPath(drv_path, "out"))
+    out = await local.build_derivation(MockDerivedPath(drv_path, "out"))
     print(f"built: {out.to_string()} valid: {await local.is_valid_path(out)}")
 
     print("\n=== evaluation (EvalState, affine service) ===")
@@ -116,7 +116,7 @@ async def main() -> None:
 
     print("\n=== one function, either store, no branching ===")
 
-    async def report(store: AsyncStore) -> str:
+    async def report(store: AsyncMockStore) -> str:
         # Typed against the base. Everything it calls is guaranteed by
         # every implementation, so it never asks which one it holds.
         path = await store.add_text_to_store("shared.txt", "either store")
@@ -124,8 +124,8 @@ async def main() -> None:
 
     print(await report(local))
     print(await report(remote))
-    print("AsyncLocalStore is an AsyncStore:", isinstance(local, AsyncStore))
-    print("query_derivation is not guaranteed, so it is on RemoteStore only:",
+    print("AsyncMockLocalStore is an AsyncMockStore:", isinstance(local, AsyncMockStore))
+    print("query_derivation is not guaranteed, so it is on MockRemoteStore only:",
           hasattr(remote, "query_derivation"), "/", hasattr(local, "query_derivation"))
 
     print("\n=== free functions (C++ virtual dispatch through a wrapper) ===")
@@ -133,8 +133,8 @@ async def main() -> None:
     print("describe(remote):", await describe(remote))
 
     print("\n=== policy enforcement ===")
-    print("AsyncLocalStore exposes query_derivation:", hasattr(local, "query_derivation"),
-          "<- False: pool wrapper may not return the affine Derivation")
+    print("AsyncMockLocalStore exposes query_derivation:", hasattr(local, "query_derivation"),
+          "<- False: pool wrapper may not return the affine MockDerivation")
 
     print("\n=== C++ exception surfaces as InternalError with cause chain ===")
     try:
@@ -151,10 +151,10 @@ async def main() -> None:
         # Deliberately wrong, and a typechecker says so - which is the
         # point being demonstrated. The ignore is what makes the demo
         # runnable AND checkable.
-        AsyncRemoteStore("unexpected-arg")  # type: ignore[call-arg]
+        AsyncMockRemoteStore("unexpected-arg")  # type: ignore[call-arg]
         print("should not happen")
     except TypeError as e:
-        print(f"AsyncRemoteStore('unexpected-arg') -> TypeError: {e}")
+        print(f"AsyncMockRemoteStore('unexpected-arg') -> TypeError: {e}")
     try:
         AsyncEvalState()  # type: ignore[call-arg]
         print("should not happen")

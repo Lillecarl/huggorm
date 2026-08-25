@@ -13,8 +13,8 @@ import anyio
 import pytest
 
 import cythonix_bindings
-from cythonix_bindings import DerivedPath
-from cythonix_generated import RPC_CLASSES, RPCDerivation
+from cythonix_bindings import MockDerivedPath
+from cythonix_generated import RPC_CLASSES, RPCMockDerivation
 from cythonix_generated._runtime import InternalError
 
 
@@ -29,7 +29,7 @@ async def typed_failure(coro: Any) -> dict[str, str]:
 # -- values and proxies ----------------------------------------------------
 
 async def test_acquire_returns_a_handle(client: Any) -> None:
-    store = await client.acquire("LocalStore")
+    store = await client.acquire("MockLocalStore")
     assert store.handle_id
     await store.aclose()
     # aclose is the shared way to let an object go: locally it shuts the
@@ -39,10 +39,10 @@ async def test_acquire_returns_a_handle(client: Any) -> None:
 
 
 async def test_wire_value_arrives_as_a_local_object(client: Any) -> None:
-    store = await client.acquire("LocalStore")
+    store = await client.acquire("MockLocalStore")
     with anyio.fail_after(10):
         p = await store.add_text_to_store("hello.txt", "world")
-    assert type(p).__module__ == "cythonix_bindings.store", type(p).__name__
+    assert type(p).__module__ == "cythonix_bindings.mock_store", type(p).__name__
     assert p.to_string().endswith("hello.txt")
     with anyio.fail_after(10):
         assert await store.is_valid_path(p) is True
@@ -50,19 +50,19 @@ async def test_wire_value_arrives_as_a_local_object(client: Any) -> None:
 
 
 async def test_a_value_argument_crosses_as_a_copy(client: Any) -> None:
-    store = await client.acquire("LocalStore")
+    store = await client.acquire("MockLocalStore")
     drv_path = await store.add_text_to_store("mysite.drv", "DrvMine")
-    built = await store.build_derivation(DerivedPath(drv_path, "out"))
+    built = await store.build_derivation(MockDerivedPath(drv_path, "out"))
     assert built.to_string().endswith("-out")
     assert await store.is_valid_path(built)
     await store.aclose()
 
 
 async def test_a_proxy_stays_remote(client: Any) -> None:
-    rstore = await client.acquire("RemoteStore")
+    rstore = await client.acquire("MockRemoteStore")
     drv = await rstore.query_derivation(
         await rstore.add_text_to_store("demo.drv", "DrvDemo"))
-    assert isinstance(drv, RPCDerivation)
+    assert isinstance(drv, RPCMockDerivation)
     assert drv._wire == "proxy"
     # The generated class carries real methods, so a missing one is a
     # plain AttributeError from Python - not a manifest lookup that
@@ -79,7 +79,7 @@ async def test_a_proxy_stays_remote(client: Any) -> None:
 async def test_backfilled_any_params_call_over_the_wire(client: Any) -> None:
     """set_env used to ship 'Any' params - alive locally, uncallable
     over the wire. The env-count delta proves the call landed."""
-    rstore = await client.acquire("RemoteStore")
+    rstore = await client.acquire("MockRemoteStore")
     drv = await rstore.query_derivation(
         await rstore.add_text_to_store("env.drv", "DrvEnv"))
 
@@ -116,7 +116,7 @@ async def test_a_decoded_cause_survives_the_wire(client: Any) -> None:
     """A C++ failure crosses as a rebuilt InternalError whose cause
     survives: __cause__ must be the original ValueError, not None -
     the regression guard for `raise ... from None`."""
-    rstore = await client.acquire("RemoteStore")
+    rstore = await client.acquire("MockRemoteStore")
     bad_path = await rstore.add_text_to_store("plain.txt", "x")
     with pytest.raises(InternalError) as caught:
         await rstore.query_derivation(bad_path)
@@ -126,24 +126,24 @@ async def test_a_decoded_cause_survives_the_wire(client: Any) -> None:
 
 
 async def test_a_released_handle_fails_typed(client: Any) -> None:
-    tmp = await client.acquire("LocalStore")
+    tmp = await client.acquire("MockLocalStore")
     ghost_id = tmp.handle_id
     await client.release(tmp)
-    threw = await typed_failure(client.proxy("LocalStore", ghost_id).get_uri())
+    threw = await typed_failure(client.proxy("MockLocalStore", ghost_id).get_uri())
     assert threw["cause_type"] == "KeyError", threw
 
 
 async def test_an_unknown_handle_fails_typed(client: Any) -> None:
     threw = await typed_failure(
-        client.proxy("LocalStore", "0" * 32).get_uri())
+        client.proxy("MockLocalStore", "0" * 32).get_uri())
     assert threw["cause_type"] == "KeyError", threw
 
 
 # -- the abstract base -----------------------------------------------------
 
 @pytest.mark.parametrize(("kind", "uri"),
-                         [("LocalStore", "local"),
-                          ("RemoteStore", "uds://daemon")])
+                         [("MockLocalStore", "local"),
+                          ("MockRemoteStore", "uds://daemon")])
 async def test_one_service_serves_either_implementation(
         client: Any, kind: str, uri: str) -> None:
     """A handle is a handle: the shared surface resolves through
@@ -152,27 +152,27 @@ async def test_one_service_serves_either_implementation(
     h = await client.acquire(kind)
     assert await h.get_uri() == uri
     path = type(h)._rpc["get_uri"]["rpc"]["path"]
-    assert path == "/nixmock.v1.StoreService/get_uri", path
-    assert isinstance(h, RPC_CLASSES["Store"]), type(h).__name__
+    assert path == "/nixmock.v1.MockStoreService/get_uri", path
+    assert isinstance(h, RPC_CLASSES["MockStore"]), type(h).__name__
     await client.release(h)
 
 
 async def test_an_unguaranteed_method_is_absent(client: Any) -> None:
     """query_derivation is not guaranteed: the pool policy drops it
-    from LocalStore, so it lives on RemoteStore alone. It is simply not
+    from MockLocalStore, so it lives on MockRemoteStore alone. It is simply not
     on the class, so Python raises before any call is made."""
-    pool_store = await client.acquire("LocalStore")
+    pool_store = await client.acquire("MockLocalStore")
     with pytest.raises(AttributeError, match="query_derivation"):
         _ = pool_store.query_derivation
-    assert hasattr(RPC_CLASSES["RemoteStore"], "query_derivation")
+    assert hasattr(RPC_CLASSES["MockRemoteStore"], "query_derivation")
     await client.release(pool_store)
 
 
 async def test_a_wire_value_refuses_remote_construction(client: Any) -> None:
     """There is no handle to construct into. It is built locally and
     passed as an argument."""
-    with pytest.raises(ValueError, match="DerivedPath"):
-        await client.acquire("DerivedPath")
+    with pytest.raises(ValueError, match="MockDerivedPath"):
+        await client.acquire("MockDerivedPath")
 
 
 # -- free functions --------------------------------------------------------
@@ -183,10 +183,10 @@ async def test_a_free_function_crosses(client: Any) -> None:
 
 
 async def test_a_free_function_takes_a_base_handle(client: Any) -> None:
-    """describe takes a Store. It had no RPC surface at all until Store
+    """describe takes a MockStore. It had no RPC surface at all until MockStore
     became a generated base with a wire identity."""
-    store = await client.acquire("LocalStore")
-    rstore = await client.acquire("RemoteStore")
+    store = await client.acquire("MockLocalStore")
+    rstore = await client.acquire("MockRemoteStore")
     assert await client.call_function("describe", store) == "store(local)"
     assert await client.call_function("describe", rstore) == "store(uds://daemon)"
     await store.aclose()
@@ -197,10 +197,10 @@ async def test_an_untouched_affine_handle_resolves_as_an_argument(
         client: Any) -> None:
     """A handle is resolvable from the moment it exists. The server
     resolves it to a wrapper whose affine target may not be built yet;
-    that used to refuse, so passing an untouched RemoteStore anywhere
+    that used to refuse, so passing an untouched MockRemoteStore anywhere
     failed. Every other handle here had been called already, which hid
     it."""
-    untouched = await client.acquire("RemoteStore")
+    untouched = await client.acquire("MockRemoteStore")
     assert await client.call_function("describe", untouched) \
         == "store(uds://daemon)"
     await untouched.aclose()

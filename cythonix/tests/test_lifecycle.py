@@ -50,8 +50,8 @@ async def test_a_handle_is_a_capability(ttl_server: Server) -> None:
     """Anyone holding the id may call. Lifetime is what tokens govern."""
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
-    store = await a.acquire("LocalStore")
-    cross = b.proxy("LocalStore", store.handle_id)
+    store = await a.acquire("MockLocalStore")
+    cross = b.proxy("MockLocalStore", store.handle_id)
     assert await cross.get_uri() == "local"
     a.stop_pinging()
     b.stop_pinging()
@@ -63,9 +63,9 @@ async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     it without the first arranging anything (tasks/031)."""
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
-    shared = await a.acquire("LocalStore")
+    shared = await a.acquire("MockLocalStore")
     hid = shared.handle_id
-    borrowed = b.proxy("LocalStore", hid)
+    borrowed = b.proxy("MockLocalStore", hid)
     assert await borrowed.get_uri() == "local"
 
     # Calling again owes no second release. A lease that counted calls
@@ -77,7 +77,7 @@ async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     assert await borrowed.get_uri() == "local", "outlives its acquirer"
 
     await b.release(borrowed)
-    gone = await wrapper_error(b.proxy("LocalStore", hid).get_uri())
+    gone = await wrapper_error(b.proxy("MockLocalStore", hid).get_uri())
     assert gone["cause_type"] == "KeyError", gone
     a.stop_pinging()
     b.stop_pinging()
@@ -88,10 +88,10 @@ async def test_double_release_fails_typed(ttl_server: Server) -> None:
     time. Reusing the spent one sent an empty id, so the old test
     asserted that releasing handle "" fails - which proves nothing."""
     a = await remote.connect(HOST, ttl_server.port)
-    store = await a.acquire("LocalStore")
+    store = await a.acquire("MockLocalStore")
     hid = store.handle_id
     await a.release(store)
-    again = a.proxy("LocalStore", hid)
+    again = a.proxy("MockLocalStore", hid)
     threw = await wrapper_error(a.release(again))
     assert threw["cause_type"] == "ValueError", threw
     assert hid[:8] in threw["cause_message"], threw
@@ -107,11 +107,11 @@ async def test_share_copy_survives_the_granter(ttl_server: Server) -> None:
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
     assert b.token is not None  # connect() binds
-    store = await a.acquire("LocalStore")
+    store = await a.acquire("MockLocalStore")
     hid = store.handle_id
     await a.share(store, b.token, mode="copy")
     await a.release(store)
-    assert await b.proxy("LocalStore", hid).get_uri() == "local"
+    assert await b.proxy("MockLocalStore", hid).get_uri() == "local"
     a.stop_pinging()
     b.stop_pinging()
 
@@ -120,12 +120,12 @@ async def test_share_transfer_moves_ownership(ttl_server: Server) -> None:
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
     assert b.token is not None
-    store = await a.acquire("LocalStore")
+    store = await a.acquire("MockLocalStore")
     hid = store.handle_id
     await a.share(store, b.token, mode="transfer")
     threw = await wrapper_error(a.release(store))
     assert threw["cause_type"] == "ValueError", threw
-    assert await b.proxy("LocalStore", hid).get_uri() == "local"
+    assert await b.proxy("MockLocalStore", hid).get_uri() == "local"
     a.stop_pinging()
     b.stop_pinging()
 
@@ -136,7 +136,7 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
     """A child pins the producer that made it, and dropping the child
     frees both."""
     a = await remote.connect(HOST, ttl_server.port)
-    rstore = await a.acquire("RemoteStore")
+    rstore = await a.acquire("MockRemoteStore")
     drv = await rstore.query_derivation(
         await rstore.add_text_to_store("life.drv", "DrvLife"))
     assert "seen 1x" in await drv.describe()
@@ -146,7 +146,7 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
 
     hid_drv = drv.handle_id
     await a.release(drv)
-    gone = await wrapper_error(a.proxy("Derivation", hid_drv).describe())
+    gone = await wrapper_error(a.proxy("MockDerivation", hid_drv).describe())
     assert gone["cause_type"] == "KeyError", gone
     a.stop_pinging()
 
@@ -202,13 +202,13 @@ async def swept(ttl_server: Server) -> Any:
 
     # 3. a connection abandoned WITHOUT detaching: its handles go.
     d = await remote.connect(HOST, ttl_server.port)
-    doomed = await d.acquire("LocalStore")
+    doomed = await d.acquire("MockLocalStore")
     doomed_id = doomed.handle_id
     d.stop_pinging()
 
     # 4. the control: a client that keeps pinging is immune.
     live = await remote.connect(HOST, ttl_server.port)
-    alive = await live.acquire("LocalStore")
+    alive = await live.acquire("MockLocalStore")
 
     # connect() binds, so both tokens exist from that call onward.
     assert a.token is not None and maker.token is not None
@@ -225,7 +225,7 @@ async def test_pinging_client_survives_the_sweeper(swept: Swept) -> None:
 
 async def test_abandoned_handles_are_reaped(swept: Swept) -> None:
     c = await remote.connect(HOST, swept.port)
-    gone = await wrapper_error(c.proxy("LocalStore", swept.doomed_id).get_uri())
+    gone = await wrapper_error(c.proxy("MockLocalStore", swept.doomed_id).get_uri())
     assert gone["cause_type"] == "KeyError", gone
     c.stop_pinging()
 

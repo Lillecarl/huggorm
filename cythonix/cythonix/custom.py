@@ -1,42 +1,42 @@
 # This file demonstrates the key learning goal:
 # Python subclasses of Cython-bound C++ classes.
 #
-# Two patterns, now on the Store hierarchy:
-# 1. Subclassing concrete LocalStore — Python-only override (no C++
-#    trampoline). `class LoudLocal(LocalStore): def get_uri():` works in
+# Two patterns, now on the MockStore hierarchy:
+# 1. Subclassing concrete MockLocalStore — Python-only override (no C++
+#    trampoline). `class LoudLocal(MockLocalStore): def get_uri():` works in
 #    Python but C++ describe() still sees "local". Good for pure-Python
 #    extensions.
-# 2. Subclassing abstract Store — trampoline (PyStore) makes Python
-#    overrides visible to C++. `class MyCache(Store):` + describe(cache)
+# 2. Subclassing abstract MockStore — trampoline (PyStore) makes Python
+#    overrides visible to C++. `class MyCache(MockStore):` + describe(cache)
 #    goes through C++ virtual dispatch and sees the Python get_uri.
 
 from cythonix_bindings import (
-    DerivedPath,
-    LocalStore,
+    MockDerivedPath,
+    MockLocalStore,
+    MockRemoteStore,
+    MockStore,
     MockStorePath,
-    RemoteStore,
-    Store,
     describe,
 )
 
 
-class LoudLocal(LocalStore):
+class LoudLocal(MockLocalStore):
     """A Python subclass that overrides get_uri()."""
 
     def get_uri(self) -> str:
         return "local-loud"
 
 
-class MyCache(Store):
-    """Trampoline demo: Python subclass of abstract Store is visible to C++."""
+class MyCache(MockStore):
+    """Trampoline demo: Python subclass of abstract MockStore is visible to C++."""
 
     def get_uri(self) -> str:
         return "https://my-cache.example.com"
 
 
 def demo() -> None:
-    local = LocalStore()
-    remote = RemoteStore()
+    local = MockLocalStore()
+    remote = MockRemoteStore()
     loud = LoudLocal()
     cache = MyCache()
 
@@ -44,15 +44,15 @@ def demo() -> None:
     print(f"remote:  uri={remote.get_uri()}")
     print(f"loud:    uri={loud.get_uri()}")
 
-    print("\n--- Trampoline: Store subclass visible to C++ ---")
+    print("\n--- Trampoline: MockStore subclass visible to C++ ---")
     # C++-level via describe() - goes through C++ virtual dispatch + PyStore
     print(f"MyCache C++ describe: {describe(cache)}")
     print(f"local C++ describe:   {describe(local)}")
 
-    print("\n--- Limitation demo: LocalStore subclass NOT visible to C++ ---")
+    print("\n--- Limitation demo: MockLocalStore subclass NOT visible to C++ ---")
     print(f"LoudLocal Python get_uri: {loud.get_uri()}")
     print(f"LoudLocal C++ describe:   {describe(loud)}  # still 'local', not 'local-loud'")
-    print("-> leaves have no trampoline; override is Python-only. Store has one.")
+    print("-> leaves have no trampoline; override is Python-only. MockStore has one.")
 
     print("\n--- Value types come from stores, not constructors ---")
     p = local.add_text_to_store("greeting.txt", "hi")
@@ -60,7 +60,7 @@ def demo() -> None:
     drv_path = local.add_text_to_store("demo.drv", "DrvDemo")
     drv = local.query_derivation(drv_path)
     print(drv.describe())
-    req = DerivedPath(drv_path, "out")
+    req = MockDerivedPath(drv_path, "out")
     print(f"request: {req.describe()}")
     out = local.build_derivation(req)
     print(f"built output: {out.to_string()} valid={local.is_valid_path(out)}")
@@ -73,7 +73,7 @@ def demo() -> None:
     print(f"request copy:    distinct={req2 is not req}, equal={req2.describe() == req.describe()}")
 
     try:
-        Store()
+        MockStore()
     except TypeError as e:
         print(f"\nStore() correctly raises: {e}")
     try:

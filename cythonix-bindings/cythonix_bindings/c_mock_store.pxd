@@ -19,34 +19,34 @@ cdef extern from "fake_library/store.hpp" nogil:
         string hash() const
         string name() const
 
-    cdef cppclass CDerivation "fake_library::Derivation":
-        CDerivation()
-        CDerivation(string name)
-        CDerivation(const CDerivation & other)
+    cdef cppclass CMockDerivation "fake_library::Derivation":
+        CMockDerivation()
+        CMockDerivation(string name)
+        CMockDerivation(const CMockDerivation & other)
         void set_env(string key, string value)
         string describe()
         int queries() const
 
-    cdef cppclass CDerivedPath "fake_library::DerivedPath":
-        CDerivedPath(CMockStorePath path)
-        CDerivedPath(CMockStorePath drv_path, string output)
-        CDerivedPath(const CDerivedPath & other)
+    cdef cppclass CMockDerivedPath "fake_library::DerivedPath":
+        CMockDerivedPath(CMockStorePath path)
+        CMockDerivedPath(CMockStorePath drv_path, string output)
+        CMockDerivedPath(const CMockDerivedPath & other)
         string describe() const
         bint is_built() const
         const CMockStorePath& path() const
         const string& output_name() const
 
-    cdef cppclass CStore "fake_library::Store":
+    cdef cppclass CMockStore "fake_library::Store":
         string get_uri() const
         bint is_valid_path(const CMockStorePath & path) const
         CMockStorePath add_text_to_store(string name, string contents) except + nogil
-        CMockStorePath build_derivation(const CDerivedPath & request) except + nogil
-        CDerivation query_derivation(const CMockStorePath & drv_path) except + nogil
+        CMockStorePath build_derivation(const CMockDerivedPath & request) except + nogil
+        CMockDerivation query_derivation(const CMockStorePath & drv_path) except + nogil
 
-    cdef cppclass CLocalStore "fake_library::LocalStore" (CStore):
+    cdef cppclass CMockLocalStore "fake_library::LocalStore" (CMockStore):
         pass
 
-    cdef cppclass CRemoteStore "fake_library::RemoteStore" (CStore):
+    cdef cppclass CMockRemoteStore "fake_library::RemoteStore" (CMockStore):
         pass
 
-    string describe_store "fake_library::describe_store" (const CStore & store)
+    string describe_store "fake_library::describe_store" (const CMockStore & store)

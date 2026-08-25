@@ -640,8 +640,8 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
     mod.body.append(ast.Expr(value=ast.Constant(value=(
         "Generated protocols: the surface both implementations share - do "
         "not edit. One per wrapped class, mirroring the wrapper hierarchy, "
-        "so a function typed against StoreLike accepts an in-process "
-        "AsyncLocalStore and a remote RPCLocalStore alike."))))
+        "so a function typed against MockStoreLike accepts an in-process "
+        "AsyncMockLocalStore and a remote RPCMockLocalStore alike."))))
     mod.body.append(_future_annotations())
     mod.body.append(ast.ImportFrom(
         module="typing",

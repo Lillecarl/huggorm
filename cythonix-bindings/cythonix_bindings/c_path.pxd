@@ -2,7 +2,7 @@
 # Declaration of the REAL Nix store API: include/nix/store/path.hh from
 # the nix package's dev output (tasks/015).
 #
-# The mock's c_store.pxd stands beside this one. Both are read by the
+# The mock's c_mock_store.pxd stands beside this one. Both are read by the
 # codegen, one class binds nix::StorePath and another binds
 # fake_library::StorePath, and the two coexist until the mock goes.
 #

@@ -26,8 +26,8 @@ async def call(grpcurl: str, server: Server, symbol: str,
 
 
 @pytest.mark.parametrize("svc", [
-    "Session", "LocalStoreService", "EvalStateService", "ValueService",
-    "DerivationService", "FunctionsService", "StoreService",
+    "Session", "MockLocalStoreService", "EvalStateService", "ValueService",
+    "MockDerivationService", "FunctionsService", "MockStoreService",
 ])
 async def test_reflection_lists_every_service(
         grpcurl: str, server: Server, pkg: str, svc: str) -> None:
@@ -40,7 +40,7 @@ async def test_acquire_is_a_typed_rpc(grpcurl: str, server: Server,
     """Construction lives on the class's own service, so an external
     tool sees the constructor's parameters in reflection instead of a
     free-text class name."""
-    _, out, _ = await call(grpcurl, server, f"{pkg}.LocalStoreService/Acquire",
+    _, out, _ = await call(grpcurl, server, f"{pkg}.MockLocalStoreService/Acquire",
                            "{}")
     assert len(json.loads(out)["id"]) == 32, out[:200]
 
@@ -74,18 +74,18 @@ async def test_one_service_serves_both_implementations(
     """Shared store methods live on StoreService, the one place they
     are declared. An external tool calls a store without knowing which
     implementation is behind the handle."""
-    _, out, _ = await call(grpcurl, server, f"{pkg}.LocalStoreService/Acquire", "{}")
+    _, out, _ = await call(grpcurl, server, f"{pkg}.MockLocalStoreService/Acquire", "{}")
     local = json.loads(out)["id"]
     _, out, _ = await call(
-        grpcurl, server, f"{pkg}.StoreService/add_text_to_store",
+        grpcurl, server, f"{pkg}.MockStoreService/add_text_to_store",
         json.dumps({"self": {"id": local}, "name": "via-grpcurl.txt",
                     "contents": "external tool"}))
     base = json.loads(out)["result"]["base_name"]
     assert base.endswith("via-grpcurl.txt"), base
 
-    _, out, _ = await call(grpcurl, server, f"{pkg}.RemoteStoreService/Acquire", "{}")
+    _, out, _ = await call(grpcurl, server, f"{pkg}.MockRemoteStoreService/Acquire", "{}")
     remote_id = json.loads(out)["id"]
-    _, out, _ = await call(grpcurl, server, f"{pkg}.StoreService/get_uri",
+    _, out, _ = await call(grpcurl, server, f"{pkg}.MockStoreService/get_uri",
                            json.dumps({"self": {"id": remote_id}}))
     assert json.loads(out).get("result") == "uds://daemon", out[:200]
 
