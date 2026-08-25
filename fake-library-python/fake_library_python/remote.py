@@ -56,8 +56,9 @@ class NixClient:
         self._ref_lock = threading.Lock()
 
         def msg(name: str) -> Any:
-            return message_factory.GetMessageClass(
-                self.pool.FindMessageTypeByName(f"{schema.PKG}.{name}"))
+            return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
+                self.pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+                    f"{schema.PKG}.{name}"))
 
         self.msg: Callable[[str], Any] = msg
 

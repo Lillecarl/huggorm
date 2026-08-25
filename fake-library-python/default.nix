@@ -5,6 +5,7 @@
   fake-library-bindings,
   fake-library-generated,
   grpcurl,
+  zuban,
   ...
 }:
 python3Packages.buildPythonPackage {
@@ -34,11 +35,26 @@ python3Packages.buildPythonPackage {
   # grpcurl is the external-tool arm: test_remote drives the same
   # reflection-served schema from outside Python, which is what keeps
   # the emitted descriptors honest.
-  nativeCheckInputs = [ grpcurl ];
+  # zuban is a mypy-compatible checker in Rust. Same flags, same
+  # diagnostics on this codebase, about thirty times faster - which is
+  # what makes it reasonable to run on every build rather than by hand.
+  #
+  # --python-executable, not MYPYPATH: a PEP 561 <pkg>-stubs package is
+  # only found through an interpreter's search path, never through
+  # MYPYPATH. Without it every binding type reads as Any and the check
+  # passes while proving nothing (tasks/027).
+  nativeCheckInputs = [
+    grpcurl
+    zuban
+  ];
 
   checkPhase = ''
     runHook preCheck
     export HOME=$TMPDIR
+    echo "--- typecheck ---"
+    zuban mypy --strict \
+      --python-executable ${python3Packages.python.interpreter} \
+      fake_library_python test_remote.py test_lifecycle.py
     echo "--- test_remote ---"
     ${python3Packages.python.interpreter} test_remote.py
     echo "--- test_lifecycle ---"

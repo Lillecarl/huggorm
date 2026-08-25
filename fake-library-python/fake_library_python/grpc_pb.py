@@ -18,11 +18,14 @@ def _pkg_dir() -> pathlib.Path:
 def load_pool() -> descriptor_pool.DescriptorPool:
     # grpc_schema.pb holds a FileDescriptorSet; unwrap it into its
     # FileDescriptorProtos before adding to the pool.
-    fds = descriptor_pb2.FileDescriptorSet.FromString(
+    # protobuf's shipped stubs do not describe the generated
+    # descriptor module, so these three calls are opaque to a
+    # typechecker. The shapes are fixed by the protobuf spec.
+    fds = descriptor_pb2.FileDescriptorSet.FromString(  # type: ignore[attr-defined]
         (_pkg_dir() / "grpc_schema.pb").read_bytes())
     pool = descriptor_pool.DescriptorPool()
     for file_dp in fds.file:
-        pool.Add(file_dp)
+        pool.Add(file_dp)  # type: ignore[no-untyped-call]
     return pool
 
 

@@ -51,7 +51,10 @@ def _field(msg: Any, name: str, number: int, type_name: str | None = None,
 
 
 def _scalar_const(name: str) -> int:
-    t = descriptor_pb2.FieldDescriptorProto()
+    # protobuf ships no stubs for its own generated descriptor
+    # module, so a typechecker cannot see these names. The shapes are
+    # fixed by the protobuf spec.
+    t = descriptor_pb2.FieldDescriptorProto()  # type: ignore[attr-defined]
     return int(getattr(t, "TYPE_" + name.upper()))
 
 
@@ -362,7 +365,7 @@ def _add_free_service(file_dp: Any, manifest: Proto,
 
 
 def build_fdset(manifest: Proto) -> bytes:
-    fds = descriptor_pb2.FileDescriptorSet()
+    fds = descriptor_pb2.FileDescriptorSet()  # type: ignore[attr-defined]
     f = fds.file.add()
     f.name = FILE
     f.package = PKG

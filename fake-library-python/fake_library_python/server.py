@@ -68,7 +68,7 @@ class Dispatcher:
         asyncio.ensure_future(_close())
 
     def msg(self, name: str) -> Any:
-        return message_factory.GetMessageClass(
+        return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
             self.pool.FindMessageTypeByName(f"{schema.PKG}.{name}"))
 
     # -- handles ---------------------------------------------------------
