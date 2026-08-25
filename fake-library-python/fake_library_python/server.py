@@ -42,7 +42,12 @@ class Dispatcher:
         self._session()
         for group in ("wrappers", "returned_types"):
             for cls_name, proto in manifest[group].items():
-                self._service(cls_name, proto)
+                # An unwrapped class has no service: it crosses as a
+                # value, so the caller already holds the object and
+                # calls it locally. The manifest says so by leaving the
+                # rpc names off.
+                if "service" in proto:
+                    self._service(cls_name, proto)
         self._free_service()
 
     @staticmethod

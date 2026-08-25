@@ -216,6 +216,16 @@ def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
         # adding a wire-value type means editing the pyx and nothing
         # else. Empty for proxies, which travel as handles.
         "wire_fields": [list(f) for f in getattr(cls, "_wire_fields", ())],
+        # Does this class need an async wrapper at all? Only two things
+        # a wrapper buys: a hop onto a home thread, and releasing the
+        # GIL around a call that waits. A pool class whose methods
+        # cannot block gets neither, so it crosses every layer as
+        # itself - no Async form, no RPC form, no await (tasks/025).
+        # Inheritable on purpose, unlike _binds: a subclass of a
+        # non-blocking class is non-blocking until it says otherwise.
+        "blocking": bool(getattr(cls, "_blocking", True)),
+        "wrapped": getattr(cls, "_threading", "affine") == "affine"
+                   or bool(getattr(cls, "_blocking", True)),
         # Private round-trip helpers present on the class. Not part of
         # the surface; the contract check reads them.
         "_helpers": sorted(h for h in ("_parts", "_from_parts") if hasattr(cls, h)),
@@ -367,6 +377,36 @@ def check_wire_contract(protos: list[dict]) -> list[str]:
         for helper in ("_parts", "_from_parts"):
             if helper not in proto["_helpers"]:
                 bad.append(f"{name}: wire-value needs a {helper} round-trip helper")
+    return bad
+
+
+def check_wrap_contract(protos: list[dict]) -> list[str]:
+    """An unwrapped class must be self-contained.
+
+    Not wrapping a class means callers touch the sync binding object
+    directly. Two things then have to hold. It may not be affine -
+    there would be no thread to hop to - which the wrapped rule already
+    guarantees. And it may not hand back an object that IS wrapped: the
+    caller would receive a bare sync instance of a type that needs a
+    runner, with no runner attached and no await to get one.
+
+    Returns a list of complaints; empty means the contract holds."""
+    wrapped = {p["name"] for p in protos if p["wrapped"]}
+    bad = []
+    for proto in protos:
+        if proto["wrapped"]:
+            continue
+        if proto["threading"] != "pool":
+            bad.append(
+                f"{proto['name']}: an unwrapped class must be threading "
+                f"'pool', not {proto['threading']!r}")
+        for m in proto["methods"]:
+            if m["return_type"] in wrapped:
+                bad.append(
+                    f"{proto['name']}.{m['name']} returns {m['return_type']}, "
+                    f"which needs a wrapper. An unwrapped class cannot "
+                    f"attach one; declare _blocking on one side or the "
+                    f"other so the two agree.")
     return bad
 
 

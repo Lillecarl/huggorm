@@ -4,11 +4,11 @@
 
 import asyncio
 
+from fake_library import DerivedPath
 from fake_library_generated import (
     AsyncLocalStore,
     AsyncRemoteStore,
     AsyncStore,
-    AsyncDerivedPath,
     AsyncEvalState,
 )
 from fake_library_generated._runtime import InternalError
@@ -20,7 +20,10 @@ async def main():
 
     print("=== sequential awaits ===")
     p = await local.add_text_to_store("hello.txt", "world")
-    print(await p.to_string(), "valid:", await local.is_valid_path(p))
+    # StorePath is pool and non-blocking, so the codegen wraps nothing:
+    # the awaited store call hands back the binding object itself and
+    # reading it is a plain call.
+    print(p.to_string(), "valid:", await local.is_valid_path(p))
 
     print("\n=== GIL released during slow store ops ===")
     t0 = asyncio.get_running_loop().time()
@@ -50,7 +53,7 @@ async def main():
         if isinstance(r, str) or isinstance(r, bool):
             printed.append(r)
         else:
-            printed.append(await r.to_string())
+            printed.append(r.to_string())
     print(f"results: {printed}")
     print(f"workers seen: {sorted(local._runner.workers_seen)}")
 
@@ -62,8 +65,8 @@ async def main():
     print(f"drv workers: {sorted(drv._runner.workers_seen)} (store's: {sorted(remote._runner.workers_seen)})")
     print(f"queries: {await drv.queries()}")
 
-    out = await local.build_derivation(AsyncDerivedPath(drv_path, "out"))
-    print(f"built: {await out.to_string()} valid: {await local.is_valid_path(out)}")
+    out = await local.build_derivation(DerivedPath(drv_path, "out"))
+    print(f"built: {out.to_string()} valid: {await local.is_valid_path(out)}")
 
     print("\n=== evaluation (EvalState, affine service) ===")
     state = AsyncEvalState("local")
@@ -115,7 +118,7 @@ async def main():
         # Typed against the base. Everything it calls is guaranteed by
         # every implementation, so it never asks which one it holds.
         path = await store.add_text_to_store("shared.txt", "either store")
-        return f"{await store.get_uri()}: {await path.to_string()}"
+        return f"{await store.get_uri()}: {path.to_string()}"
 
     print(await report(local))
     print(await report(remote))

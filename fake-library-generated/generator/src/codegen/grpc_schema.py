@@ -112,9 +112,15 @@ def annotate(manifest: dict) -> dict:
     manifest["package"] = PKG
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
-            proto["service"] = service_name(cls_name)
             if proto["wire"] == "value":
                 proto["message"] = value_msg_name(cls_name)
+            # An unwrapped class has no remote surface: it crosses as a
+            # value, so a caller already holds the object and calls it
+            # directly. Giving it a service would publish rpcs that
+            # nobody can reach a handle for.
+            if not proto["wrapped"]:
+                continue
+            proto["service"] = service_name(cls_name)
             if group == "wrappers":
                 proto["acquire"] = {
                     "path": method_path(cls_name, ACQUIRE),
@@ -334,6 +340,7 @@ def build_fdset(manifest: dict) -> bytes:
     # operations run wherever the producing wrapper put them.
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
-            _add_service(f, cls_name, proto, kinds)
+            if proto["wrapped"]:
+                _add_service(f, cls_name, proto, kinds)
     _add_free_service(f, manifest, kinds)
     return fds.SerializeToString()

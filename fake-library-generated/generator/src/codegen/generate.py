@@ -23,6 +23,7 @@ from codegen.model import (
     binding_map,
     check_binding_map,
     check_wire_contract,
+    check_wrap_contract,
     extract_free_function,
     extract_wrapper,
     returned_types_from_api,
@@ -185,9 +186,27 @@ def main(argv=None):
     returned_protos = [
         extract_wrapper(kls, api=api, mapping=mapping) for kls in returned_classes
     ]
-    returned_policies = {p["name"]: p["threading"] for p in returned_protos}
     protos = [extract_wrapper(svc, api=api, mapping=mapping, constructible=True)
               for svc in wrapper_classes]
+
+    # Which classes get an async wrapper at all. A pool class whose
+    # methods cannot block gets nothing from one, so it crosses every
+    # layer as the sync binding object itself (tasks/025).
+    complaints = check_wrap_contract(protos + returned_protos)
+    if complaints:
+        for c in complaints:
+            print(f"wrap contract: {c}", file=sys.stderr)
+        sys.exit(1)
+    unwrapped = sorted(p["name"] for p in protos + returned_protos
+                       if not p["wrapped"])
+    if unwrapped:
+        print(f"not wrapped (pool and non-blocking, so nothing to wrap): "
+              f"{', '.join(unwrapped)}")
+
+    # Only a WRAPPED returned type gets adopted into a runner; an
+    # unwrapped one is handed back exactly as the binding produced it.
+    returned_policies = {p["name"]: p["threading"] for p in returned_protos
+                         if p["wrapped"]}
 
     # policy enforcement: a pool wrapper may not return affine types at
     # all - drop them from the surface entirely.
@@ -227,15 +246,19 @@ def main(argv=None):
     # Every name that gets an Async wrapper. Parameters typed with one of
     # these accept the wrapper as well as the sync binding object, and
     # the emitter widens their annotations accordingly.
-    async_types = {p["name"] for p in returned_protos} | {p["name"] for p in protos}
+    async_types = {p["name"] for p in returned_protos + protos if p["wrapped"]}
 
     for proto in returned_protos:
+        if not proto["wrapped"]:
+            continue
         fname = f"async_{proto['name'].lower()}.py"
         code = ast.unparse(returned_module(proto, async_types))
         (out / fname).write_text(code + "\n")
         print(f"generated {fname} for returned type {proto['name']} ({proto['threading']})")
 
     for proto in protos:
+        if not proto["wrapped"]:
+            continue
         fname = f"async_{proto['name'].lower()}.py"
         code = ast.unparse(wrapper_module(proto, returned_policies, async_types))
         (out / fname).write_text(code + "\n")
@@ -250,7 +273,7 @@ def main(argv=None):
         print(f"generated {FREE_MODULE}.py for {len(free_protos)} free "
               f"function(s): {', '.join(free_names)}")
 
-    all_names = [p["name"] for p in returned_protos] + [p["name"] for p in protos]
+    all_names = [p["name"] for p in returned_protos + protos if p["wrapped"]]
     (out / "__init__.py").write_text(
         ast.unparse(init_module(all_names, free_names)) + "\n")
 

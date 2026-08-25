@@ -48,12 +48,11 @@ def test_runtime_contract(out: pathlib.Path):
 
 
 async def test_behavior():
+    from fake_library import DerivedPath, StorePath
     from fake_library_generated import (
         AsyncLocalStore,
         AsyncRemoteStore,
-        AsyncStorePath,
         AsyncDerivation,
-        AsyncDerivedPath,
         AsyncEvalState,
         AsyncValue,
     )
@@ -72,7 +71,11 @@ async def test_behavior():
     )
     elapsed = asyncio.get_running_loop().time() - t0
     assert elapsed < 0.18, f"expected overlapped adds, took {elapsed:.2f}s"
-    assert len({await p1.to_string(), await p2.to_string()}) == 2
+    # StorePath is pool AND non-blocking, so it has no wrapper: an
+    # awaited store method hands back the binding object itself, and
+    # reading it is a plain call (tasks/025).
+    assert type(p1) is StorePath
+    assert len({p1.to_string(), p2.to_string()}) == 2
     assert await local.is_valid_path(p1) is True
 
     # Lazy construction must run the factory EXACTLY ONCE, even when
@@ -153,9 +156,17 @@ async def test_behavior():
     # to what can still go wrong: a parameter the emitter forgot to
     # unwrap, or a signature that drifted from the manifest.
     checked_ctors = 0
-    abstract = []
+    abstract, not_wrapped = [], []
     for cls_name, proto in manifest["wrappers"].items():
         py = pkg_dir / f"async_{cls_name.lower()}.py"
+        if not proto["wrapped"]:
+            # No wrapper was emitted, so there is no emitted __init__
+            # to check. What must hold instead is that nothing was
+            # emitted at all.
+            assert not py.exists(), (
+                f"{cls_name} is not wrapped, yet {py.name} exists")
+            not_wrapped.append(cls_name)
+            continue
         tree = ast.parse(py.read_text(), filename=str(py.name))
         init = next(
             n for n in ast.walk(tree)
@@ -194,20 +205,21 @@ async def test_behavior():
             f"manifest declares {n_optional} optional parameter(s)"
         )
         checked_ctors += 1
-    assert checked_ctors == len(manifest["wrappers"]) - len(abstract), (
-        f"checked {checked_ctors} wrapper ctors, expected "
-        f"{len(manifest['wrappers']) - len(abstract)} "
-        f"(abstract, so skipped: {abstract})"
+    expected = len(manifest["wrappers"]) - len(abstract) - len(not_wrapped)
+    assert checked_ctors == expected, (
+        f"checked {checked_ctors} wrapper ctors, expected {expected} "
+        f"(abstract, so skipped: {abstract}; unwrapped: {not_wrapped})"
     )
     assert abstract, "expected at least one abstract base in the surface"
+    assert not_wrapped, "expected at least one unwrapped class in the surface"
 
     # Opaque and built derived paths.
-    req = AsyncDerivedPath(p1)
+    req = DerivedPath(p1)
     out_opaque = await local.build_derivation(req)
-    assert await out_opaque.to_string() == await p1.to_string()
-    drv_req = AsyncDerivedPath(p2, "out")
+    assert out_opaque.to_string() == p1.to_string()
+    drv_req = DerivedPath(p2, "out")
     out_built = await local.build_derivation(drv_req)
-    assert (await out_built.name_part()).endswith("-out")
+    assert out_built.name_part().endswith("-out")
     assert await local.is_valid_path(out_built) is True
 
     # Affine store: everything pinned to one dedicated thread, including
@@ -231,9 +243,9 @@ async def test_behavior():
 
     # Returned pool values are free to use any thread.
     spool = await local.add_text_to_store("x", "y")
-    assert isinstance(spool, AsyncStorePath)
+    assert isinstance(spool, StorePath)
     assert isinstance(drv, AsyncDerivation)
-    assert isinstance(drv_req, AsyncDerivedPath)
+    assert isinstance(drv_req, DerivedPath)
 
     # Policy enforcement: the pool LocalStore may not expose an
     # affine-returning method, so the generator dropped it.
@@ -258,6 +270,29 @@ async def test_behavior():
     assert manifest["wrappers"]["DerivedPath"]["wire"] == "value"
     assert manifest["wrappers"]["EvalState"]["wire"] == "proxy"
     assert local._wire == "proxy" and spool._wire == "value"
+
+    # Wrapping is a SEPARATE axis from wire policy, and the rule is:
+    # wrap when the object needs a home thread (affine) or its methods
+    # can block. StorePath and DerivedPath are pool and declare
+    # _blocking = False, so they cross every layer as themselves -
+    # no await in front of a substring read (tasks/025).
+    import fake_library_generated as flg_names
+    for group, name in (("returned_types", "StorePath"),
+                        ("wrappers", "DerivedPath")):
+        proto = manifest[group][name]
+        assert proto["blocking"] is False and proto["wrapped"] is False, proto
+        assert not hasattr(flg_names, f"Async{name}"), (
+            f"Async{name} must not be generated")
+        # ...and nothing remote either: with no handle to address, an
+        # rpc on it could never be called.
+        assert "service" not in proto and "acquire" not in proto, proto
+        assert all("rpc" not in m for m in proto["methods"]), proto["methods"]
+        # It still has a wire message: it crosses as a value.
+        assert proto["message"], proto
+    # The control: an affine class and a blocking pool class both stay
+    # wrapped, so the rule is doing work rather than switching nothing.
+    assert manifest["returned_types"]["Value"]["wrapped"] is True
+    assert manifest["wrappers"]["LocalStore"]["wrapped"] is True
 
     # C++ exceptions surface as InternalError with the cause attached.
     try:
@@ -431,7 +466,7 @@ async def test_behavior():
         raise AssertionError("missing required store_uri must fail")
     except TypeError:
         pass
-    assert await AsyncDerivedPath(p1).describe() == f"opaque {await p1.to_string()}"
+    assert DerivedPath(p1).describe() == f"opaque {p1.to_string()}"
 
     await drv.aclose()
     await remote.aclose()

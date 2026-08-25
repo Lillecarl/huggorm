@@ -23,6 +23,12 @@
 #   thread (the returned-value attachment rule makes this enforceable).
 # `_abstract = True` marks Store as a generated BASE: wrapped and
 # wire-addressable, but never constructed.
+#
+# `_blocking = False` says the opposite thing about a class: none of its
+# methods can wait, so an async wrapper would buy nothing and cost a
+# thread hop in front of a substring read. Such a class crosses every
+# layer as itself. The rule the codegen applies is: emit a wrapper when
+# the object needs a home thread (affine) OR its methods can block.
 
 from libcpp.string cimport string
 from cython.operator cimport dereference as deref
@@ -179,6 +185,12 @@ cdef class StorePath:
     # wrapper boundaries as a copy.
     _wire = "value"
     _binds = "CStorePath"
+    # Nothing here allocates, does IO or waits: every accessor reads a
+    # substring of the one string this object holds. So there is no
+    # thread to hop to and no GIL to release, and the codegen emits no
+    # async wrapper - a StorePath is handed back as itself, on both
+    # sides of the wire (tasks/025).
+    _blocking = False
     # Serialization contract for every wire-value type, read by the
     # codegen. The field list IS the proto message shape; a field type
     # naming another wire-value nests that type's message. _parts()
@@ -261,6 +273,9 @@ cdef class DerivedPath:
     # Immutable build request: wire-value.
     _wire = "value"
     _binds = "CDerivedPath"
+    # Same as StorePath: a self-contained request object whose only
+    # method formats its own fields. No wrapper.
+    _blocking = False
     # A wire-value field may name another wire-value type: the emitted
     # message nests StorePathMsg and the codec recurses into it.
     # A trailing "?" marks an optional field: proto3 cannot tell an
