@@ -10,13 +10,14 @@ Every step calls audit(). That method held the one invariant the whole
 model rests on and nothing called it, so a lease created or destroyed
 by accident stayed invisible until a handle leaked much later.
 
-Run:  nix run --file . ourPython -- test_handles.py
+Run:  nix develop --file . shell --command pytest cythonix/tests
 """
 
 from typing import Any
 
+import pytest
+
 from cythonix.lifecycle import ANON, HandleTable
-from test_remote import check
 
 
 class Obj:
@@ -38,17 +39,17 @@ def test_identity_mapping() -> None:
     h1 = t.put(obj, a)
     h2 = t.put(obj, a)
     t.audit()
-    check("same object, same connection: one handle", h1 == h2, h1[:8])
-    check("second put adds a lease", t.entries[h1].leases == 2)
-    check("one entry, not two", len(t.entries) == 1, len(t.entries))
+    assert h1 == h2, f"same object, same connection: one handle :: {h1[:8]}"
+    assert t.entries[h1].leases == 2, "second put adds a lease"
+    assert len(t.entries) == 1, f"one entry, not two :: {len(t.entries)}"
 
     # Releasing once must NOT drop it: the second put took a lease.
     t.release(a, h1)
     t.audit()
-    check("one release leaves the object alive", h1 in t.entries)
+    assert h1 in t.entries, "one release leaves the object alive"
     t.release(a, h1)
     t.audit()
-    check("the matching release drops it", h1 not in t.entries)
+    assert h1 not in t.entries, "the matching release drops it"
 
 
 def test_distinct_objects_get_distinct_handles() -> None:
@@ -57,7 +58,7 @@ def test_distinct_objects_get_distinct_handles() -> None:
     h1 = t.put(Obj("one"), a)
     h2 = t.put(Obj("two"), a)
     t.audit()
-    check("distinct objects: distinct handles", h1 != h2)
+    assert h1 != h2, "distinct objects: distinct handles"
 
 
 def test_identity_is_per_connection() -> None:
@@ -67,13 +68,13 @@ def test_identity_is_per_connection() -> None:
     ha = t.put(obj, a)
     hb = t.put(obj, b)
     t.audit()
-    check("two connections get two handles for one object", ha != hb)
-    check("both handles resolve to the same object",
-          t.get(ha) is t.get(hb) is obj)
+    assert ha != hb, "two connections get two handles for one object"
+    assert t.get(ha) is t.get(hb) is obj, "both handles resolve to the same object"
     t.release(a, ha)
     t.audit()
-    check("one connection releasing does not drop the other's handle",
-          ha not in t.entries and hb in t.entries)
+    assert (
+        ha not in t.entries and hb in t.entries
+    ), "one connection releasing does not drop the other's handle"
 
 
 def test_index_does_not_outlive_the_entry() -> None:
@@ -86,11 +87,11 @@ def test_index_does_not_outlive_the_entry() -> None:
     h1 = t.put(obj, a)
     t.release(a, h1)
     t.audit()
-    check("dropped entry clears the object index", not t._by_obj.get(a))
+    assert not t._by_obj.get(a), "dropped entry clears the object index"
     h2 = t.put(obj, a)
     t.audit()
-    check("the same object after a drop gets a fresh handle", h2 != h1)
-    check("and it works", t.get(h2) is obj)
+    assert h2 != h1, "the same object after a drop gets a fresh handle"
+    assert t.get(h2) is obj, "and it works"
 
 
 def test_dead_connection_clears_its_index() -> None:
@@ -103,11 +104,10 @@ def test_dead_connection_clears_its_index() -> None:
     t.connections[a].last_seen -= 10.0
     dropped = t.sweep()
     t.audit()
-    check("the silent connection's handle drops", ha in dropped, dropped)
-    check("the live connection keeps its own", hb in t.entries)
-    check("the dead connection's index bucket is gone", a not in t._by_obj)
-    check("the survivor's entry forgot the dead token",
-          a not in t.entries[hb].tokens)
+    assert ha in dropped, f"the silent connection's handle drops :: {dropped}"
+    assert hb in t.entries, "the live connection keeps its own"
+    assert a not in t._by_obj, "the dead connection's index bucket is gone"
+    assert a not in t.entries[hb].tokens, "the survivor's entry forgot the dead token"
 
 
 def test_share_indexes_the_target() -> None:
@@ -121,10 +121,10 @@ def test_share_indexes_the_target() -> None:
     t.audit()
     hb = t.put(obj, b)
     t.audit()
-    check("put after share reuses the shared handle", hb == ha)
-    check("and it took a lease rather than a second handle",
-          len(t.entries) == 1 and t.entries[ha].leases == 3,
-          t.entries[ha].leases)
+    assert hb == ha, "put after share reuses the shared handle"
+    assert (
+        len(t.entries) == 1 and t.entries[ha].leases == 3
+    ), f"and it took a lease rather than a second handle :: {t.entries[ha].leases}"
 
 
 def test_transfer_leaves_the_source_indexed() -> None:
@@ -137,11 +137,11 @@ def test_transfer_leaves_the_source_indexed() -> None:
     ha = t.put(obj, a)
     t.share(a, b, ha, "transfer")
     t.audit()
-    check("transfer left the source holding nothing", ha not in t.connections[a].leases)
+    assert ha not in t.connections[a].leases, "transfer left the source holding nothing"
     again = t.put(obj, a)
     t.audit()
-    check("the source can take a new lease on the same handle", again == ha)
-    check("and the entry counts both holders", t.entries[ha].leases == 2)
+    assert again == ha, "the source can take a new lease on the same handle"
+    assert t.entries[ha].leases == 2, "and the entry counts both holders"
 
 
 def test_escrow_survives_and_re_indexes() -> None:
@@ -149,18 +149,18 @@ def test_escrow_survives_and_re_indexes() -> None:
     a = t.bind()
     obj = Obj("escrowed")
     ha = t.put(obj, a)
-    check("detach moves one lease", t.detach(a, ha) == 1)
+    assert t.detach(a, ha) == 1, "detach moves one lease"
     t.audit()
     t.connections[a].last_seen -= 10.0
     t.sweep()
     t.audit()
-    check("escrow keeps the object alive with no owner", ha in t.entries)
+    assert ha in t.entries, "escrow keeps the object alive with no owner"
     claimed = t.bind(a)
     t.audit()
-    check("bind claims it back", t.connections[claimed].leases.get(ha) == 1)
+    assert t.connections[claimed].leases.get(ha) == 1, "bind claims it back"
     same = t.put(obj, claimed)
     t.audit()
-    check("a claimed handle is indexed again", same == ha, (same[:8], ha[:8]))
+    assert same == ha, f"a claimed handle is indexed again :: {(same[:8], ha[:8])}"
 
 
 def test_bad_producer_leaves_no_trace() -> None:
@@ -172,19 +172,16 @@ def test_bad_producer_leaves_no_trace() -> None:
     a = t.bind()
     parent = t.put(Obj("store"), a)
     before = len(t.entries)
-    try:
+    with pytest.raises(KeyError):
         t.put(Obj("drv"), a, parents=[parent, "nope"])
-    except KeyError:
-        pass
-    else:
-        raise AssertionError("expected KeyError for an unknown producer")
     t.audit()
-    check("the failed put registered nothing", len(t.entries) == before)
-    check("the real producer kept no dangling child",
-          not t.entries[parent].children, t.entries[parent].children)
+    assert len(t.entries) == before, "the failed put registered nothing"
+    assert (
+        not t.entries[parent].children
+    ), f"the real producer kept no dangling child :: {t.entries[parent].children}"
     t.release(a, parent)
     t.audit()
-    check("so the producer still reaps", parent not in t.entries)
+    assert parent not in t.entries, "so the producer still reaps"
 
 
 def test_producer_pinning_with_a_reused_child() -> None:
@@ -196,16 +193,17 @@ def test_producer_pinning_with_a_reused_child() -> None:
     d1 = t.put(drv_obj, a, parents=[store])
     d2 = t.put(drv_obj, a, parents=[store])
     t.audit()
-    check("the reused child is one handle", d1 == d2)
-    check("the producer counts it once", t.entries[store].children == {d1})
+    assert d1 == d2, "the reused child is one handle"
+    assert t.entries[store].children == {d1}, "the producer counts it once"
     t.release(a, store)
     t.audit()
-    check("the producer stays while its child lives", store in t.entries)
+    assert store in t.entries, "the producer stays while its child lives"
     t.release(a, d1)
     t.release(a, d1)
     t.audit()
-    check("dropping the child cascades to the producer",
-          d1 not in t.entries and store not in t.entries)
+    assert (
+        d1 not in t.entries and store not in t.entries
+    ), "dropping the child cascades to the producer"
 
 
 def test_audit_catches_an_invented_lease() -> None:
@@ -215,12 +213,8 @@ def test_audit_catches_an_invented_lease() -> None:
     a = t.bind()
     h = t.put(Obj("x"), a)
     t.entries[h].leases += 1
-    try:
+    with pytest.raises(AssertionError, match="invariant violated"):
         t.audit()
-    except AssertionError:
-        check("audit catches a lease the holders do not have", True)
-    else:
-        raise AssertionError("audit passed on a broken table")
 
 
 def test_anonymous_holder() -> None:
@@ -229,8 +223,8 @@ def test_anonymous_holder() -> None:
     h1 = t.put(obj, "")
     h2 = t.put(obj, "")
     t.audit()
-    check("the anonymous holder is one connection", h1 == h2)
-    check("and it is keyed by ANON", ANON in t.connections)
+    assert h1 == h2, "the anonymous holder is one connection"
+    assert ANON in t.connections, "and it is keyed by ANON"
 
 
 def test_touch_grants_once() -> None:
@@ -241,21 +235,21 @@ def test_touch_grants_once() -> None:
     obj = Obj("shared out of band")
     ha = t.put(obj, a)
 
-    check("the borrower is granted on first use", t.touch(b, ha) is True)
+    assert t.touch(b, ha) is True, "the borrower is granted on first use"
     t.audit()
-    check("and not on the second", t.touch(b, ha) is False)
-    check("or the tenth", not any(t.touch(b, ha) for _ in range(10)))
+    assert t.touch(b, ha) is False, "and not on the second"
+    assert not any(t.touch(b, ha) for _ in range(10)), "or the tenth"
     t.audit()
-    check("so it owes exactly one release", t.connections[b].leases[ha] == 1)
-    check("the acquirer's own use grants nothing", t.touch(a, ha) is False)
+    assert t.connections[b].leases[ha] == 1, "so it owes exactly one release"
+    assert t.touch(a, ha) is False, "the acquirer's own use grants nothing"
     t.audit()
 
     t.release(a, ha)
     t.audit()
-    check("the object outlives its acquirer", ha in t.entries)
+    assert ha in t.entries, "the object outlives its acquirer"
     t.release(b, ha)
     t.audit()
-    check("and drops when the borrower lets go", ha not in t.entries)
+    assert ha not in t.entries, "and drops when the borrower lets go"
 
 
 def test_touch_refuses_an_unknown_handle() -> None:
@@ -264,14 +258,10 @@ def test_touch_refuses_an_unknown_handle() -> None:
     existed."""
     t = table()
     a = t.bind()
-    try:
+    with pytest.raises(KeyError):
         t.touch(a, "0" * 32)
-    except KeyError:
-        pass
-    else:
-        raise AssertionError("touched a handle that does not exist")
     t.audit()
-    check("an unknown handle grants nothing", not t.connections[a].leases)
+    assert not t.connections[a].leases, "an unknown handle grants nothing"
 
 
 def test_touch_takes_ownership_back_after_detach() -> None:
@@ -284,12 +274,12 @@ def test_touch_takes_ownership_back_after_detach() -> None:
     ha = t.put(obj, a)
     t.detach(a, ha)
     t.audit()
-    check("detach left the connection holding nothing",
-          ha not in t.connections[a].leases)
-    check("calling through it grants again", t.touch(a, ha) is True)
+    assert ha not in t.connections[a].leases, "detach left the connection holding nothing"
+    assert t.touch(a, ha) is True, "calling through it grants again"
     t.audit()
-    check("escrow still holds the detached lease",
-          t.escrow[a][ha] == 1 and t.entries[ha].leases == 2)
+    assert (
+        t.escrow[a][ha] == 1 and t.entries[ha].leases == 2
+    ), "escrow still holds the detached lease"
 
 
 def test_manifest_schema_is_checked() -> None:
@@ -301,43 +291,11 @@ def test_manifest_schema_is_checked() -> None:
     from cythonix import grpc_pb
     from cythonix_generated._wiretypes import MANIFEST_SCHEMA, check_manifest
 
-    check("the shipped manifest passes its own check",
-          grpc_pb.load_manifest()["schema"] == MANIFEST_SCHEMA)
+    assert (
+        grpc_pb.load_manifest()["schema"] == MANIFEST_SCHEMA
+    ), "the shipped manifest passes its own check"
     bad_manifests: list[dict[str, Any]] = [
         {}, {"schema": MANIFEST_SCHEMA + 1}, {"schema": "1"}]
     for bad in bad_manifests:
-        try:
+        with pytest.raises(ValueError):
             check_manifest(bad)
-        except ValueError:
-            continue
-        raise AssertionError(f"accepted a manifest with {bad!r}")
-    check("a manifest from another generator is refused", True)
-
-
-def main() -> None:
-    tests: list[Any] = [
-        test_identity_mapping,
-        test_distinct_objects_get_distinct_handles,
-        test_identity_is_per_connection,
-        test_index_does_not_outlive_the_entry,
-        test_dead_connection_clears_its_index,
-        test_share_indexes_the_target,
-        test_transfer_leaves_the_source_indexed,
-        test_escrow_survives_and_re_indexes,
-        test_bad_producer_leaves_no_trace,
-        test_producer_pinning_with_a_reused_child,
-        test_audit_catches_an_invented_lease,
-        test_anonymous_holder,
-        test_touch_grants_once,
-        test_touch_refuses_an_unknown_handle,
-        test_touch_takes_ownership_back_after_detach,
-        test_manifest_schema_is_checked,
-    ]
-    for fn in tests:
-        print(f"\n-- {fn.__name__}")
-        fn()
-    print("\nALL HANDLE TABLE CHECKS PASSED")
-
-
-if __name__ == "__main__":
-    main()

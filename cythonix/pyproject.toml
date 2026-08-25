@@ -10,4 +10,18 @@ requires-python = ">=3.10"
 dependencies = ["cythonix-bindings", "cythonix-generated"]
 
 [tool.setuptools.packages.find]
+# tests/ is not shipped: it is a suite, not a module anyone imports.
 include = ["cythonix*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# anyio's runner, not pytest-asyncio's. Tests carry the marker through
+# a module-level pytestmark; there is no auto mode, and the marker is
+# what tells the plugin which backend fixture to use.
+markers = ["anyio"]
+# A hung test is the failure mode this suite is most exposed to: a
+# server that never came up, a handle that never resolved, a native
+# crash that took a thread with it. Fail instead of waiting.
+timeout = 180
+addopts = "-q --strict-markers --strict-config"

@@ -29,3 +29,19 @@ Review finding 14.
   test over put/release/share/detach/claim/sweep: that loop is what
   would have caught the escrow double count immediately.
 - Transitive policy enforcement has no case to test (see 008).
+
+## 2026-08-25: the suites are pytest and anyio now
+
+The structural half of this is addressed. What used to be three
+scripts with a hand-rolled `check()` and one giant `main()` is now 73
+tests with fixtures, which changes what a failure costs: one test
+fails instead of stopping everything after it, and a single scenario
+can be run on its own.
+
+That matters more than it did. Against a mock a failure was an
+exception; against real Nix (tasks/015) it can be a native crash, and
+the server being a subprocess is what keeps such a crash from taking
+the run with it.
+
+The blind spots this file lists are about COVERAGE, not structure, and
+they are still open.

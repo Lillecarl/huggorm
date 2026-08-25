@@ -30,6 +30,13 @@ rec {
       cythonix-bindings
       cythonix-generated
       cythonix
+      # The suites run under pytest, in the devshell and in the build
+      # alike. pytest-timeout because a hung test is the failure this
+      # suite is most exposed to - a server that never came up, or a
+      # native crash that took a thread with it.
+      pytest
+      anyio
+      pytest-timeout
     ]
   );
   # nix run --file . check
@@ -57,7 +64,7 @@ rec {
       echo "--- typecheck: the hand-written layer and the suites ---"
       ( cd cythonix \
         && zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
-             cythonix test_remote.py test_lifecycle.py )
+             cythonix tests )
       echo "--- typecheck: the emitted package ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         "${cythonix-generated}/lib/python3.14/site-packages/cythonix_generated"
@@ -69,6 +76,7 @@ rec {
     packages = [
       ourPython
       pkgs.zuban
+      pkgs.grpcurl
     ];
     shellHook = # bash
     ''

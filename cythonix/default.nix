@@ -28,10 +28,12 @@ python3Packages.buildPythonPackage {
     python3Packages.protobuf
   ];
 
-  # The integration suites used to run only when someone typed
-  # `nix run --file . ourPython -- test_remote.py`. Nothing built them,
-  # so a green suite proved nothing about the last commit. They run
-  # here now, over a real gRPC socket on loopback.
+  # The integration suites run here, over a real gRPC socket on
+  # loopback, under pytest. They used to be scripts with a hand-rolled
+  # check() and one giant main(), which meant no isolation, no way to
+  # run one of them, and a failure that stopped everything after it.
+  # That was survivable against a mock; against real Nix, where a
+  # failure can be a native crash, it is not.
   #
   # grpcurl is the external-tool arm: test_remote drives the same
   # reflection-served schema from outside Python, which is what keeps
@@ -48,6 +50,9 @@ python3Packages.buildPythonPackage {
     grpcurl
     ruff
     zuban
+    python3Packages.pytest
+    python3Packages.anyio
+    python3Packages.pytest-timeout
   ];
 
   checkPhase = ''
@@ -58,13 +63,9 @@ python3Packages.buildPythonPackage {
     echo "--- typecheck ---"
     zuban mypy --strict \
       --python-executable ${python3Packages.python.interpreter} \
-      cythonix test_remote.py test_lifecycle.py test_handles.py
-    echo "--- test_handles ---"
-    ${python3Packages.python.interpreter} test_handles.py
-    echo "--- test_remote ---"
-    ${python3Packages.python.interpreter} test_remote.py
-    echo "--- test_lifecycle ---"
-    ${python3Packages.python.interpreter} test_lifecycle.py
+      cythonix tests
+    echo "--- pytest ---"
+    pytest
     runHook postCheck
   '';
 
