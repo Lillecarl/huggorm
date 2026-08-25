@@ -6,6 +6,10 @@ emitter needs arrives in the dict produced by model.extract_wrapper.
 """
 
 import ast
+from typing import Any
+
+# One class, method or function as a plain dict. See model.Proto.
+Proto = dict[str, Any]
 
 RUNNER_BY_THREADING = {
     "affine": "AffineRunner",
@@ -35,7 +39,7 @@ def _param_ann(type_str: str, async_types: set[str]) -> str:
     return f"{type_str} | Async{type_str}" if type_str in async_types else type_str
 
 
-def _ctor_args(proto: dict, async_types: set[str]) -> ast.arguments:
+def _ctor_args(proto: Proto, async_types: set[str]) -> ast.arguments:
     """Typed __init__ parameters from the declared constructor.
 
     This used to be `*args, **kwargs` forwarded blind, because nothing
@@ -44,7 +48,7 @@ def _ctor_args(proto: dict, async_types: set[str]) -> ast.arguments:
     site instead of inside a lazy factory on some worker thread, and a
     typechecker can see it."""
     args = [ast.arg(arg="self")]
-    defaults = []
+    defaults: list[ast.expr] = []
     for p in proto["ctor"]:
         ann = _param_ann(p["type"], async_types)
         if p["optional"]:
@@ -67,7 +71,7 @@ def _ctor_args(proto: dict, async_types: set[str]) -> ast.arguments:
                          kw_defaults=[], kwarg=None, defaults=defaults)
 
 
-def _emitted_annotations(proto: dict, async_types: set[str],
+def _emitted_annotations(proto: Proto, async_types: set[str],
                          bound_policies: dict[str, str]) -> list[str]:
     """The annotation strings the emitter will actually write. Import
     collection reads THIS, not the raw protocol types: a return type
@@ -123,7 +127,8 @@ def _ann(type_str: str, context: str) -> ast.expr:
         raise ValueError(f"unparseable annotation {type_str!r} on {context}") from e
 
 
-def returned_module(proto: dict, async_types: set[str] | None = None) -> ast.Module:
+def returned_module(proto: Proto,
+                    async_types: set[str] | None = None) -> ast.Module:
     """
     Emit Async<Bound> for a returned value type (e.g. Poop).
 
@@ -229,8 +234,8 @@ def returned_module(proto: dict, async_types: set[str] | None = None) -> ast.Mod
     return mod
 
 
-def _append_methods_and_aclose(cls: ast.ClassDef, proto: dict, svc: str,
-                               async_types: set[str]):
+def _append_methods_and_aclose(cls: ast.ClassDef, proto: Proto, svc: str,
+                               async_types: set[str]) -> None:
     for m in proto["methods"]:
         params = [ast.arg(arg="self")] + [
             ast.arg(arg=p["name"],
@@ -263,7 +268,7 @@ def _append_methods_and_aclose(cls: ast.ClassDef, proto: dict, svc: str,
     cls.body.append(_aclose_method())
 
 
-def _hop_call(method_name: str, params: list[dict]) -> ast.Call:
+def _hop_call(method_name: str, params: list[Proto]) -> ast.Call:
     return ast.Call(
         func=ast.Attribute(
             value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
@@ -294,7 +299,7 @@ def _forward(call: ast.expr, return_type: str) -> ast.stmt:
         keywords=[]))
 
 
-def _hop_return(method_name: str, params: list[dict],
+def _hop_return(method_name: str, params: list[Proto],
                 return_type: str = "None") -> ast.stmt:
     return _forward(_hop_call(method_name, params), return_type)
 
@@ -310,8 +315,9 @@ def _runner_decl() -> ast.AnnAssign:
                          value=None, simple=1)
 
 
-def _append_hop_method(cls: ast.ClassDef, proto: dict, m: dict, svc: str,
-                       async_types: set[str], bound_policies: dict[str, str]):
+def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
+                       async_types: set[str],
+                       bound_policies: dict[str, str]) -> None:
     """One `async def` that hops to the runner. Shared by the abstract
     base and its subclasses: the body is identical either way, which is
     exactly why a base can carry it - the runner comes from whichever
@@ -349,7 +355,7 @@ def _append_hop_method(cls: ast.ClassDef, proto: dict, m: dict, svc: str,
         type_params=[]))
 
 
-def wrapper_module(proto: dict, bound_policies: dict[str, str] | None = None,
+def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
                    async_types: set[str] | None = None) -> ast.Module:
     """Emit Async<Svc>. bound_policies maps returned-type names to their
     declared threading policy; those methods adopt the produced object
@@ -605,7 +611,7 @@ def _sync_imports(annotations: list[str], defined_here: set[str]) -> ast.ImportF
                           level=0)
 
 
-def _params(m: dict, cls_name: str, ann: dict[str, str]) -> ast.arguments:
+def _params(m: Proto, cls_name: str, ann: dict[str, str]) -> ast.arguments:
     """`self` plus one typed argument per declared parameter. `ann` maps
     a declared type to the annotation this module writes for it."""
     args = [ast.arg(arg="self")] + [
@@ -618,7 +624,7 @@ def _params(m: dict, cls_name: str, ann: dict[str, str]) -> ast.arguments:
                          kw_defaults=[], kwarg=None, defaults=[])
 
 
-def protocol_module(manifest: dict, ordered: list[dict],
+def protocol_module(manifest: Proto, ordered: list[Proto],
                     adoptable: set[str]) -> ast.Module:
     """Emit one Protocol per wrapped class: the surface a caller can
     program against without knowing whether the object answering is in
@@ -661,8 +667,9 @@ def protocol_module(manifest: dict, ordered: list[dict],
     for proto in ordered:
         name = proto["name"]
         base = proto.get("async_base")
-        bases = ([ast.Name(id=protocol_name(base))] if base else []) \
-            + [ast.Name(id="Protocol")]
+        bases: list[ast.expr] = (
+            [ast.Name(id=protocol_name(base))] if base else [])
+        bases.append(ast.Name(id="Protocol"))
         cls = ast.ClassDef(
             name=protocol_name(name), bases=bases, keywords=[], body=[],
             # isinstance() against this checks that the method NAMES are
@@ -711,7 +718,7 @@ def protocol_module(manifest: dict, ordered: list[dict],
     return mod
 
 
-def _spec(m: dict) -> ast.expr:
+def _spec(m: Proto) -> ast.expr:
     """One method's call spec as a literal, straight out of the
     manifest. The docstring is dropped: it is already on the method."""
     return ast.parse(repr({k: v for k, v in m.items()
@@ -719,7 +726,7 @@ def _spec(m: dict) -> ast.expr:
                      mode="eval").body
 
 
-def rpc_module(manifest: dict, ordered: list[dict],
+def rpc_module(manifest: Proto, ordered: list[Proto],
                wrapped: set[str]) -> ast.Module:
     """Emit one RPC client class per wrapped class.
 
@@ -935,7 +942,8 @@ def rpc_module(manifest: dict, ordered: list[dict],
 FREE_MODULE = "free_functions"
 
 
-def free_function_module(protos: list[dict], async_types: set[str]) -> ast.Module:
+def free_function_module(protos: list[Proto],
+                        async_types: set[str]) -> ast.Module:
     """Emit module-level coroutines for the bindings' free functions.
 
     They have no instance, so there is no runner to hop through and no
@@ -1010,7 +1018,7 @@ def _stub_body(doc: str) -> list[ast.stmt]:
     return out
 
 
-def stub_module(module: str, protos: list[dict], free_protos: list[dict],
+def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
                 produced: set[str], foreign: dict[str, str]) -> ast.Module:
     """Emit the .pyi describing ONE binding module.
 
@@ -1054,11 +1062,11 @@ def stub_module(module: str, protos: list[dict], free_protos: list[dict],
 
     by_name = {p["name"]: p for p in protos}
 
-    def inherited(proto) -> dict:
+    def inherited(proto: Proto) -> Proto:
         """Methods a base already declares identically. extract_wrapper
         walks the MRO, so a subclass proto restates everything it
         inherits; Python does not, and neither should the stub."""
-        out = {}
+        out: Proto = {}
         for b in proto["bases"]:
             base = by_name.get(b.rsplit(".", 1)[-1])
             if base is None:
@@ -1069,7 +1077,8 @@ def stub_module(module: str, protos: list[dict], free_protos: list[dict],
 
     for proto in protos:
         name = proto["name"]
-        bases = [ast.Name(id=b.rsplit(".", 1)[-1]) for b in proto["bases"]]
+        bases: list[ast.expr] = [
+            ast.Name(id=b.rsplit(".", 1)[-1]) for b in proto["bases"]]
         from_base = inherited(proto)
         cls = ast.ClassDef(name=name, bases=bases, keywords=[], body=[],
                            decorator_list=[], type_params=[])

@@ -11,6 +11,8 @@ import json
 import pathlib
 import shutil
 import sys
+from types import ModuleType
+from typing import Any
 
 from codegen.emitter import (
     FREE_MODULE,
@@ -36,14 +38,17 @@ from codegen.model import (
 )
 from codegen.pxd import extract_api
 
+# See model.Proto: one class, method or function as a plain dict.
+Proto = dict[str, Any]
 
-def _load_bindings_module():
+
+def _load_bindings_module() -> ModuleType:
     import fake_library
 
     return fake_library
 
 
-def _wrapper_classes(bindings_module) -> list[type]:
+def _wrapper_classes(bindings_module: ModuleType) -> list[type]:
     """
     Every public wrapper class that declares a threading policy, except
     those excluded from generation (_async = False, e.g. the abstract
@@ -70,7 +75,7 @@ def _wrapper_classes(bindings_module) -> list[type]:
     return sorted(out, key=lambda c: c.__name__)
 
 
-def _free_functions(bindings_module) -> list:
+def _free_functions(bindings_module: ModuleType) -> list[Any]:
     """Every public module-level function in the bindings, sorted.
 
     All of them, not only the ones declaring _threading. The policy
@@ -91,7 +96,9 @@ def _free_functions(bindings_module) -> list:
     return out
 
 
-def _hierarchy(wrapper_classes, protos):
+def _hierarchy(
+    wrapper_classes: list[type], protos: list[Proto]
+) -> tuple[dict[str, str], dict[str, set[str]], list[str]]:
     """Link each emitted wrapper to its nearest emitted ancestor, and
     work out which methods the ancestor may guarantee.
 
@@ -110,14 +117,16 @@ def _hierarchy(wrapper_classes, protos):
     """
     by_class = dict(zip(wrapper_classes, protos))
     emitted = set(wrapper_classes)
-    base_of, children = {}, {}
+    base_of: dict[str, str] = {}
+    children: dict[str, list[Proto]] = {}
     for cls in wrapper_classes:
         parent = next((k for k in cls.__mro__[1:] if k in emitted), None)
         if parent is not None:
             base_of[by_class[cls]["name"]] = by_class[parent]["name"]
             children.setdefault(by_class[parent]["name"], []).append(by_class[cls])
 
-    shared_of, complaints = {}, []
+    shared_of: dict[str, set[str]] = {}
+    complaints: list[str] = []
     for base_name, kids in children.items():
         base = next(p for p in protos if p["name"] == base_name)
         names = {m["name"] for m in base["methods"]}
@@ -144,7 +153,7 @@ def _hierarchy(wrapper_classes, protos):
     return base_of, shared_of, complaints
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="output directory for fake_library_generated")
     parser.add_argument(
@@ -157,7 +166,7 @@ def main(argv=None):
 
     bindings = _load_bindings_module()
 
-    api = {"classes": {}, "free_functions": []}
+    api: dict[str, Any] = {"classes": {}, "free_functions": []}
     for path_str in args.pxd:
         part = extract_api(pathlib.Path(path_str).read_text())
         api["classes"].update(part["classes"])
@@ -236,10 +245,13 @@ def main(argv=None):
         proto["async_base"] = base_of.get(proto["name"])
         shared = shared_of.get(proto["name"])
         if shared is not None:
-            dropped = [m["name"] for m in proto["methods"] if m["name"] not in shared]
-            if dropped:
+            # A different `dropped` from the count above; naming it
+            # so was how a typechecker noticed.
+            only_on_subclasses = [m["name"] for m in proto["methods"]
+                                  if m["name"] not in shared]
+            if only_on_subclasses:
                 print(f"{proto['name']} guarantees {sorted(shared)}; "
-                      f"{sorted(dropped)} live on subclasses only")
+                      f"{sorted(only_on_subclasses)} live on subclasses only")
             proto["methods"] = [m for m in proto["methods"] if m["name"] in shared]
     # Subclasses keep only what the base does not already provide.
     for proto in protos:
@@ -297,7 +309,7 @@ def main(argv=None):
     for proto in protos + returned_protos:
         proto.pop("_helpers", None)
 
-    manifest = {
+    manifest: Proto = {
         "schema": 1,
         "wrappers": {p["name"]: p for p in protos},
         "returned_types": {p["name"]: p for p in returned_protos},
@@ -308,7 +320,7 @@ def main(argv=None):
     # never resolved is uncallable over the wire while looking alive
     # locally. Fail the build naming every offender; an explicit escape
     # hatch can be added when a legitimate case first appears.
-    unresolved = []
+    unresolved: list[str] = []
     for fname, proto in manifest["free_functions"].items():
         for p in proto["params"]:
             if p["type"] == "Any":

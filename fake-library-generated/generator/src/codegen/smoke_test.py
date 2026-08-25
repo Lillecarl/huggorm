@@ -20,14 +20,15 @@ import importlib
 import json
 import pathlib
 import sys
+from typing import Any
 
 
-def test_parse(out: pathlib.Path):
+def test_parse(out: pathlib.Path) -> None:
     for py in sorted(out.glob("*.py")):
         ast.parse(py.read_text(), filename=str(py))
 
 
-def test_runtime_contract(out: pathlib.Path):
+def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference
     the runtime only via `from _runtime import X`; a rename on either
     side otherwise ships a wheel that fails at first wrapper import.
@@ -47,7 +48,7 @@ def test_runtime_contract(out: pathlib.Path):
     )
 
 
-async def test_behavior():
+async def test_behavior() -> None:
     import fake_library
     from fake_library import DerivedPath, StorePath
     from fake_library_generated import (
@@ -59,7 +60,9 @@ async def test_behavior():
     )
     from fake_library_generated._runtime import InternalError
 
-    pkg_dir = pathlib.Path(importlib.import_module("fake_library_generated").__file__).parent
+    pkg_file = importlib.import_module("fake_library_generated").__file__
+    assert pkg_file is not None
+    pkg_dir = pathlib.Path(pkg_file).parent
     manifest = json.loads((pkg_dir / "manifest.json").read_text())
 
     # Pool store: concurrent adds genuinely overlap.
@@ -86,12 +89,12 @@ async def test_behavior():
     from fake_library_generated import _runtime
 
     class _Probe:
-        def noop(self):
+        def noop(self) -> str:
             return "ok"
 
-    made = []
+    made: list[int] = []
 
-    def factory():
+    def factory() -> _Probe:
         made.append(1)
         return _Probe()
 
@@ -102,9 +105,9 @@ async def test_behavior():
 
     # Same guarantee on the failure path: one attempt, every caller
     # gets the cached error.
-    failed = []
+    failed: list[int] = []
 
-    def bad_factory():
+    def bad_factory() -> object:
         failed.append(1)
         raise RuntimeError("no")
 
@@ -122,7 +125,7 @@ async def test_behavior():
     # wherever the caller happened to run).
     import types
 
-    def _shell(runner):
+    def _shell(runner: Any) -> Any:
         return types.SimpleNamespace(_runner=runner, _wire="proxy")
 
     lazy_affine = _shell(_runtime.AffineRunner(lambda: object()))
@@ -342,19 +345,19 @@ async def test_behavior():
     # touched yet could not be passed anywhere. Both stores above had
     # been called already, which is why this went unseen. The runner
     # now constructs on its own thread before the argument is unwrapped.
-    fresh = AsyncRemoteStore()
-    assert fresh._runner._obj is None, "expected an unconstructed wrapper"
-    assert await flg.describe(fresh) == "store(uds://daemon)"
-    assert fresh._runner.born_thread_name.startswith("flg-affine"), (
-        f"argument construction must stay on its own thread, not "
-        f"{fresh._runner.born_thread_name}")
+    untouched_store = AsyncRemoteStore()
+    assert untouched_store._runner._obj is None, "expected an unconstructed wrapper"
+    assert await flg.describe(untouched_store) == "store(uds://daemon)"
+    born = untouched_store._runner.born_thread_name
+    assert born is not None and born.startswith("flg-affine"), (
+        f"argument construction must stay on its own thread, not {born}")
     # ...and as a method argument too, not only a free-function one.
     untouched = AsyncEvalState("local")
     thunk_arg = await state.parse_expr("1")
     await untouched.force(thunk_arg)
     assert await thunk_arg.integer() == 1
     await untouched.aclose()
-    await fresh.aclose()
+    await untouched_store.aclose()
     free = manifest["free_functions"]
     assert free["describe"]["params"] == [{"name": "obj", "type": "Store"}], (
         free["describe"]["params"]
@@ -485,7 +488,7 @@ async def test_behavior():
     # Caching of a GENUINE factory failure is covered directly above,
     # via PoolRunner(bad_factory); that guarantee is unchanged.
     try:
-        AsyncRemoteStore("unexpected-arg")
+        AsyncRemoteStore("unexpected-arg")  # type: ignore[call-arg]
         raise AssertionError("wrong arity must fail at construction")
     except TypeError:
         pass
@@ -493,7 +496,7 @@ async def test_behavior():
     # A declared required parameter is required, and a declared optional
     # one is optional.
     try:
-        AsyncEvalState()
+        AsyncEvalState()  # type: ignore[call-arg]
         raise AssertionError("missing required store_uri must fail")
     except TypeError:
         pass
@@ -504,7 +507,7 @@ async def test_behavior():
     await local.aclose()
 
 
-def test_no_unused_imports(out: pathlib.Path):
+def test_no_unused_imports(out: pathlib.Path) -> None:
     """Emitted modules must import exactly what they use. An import the
     emitter adds but never references means the import list is derived
     from the wrong set - which is how the sync Derivation kept arriving
@@ -525,10 +528,9 @@ def test_no_unused_imports(out: pathlib.Path):
         # __init__ re-exports rather than uses; __all__ names it instead.
         if py.name == "__init__.py":
             used |= {
-                c.value
+                n.value
                 for n in ast.walk(tree)
                 if isinstance(n, ast.Constant) and isinstance(n.value, str)
-                for c in [n]
             }
         unused = sorted(imported - used)
         if unused:
@@ -536,14 +538,14 @@ def test_no_unused_imports(out: pathlib.Path):
     assert not offenders, "emitted modules with unused imports:\n" + "\n".join(offenders)
 
 
-def _emitted_classes(out: pathlib.Path) -> dict:
+def _emitted_classes(out: pathlib.Path) -> dict[str, Any]:
     """Every class the build emitted: name -> (base names, methods).
 
     Read with ast rather than by importing, so the comparison is
     between what was WRITTEN in each of the three modules. An
     annotation that resolves to the same object through two different
     spellings is exactly the kind of drift this is looking for."""
-    found = {}
+    found: dict[str, Any] = {}
     for py in sorted(out.glob("*.py")):
         tree = ast.parse(py.read_text(), filename=py.name)
         for node in tree.body:
@@ -569,17 +571,18 @@ def _emitted_classes(out: pathlib.Path) -> dict:
     return found
 
 
-def _resolved(found: dict, name: str) -> dict:
+def _resolved(found: dict[str, Any], name: str) -> dict[str, Any]:
     """One class's whole method surface, leaf definitions winning."""
     bases, methods = found[name]
-    out = {}
+    out: dict[str, Any] = {}
     for b in bases:
         if b in found:
             out |= _resolved(found, b)
-    return out | methods
+    merged: dict[str, Any] = out | methods
+    return merged
 
 
-def test_conformance(out: pathlib.Path):
+def test_conformance(out: pathlib.Path) -> None:
     """The three emitted surfaces must agree.
 
     A protocol is only worth having if the implementations really
@@ -614,8 +617,8 @@ def test_conformance(out: pathlib.Path):
     speaks_for = {proto["protocol"]: name for name, proto in wrapped.items()}
     found = _emitted_classes(out)
 
-    def blocked_over_chain(name):
-        out_ = {}
+    def blocked_over_chain(name: str | None) -> set[str]:
+        out_: dict[str, list[str]] = {}
         while name is not None:
             proto = wrapped[name]
             for m in proto["methods"]:
@@ -681,7 +684,7 @@ def test_conformance(out: pathlib.Path):
         "working or the surface changed and this gate now proves nothing")
 
 
-def test_stubs(out: pathlib.Path):
+def test_stubs(out: pathlib.Path) -> None:
     """The stub package must describe the bindings EXACTLY.
 
     A stub package is authoritative: once fake_library-stubs exists, a
@@ -727,8 +730,8 @@ def test_stubs(out: pathlib.Path):
             cls = getattr(module, name)
             # Everything the stub says this class has, including what it
             # inherits through a base the stub also declares.
-            def surface(n):
-                out_ = set()
+            def surface(n: str) -> set[str]:
+                out_: set[str] = set()
                 cn = classes.get(n)
                 if cn is None:
                     return out_
@@ -776,7 +779,7 @@ def test_stubs(out: pathlib.Path):
         f"these are imported but not re-exported: {sorted(exported - aliased)}")
 
 
-def test_docstrings():
+def test_docstrings() -> None:
     """Every emitted module and class must carry a real __doc__. A
     string literal is only a docstring when nothing precedes it, so an
     import or a class attribute emitted first silently demotes it to a
@@ -799,7 +802,7 @@ def test_docstrings():
     assert not missing, f"emitted objects without a docstring: {sorted(set(missing))}"
 
 
-def test_annotations_resolve():
+def test_annotations_resolve() -> None:
     """PEP 649 defers annotation evaluation, so a missing import only
     explodes when something calls typing.get_type_hints - which every
     introspecting consumer does, and every Python below 3.14 does at
@@ -826,7 +829,7 @@ def test_annotations_resolve():
     assert not failures, "unresolvable annotations:\n" + "\n".join(failures)
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
