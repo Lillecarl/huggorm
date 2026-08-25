@@ -14,6 +14,7 @@ import sys
 
 from codegen.emitter import wrapper_module, returned_module, init_module
 from codegen.model import (
+    check_wire_contract,
     extract_wrapper,
     returned_types_from_api,
 )
@@ -121,6 +122,14 @@ def main(argv=None):
     all_names = [p["name"] for p in returned_protos] + [p["name"] for p in protos]
     (out / "__init__.py").write_text(ast.unparse(init_module(all_names)) + "\n")
 
+    # The wire policy and the serialization contract must agree before
+    # anything downstream trusts either. Loud, at build time.
+    complaints = check_wire_contract(protos + returned_protos)
+    if complaints:
+        for c in complaints:
+            print(f"wire contract: {c}", file=sys.stderr)
+        sys.exit(1)
+
     manifest = {
         "schema": 1,
         "wrappers": {p["name"]: p for p in protos},
@@ -146,13 +155,18 @@ def main(argv=None):
             print(f"unresolved type: {u}", file=sys.stderr)
         sys.exit(1)
 
+    # grpc_schema owns wire naming; stamping it into the manifest is what
+    # lets the server and the client read the names instead of each
+    # rebuilding the same convention from scratch.
+    from codegen.grpc_schema import annotate, build_fdset
+    annotate(manifest)
+
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         f"wrote manifest ({len(protos)} wrappers, {len(returned_protos)} returned types) "
         f"to {out / 'manifest.json'}"
     )
 
-    from codegen.grpc_schema import build_fdset
     (out / "grpc_schema.pb").write_bytes(build_fdset(manifest))
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
 
