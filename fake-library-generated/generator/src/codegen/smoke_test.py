@@ -486,6 +486,8 @@ def test_no_unused_imports(out: pathlib.Path):
             (a.asname or a.name)
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom)
+            # __future__ is a compiler directive, not a name to use.
+            and node.module != "__future__"
             for a in node.names
         }
         used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
@@ -516,6 +518,8 @@ def test_docstrings():
         missing.append("fake_library_generated")
     for name in flg.__all__:
         cls = getattr(flg, name)
+        if not isinstance(cls, type) and not callable(cls):
+            continue  # a re-exported registry, not a documented object
         mod = sys.modules[cls.__module__]
         if not (mod.__doc__ or "").strip():
             missing.append(f"module {cls.__module__}")
@@ -536,6 +540,8 @@ def test_annotations_resolve():
     failures = []
     for name in flg.__all__:
         cls = getattr(flg, name)
+        if not isinstance(cls, type) and not callable(cls):
+            continue  # a re-exported registry, not an annotated object
         targets = [(name, cls)]
         for attr, val in vars(cls).items():
             fn = val.__func__ if isinstance(val, (staticmethod, classmethod)) else val

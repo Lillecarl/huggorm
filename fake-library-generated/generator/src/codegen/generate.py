@@ -16,7 +16,9 @@ from codegen.emitter import (
     FREE_MODULE,
     free_function_module,
     init_module,
+    protocol_module,
     returned_module,
+    rpc_module,
     wrapper_module,
 )
 from codegen.model import (
@@ -273,10 +275,6 @@ def main(argv=None):
         print(f"generated {FREE_MODULE}.py for {len(free_protos)} free "
               f"function(s): {', '.join(free_names)}")
 
-    all_names = [p["name"] for p in returned_protos + protos if p["wrapped"]]
-    (out / "__init__.py").write_text(
-        ast.unparse(init_module(all_names, free_names)) + "\n")
-
     # The wire policy and the serialization contract must agree before
     # anything downstream trusts either. Loud, at build time.
     complaints = check_wire_contract(protos + returned_protos)
@@ -327,8 +325,43 @@ def main(argv=None):
     # grpc_schema owns wire naming; stamping it into the manifest is what
     # lets the server and the client read the names instead of each
     # rebuilding the same convention from scratch.
+    from codegen import surface
     from codegen.grpc_schema import annotate, build_fdset
     annotate(manifest)
+    surface.annotate(manifest)
+
+    # The three surfaces - protocol, in-process wrapper, RPC client -
+    # must agree on which returns get adopted into an object of their
+    # own. returned_policies is that set; check nothing else claims it.
+    complaints = surface.check_adoptable(manifest, set(returned_policies))
+    if complaints:
+        for c in complaints:
+            print(f"adoptable: {c}", file=sys.stderr)
+        sys.exit(1)
+
+    ordered = surface.order(manifest)
+    adoptable = set(returned_policies)
+    (out / f"{surface.PROTOCOL_MODULE}.py").write_text(
+        ast.unparse(protocol_module(manifest, ordered, adoptable)) + "\n")
+    (out / f"{surface.RPC_MODULE}.py").write_text(
+        ast.unparse(rpc_module(manifest, ordered,
+                               surface.wrapped_names(manifest))) + "\n")
+    withheld = [
+        f"{proto['name']}.{m['name']}"
+        for proto in ordered for m in proto["methods"] if m["protocol_blockers"]
+    ]
+    print(f"generated {surface.PROTOCOL_MODULE}.py and "
+          f"{surface.RPC_MODULE}.py for {len(ordered)} class(es)")
+    for name in withheld:
+        proto_name, _, m_name = name.partition(".")
+        proto = next(p for p in ordered if p["name"] == proto_name)
+        m = next(m for m in proto["methods"] if m["name"] == m_name)
+        for why in m["protocol_blockers"]:
+            print(f"warning: {name} is not on the protocol - {why}")
+
+    all_names = [p["name"] for p in ordered]
+    (out / "__init__.py").write_text(
+        ast.unparse(init_module(all_names, free_names)) + "\n")
 
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(

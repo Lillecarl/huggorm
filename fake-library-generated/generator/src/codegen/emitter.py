@@ -523,6 +523,302 @@ def _aclose_method() -> ast.AsyncFunctionDef:
     )
 
 
+def _future_annotations() -> ast.ImportFrom:
+    """Lazy annotations, so a class may name one defined further down.
+
+    The protocol and rpc modules each hold the whole surface, and a
+    method on the first class can return the last one. PEP 649 already
+    defers evaluation on 3.14, but the emitted package is meant to be
+    readable and portable below it."""
+    return ast.ImportFrom(module="__future__",
+                          names=[ast.alias(name="annotations")], level=0)
+
+
+def _sync_imports(annotations: list[str], defined_here: set[str]) -> ast.ImportFrom | None:
+    """Import the binding types an all-in-one module annotates with.
+
+    Unlike the per-class wrappers there are no siblings to import from:
+    everything else the module names, it defines."""
+    used = _annotation_names(annotations) - _BUILTIN_TYPES - defined_here
+    if not used:
+        return None
+    return ast.ImportFrom(module="fake_library",
+                          names=[ast.alias(name=n) for n in sorted(used)],
+                          level=0)
+
+
+def _params(m: dict, cls_name: str, ann: dict[str, str]) -> ast.arguments:
+    """`self` plus one typed argument per declared parameter. `ann` maps
+    a declared type to the annotation this module writes for it."""
+    args = [ast.arg(arg="self")] + [
+        ast.arg(arg=p["name"],
+                annotation=_ann(ann.get(p["type"], p["type"]),
+                                f"{cls_name}.{m['name']}:{p['name']}"))
+        for p in m["params"]
+    ]
+    return ast.arguments(posonlyargs=[], args=args, vararg=None, kwonlyargs=[],
+                         kw_defaults=[], kwarg=None, defaults=[])
+
+
+def protocol_module(manifest: dict, ordered: list[dict],
+                    adoptable: set[str]) -> ast.Module:
+    """Emit one Protocol per wrapped class: the surface a caller can
+    program against without knowing whether the object answering is in
+    this process or on the far side of a socket.
+
+    Methods with a proxy parameter are absent, and the manifest says
+    why for each of them (see surface.protocol_blockers). Everything
+    else is here, including every method whose types tasks/025 made
+    identical on both sides."""
+    from codegen.surface import ACLOSE, protocol_name
+
+    defined = {protocol_name(p["name"]) for p in ordered}
+
+    def ret_ann(rt: str) -> str:
+        return protocol_name(rt) if rt in adoptable else rt
+
+    annotations = []
+    for proto in ordered:
+        for m in proto["methods"]:
+            if m["protocol_blockers"]:
+                continue
+            annotations += [p["type"] for p in m["params"]]
+            annotations.append(ret_ann(m["return_type"]))
+
+    mod = ast.Module(body=[], type_ignores=[])
+    mod.body.append(ast.Expr(value=ast.Constant(value=(
+        "Generated protocols: the surface both implementations share - do "
+        "not edit. One per wrapped class, mirroring the wrapper hierarchy, "
+        "so a function typed against StoreLike accepts an in-process "
+        "AsyncLocalStore and a remote RPCLocalStore alike."))))
+    mod.body.append(_future_annotations())
+    mod.body.append(ast.ImportFrom(
+        module="typing",
+        names=[ast.alias(name="Protocol"), ast.alias(name="runtime_checkable")],
+        level=0))
+    sync = _sync_imports(annotations, defined)
+    if sync is not None:
+        mod.body.append(sync)
+
+    for proto in ordered:
+        name = proto["name"]
+        base = proto.get("async_base")
+        bases = ([ast.Name(id=protocol_name(base))] if base else []) \
+            + [ast.Name(id="Protocol")]
+        cls = ast.ClassDef(
+            name=protocol_name(name), bases=bases, keywords=[], body=[],
+            # isinstance() against this checks that the method NAMES are
+            # present and nothing more. The signature gate in the smoke
+            # test is what proves an implementation really conforms.
+            decorator_list=[ast.Name(id="runtime_checkable")],
+            type_params=[])
+        offered = [m for m in proto["methods"] if not m["protocol_blockers"]]
+        withheld = [m["name"] for m in proto["methods"] if m["protocol_blockers"]]
+        cls.body.append(ast.Expr(value=ast.Constant(value=(
+            f"What every {name} implementation promises"
+            + (f", on top of {protocol_name(base)}." if base else ".")
+            + (f" {', '.join(sorted(withheld))} cannot be promised: see "
+               f"protocol_blockers in the manifest." if withheld else "")))))
+        for m in offered:
+            body: list[ast.stmt] = []
+            if m["doc"]:
+                body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
+            body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+            cls.body.append(ast.AsyncFunctionDef(
+                name=m["name"],
+                args=_params(m, name, {}),
+                body=body,
+                decorator_list=[],
+                returns=_ann(ret_ann(m["return_type"]), f"{name}.{m['name']}"),
+                type_params=[]))
+        if base is None:
+            cls.body.append(ast.AsyncFunctionDef(
+                name=ACLOSE,
+                args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
+                                   vararg=None, kwonlyargs=[], kw_defaults=[],
+                                   kwarg=None, defaults=[]),
+                body=[
+                    ast.Expr(value=ast.Constant(value=(
+                        "Release this object. In process that shuts the "
+                        "runner's thread down; remotely it gives the lease "
+                        "back. Either way the object is spent afterwards."))),
+                    ast.Expr(value=ast.Constant(value=Ellipsis)),
+                ],
+                decorator_list=[],
+                returns=_ann("None", f"{name}.{ACLOSE}"),
+                type_params=[]))
+        mod.body.append(cls)
+
+    ast.fix_missing_locations(mod)
+    return mod
+
+
+def _spec(m: dict) -> ast.expr:
+    """One method's call spec as a literal, straight out of the
+    manifest. The docstring is dropped: it is already on the method."""
+    return ast.parse(repr({k: v for k, v in m.items()
+                           if k not in ("doc", "protocol_blockers")}),
+                     mode="eval").body
+
+
+def rpc_module(manifest: dict, ordered: list[dict],
+               wrapped: set[str]) -> ast.Module:
+    """Emit one RPC client class per wrapped class.
+
+    These replace a __getattr__ proxy. That proxy resolved a method
+    name against the manifest at call time, which meant a typechecker
+    saw nothing at all: it could neither reject a call that does not
+    exist nor check the arguments of one that does. A generated class
+    has real methods with real signatures, so both directions are
+    checked - and the conformance gate compares them against the
+    protocol and the in-process wrapper.
+
+    Unlike the in-process side, NO class here is abstract. Locally an
+    abstract base has no implementation to construct; remotely every
+    handle addresses a real object on the server, and the base is a
+    perfectly good view of it - which is the common case, since a
+    caller usually does not care which store answered."""
+    from codegen.surface import ACLOSE, REGISTRY, rpc_class_name
+
+    defined = {rpc_class_name(p["name"]) for p in ordered}
+
+    # A proxy is an RPC class on BOTH sides here: a remote caller holds
+    # a handle, never a local object. That is the divergence keeping a
+    # method with a proxy parameter off the protocol - the in-process
+    # wrapper needs the local object instead.
+    ann = {n: rpc_class_name(n) for n in wrapped}
+
+    annotations = ["str"]
+    for proto in ordered:
+        for m in proto["methods"]:
+            annotations += [ann.get(p["type"], p["type"]) for p in m["params"]]
+            annotations.append(ann.get(m["return_type"], m["return_type"]))
+
+    mod = ast.Module(body=[], type_ignores=[])
+    mod.body.append(ast.Expr(value=ast.Constant(value=(
+        "Generated RPC clients - do not edit. One per wrapped class, "
+        "mirroring the wrapper hierarchy. Each method carries the call "
+        "spec the manifest gave it, so a call needs no lookup and names "
+        "nothing the build did not put there."))))
+    mod.body.append(_future_annotations())
+    sync = _sync_imports(annotations, defined)
+    if sync is not None:
+        mod.body.append(sync)
+
+    for proto in ordered:
+        name = proto["name"]
+        base = proto.get("async_base")
+        cls = ast.ClassDef(
+            name=rpc_class_name(name),
+            bases=[ast.Name(id=rpc_class_name(base))] if base else [],
+            keywords=[], body=[], decorator_list=[], type_params=[])
+        cls.body.append(ast.Expr(value=ast.Constant(value=(
+            f"A {name} living behind a handle on a server. Same surface as "
+            f"Async{name}, different location."
+            + (f" Inherits {', '.join(proto['inherited'])} from "
+               f"{rpc_class_name(base)}." if base and proto.get("inherited")
+               else "")))))
+        cls.body.append(ast.Assign(targets=[ast.Name(id="_wire")],
+                                   value=ast.Constant(value=proto["wire"])))
+
+        # The call specs. A subclass that adds methods must restate the
+        # base's too: an attribute shadows rather than merges, and an
+        # inherited method's body reads self._rpc. One that adds none
+        # inherits the whole map untouched.
+        if proto["methods"] or base is None:
+            specs = ast.Dict(
+                keys=[ast.Constant(value=m["name"]) for m in proto["methods"]],
+                values=[_spec(m) for m in proto["methods"]])
+            if base:
+                specs = ast.Dict(
+                    keys=[None] + specs.keys,
+                    values=[ast.Attribute(value=ast.Name(id=rpc_class_name(base)),
+                                          attr="_rpc")] + specs.values)
+            cls.body.append(ast.Assign(targets=[ast.Name(id="_rpc")], value=specs))
+
+        if base is None:
+            cls.body.append(ast.FunctionDef(
+                name="__init__",
+                args=ast.arguments(
+                    posonlyargs=[],
+                    args=[ast.arg(arg="self"), ast.arg(arg="client"),
+                          ast.arg(arg="handle_id",
+                                  annotation=_ann("str", f"{name}.__init__"))],
+                    vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
+                    defaults=[]),
+                body=[
+                    ast.Assign(
+                        targets=[ast.Attribute(value=ast.Name(id="self"),
+                                               attr="_client")],
+                        value=ast.Name(id="client")),
+                    ast.Assign(
+                        targets=[ast.Attribute(value=ast.Name(id="self"),
+                                               attr="handle_id")],
+                        value=ast.Name(id="handle_id")),
+                ],
+                decorator_list=[], returns=_ann("None", f"{name}.__init__"),
+                type_params=[]))
+
+        for m in proto["methods"]:
+            body: list[ast.stmt] = []
+            if m["doc"]:
+                body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
+            body.append(ast.Return(value=ast.Await(value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Attribute(value=ast.Name(id="self"),
+                                        attr="_client"),
+                    attr="invoke"),
+                args=[
+                    ast.Subscript(
+                        value=ast.Attribute(value=ast.Name(id="self"),
+                                            attr="_rpc"),
+                        slice=ast.Constant(value=m["name"])),
+                    ast.Attribute(value=ast.Name(id="self"), attr="handle_id"),
+                    ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]]),
+                ],
+                keywords=[]))))
+            cls.body.append(ast.AsyncFunctionDef(
+                name=m["name"],
+                args=_params(m, name, ann),
+                body=body,
+                decorator_list=[],
+                returns=_ann(ann.get(m["return_type"], m["return_type"]),
+                             f"{name}.{m['name']}"),
+                type_params=[]))
+
+        if base is None:
+            cls.body.append(ast.AsyncFunctionDef(
+                name=ACLOSE,
+                args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
+                                   vararg=None, kwonlyargs=[], kw_defaults=[],
+                                   kwarg=None, defaults=[]),
+                body=[
+                    ast.Expr(value=ast.Constant(value=(
+                        "Give the lease back. The in-process wrapper shuts "
+                        "its runner down here; there is no thread to shut "
+                        "down on this side, so the server's copy is what "
+                        "gets released."))),
+                    ast.Expr(value=ast.Await(value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Attribute(value=ast.Name(id="self"),
+                                                attr="_client"),
+                            attr="release"),
+                        args=[ast.Name(id="self")], keywords=[]))),
+                ],
+                decorator_list=[], returns=_ann("None", f"{name}.{ACLOSE}"),
+                type_params=[]))
+
+        mod.body.append(cls)
+
+    mod.body.append(ast.Assign(
+        targets=[ast.Name(id=REGISTRY)],
+        value=ast.Dict(
+            keys=[ast.Constant(value=p["name"]) for p in ordered],
+            values=[ast.Name(id=rpc_class_name(p["name"])) for p in ordered])))
+    ast.fix_missing_locations(mod)
+    return mod
+
+
 FREE_MODULE = "free_functions"
 
 
@@ -584,17 +880,38 @@ def free_function_module(protos: list[dict], async_types: set[str]) -> ast.Modul
 
 
 def init_module(all_names: list[str], free_names: list[str] | None = None) -> ast.Module:
+    """The package front door: every wrapped class in its three forms -
+    the protocol it promises, the in-process implementation and the RPC
+    implementation - plus the free functions."""
+    from codegen.surface import (
+        PROTOCOL_MODULE,
+        REGISTRY,
+        RPC_MODULE,
+        async_class_name,
+        protocol_name,
+        rpc_class_name,
+    )
+
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(
         ast.Expr(
             value=ast.Constant(
-                value="Generated async wrappers - do not edit. Built via ast at Nix build time."
+                value="Generated surface - do not edit. Built via ast at Nix build time."
             )
         )
     )
     for name in all_names:
         fname = f"async_{name.lower()}"
-        mod.body.append(ast.ImportFrom(module=fname, names=[ast.alias(name=f"Async{name}")], level=1))
+        mod.body.append(ast.ImportFrom(
+            module=fname,
+            names=[ast.alias(name=async_class_name(name))], level=1))
+    mod.body.append(ast.ImportFrom(
+        module=PROTOCOL_MODULE,
+        names=[ast.alias(name=protocol_name(n)) for n in all_names], level=1))
+    mod.body.append(ast.ImportFrom(
+        module=RPC_MODULE,
+        names=[ast.alias(name=REGISTRY)]
+        + [ast.alias(name=rpc_class_name(n)) for n in all_names], level=1))
     free_names = free_names or []
     if free_names:
         mod.body.append(ast.ImportFrom(
@@ -605,7 +922,10 @@ def init_module(all_names: list[str], free_names: list[str] | None = None) -> as
         ast.Assign(
             targets=[ast.Name(id="__all__")],
             value=ast.List(
-                elts=[ast.Constant(value=f"Async{n}") for n in all_names]
+                elts=[ast.Constant(value=f(n))
+                      for n in all_names
+                      for f in (async_class_name, protocol_name, rpc_class_name)]
+                + [ast.Constant(value=REGISTRY)]
                 + [ast.Constant(value=n) for n in free_names]
             ),
         )
