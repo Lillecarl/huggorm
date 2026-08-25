@@ -45,8 +45,60 @@ def _normalize(t: str) -> str:
     return _C_ALIASES.get(t, t)
 
 
-def map_c_type(raw: str, bindings_module) -> str:
-    """Map a raw pxd type ('string', 'const CPoop&', 'CPoop*', 'CPoop')
+def binding_map(bindings_module) -> dict[str, str]:
+    """pxd declaration name -> Python binding name, from the `_binds`
+    each cdef class declares.
+
+    This is the ONLY link between the two hand-written files. It used to
+    be a naming convention - strip a leading "C" and hope the bindings
+    module has the rest - living in this module, invisible from either
+    file it constrained. A pxd class named anything else silently failed
+    to map, and the failure was swallowed on returns and fatal on
+    parameters, for no reason.
+
+    Read from __dict__, not getattr: LocalStore would otherwise inherit
+    Store's _binds and claim to be CStore."""
+    out: dict[str, str] = {}
+    for name in sorted(dir(bindings_module)):
+        obj = getattr(bindings_module, name)
+        if not isinstance(obj, type):
+            continue
+        c_name = obj.__dict__.get("_binds")
+        if c_name is None:
+            continue
+        if c_name in out:
+            raise ValueError(
+                f"{name} and {out[c_name]} both declare _binds = {c_name!r}")
+        out[c_name] = name
+    return out
+
+
+def check_binding_map(api: dict, mapping: dict[str, str]) -> list[str]:
+    """Complaints about the pxd and the bindings disagreeing.
+
+    Claiming a class the pxd does not declare is always a mistake - a
+    typo, or a declaration that was renamed on one side only. Fatal.
+
+    The other direction, a pxd class nothing binds, is reported as a
+    warning by the caller: declaring a C++ type only to name it in a
+    signature is legitimate, and real Nix headers will be full of them.
+    Here it is a coverage hole worth seeing."""
+    declared = set(api["classes"])
+    bad = [
+        f"{py}._binds = {c!r}: no class of that name in the pxd "
+        f"(declared: {sorted(declared)})"
+        for c, py in sorted(mapping.items())
+        if c not in declared
+    ]
+    return bad
+
+
+def unbound_pxd_classes(api: dict, mapping: dict[str, str]) -> list[str]:
+    return sorted(set(api["classes"]) - set(mapping))
+
+
+def map_c_type(raw: str, mapping: dict[str, str]) -> str:
+    """Map a raw pxd type ('string', 'const CStorePath&', 'CValue*')
     to the Python annotation used by protocol dicts."""
     t = raw.strip()
     if t.startswith("const "):
@@ -55,14 +107,11 @@ def map_c_type(raw: str, bindings_module) -> str:
         t = t[:-1].rstrip()
     if t in _PRIMITIVES:
         return _PRIMITIVES[t]
-    if t.startswith("C"):
-        candidate = t[1:]
-        if hasattr(bindings_module, candidate):
-            # Bound wrapper types are validated by the caller (they must
-            # carry a _threading marker to be usable as return values;
-            # plain parameter use is fine regardless).
-            return candidate
-    raise ValueError(f"unmapped pxd type {raw!r}")
+    if t in mapping:
+        return mapping[t]
+    raise ValueError(
+        f"unmapped pxd type {raw!r}: neither a primitive nor a class any "
+        f"binding claims with _binds")
 
 
 def _annotation_name(ann) -> str:
@@ -95,7 +144,7 @@ def extract_method(func) -> dict:
     }
 
 
-def extract_wrapper(cls, api=None, bindings=None) -> dict:
+def extract_wrapper(cls, api=None, mapping=None) -> dict:
     """
     Reflect the live Python surface across the fake_library MRO chain:
     every public method and property the bindings actually expose, with
@@ -104,7 +153,7 @@ def extract_wrapper(cls, api=None, bindings=None) -> dict:
     policies elsewhere.
 
     Cython's `str arg` signature typing yields NO runtime annotation,
-    so parameter types fall back to "Any"; when api+bindings are given,
+    so parameter types fall back to "Any"; when api+mapping are given,
     those gaps are filled from the pxd declarations.
     """
     entries: dict[str, object] = {}
@@ -128,8 +177,8 @@ def extract_wrapper(cls, api=None, bindings=None) -> dict:
             methods.append(_reader_method(name, val))
         # anything else (plain class attrs) is not part of the surface
 
-    if api is not None and bindings is not None:
-        table = _pxd_signature_table(cls, api, bindings)
+    if api is not None and mapping is not None:
+        table = _pxd_signature_table(cls, api, mapping)
         for m in methods:
             known = table.get(m["name"])
             if not known:
@@ -201,7 +250,7 @@ def check_wire_contract(protos: list[dict]) -> list[str]:
     return bad
 
 
-def _pxd_signature_table(cls, api: dict, bindings_module) -> dict:
+def _pxd_signature_table(cls, api: dict, mapping: dict[str, str]) -> dict:
     """method name -> {'params': [python type names], 'ret': python type
     name or None}, gathered from every fake_library base in the MRO,
     using the pxd declarations.
@@ -219,17 +268,17 @@ def _pxd_signature_table(cls, api: dict, bindings_module) -> dict:
         if info is None:
             continue
         for m in info["methods"]:
-            try:
-                ret = map_c_type(m["ret"], bindings_module)
-            except ValueError:
-                ret = None
+            # Unmapped types are fatal on BOTH sides now. A swallowed
+            # return type silently left the surface un-backfilled, so a
+            # missing _binds surfaced as a mysterious "Any" much later -
+            # or not at all, when a live annotation happened to cover.
             out.setdefault(
                 m["name"],
                 {
                     "params": [
-                        map_c_type(ptype, bindings_module) for _, ptype in m["params"]
+                        map_c_type(ptype, mapping) for _, ptype in m["params"]
                     ],
-                    "ret": ret,
+                    "ret": map_c_type(m["ret"], mapping),
                 },
             )
     return out
@@ -250,17 +299,18 @@ def _reader_method(name: str, val) -> dict:
     return {"name": name, "params": [], "return_type": ret, "doc": doc}
 
 
-def returned_types_from_api(api: dict, bindings_module) -> list[type]:
+def returned_types_from_api(api: dict, bindings_module,
+                            mapping: dict[str, str]) -> list[type]:
     """Binding classes that appear as a method return type in the pxd
     AND carry a _threading marker — values handed back across the
     wrapper surface, as opposed to entry points users construct."""
+    bound = set(mapping.values())
     names: set[str] = set()
     for info in api["classes"].values():
         for m in info["methods"]:
-            try:
-                py = map_c_type(m["ret"], bindings_module)
-            except ValueError:
-                continue
+            py = map_c_type(m["ret"], mapping)
+            if py not in bound:
+                continue  # a scalar
             kls = getattr(bindings_module, py, None)
             if isinstance(kls, type) and hasattr(kls, "_threading"):
                 names.add(py)

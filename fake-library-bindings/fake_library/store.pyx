@@ -91,6 +91,10 @@ cdef class Store:
 
     _threading = "pool"
     _async = False  # abstract: excluded from wrapper generation
+    # The C++ declaration this class binds. Declared per class, never
+    # inherited: the codegen reads __dict__, so LocalStore must name its
+    # own. This is the ONLY link between the pxd and the pyx.
+    _binds = "CStore"
 
     def __init__(self):
         if self._ptr == NULL:
@@ -143,6 +147,7 @@ cdef class Store:
 
 cdef class LocalStore(Store):
     _threading = "pool"
+    _binds = "CLocalStore"
 
     def __cinit__(self):
         self._ptr = new CLocalStore()
@@ -150,6 +155,7 @@ cdef class LocalStore(Store):
 
 cdef class RemoteStore(Store):
     _threading = "affine"
+    _binds = "CRemoteStore"
 
     def __cinit__(self):
         self._ptr = new CRemoteStore()
@@ -165,6 +171,7 @@ cdef class StorePath:
     # Immutable value: safe to serialize across a wire, so it crosses
     # wrapper boundaries as a copy.
     _wire = "value"
+    _binds = "CStorePath"
     # Serialization contract for every wire-value type, read by the
     # codegen. The field list IS the proto message shape; a field type
     # naming another wire-value nests that type's message. _parts()
@@ -215,6 +222,7 @@ cdef class StorePath:
 
 cdef class Derivation:
     _threading = "affine"
+    _binds = "CDerivation"
     # The instructive wire case: looks like a value, but set_env and the
     # access counter mutate it - so despite being a plain data holder it
     # must travel as a proxy. Mutability forces proxy, always.
@@ -245,6 +253,7 @@ cdef class DerivedPath:
     _threading = "pool"
     # Immutable build request: wire-value.
     _wire = "value"
+    _binds = "CDerivedPath"
     # A wire-value field may name another wire-value type: the emitted
     # message nests StorePathMsg and the codec recurses into it.
     # A trailing "?" marks an optional field: proto3 cannot tell an

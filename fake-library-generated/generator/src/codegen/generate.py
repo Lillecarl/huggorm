@@ -14,9 +14,12 @@ import sys
 
 from codegen.emitter import wrapper_module, returned_module, init_module
 from codegen.model import (
+    binding_map,
+    check_binding_map,
     check_wire_contract,
     extract_wrapper,
     returned_types_from_api,
+    unbound_pxd_classes,
 )
 from codegen.pxd import extract_api
 
@@ -73,12 +76,25 @@ def main(argv=None):
         api["classes"].update(part["classes"])
         print(f"parsed pxd: {len(part['classes'])} classes from {path_str}")
 
+    # The pxd and the pyx are the two hand-written files, and _binds is
+    # the only thing joining them. Check the join before trusting either.
+    mapping = binding_map(bindings)
+    complaints = check_binding_map(api, mapping)
+    if complaints:
+        for c in complaints:
+            print(f"binding map: {c}", file=sys.stderr)
+        sys.exit(1)
+    for c_name in unbound_pxd_classes(api, mapping):
+        print(f"warning: pxd declares {c_name}, no binding claims it with _binds")
+    print(f"binding map: {len(mapping)} classes "
+          + ", ".join(f"{c}->{py}" for c, py in sorted(mapping.items())))
+
     wrapper_classes = _wrapper_classes(bindings)
 
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    returned_classes = returned_types_from_api(api, bindings)
+    returned_classes = returned_types_from_api(api, bindings, mapping)
     returned_set = set(returned_classes)
     wrapper_classes = [c for c in wrapper_classes if c not in returned_set]
     if not wrapper_classes:
@@ -86,10 +102,10 @@ def main(argv=None):
         sys.exit(1)
 
     returned_protos = [
-        extract_wrapper(kls, api=api, bindings=bindings) for kls in returned_classes
+        extract_wrapper(kls, api=api, mapping=mapping) for kls in returned_classes
     ]
     returned_policies = {p["name"]: p["threading"] for p in returned_protos}
-    protos = [extract_wrapper(svc, api=api, bindings=bindings) for svc in wrapper_classes]
+    protos = [extract_wrapper(svc, api=api, mapping=mapping) for svc in wrapper_classes]
 
     # policy enforcement: a pool wrapper may not return affine types at
     # all - drop them from the surface entirely.

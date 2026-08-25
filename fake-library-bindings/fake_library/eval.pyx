@@ -34,6 +34,8 @@ gc_init()
 
 cdef class Value:
     _threading = "affine"
+    # The C++ declaration this class binds; see store.pyx.
+    _binds = "CValue"
     # Wire-proxy despite being "just data": thunks must force on their
     # home thread and forcing mutates in place. A future refinement may
     # serialize forced scalars; until then, proxy.
@@ -86,6 +88,7 @@ cdef class EvalState:
     cdef CEvalState* _ptr
 
     _threading = "affine"
+    _binds = "CEvalState"
 
     def __cinit__(self, str store_uri="local"):
         cdef bytes b_uri = store_uri.encode('utf-8')
