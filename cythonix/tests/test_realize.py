@@ -15,8 +15,6 @@ from conftest import HOST, Server
 from cythonix import remote
 from cythonix_generated import RPCValue
 
-pytestmark = pytest.mark.anyio
-
 
 @pytest.fixture
 async def state(server: Server) -> Any:

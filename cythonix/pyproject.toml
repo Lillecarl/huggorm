@@ -16,10 +16,9 @@ exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# anyio's runner, not pytest-asyncio's. Tests carry the marker through
-# a module-level pytestmark; there is no auto mode, and the marker is
-# what tells the plugin which backend fixture to use.
-markers = ["anyio"]
+# anyio's runner, not pytest-asyncio's. auto: every async test runs
+# under it without a marker of its own, the same way asyncio_mode did.
+anyio_mode = "auto"
 # A hung test is the failure mode this suite is most exposed to: a
 # server that never came up, a handle that never resolved, a native
 # crash that took a thread with it. Fail instead of waiting.

@@ -14,8 +14,6 @@ from typing import Any
 import pytest
 from conftest import Server, run_tool
 
-pytestmark = pytest.mark.anyio
-
 
 @pytest.fixture(scope="session")
 def pkg() -> str:

@@ -22,8 +22,6 @@ from conftest import HOST, SHORT_TTL, Server
 
 from cythonix import remote
 
-pytestmark = pytest.mark.anyio
-
 
 async def wrapper_error(coro: Any) -> dict[str, str]:
     """Run something expected to fail, and return the typed error it

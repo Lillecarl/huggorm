@@ -17,8 +17,6 @@ from cythonix_bindings import DerivedPath
 from cythonix_generated import RPC_CLASSES, RPCDerivation
 from cythonix_generated._runtime import InternalError
 
-pytestmark = pytest.mark.anyio
-
 
 async def typed_failure(coro: Any) -> dict[str, str]:
     try:

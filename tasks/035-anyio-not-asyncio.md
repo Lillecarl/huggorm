@@ -14,9 +14,10 @@ port probe, the timeouts, the sleeps. pytest-asyncio is gone.
 
 Two things about anyio's plugin worth knowing before touching it:
 
-- there is no auto mode. Each suite carries
-  `pytestmark = pytest.mark.anyio`; without it the plugin does not run
-  the test and pytest reports a coroutine that was never awaited.
+- `anyio_mode = "auto"` runs every async test under it without a
+  marker, the same way `asyncio_mode` did. (I first wrote that anyio
+  had no auto mode and marked every suite by hand; Carl corrected it.
+  anyio has had the setting since 4.x.)
 - the runner is cached at the `anyio_backend` fixture's scope. That
   fixture is session-scoped here on purpose, because that is what lets
   a server fixture outlive one test. A client belongs to the loop it
