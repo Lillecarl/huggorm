@@ -20,13 +20,16 @@ Exception policy:
   not retry a factory that already failed.
 """
 
+from __future__ import annotations
+
 import asyncio
 import concurrent.futures
 import copy
 import json
 import threading
+from typing import Any, Callable, Iterable
 
-_POOL = None
+_POOL: concurrent.futures.ThreadPoolExecutor | None = None
 _POOL_LOCK = threading.Lock()
 
 
@@ -39,16 +42,17 @@ class WrapperError(Exception):
         super().__init__(message)
         self.message = message
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str]:
         return {"code": self.code, "message": self.message}
 
     @classmethod
-    def from_dict(cls, d: dict):
+    def from_dict(cls, d: dict[str, str]) -> WrapperError:
         """Rebuild a wrapper error from to_dict() output - used at RPC
         boundaries so typed errors survive the wire. A dict carrying a
         cause is by definition an InternalError; the original cause
         type is approximated by name."""
-        known = {"ValueError": ValueError, "TypeError": TypeError,
+        known: dict[str, type[BaseException]] = {
+                 "ValueError": ValueError, "TypeError": TypeError,
                  "RuntimeError": RuntimeError, "KeyError": KeyError,
                  "OSError": OSError}
         if "cause_type" not in d:
@@ -67,7 +71,7 @@ class InternalError(WrapperError):
         super().__init__(message)
         self.__cause__ = cause
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str]:
         d = super().to_dict()
         cause = self.__cause__
         d["cause_type"] = type(cause).__name__
@@ -85,7 +89,7 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
         return _POOL
 
 
-def unwrap_arg(x):
+def unwrap_arg(x: Any) -> Any:
     """Normalize one argument: an async wrapper contributes its target
     object, anything else passes through. Used for method arguments and
     for constructor args replayed by a lazy factory.
@@ -103,7 +107,7 @@ def unwrap_arg(x):
     return obj
 
 
-async def _materialize_args(args: list):
+async def _materialize_args(args: list[Any]) -> None:
     """Give every wrapper argument something to unwrap.
 
     Each one constructs on ITS OWN thread, one at a time, before the
@@ -121,21 +125,22 @@ class BaseRunner:
     # their own thread; pool runners may construct anywhere.
     dedicated_thread = False
 
-    def __init__(self, factory, obj=None):
+    def __init__(self, factory: Callable[[], Any] | None,
+                 obj: Any = None) -> None:
         # Either a lazy factory (constructed on first use, on this
         # runner's thread) or an already-built obj — never both.
         self._factory = factory
-        self._obj = obj
-        self._construct_error = None
+        self._obj: Any = obj
+        self._construct_error: BaseException | None = None
         # Pool runners admit concurrent first-calls; this lock makes
         # check-and-construct atomic so the factory runs exactly once.
         self._construct_lock = threading.Lock()
-        self.last_worker_name = None
-        self.last_worker_ident = None
-        self.born_thread_name = None
-        self.workers_seen = set()
+        self.last_worker_name: str | None = None
+        self.last_worker_ident: int | None = None
+        self.born_thread_name: str | None = None
+        self.workers_seen: set[str] = set()
 
-    def _resolve(self):
+    def _resolve(self) -> Any:
         # Runs inside a worker thread. First call constructs the object
         # on whichever thread this runner owns (affine) or a pool thread.
         # Double-checked: the fast path skips the lock once constructed.
@@ -147,6 +152,7 @@ class BaseRunner:
                     # Factory already failed once; re-raise without retrying.
                     raise self._construct_error
                 try:
+                    assert self._factory is not None
                     self._obj = self._factory()
                 except Exception as e:
                     self._construct_error = e
@@ -154,7 +160,7 @@ class BaseRunner:
                 self.born_thread_name = threading.current_thread().name
         return self._obj
 
-    def ensure(self):
+    def ensure(self) -> Any:
         """Return the underlying object, constructing it if needed.
         Used when a wrapper is passed as an argument to another wrapper:
         the sync binding wants the raw target, not the async handle.
@@ -174,11 +180,11 @@ class BaseRunner:
         return self._resolve()
 
     @staticmethod
-    def _unwrap(args):
+    def _unwrap(args: Iterable[Any]) -> list[Any]:
         # A wrapper argument contributes its target object.
         return [unwrap_arg(a) for a in args]
 
-    def _invoke(self, method, args):
+    def _invoke(self, method: str, args: list[Any]) -> Any:
         cur_before = threading.current_thread()
         try:
             obj = self._resolve()
@@ -200,7 +206,13 @@ class BaseRunner:
     def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         raise NotImplementedError
 
-    async def materialize(self):
+    async def aclose(self) -> None:
+        """Release whatever this runner owns. Every subclass has always
+        had one; the base did not declare it, so every emitted wrapper
+        called an attribute that formally did not exist."""
+        raise NotImplementedError
+
+    async def materialize(self) -> None:
         """Construct the target on this runner's OWN thread.
 
         ensure() refuses to build a dedicated-thread object, because it
@@ -219,13 +231,13 @@ class BaseRunner:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(self._executor(), self._resolve)
 
-    async def call(self, method: str, args: list):
+    async def call(self, method: str, args: list[Any]) -> Any:
         await _materialize_args(args)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor(), lambda: self._invoke(method, args))
 
 
-def _release_gc_thread():
+def _release_gc_thread() -> None:
     """Run ON a dying dedicated thread, as its last action.
 
     The bindings are imported here rather than at module scope: the
@@ -241,16 +253,17 @@ class AffineRunner(BaseRunner):
 
     dedicated_thread = True
 
-    def __init__(self, factory, name: str = "flg-affine"):
+    def __init__(self, factory: Callable[[], Any],
+                 name: str = "flg-affine") -> None:
         super().__init__(factory)
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix=name
         )
 
-    def _executor(self):
+    def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         return self._pool
 
-    async def aclose(self):
+    async def aclose(self) -> None:
         # The dedicated thread is about to die, so it has to leave the
         # collector's list first - on itself, as its last GC action.
         # Skipping that left a dead thread registered, and the next
@@ -267,10 +280,10 @@ class AffineRunner(BaseRunner):
 class PoolRunner(BaseRunner):
     """Operations run on a shared pool. Target must be thread-safe."""
 
-    def _executor(self):
+    def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         return _shared_pool()
 
-    async def aclose(self):
+    async def aclose(self) -> None:
         return None  # shared pool outlives wrappers
 
 
@@ -284,22 +297,22 @@ class AttachedRunner(BaseRunner):
 
     dedicated_thread = True
 
-    def __init__(self, obj, parent: BaseRunner):
+    def __init__(self, obj: Any, parent: BaseRunner) -> None:
         super().__init__(factory=None, obj=obj)
         self._parent = parent
         # Best knowledge: the producer's last worker is where obj was born.
         self.born_thread_name = parent.last_worker_name
 
-    def _executor(self):
+    def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         return self._parent._executor()
 
-    async def aclose(self):
+    async def aclose(self) -> None:
         # Nothing to shut down: the executor is shared with the parent,
         # and the underlying C++ object dies with this wrapper.
         self._obj = None
 
 
-async def call_function(fn, args: list):
+async def call_function(fn: Callable[..., Any], args: list[Any]) -> Any:
     """Run a module-level binding function on the shared pool.
 
     Free functions have no instance, so there is no runner to own them
@@ -310,7 +323,7 @@ async def call_function(fn, args: list):
     await _materialize_args(args)
     loop = asyncio.get_running_loop()
 
-    def invoke():
+    def invoke() -> Any:
         try:
             return fn(*[unwrap_arg(a) for a in args])
         except Exception as e:
@@ -321,7 +334,7 @@ async def call_function(fn, args: list):
     return await loop.run_in_executor(_shared_pool(), invoke)
 
 
-def attach_runner(obj, parent: BaseRunner, policy: str) -> BaseRunner:
+def attach_runner(obj: Any, parent: BaseRunner, policy: str) -> BaseRunner:
     """Pick a runner for a returned object based on its declared policy."""
     if policy == "affine":
         if isinstance(parent, AffineRunner | AttachedRunner):
