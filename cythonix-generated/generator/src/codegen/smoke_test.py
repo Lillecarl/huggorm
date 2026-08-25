@@ -863,6 +863,135 @@ def _resolved(found: dict[str, Any], name: str) -> dict[str, Any]:
     return merged
 
 
+def _expr(src: str) -> str:
+    """One expression, normalized the way ast.unparse writes it, so a
+    manifest string and an emitted node compare as source."""
+    return ast.unparse(ast.parse(src, mode="eval").body)
+
+
+def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
+    """The emitted surfaces against the MANIFEST, not each other.
+
+    test_conformance compares the three modules to one another, which
+    is the right question for drift BETWEEN them and blind to drift
+    they share. Emptying the emitter's defaults loop changes all three
+    together, so they stay perfectly consistent and perfectly wrong -
+    verified, and it passed.
+
+    So this compares one surface to the declaration it came from. Only
+    the parts that cross VERBATIM: parameter names and parameter
+    defaults. An annotation is transformed on the way out - widened
+    for async, renamed to a protocol, swapped for a twin - and
+    re-deriving those here would rebuild the emitter inside its own
+    test, which is exactly what test_conformance avoids. A name and a
+    default get no such treatment, so comparing them needs no rules at
+    all.
+
+    The in-process wrapper is the surface picked, because it is the
+    one that carries every method: the protocol drops what it cannot
+    promise and the rpc client drops what cannot cross."""
+    import cythonix_generated as flg
+
+    manifest = json.loads(
+        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
+    wrapped = {
+        name: proto
+        for group in ("wrappers", "returned_types")
+        for name, proto in manifest[group].items()
+        if proto["wrapped"]
+    }
+    found = _emitted_classes(out)
+
+    def declared(name: str | None) -> dict[str, Any]:
+        """Every method the chain declares, leaf definitions winning.
+        018 splits a surface across a base and its subclasses, so one
+        class's own list is only part of what it offers."""
+        out_: dict[str, Any] = {}
+        while name is not None:
+            proto = wrapped[name]
+            for m in proto["methods"]:
+                out_.setdefault(m["name"], m)
+            name = proto.get("async_base")
+        return out_
+
+    failures, checked, ctor_checked = [], 0, 0
+    for cls_name, proto in wrapped.items():
+        emitted = _resolved(found, proto["async_class"])
+        for name, m in declared(cls_name).items():
+            sig = emitted.get(name)
+            if sig is None:
+                failures.append(f"{cls_name}.{name}: declared, not emitted")
+                continue
+            checked += 1
+            want_names = [p["name"] for p in m["params"]]
+            if sig["params"] != want_names:
+                failures.append(
+                    f"{cls_name}.{name} takes {sig['params']}, the manifest "
+                    f"declares {want_names}")
+            # Defaults align to the END of the parameter list, the way
+            # Python aligns them.
+            want_defaults = [_expr(p["default"]) for p in m["params"]
+                             if p["default"] is not None]
+            if [_expr(d) for d in sig["defaults"]] != want_defaults:
+                failures.append(
+                    f"{cls_name}.{name} defaults to {sig['defaults']}, the "
+                    f"manifest declares {want_defaults}")
+
+    # ...and the CONSTRUCTORS, read off the stubs. That is where a
+    # constructor default actually lands: the only class with one is a
+    # returned type, and a returned type's emitted __init__ takes
+    # (obj, runner) rather than the declared parameters. A check
+    # against the wrappers alone would have compared two empty lists
+    # and said nothing.
+    from codegen.emitter import STUB_PACKAGE
+
+    # Every declared class, not only the wrapped ones: the stubs
+    # describe the BINDINGS, which the generated surface has filtered.
+    declared_classes = {
+        name: pr
+        for group in ("wrappers", "returned_types")
+        for name, pr in manifest[group].items()
+    }
+    for pyi in sorted((out.parent / STUB_PACKAGE).glob("*.pyi")):
+        tree = ast.parse(pyi.read_text(), filename=pyi.name)
+        for node in tree.body:
+            if (not isinstance(node, ast.ClassDef)
+                    or node.name not in declared_classes):
+                continue
+            init = next((f for f in node.body
+                         if isinstance(f, ast.FunctionDef)
+                         and f.name == "__init__"), None)
+            if init is None:
+                continue
+            want = [_expr(p["default"])
+                    for p in declared_classes[node.name].get("ctor") or []
+                    if p["default"] is not None]
+            got = [_expr(ast.unparse(d)) for d in init.args.defaults]
+            if got != want:
+                failures.append(
+                    f"{pyi.name}:{node.name}.__init__ defaults to {got}, "
+                    f"the manifest declares {want}")
+            ctor_checked += 1
+
+    assert not failures, ("the emitted surface and the manifest disagree:\n  "
+                          + "\n  ".join(failures))
+    assert any(p["default"] is not None
+               for pr in declared_classes.values()
+               for p in pr.get("ctor") or []), (
+        "no constructor declares a default; that half proves nothing")
+    assert ctor_checked >= len(wrapped) // 2, (
+        f"checked only {ctor_checked} constructor(s) in the stubs")
+    assert checked >= 3 * len(wrapped), (
+        f"checked only {checked} method(s) across {len(wrapped)} classes")
+    # Non-vacuity: something must actually HAVE a default, or the
+    # comparison is between two empty lists everywhere.
+    assert any(p["default"] is not None
+               for group in ("wrappers", "returned_types")
+               for pr in manifest[group].values()
+               for m in pr["methods"] for p in m["params"]), (
+        "no method declares a default; this gate now proves nothing")
+
+
 def test_conformance(out: pathlib.Path) -> None:
     """The three emitted surfaces must agree.
 
@@ -1169,6 +1298,7 @@ def main(argv: list[str] | None = None) -> None:
     importlib.invalidate_caches()
     test_runtime_contract(out)
     test_no_unused_imports(out)
+    test_the_manifest_is_what_got_written(out)
     test_conformance(out)
     test_stubs(out)
     test_docstrings()
