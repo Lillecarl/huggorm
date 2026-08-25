@@ -14,6 +14,10 @@ import shutil
 from setuptools import setup
 from setuptools.command.build_py import build_py
 
+# The stub package's directory name, owned by the emitter so setup.py
+# and the generator cannot drift.
+STUB_PACKAGE = "fake_library-stubs"
+
 
 class build_with_codegen(build_py):
     def run(self):
@@ -32,11 +36,20 @@ class build_with_codegen(build_py):
 
         # build_py snapshots package_data before our hook runs, so the
         # generated schema needs an explicit copy into build_lib.
-        src = pathlib.Path(pkg_dir) / "grpc_schema.pb"
-        dst = pathlib.Path(self.build_lib) / "fake_library_generated" / "grpc_schema.pb"
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(src, dst)
+        for name in ("grpc_schema.pb", "py.typed"):
+            dst = pathlib.Path(self.build_lib) / "fake_library_generated" / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(pathlib.Path(pkg_dir) / name, dst)
+
+        # The stubs for the bindings are a PEP 561 stub-only package:
+        # a directory named <package>-stubs holding .pyi files and NO
+        # __init__.py. build_py cannot collect one - the name is not an
+        # identifier and there is no module to find - so it is copied
+        # wholesale into build_lib, which is the wheel's root.
+        stubs = pathlib.Path(cwd) / STUB_PACKAGE
+        shutil.copytree(stubs, pathlib.Path(self.build_lib) / STUB_PACKAGE,
+                        dirs_exist_ok=True)
 
 
 setup(cmdclass={"build_py": build_with_codegen},
-      package_data={"fake_library_generated": ["grpc_schema.pb"]})
+      package_data={"fake_library_generated": ["grpc_schema.pb", "py.typed"]})

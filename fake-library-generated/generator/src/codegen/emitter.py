@@ -879,6 +879,169 @@ def free_function_module(protos: list[dict], async_types: set[str]) -> ast.Modul
     return mod
 
 
+STUB_PACKAGE = "fake_library-stubs"
+
+
+def _stub_body(doc: str) -> list[ast.stmt]:
+    """A docstring (when there is one) followed by `...`."""
+    out: list[ast.stmt] = []
+    if doc:
+        out.append(ast.Expr(value=ast.Constant(value=doc)))
+    out.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+    return out
+
+
+def stub_module(module: str, protos: list[dict], free_protos: list[dict],
+                produced: set[str], foreign: dict[str, str]) -> ast.Module:
+    """Emit the .pyi describing ONE binding module.
+
+    The bindings ship as compiled extensions. A typechecker cannot read
+    a .so, so without this every binding type is Any - which is why a
+    protocol-typed consumer could catch a call to a method that does
+    not exist and NOT catch a str passed where a StorePath is declared
+    (tasks/027).
+
+    Everything here already exists in the protocol dicts: method
+    signatures reflected from the live class and backfilled from the
+    pxd, and constructor signatures from the pxd, which is the only
+    place a Cython constructor's signature exists at all (019).
+
+    `produced` names the classes that are handed back rather than
+    constructed. Their __init__ raises unconditionally, so the stub
+    says NoReturn - true, and it makes StorePath() an error at the call
+    site instead of a TypeError at runtime.
+
+    These protos are the UNFILTERED ones. The generated surface is not
+    the binding surface: the pool policy drops query_derivation from
+    Store, and 018 moves the shared methods off the subclasses. Both
+    are rules about the async wrappers. A stub describing the sync
+    bindings that way would hide LocalStore.query_derivation, which
+    exists and which custom.py calls."""
+    mod = ast.Module(body=[], type_ignores=[])
+    short = module.rsplit(".", 1)[-1]
+    mod.body.append(ast.Expr(value=ast.Constant(value=(
+        f"Generated type stubs for {module} - do not edit.\n\n"
+        f"The module itself is a compiled extension, which carries no "
+        f"signatures a typechecker can read. Built via ast at Nix build "
+        f"time, from the same protocol dicts as every other surface."))))
+
+    if any(p["name"] in produced for p in protos):
+        mod.body.append(ast.ImportFrom(
+            module="typing", names=[ast.alias(name="NoReturn")], level=0))
+    for name, other in sorted(foreign.items()):
+        mod.body.append(ast.ImportFrom(
+            module=other.rsplit(".", 1)[-1],
+            names=[ast.alias(name=name)], level=1))
+
+    by_name = {p["name"]: p for p in protos}
+
+    def inherited(proto) -> dict:
+        """Methods a base already declares identically. extract_wrapper
+        walks the MRO, so a subclass proto restates everything it
+        inherits; Python does not, and neither should the stub."""
+        out = {}
+        for b in proto["bases"]:
+            base = by_name.get(b.rsplit(".", 1)[-1])
+            if base is None:
+                continue
+            out |= inherited(base)
+            out |= {m["name"]: m for m in base["methods"]}
+        return out
+
+    for proto in protos:
+        name = proto["name"]
+        bases = [ast.Name(id=b.rsplit(".", 1)[-1]) for b in proto["bases"]]
+        from_base = inherited(proto)
+        cls = ast.ClassDef(name=name, bases=bases, keywords=[], body=[],
+                           decorator_list=[], type_params=[])
+        cls.body.append(ast.Expr(value=ast.Constant(value=(
+            proto.get("doc")
+            or f"Binding for the C++ {proto['binds']}. Threading "
+               f"'{proto['threading']}', wire '{proto['wire']}'."))))
+        # The declarations the codegen itself reads. They are real class
+        # attributes, so a stub that omitted them would make every
+        # reader of them an error.
+        for attr, kind in (("_threading", "str"), ("_wire", "str"),
+                           ("_binds", "str")):
+            cls.body.append(ast.AnnAssign(
+                target=ast.Name(id=attr),
+                annotation=_ann(kind, f"{name}.{attr}"),
+                value=None, simple=1))
+        if name in produced:
+            cls.body.append(ast.FunctionDef(
+                name="__init__",
+                args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
+                                   vararg=None, kwonlyargs=[], kw_defaults=[],
+                                   kwarg=None, defaults=[]),
+                body=_stub_body(
+                    f"Always raises: a {name} is produced by another "
+                    f"object, never constructed."),
+                decorator_list=[],
+                returns=_ann("NoReturn", f"{name}.__init__"),
+                type_params=[]))
+        else:
+            cls.body.append(ast.FunctionDef(
+                name="__init__", args=_ctor_args(proto, set()),
+                body=_stub_body(""), decorator_list=[],
+                returns=_ann("None", f"{name}.__init__"), type_params=[]))
+        for m in proto["methods"]:
+            same = from_base.get(m["name"])
+            if same is not None and (
+                    [p["type"] for p in same["params"]]
+                    == [p["type"] for p in m["params"]]
+                    and same["return_type"] == m["return_type"]):
+                continue  # inherited unchanged; the base declares it
+            cls.body.append(ast.FunctionDef(
+                name=m["name"], args=_params(m, name, {}),
+                body=_stub_body(m["doc"]), decorator_list=[],
+                returns=_ann(m["return_type"], f"{name}.{m['name']}"),
+                type_params=[]))
+        if len(cls.body) == 1:
+            # Docstring only: a class body needs a statement.
+            cls.body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+        mod.body.append(cls)
+
+    for proto in free_protos:
+        mod.body.append(ast.FunctionDef(
+            name=proto["name"],
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg=p["name"],
+                              annotation=_ann(p["type"],
+                                              f"{short}.{proto['name']}:{p['name']}"))
+                      for p in proto["params"]],
+                vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
+                defaults=[]),
+            body=_stub_body(proto["doc"]),
+            decorator_list=[],
+            returns=_ann(proto["return_type"], f"{short}.{proto['name']}"),
+            type_params=[]))
+
+    ast.fix_missing_locations(mod)
+    return mod
+
+
+def stub_init_module(by_module: dict[str, list[str]]) -> ast.Module:
+    """The stub package's __init__.pyi: re-export exactly what the real
+    __init__ exports, in the same order."""
+    mod = ast.Module(body=[], type_ignores=[])
+    mod.body.append(ast.Expr(value=ast.Constant(value=(
+        "Generated type stubs for fake_library - do not edit."))))
+    names = []
+    for module, exported in by_module.items():
+        # `X as X` is what marks a name re-exported from a stub; a plain
+        # import is private to the stub and invisible to consumers.
+        mod.body.append(ast.ImportFrom(
+            module=module.rsplit(".", 1)[-1],
+            names=[ast.alias(name=n, asname=n) for n in exported], level=1))
+        names += exported
+    mod.body.append(ast.Assign(
+        targets=[ast.Name(id="__all__")],
+        value=ast.List(elts=[ast.Constant(value=n) for n in names])))
+    ast.fix_missing_locations(mod)
+    return mod
+
+
 def init_module(all_names: list[str], free_names: list[str] | None = None) -> ast.Module:
     """The package front door: every wrapped class in its three forms -
     the protocol it promises, the in-process implementation and the RPC

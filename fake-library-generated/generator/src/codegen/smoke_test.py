@@ -681,6 +681,101 @@ def test_conformance(out: pathlib.Path):
         "working or the surface changed and this gate now proves nothing")
 
 
+def test_stubs(out: pathlib.Path):
+    """The stub package must describe the bindings EXACTLY.
+
+    A stub package is authoritative: once fake_library-stubs exists, a
+    typechecker stops looking at the real module, so a name the stubs
+    omit becomes an error at every call site and a name they invent
+    becomes a call that fails at runtime. Both directions matter, which
+    is why this compares sets rather than checking coverage one way.
+
+    Reflected against the LIVE modules, not the manifest. The manifest
+    holds the generated surface, which the affine-return drop and 018's
+    hierarchy split have already filtered; the bindings have neither."""
+    import importlib
+
+    from codegen.emitter import STUB_PACKAGE
+
+    stub_dir = out.parent / STUB_PACKAGE
+    assert stub_dir.is_dir(), f"no stub package at {stub_dir}"
+
+    bindings = importlib.import_module("fake_library")
+    failures = []
+    checked = 0
+    for pyi in sorted(stub_dir.glob("*.pyi")):
+        if pyi.name == "__init__.pyi":
+            continue
+        module = importlib.import_module(f"{bindings.__name__}.{pyi.stem}")
+        tree = ast.parse(pyi.read_text(), filename=pyi.name)
+
+        declared, classes = set(), {}
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                declared.add(node.name)
+                classes[node.name] = node
+            elif isinstance(node, ast.FunctionDef):
+                declared.add(node.name)
+        live = {n for n in dir(module) if not n.startswith("_")
+                and getattr(getattr(module, n), "__module__", None) == module.__name__}
+        if declared != live:
+            failures.append(
+                f"{pyi.name}: declares {sorted(declared - live)} that do not "
+                f"exist, and omits {sorted(live - declared)}")
+
+        for name, node in classes.items():
+            cls = getattr(module, name)
+            # Everything the stub says this class has, including what it
+            # inherits through a base the stub also declares.
+            def surface(n):
+                out_ = set()
+                cn = classes.get(n)
+                if cn is None:
+                    return out_
+                for b in cn.bases:
+                    if isinstance(b, ast.Name):
+                        out_ |= surface(b.id)
+                return out_ | {f.name for f in cn.body
+                               if isinstance(f, ast.FunctionDef)
+                               and not f.name.startswith("_")}
+            stub_methods = surface(name)
+            live_methods = set()
+            for k in cls.__mro__:
+                if getattr(k, "__module__", "").split(".")[0] != bindings.__name__:
+                    continue
+                live_methods |= {a for a, v in k.__dict__.items()
+                                 if not a.startswith("_")
+                                 and (callable(v) or hasattr(v, "__get__"))}
+            if stub_methods != live_methods:
+                failures.append(
+                    f"{pyi.name}:{name} declares "
+                    f"{sorted(stub_methods - live_methods)} that do not "
+                    f"exist, and omits {sorted(live_methods - stub_methods)}")
+            checked += 1
+
+    assert not failures, "stubs disagree with the bindings:\n  " + "\n  ".join(failures)
+    assert checked >= 5, f"stub gate checked only {checked} class(es)"
+
+    # The __init__ stub must re-export exactly what the real one does.
+    init = ast.parse((stub_dir / "__init__.pyi").read_text())
+    exported = {
+        a.name
+        for node in init.body if isinstance(node, ast.ImportFrom)
+        for a in node.names
+    }
+    assert exported == set(bindings.__all__), (
+        f"__init__.pyi exports {sorted(exported)}, the package exports "
+        f"{sorted(bindings.__all__)}")
+    # A plain import in a stub is PRIVATE; only `X as X` re-exports.
+    aliased = {
+        a.name
+        for node in init.body if isinstance(node, ast.ImportFrom)
+        for a in node.names if a.asname == a.name
+    }
+    assert aliased == exported, (
+        f"these are imported but not re-exported: {sorted(exported - aliased)}")
+
+
 def test_docstrings():
     """Every emitted module and class must carry a real __doc__. A
     string literal is only a docstring when nothing precedes it, so an
@@ -746,6 +841,7 @@ def main(argv=None):
     test_runtime_contract(out)
     test_no_unused_imports(out)
     test_conformance(out)
+    test_stubs(out)
     test_docstrings()
     test_annotations_resolve()
     asyncio.run(test_behavior())

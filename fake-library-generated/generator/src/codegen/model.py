@@ -201,6 +201,11 @@ def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
     return {
         "name": cls.__qualname__,
         "module": cls.__module__,
+        # Read from __dict__, not inspect.getdoc: a class with no
+        # docstring of its own would otherwise inherit its base's and
+        # the stub would document LocalStore with Store's text.
+        "doc": cls.__dict__.get("__doc__") or "",
+        "binds": cls.__dict__.get("_binds", ""),
         "bases": [f"{b.__module__}.{b.__qualname__}" for b in cls.__bases__ if b is not object],
         "threading": getattr(cls, "_threading", "affine"),
         # Generated as a base class: carries the surface its subclasses

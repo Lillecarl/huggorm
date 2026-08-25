@@ -14,11 +14,14 @@ import sys
 
 from codegen.emitter import (
     FREE_MODULE,
+    STUB_PACKAGE,
     free_function_module,
     init_module,
     protocol_module,
     returned_module,
     rpc_module,
+    stub_init_module,
+    stub_module,
     wrapper_module,
 )
 from codegen.model import (
@@ -371,6 +374,56 @@ def main(argv=None):
     (out / "__init__.py").write_text(
         ast.unparse(init_module(all_names, free_names)) + "\n")
 
+    # Type stubs for the bindings themselves (tasks/027). The bindings
+    # are compiled extensions, so a typechecker reads no signatures out
+    # of them and every binding type resolves to Any - which made the
+    # generated protocols name types that check nothing. Everything
+    # needed is already in the protocol dicts.
+    #
+    # A PEP 561 stub-only package, because a .pyi has to sit beside the
+    # module it describes and the bindings are built and installed
+    # before this runs. The generated package cannot write into them.
+    stub_dir = out.parent / STUB_PACKAGE
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    # Re-extracted, NOT the protos above: those have been through the
+    # affine-return drop and 018's hierarchy split, which are rules
+    # about the async wrappers. The bindings themselves have neither.
+    all_protos = (
+        [extract_wrapper(k, api=api, mapping=mapping) for k in returned_classes]
+        + [extract_wrapper(k, api=api, mapping=mapping, constructible=True)
+           for k in wrapper_classes])
+    # Bases before subclasses: a stub may forward-reference, but there
+    # is no reason to make a reader do it.
+    order_of = {p["name"]: i for i, p in enumerate(all_protos)}
+    all_protos.sort(key=lambda p: (
+        len([b for b in p["bases"] if b.rsplit(".", 1)[-1] in order_of]),
+        order_of[p["name"]]))
+    produced = {p["name"] for p in returned_protos}
+    home = {p["name"]: p["module"] for p in all_protos}
+    modules = sorted({p["module"] for p in all_protos}
+                     | {p["module"] for p in free_protos})
+    exported: dict[str, list[str]] = {}
+    for module in modules:
+        mine = [p for p in all_protos if p["module"] == module]
+        mine_free = [p for p in free_protos if p["module"] == module]
+        # Types this module names but does not define.
+        mentioned = {p["type"] for pr in mine for m in pr["methods"]
+                     for p in m["params"]}
+        mentioned |= {m["return_type"] for pr in mine for m in pr["methods"]}
+        mentioned |= {p["type"] for pr in mine for p in pr["ctor"]}
+        mentioned |= {p["type"] for pr in mine_free for p in pr["params"]}
+        mentioned |= {pr["return_type"] for pr in mine_free}
+        foreign = {n: home[n] for n in mentioned
+                   if n in home and home[n] != module}
+        short = module.rsplit(".", 1)[-1]
+        (stub_dir / f"{short}.pyi").write_text(ast.unparse(
+            stub_module(module, mine, mine_free, produced, foreign)) + "\n")
+        exported[module] = [p["name"] for p in mine] + [p["name"] for p in mine_free]
+    (stub_dir / "__init__.pyi").write_text(
+        ast.unparse(stub_init_module(exported)) + "\n")
+    print(f"generated {STUB_PACKAGE}/ for {len(modules)} binding module(s): "
+          + ", ".join(sorted(m.rsplit('.', 1)[-1] for m in modules)))
+
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(
         f"wrote manifest ({len(protos)} wrappers, {len(returned_protos)} returned types) "
@@ -386,6 +439,12 @@ def main(argv=None):
 
     shutil.copy(pathlib.Path(__file__).parent / "runtime.py", out / "_runtime.py")
     print(f"copied runtime into {out}")
+
+    # PEP 561: without this marker a typechecker skips an INSTALLED
+    # package entirely, however well annotated it is. The whole point
+    # of the protocols is that a consumer can be checked against them,
+    # and a consumer imports the installed package.
+    (out / "py.typed").write_text("")
 
 
 if __name__ == "__main__":
