@@ -233,6 +233,28 @@ def test_anonymous_holder() -> None:
     check("and it is keyed by ANON", ANON in t.connections)
 
 
+def test_manifest_schema_is_checked() -> None:
+    """A manifest from another generator must be refused, not read.
+
+    The server and the client learn every type, policy and rpc name
+    from this file. A stale one does not fail on load - it answers
+    wrong, one lookup at a time (tasks/022)."""
+    from fake_library_generated._wiretypes import MANIFEST_SCHEMA, check_manifest
+    from fake_library_python import grpc_pb
+
+    check("the shipped manifest passes its own check",
+          grpc_pb.load_manifest()["schema"] == MANIFEST_SCHEMA)
+    bad_manifests: list[dict[str, Any]] = [
+        {}, {"schema": MANIFEST_SCHEMA + 1}, {"schema": "1"}]
+    for bad in bad_manifests:
+        try:
+            check_manifest(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted a manifest with {bad!r}")
+    check("a manifest from another generator is refused", True)
+
+
 def main() -> None:
     tests: list[Any] = [
         test_identity_mapping,
@@ -247,6 +269,7 @@ def main() -> None:
         test_producer_pinning_with_a_reused_child,
         test_audit_catches_an_invented_lease,
         test_anonymous_holder,
+        test_manifest_schema_is_checked,
     ]
     for fn in tests:
         print(f"\n-- {fn.__name__}")

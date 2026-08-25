@@ -37,6 +37,7 @@ from codegen.model import (
     unbound_pxd_classes,
 )
 from codegen.pxd import extract_api
+from codegen.wiretypes import MANIFEST_SCHEMA
 
 # See model.Proto: one class, method or function as a plain dict.
 Proto = dict[str, Any]
@@ -312,7 +313,7 @@ def main(argv: list[str] | None = None) -> None:
         proto.pop("_helpers", None)
 
     manifest: Proto = {
-        "schema": 1,
+        "schema": MANIFEST_SCHEMA,
         "wrappers": {p["name"]: p for p in protos},
         "returned_types": {p["name"]: p for p in returned_protos},
         "free_functions": {p["name"]: p for p in free_protos},

@@ -16,6 +16,24 @@ two that drift.
 
 import ast
 
+# The manifest's shape, bumped whenever a consumer that reads an OLD
+# manifest would be wrong rather than merely missing something. The
+# generator stamps it and every reader checks it: client and server are
+# built together today, so they always agree with each other and would
+# agree just as happily on yesterday's shape (tasks/022).
+MANIFEST_SCHEMA = 1
+
+
+def check_manifest(manifest: dict[str, object]) -> None:
+    """Refuse a manifest this code cannot read."""
+    found = manifest.get("schema")
+    if found != MANIFEST_SCHEMA:
+        raise ValueError(
+            f"manifest schema {found!r}, expected {MANIFEST_SCHEMA}: it was "
+            f"written by a different generator. Rebuild the package that "
+            f"ships it against this one.")
+
+
 # The types that go in a field as themselves. The schema maps them to
 # proto types and the codec maps them to constructors; both start here.
 SCALAR_NAMES = ("str", "int", "bool")

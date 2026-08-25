@@ -7,6 +7,7 @@ from typing import Any
 from google.protobuf import descriptor_pb2, descriptor_pool
 
 import fake_library_generated
+from fake_library_generated._wiretypes import check_manifest
 
 PKG = "nixmock.v1"
 
@@ -32,4 +33,8 @@ def load_pool() -> descriptor_pool.DescriptorPool:
 def load_manifest() -> dict[str, Any]:
     manifest: dict[str, Any] = json.loads(
         (_pkg_dir() / "manifest.json").read_text())
+    # The server and the client read this to learn every type, policy
+    # and rpc name they use. A manifest from another generator would
+    # not fail here - it would answer wrong, one lookup at a time.
+    check_manifest(manifest)
     return manifest
