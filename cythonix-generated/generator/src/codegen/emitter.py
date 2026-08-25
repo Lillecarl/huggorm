@@ -35,6 +35,44 @@ def _param_ann(type_str: str, async_types: set[str]) -> str:
     return f"{type_str} | Async{type_str}" if type_str in async_types else type_str
 
 
+def _arguments(leading: list[ast.arg], params: list[Proto],
+               types: list[str], where: str) -> ast.arguments:
+    """`leading` plus one argument per declared parameter, annotated
+    and defaulted.
+
+    `types` is the annotation each parameter is written with. The
+    caller resolves it, because the same declared type is spelled
+    differently in an async wrapper, in a protocol and in a stub.
+
+    The default is written from the manifest's source string, so every
+    surface offers the same one. A caller that omits the argument gets
+    the same value in-process and over RPC, and the wire never has to
+    represent absence."""
+    args = list(leading)
+    defaults: list[ast.expr] = []
+    for p, type_str in zip(params, types, strict=True):
+        args.append(ast.arg(arg=p["name"],
+                            annotation=_ann(type_str, f"{where}:{p['name']}")))
+        if p["default"] is not None:
+            defaults.append(_ann(p["default"], f"{where}:{p['name']}="))
+        elif defaults:
+            raise ValueError(
+                f"{where}: required parameter {p['name']!r} follows a "
+                f"defaulted one")
+    return ast.arguments(posonlyargs=[], args=args, vararg=None,
+                         kwonlyargs=[], kw_defaults=[], kwarg=None,
+                         defaults=defaults)
+
+
+def _default_names(params: list[Proto]) -> list[str]:
+    """The default expressions in one parameter list, as strings.
+
+    Import collection reads these beside the annotations: a default of
+    `ContentAddressMethod.NAR` names a type the module has to import,
+    and the annotation only happens to name the same one."""
+    return [p["default"] for p in params if p["default"] is not None]
+
+
 def _ctor_args(proto: Proto, async_types: set[str]) -> ast.arguments:
     """Typed __init__ parameters from the declared constructor.
 
@@ -76,6 +114,7 @@ def _emitted_annotations(proto: Proto, async_types: set[str],
     out = [_param_ann(p["type"], async_types) for p in proto.get("ctor", ())]
     for m in proto["methods"]:
         out += [_param_ann(p["type"], async_types) for p in m["params"]]
+        out += _default_names(m["params"])
         rt = m["return_type"]
         out.append(f"Async{rt}" if rt in bound_policies else rt)
     return out
@@ -305,12 +344,10 @@ def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
     base and its subclasses: the body is identical either way, which is
     exactly why a base can carry it - the runner comes from whichever
     __init__ ran."""
-    params = [ast.arg(arg="self")] + [
-        ast.arg(arg=p["name"],
-                annotation=_ann(_param_ann(p["type"], async_types),
-                                f"{svc}.{m['name']}:{p['name']}"))
-        for p in m["params"]
-    ]
+    params = _arguments(
+        [ast.arg(arg="self")], m["params"],
+        [_param_ann(p["type"], async_types) for p in m["params"]],
+        f"{svc}.{m['name']}")
     body: list[ast.stmt] = []
     if m["doc"]:
         body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
@@ -329,8 +366,7 @@ def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
         body.append(_hop_return(m["name"], m["params"], rt))
     cls.body.append(ast.AsyncFunctionDef(
         name=m["name"],
-        args=ast.arguments(posonlyargs=[], args=params, vararg=None,
-                           kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
+        args=params,
         body=body,
         decorator_list=[],
         returns=(_ann(f"Async{rt}", f"{svc}.{m['name']}") if rt in bound_policies
@@ -597,14 +633,10 @@ def _sync_imports(annotations: list[str], defined_here: set[str]) -> ast.ImportF
 def _params(m: Proto, cls_name: str, ann: dict[str, str]) -> ast.arguments:
     """`self` plus one typed argument per declared parameter. `ann` maps
     a declared type to the annotation this module writes for it."""
-    args = [ast.arg(arg="self")] + [
-        ast.arg(arg=p["name"],
-                annotation=_ann(ann.get(p["type"], p["type"]),
-                                f"{cls_name}.{m['name']}:{p['name']}"))
-        for p in m["params"]
-    ]
-    return ast.arguments(posonlyargs=[], args=args, vararg=None, kwonlyargs=[],
-                         kw_defaults=[], kwarg=None, defaults=[])
+    return _arguments(
+        [ast.arg(arg="self")], m["params"],
+        [ann.get(p["type"], p["type"]) for p in m["params"]],
+        f"{cls_name}.{m['name']}")
 
 
 def protocol_module(manifest: Proto, ordered: list[Proto],
@@ -630,6 +662,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
             if m["protocol_blockers"]:
                 continue
             annotations += [p["type"] for p in m["params"]]
+            annotations += _default_names(m["params"])
             annotations.append(ret_ann(m["return_type"]))
 
     mod = ast.Module(body=[], type_ignores=[])
@@ -703,10 +736,17 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
 
 def _spec(m: Proto) -> ast.expr:
     """One method's call spec as a literal, straight out of the
-    manifest. The docstring is dropped: it is already on the method."""
-    return ast.parse(repr({k: v for k, v in m.items()
-                           if k not in ("doc", "protocol_blockers")}),
-                     mode="eval").body
+    manifest. The docstring is dropped: it is already on the method.
+
+    So are the parameter defaults. The method signature above resolved
+    them before the call reached the runtime, so every argument the
+    spec describes is present - carrying a default here would suggest
+    the runtime fills one in, and it never does."""
+    spec = {k: v for k, v in m.items()
+            if k not in ("doc", "protocol_blockers")}
+    spec["params"] = [{k: v for k, v in p.items() if k != "default"}
+                      for p in m["params"]]
+    return ast.parse(repr(spec), mode="eval").body
 
 
 def rpc_module(manifest: Proto, ordered: list[Proto],
@@ -740,6 +780,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     for proto in ordered:
         for m in proto["methods"]:
             annotations += [ann.get(p["type"], p["type"]) for p in m["params"]]
+            annotations += _default_names(m["params"])
             annotations.append(ann.get(m["return_type"], m["return_type"]))
 
     mod = ast.Module(body=[], type_ignores=[])
@@ -944,6 +985,7 @@ def free_function_module(protos: list[Proto],
     annotations = []
     for proto in protos:
         annotations += [_param_ann(p["type"], async_types) for p in proto["params"]]
+        annotations += _default_names(proto["params"])
         annotations.append(proto["return_type"])
     used = _annotation_names(annotations)
     if any(p["return_type"] != "None" for p in protos):
@@ -972,13 +1014,10 @@ def free_function_module(protos: list[Proto],
             keywords=[]), proto["return_type"]))
         mod.body.append(ast.AsyncFunctionDef(
             name=proto["name"],
-            args=ast.arguments(
-                posonlyargs=[],
-                args=[ast.arg(arg=p["name"],
-                              annotation=_ann(_param_ann(p["type"], async_types),
-                                              f"{proto['name']}:{p['name']}"))
-                      for p in proto["params"]],
-                vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
+            args=_arguments(
+                [], proto["params"],
+                [_param_ann(p["type"], async_types) for p in proto["params"]],
+                proto["name"]),
             body=body,
             decorator_list=[],
             returns=_ann(proto["return_type"], proto["name"]),
@@ -1117,14 +1156,9 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     for proto in free_protos:
         mod.body.append(ast.FunctionDef(
             name=proto["name"],
-            args=ast.arguments(
-                posonlyargs=[],
-                args=[ast.arg(arg=p["name"],
-                              annotation=_ann(p["type"],
-                                              f"{short}.{proto['name']}:{p['name']}"))
-                      for p in proto["params"]],
-                vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
-                defaults=[]),
+            args=_arguments([], proto["params"],
+                            [p["type"] for p in proto["params"]],
+                            f"{short}.{proto['name']}"),
             body=_stub_body(proto["doc"]),
             decorator_list=[],
             returns=_ann(proto["return_type"], f"{short}.{proto['name']}"),

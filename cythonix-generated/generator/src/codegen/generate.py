@@ -129,6 +129,14 @@ def _free_functions(bindings_module: ModuleType) -> list[Any]:
     return out
 
 
+def _sig(m: Proto) -> list[str]:
+    """One method's parameter list, as the pair that has to match:
+    the declared type and the declared default."""
+    return [f"{p['name']}: {p['type']}"
+            + (f" = {p['default']}" if p["default"] is not None else "")
+            for p in m["params"]]
+
+
 def _hierarchy(
     wrapper_classes: list[type], protos: list[Proto]
 ) -> tuple[dict[str, str], dict[str, set[str]], list[str]]:
@@ -176,13 +184,17 @@ def _hierarchy(
                 if m["name"] not in names:
                     continue
                 b = base_sigs[m["name"]]
-                if ([p["type"] for p in m["params"]] != [p["type"] for p in b["params"]]
-                        or m["return_type"] != b["return_type"]):
+                # Defaults too, not only types. The base declares the
+                # method the subclass inherits, so a subclass that
+                # changed only a default would be called with the
+                # base's one - and the two would disagree about what
+                # the short call means.
+                if (_sig(m) != _sig(b) or m["return_type"] != b["return_type"]):
                     complaints.append(
                         f"{kid['name']}.{m['name']} does not match "
                         f"{base_name}.{m['name']}: "
-                        f"{[p['type'] for p in m['params']]} -> {m['return_type']} "
-                        f"vs {[p['type'] for p in b['params']]} -> {b['return_type']}")
+                        f"{_sig(m)} -> {m['return_type']} "
+                        f"vs {_sig(b)} -> {b['return_type']}")
     return base_of, shared_of, complaints
 
 
@@ -495,6 +507,14 @@ def main(argv: list[str] | None = None) -> None:
         written += [p["type"] for pr in mine for p in pr["ctor"]]
         written += [p["type"] for pr in mine_free for p in pr["params"]]
         written += [pr["return_type"] for pr in mine_free]
+        # And the defaults, which are expressions rather than types but
+        # name types all the same: `method: ContentAddressMethod =
+        # ContentAddressMethod.NAR` needs the import for the second
+        # half even if the first half were spelled differently.
+        written += [p["default"] for pr in mine for m in pr["methods"]
+                    for p in m["params"] if p["default"] is not None]
+        written += [p["default"] for pr in mine_free for p in pr["params"]
+                    if p["default"] is not None]
         mentioned = {n for t in written for n in names_in(t)}
         foreign = {n: home[n] for n in mentioned
                    if n in home and home[n] != module}

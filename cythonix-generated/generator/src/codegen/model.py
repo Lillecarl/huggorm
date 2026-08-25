@@ -6,9 +6,11 @@ by the caller. The dict shape is the contract between the sources
 (the bindings pxd + the installed bindings) and the emitter (emitter.py).
 """
 
+import ast
 import contextlib
 import importlib
 import inspect
+from enum import Enum
 from types import ModuleType
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -171,6 +173,59 @@ def _annotation_name(ann: Any) -> str:
     return getattr(ann, "__name__", str(ann))
 
 
+def default_source(value: Any, where: str) -> str | None:
+    """One parameter default, as the source that reproduces it.
+
+    A default is a fact about the SIGNATURE, not about the wire. Every
+    generated surface writes it, so a caller that omits the argument
+    gets the same value in-process and over RPC, and the argument that
+    reaches the wire is always present. That is why this answers with
+    source rather than with a value: the emitter writes it, the runtime
+    never sees it.
+
+    None means the parameter has no default.
+
+    An enum member is written as the member, not as its value. A
+    StrEnum member IS a string, so `repr` would give `'nar'` - which
+    still calls correctly and which a typechecker rejects, because a
+    str is not a ContentAddressMethod.
+
+    Everything else must be a literal that reads back as itself. That
+    check is not ceremony: `repr(float("inf"))` is `inf`, which is a
+    NameError in the module it would be written into.
+
+    A default of None is refused. The surface has no optional spelling
+    yet - a proxy has no None to send and a scalar field has no
+    presence - so a None default would typecheck here and fail at the
+    first call that took it."""
+    if value is inspect.Parameter.empty:
+        return None
+    if value is None:
+        raise ValueError(
+            f"{where}: a default of None needs an optional type the surface "
+            f"cannot yet spell. Declare the parameter required.")
+    if isinstance(value, Enum):
+        return f"{type(value).__name__}.{value.name}"
+    src = repr(value)
+    try:
+        if ast.literal_eval(src) != value:
+            raise ValueError("does not read back as itself")
+    except (ValueError, SyntaxError) as exc:
+        raise ValueError(
+            f"{where}: default {value!r} is not a literal the generated "
+            f"surfaces can write ({exc})") from None
+    return src
+
+
+def _param(p: inspect.Parameter, type_str: str, where: str) -> Proto:
+    """One parameter, as every layer above reads it."""
+    return {
+        "name": p.name,
+        "type": type_str,
+        "default": default_source(p.default, f"{where}:{p.name}"),
+    }
+
+
 def extract_method(func: Any) -> Proto:
     sig = inspect.signature(func)
     params = list(sig.parameters.values())[1:]  # drop self
@@ -181,7 +236,9 @@ def extract_method(func: Any) -> Proto:
     return {
         "name": func.__name__,
         "params": [
-            {"name": p.name, "type": _normalize(_annotation_name(hints.get(p.name, p.annotation)))}
+            _param(p,
+                   _normalize(_annotation_name(hints.get(p.name, p.annotation))),
+                   func.__name__)
             for p in params
         ],
         "return_type": _normalize(_annotation_name(hints.get("return", sig.return_annotation))),
@@ -398,8 +455,9 @@ def extract_free_function(fn: Any, api: Api,
     sig = inspect.signature(fn)
     hints = getattr(fn, "__annotations__", {})
     params = [
-        {"name": p.name,
-         "type": _normalize(_annotation_name(hints.get(p.name, p.annotation)))}
+        _param(p,
+               _normalize(_annotation_name(hints.get(p.name, p.annotation))),
+               fn.__name__)
         for p in sig.parameters.values()
     ]
     declared = {f["name"]: f for f in api.get("free_functions", [])}

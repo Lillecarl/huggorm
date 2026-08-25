@@ -130,6 +130,46 @@ def test_declarations_are_found_by_binds() -> None:
     assert table["m"] == {"params": ["str"], "ret": "bool"}, table
 
 
+def test_a_default_is_written_or_refused() -> None:
+    """What a parameter default may be, and what happens to the rest.
+
+    The generated surfaces WRITE the default as source, so a default
+    this cannot write has to stop the build - a wrapper missing one
+    the binding has would answer a short call differently depending on
+    where the object lives.
+
+    An enum member is written as the member. A StrEnum member IS a
+    string, so `repr` gives `'nar'`, which calls correctly and which a
+    typechecker rejects: a str is not a ContentAddressMethod."""
+    import enum
+    import inspect
+
+    from codegen.model import default_source
+
+    class Word(enum.StrEnum):
+        NAR = "nar"
+
+    def src(value: object) -> str | None:
+        return default_source(value, "probe:p")
+
+    assert src(inspect.Parameter.empty) is None
+    assert src(Word.NAR) == "Word.NAR"
+    assert src("nar") == "'nar'"
+    assert src(7) == "7" and src(True) == "True" and src(b"x") == "b'x'"
+
+    # None looks like it should work and does not: the surface has no
+    # optional spelling, so it would typecheck here and fail at the
+    # first call that took it.
+    for bad, why in ((None, "optional type"), (float("inf"), "not a literal"),
+                     (object(), "not a literal")):
+        try:
+            src(bad)
+        except ValueError as e:
+            assert why in str(e), (bad, str(e))
+        else:
+            raise AssertionError(f"{bad!r} was accepted as a default")
+
+
 def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference
     the runtime only via `from _runtime import X`; a rename on either
@@ -461,7 +501,8 @@ async def test_behavior() -> None:
     await untouched.aclose()
     await untouched_store.aclose()
     free = manifest["free_functions"]
-    assert free["describe"]["params"] == [{"name": "obj", "type": "MockStore"}], (
+    assert free["describe"]["params"] == [
+        {"name": "obj", "type": "MockStore", "default": None}], (
         free["describe"]["params"]
     )
     assert free["collect_garbage"]["return_type"] == "None"
@@ -760,6 +801,10 @@ def _emitted_classes(out: pathlib.Path) -> dict[str, Any]:
                     "params": [a.arg for a in args],
                     "annotations": [ast.unparse(a.annotation) if a.annotation
                                     else None for a in args],
+                    # Aligned to the END of the parameter list, the way
+                    # Python aligns them, so a comparison across the
+                    # three surfaces is between the same parameters.
+                    "defaults": [ast.unparse(d) for d in f.args.defaults],
                     "returns": ast.unparse(f.returns) if f.returns else None,
                     "is_async": isinstance(f, ast.AsyncFunctionDef),
                     "where": py.name,
@@ -858,6 +903,15 @@ def test_conformance(out: pathlib.Path) -> None:
                         f"{cls_name}.{m}: {label} annotates "
                         f"{sig['annotations']}, {proto['protocol']} declares "
                         f"{want['annotations']}")
+                if sig["defaults"] != want["defaults"]:
+                    # A default is part of what a call MEANS. Three
+                    # surfaces that agree on types and disagree here
+                    # answer the same short call differently depending
+                    # on where the object lives.
+                    failures.append(
+                        f"{cls_name}.{m}: {label} defaults to "
+                        f"{sig['defaults']}, {proto['protocol']} declares "
+                        f"{want['defaults']}")
                 if not sig["is_async"]:
                     failures.append(f"{cls_name}.{m}: {label} is not async")
                 expected = want["returns"]
@@ -1041,6 +1095,7 @@ def main(argv: list[str] | None = None) -> None:
     test_pxd_renders_every_type()
     test_annotation_rendering()
     test_declarations_are_found_by_binds()
+    test_a_default_is_written_or_refused()
 
     # Import the generated package from its parent dir, shadowing any
     # installed copy. Bindings (cythonix_bindings) come from PYTHONPATH.
