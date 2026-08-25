@@ -29,7 +29,7 @@ class build_with_codegen(build_py):
         argv = ["--out", pkg_dir]
         pxds = os.environ.get("PXD_FILE", "").split()
         if pxds:
-            argv += ["--pxd"] + pxds
+            argv += ["--pxd", *pxds]
         generate(argv)
         smoke(["--out", pkg_dir])
         super().run()
