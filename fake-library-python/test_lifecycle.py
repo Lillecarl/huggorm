@@ -48,14 +48,28 @@ async def main():
         uri = await cross.get_uri()
         check("handle usable across connections", uri == "local")
 
+        # Release once, then release the SAME handle id through a fresh
+        # object. Reusing store_a sent an empty id the second time (the
+        # client blanks handle_id on success), so this used to assert
+        # that releasing handle "" fails - which proves nothing.
+        hid_a = store_a.handle_id
+        await a.release(store_a)
+        again = remote.RemoteObj(a, "LocalStore", hid_a)
         threw = None
         try:
-            await a.release(store_a)
-            await a.release(store_a)  # second release: lease already gone
+            await a.release(again)
         except InternalError as e:
             threw = e.to_dict()
         check("double release fails typed",
-              threw is not None and threw["cause_type"] == "ValueError", threw)
+              threw is not None and threw["cause_type"] == "ValueError"
+              and hid_a[:8] in threw["cause_message"], threw)
+
+        threw = None
+        try:
+            await a.release(store_a)  # already blanked client-side
+        except ValueError as e:
+            threw = str(e)
+        check("releasing a spent object fails client-side", threw is not None, threw)
 
         # ---- share: copy and transfer --------------------------------
         tok_b = b.token
@@ -64,9 +78,9 @@ async def main():
             probe = remote.RemoteObj(b, "LocalStore", hid)
             return await probe.get_uri()
 
-        # a's first lease was consumed by the successful FIRST release
-        # above. Re-acquire cleanly; capture ids before releasing
-        # (release() clears the client-side handle).
+        # a's first lease was consumed by the successful release above.
+        # Re-acquire cleanly; capture ids before releasing (release()
+        # clears the client-side handle).
         store_a2 = await a.acquire("LocalStore")
         hid_a2 = store_a2.handle_id
         await a.share(store_a2, tok_b, mode="copy")

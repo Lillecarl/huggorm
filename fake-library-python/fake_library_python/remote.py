@@ -163,6 +163,12 @@ class NixClient:
         return RemoteObj(self, cls_name, resp.id)
 
     async def release(self, obj: RemoteObj):
+        if obj.handle_id is None:
+            # Releasing twice through the same object used to send an
+            # empty id: protobuf drops a None string, so the server
+            # answered "no lease on ''" and the caller saw a plausible
+            # error about the wrong handle.
+            raise ValueError("handle already released through this object")
         req = self.msg("Handle")(id=obj.handle_id)
         await self._rpc(f"/{schema.PKG}.Session/Release", req, "Handle")
         obj.handle_id = None
