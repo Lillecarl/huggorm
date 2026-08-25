@@ -918,11 +918,16 @@ def rpc_module(manifest: dict, ordered: list[dict],
 
         mod.body.append(cls)
 
-    mod.body.append(ast.Assign(
-        targets=[ast.Name(id=REGISTRY)],
+    # Annotated: the inferred value type is the join of every class in
+    # it, which collapses to type[object] - and object takes no
+    # constructor arguments, so a caller could not build one.
+    mod.body.append(ast.AnnAssign(
+        target=ast.Name(id=REGISTRY),
+        annotation=_ann("dict[str, type[Any]]", REGISTRY),
         value=ast.Dict(
             keys=[ast.Constant(value=p["name"]) for p in ordered],
-            values=[ast.Name(id=rpc_class_name(p["name"])) for p in ordered])))
+            values=[ast.Name(id=rpc_class_name(p["name"])) for p in ordered]),
+        simple=1))
     ast.fix_missing_locations(mod)
     return mod
 
