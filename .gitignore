@@ -3,6 +3,9 @@ result
 result-*
 .direnv/
 
+# Agents
+.scratchpad
+
 # Python
 __pycache__/
 *.py[cod]
