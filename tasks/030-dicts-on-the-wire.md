@@ -114,3 +114,47 @@ value message:
 - a map of maps. proto3 will not synthesise the wrapper.
 - a map of proxies. Every entry would be a lease, and nothing grants
   leases in bulk (tasks/031).
+
+## Done 2026-08-25: the mock has collections
+
+A value can now be a list or an attribute set holding other values, so
+a value is a tree and any node of it may still be a thunk. Built, not
+parsed (Carl: "just builder methods, we don't want to reimplement
+Nix"). Attributes live in a sorted array like nix::Bindings, because
+Carl confirmed Nix attribute sets are alphabetical - so an index walk
+IS the listing order and `dict[str, V]` is the right Python shape.
+
+The binding surface is index-based and container-free:
+size/at/name_at/value_at/has/get to read, make_list plus list_append
+and make_attrs plus attrs_set to build. That is not a style choice.
+The pxd declares this API to Cython, and a template type there maps to
+nothing, so a declared surface is scalars and Value pointers.
+
+Two things fell out of it:
+
+- the pxd parser answered "void" for any type it could not render, so
+  a `vector[string]` return would have become None with nothing
+  reporting it. Fixed and gated.
+- a RETURNED type producing another returned type was not adopted into
+  its async wrapper. A Value that holds Values is the first thing with
+  that shape, and the conformance gate named all three methods.
+
+## What is left: the recursive message
+
+`Value.attrs() -> dict[str, Value]` and `Value.items() -> list[Value]`
+are deliberately absent. They need a collection of PROXIES, which is
+the NixValue message, and that message needs a decision this file
+cannot make on its own:
+
+**What does a client ask for?** The message shape is settled. The rpc
+that carries it is not. A tree that forces everything can be unbounded
+and can raise halfway down; a tree that forces nothing is a handle the
+client already had. Somewhere between them is a `Realize(handle,
+depth)` that serializes what is forced, leaves a thunk as a proxy, and
+stops at a depth the caller names.
+
+And every proxy in that tree takes a lease. A realize over a large
+attribute set hands the client hundreds of handles to release. The
+client's finalizers do balance it (tasks/028), but the round trip that
+saved N calls costs N handles, which may argue for the depth limit
+being small by default.

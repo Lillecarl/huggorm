@@ -139,6 +139,10 @@ the error code being switched off across a package.
 
 ### Not done
 
-The C++ side. -Wall and clang-tidy over the mock are still open, and
-they belong to whoever owns that code - which stops being us when the
-mock is replaced by real Nix (tasks/015).
+clang-tidy over the mock. It belongs to whoever owns that code, which
+stops being us when the mock is replaced by real Nix (tasks/015).
+
+Correction, 2026-08-25: -Wall was never open. meson.build has carried
+`warning_level=2` since the mock was written, which is -Wall -Wextra,
+and the mock has always compiled clean under it. This file said
+otherwise and was wrong.
