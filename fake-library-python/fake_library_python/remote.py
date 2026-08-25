@@ -1,11 +1,24 @@
 """
 Client side of the remote layer.
 
-RemoteObj gives the OOP feel: it holds a handle and exposes the same
-method surface as the local async wrapper. Wire-values come back as
-REAL local objects (copies - deserialized via the private binding
-helpers), proxies stay remote behind handles. Identical semantics to
-the in-process layer, different location.
+The client owns the connection, the codec and the lifecycle rpcs.
+Every object it hands back is a GENERATED class from
+fake_library_generated.rpc: real methods, real signatures, one per
+class in the manifest, satisfying the same protocol the in-process
+wrapper satisfies.
+
+That is the whole of this module's knowledge of the domain: none. It
+looks a class up by name in the generated registry and calls it. What
+used to live here was a RemoteObj that resolved method names against
+the manifest inside __getattr__ - which worked, and which a
+typechecker could see nothing at all through. It could neither reject
+a call to a method that does not exist nor check the arguments of one
+that does, and it satisfied every Protocol vacuously.
+
+Wire-values still come back as REAL local objects (copies,
+deserialized through the private binding helpers); proxies stay remote
+behind handles. Identical semantics to the in-process layer, different
+location.
 """
 
 import asyncio
@@ -22,69 +35,6 @@ from .lifecycle import TOKEN_HEADER
 from .wire import WireCodec
 
 
-class RemoteObj:
-    def __init__(self, client, cls_name: str, handle_id: str):
-        self._client = client
-        self._cls = cls_name
-        self.handle_id = handle_id
-
-    def _proto(self, cls_name=None) -> dict:
-        mft = self._client.manifest
-        name = cls_name or self._cls
-        proto = mft["wrappers"].get(name) or mft["returned_types"].get(name)
-        if proto is None:
-            raise AttributeError(f"{name!r} is not a class in the manifest")
-        return proto
-
-    def _resolve(self, method):
-        """Find a method on this class or on a base, walking the same
-        chain Python walks.
-
-        An inherited method's rpc lives on the service that DECLARED it,
-        so calling get_uri on a LocalStore handle dispatches through
-        StoreService. That is the type-agnostic path: the server
-        resolves the handle to whatever wrapper it is and the call lands
-        regardless of which implementation answered."""
-        name, seen = self._cls, []
-        while name is not None:
-            proto = self._proto(name)
-            seen.append(name)
-            for m in proto["methods"]:
-                if m["name"] == method:
-                    return m
-            name = proto.get("async_base")
-        offered = sorted(
-            m["name"]
-            for n in seen
-            for m in self._proto(n)["methods"]
-        )
-        raise AttributeError(
-            f"{self._cls!r} has no remote method {method!r}; the manifest "
-            f"offers {offered} across {seen}")
-
-    @property
-    def wire(self) -> str:
-        # Both groups, not just wrappers: a returned type used to fall
-        # through to the "proxy" default and answer correctly only
-        # because every returned proxy happens to be one.
-        return self._proto()["wire"]
-
-    def __getattr__(self, method):
-        if method.startswith("_"):
-            # Never let a dunder lookup (copy, pickle, repr helpers) walk
-            # into manifest resolution and come back as a coroutine.
-            raise AttributeError(method)
-        # next() with no default used to raise StopIteration here, which
-        # neither reads as a missing attribute nor survives inside a
-        # coroutine. _resolve raises AttributeError, and walks bases.
-        m = self._resolve(method)
-
-        async def call(*args):
-            return await self._client.invoke(self._cls, m, self.handle_id, args)
-
-        return call
-
-
 class NixClient:
     def __init__(self, host="127.0.0.1", port=50051):
         self.pool = schema.load_pool()
@@ -99,6 +49,22 @@ class NixClient:
                 self.pool.FindMessageTypeByName(f"{schema.PKG}.{name}"))
 
         self.msg = msg
+
+    def proxy(self, cls_name: str, handle_id: str):
+        """A client-side object for one remote handle.
+
+        The class is generated - one per class in the manifest, with
+        the same inheritance - so this is a lookup and a constructor,
+        and this module names nothing."""
+        from fake_library_generated.rpc import RPC_CLASSES
+
+        try:
+            cls = RPC_CLASSES[cls_name]
+        except KeyError:
+            raise TypeError(
+                f"{cls_name!r} has no generated client class; the build "
+                f"offers {sorted(RPC_CLASSES)}") from None
+        return cls(self, handle_id)
 
     async def _rpc(self, path, req, reply_name):
         from fake_library_generated._runtime import WrapperError
@@ -162,13 +128,13 @@ class NixClient:
             self._pinger.cancel()
             self._pinger = None
 
-    async def share(self, obj: RemoteObj, to_token: str, mode="copy"):
+    async def share(self, obj, to_token: str, mode="copy"):
         req = self.msg("ShareReq")(mode=mode)
         req.handle.id = obj.handle_id
         req.to_token = to_token
         await self._rpc(f"/{schema.PKG}.Session/Share", req, "AckResp")
 
-    async def detach(self, obj: RemoteObj | None = None, all=False) -> bool:
+    async def detach(self, obj=None, all=False) -> bool:
         """Hand our claim back as escrow under our own token. With no
         target and all=True, detaches every lease we hold."""
         req = self.msg("DetachReq")(all=all)
@@ -177,17 +143,21 @@ class NixClient:
         resp = await self._rpc(f"/{schema.PKG}.Session/Detach", req, "AckResp")
         return resp.ok
 
-    async def acquire(self, cls_name, *args) -> RemoteObj:
+    async def acquire(self, cls_name, *args):
         """Construct one instance remotely, from typed constructor
         arguments. The arguments cross exactly like method arguments -
         same codec, same wire policies - because they are declared the
         same way."""
-        try:
-            proto = self.manifest["wrappers"][cls_name]
-        except KeyError:
+        offered = sorted(n for n, p in self.manifest["wrappers"].items()
+                         if "acquire" in p)
+        proto = self.manifest["wrappers"].get(cls_name)
+        if proto is None or "acquire" not in proto:
+            # Not every constructible class is remotely constructible.
+            # One that crosses as a value has no handle to construct
+            # INTO: build it locally and pass it as an argument.
             raise ValueError(
-                f"{cls_name!r} is not constructible; the manifest offers "
-                f"{sorted(self.manifest['wrappers'])}") from None
+                f"{cls_name!r} cannot be constructed remotely; the manifest "
+                f"offers {offered}")
         ctor = proto["ctor"]
         required = [p["name"] for p in ctor if not p["optional"]]
         if len(args) < len(required) or len(args) > len(ctor):
@@ -202,9 +172,9 @@ class NixClient:
             self.codec.encode(req, p["name"], p["type"], val,
                               lambda obj: obj.handle_id)
         resp = await self._rpc(proto["acquire"]["path"], req, "Handle")
-        return RemoteObj(self, cls_name, resp.id)
+        return self.proxy(cls_name, resp.id)
 
-    async def release(self, obj: RemoteObj):
+    async def release(self, obj):
         if obj.handle_id is None:
             # Releasing twice through the same object used to send an
             # empty id: protobuf drops a None string, so the server
@@ -237,9 +207,13 @@ class NixClient:
         resp = await self._rpc(proto["rpc"]["path"], req, proto["rpc"]["resp"])
         return self.codec.decode(
             resp, "result", proto["return_type"],
-            lambda hid: RemoteObj(self, proto["return_type"], hid))
+            lambda hid: self.proxy(proto["return_type"], hid))
 
-    async def invoke(self, cls_name, m, handle_id, args):
+    async def invoke(self, m, handle_id, args):
+        """Make one call. `m` is the call spec a generated method
+        carries: the manifest's own entry for that method, minus the
+        docstring. Nothing is resolved here - the build already did
+        it."""
         req = self.msg(m["rpc"]["req"])()
         req.self.id = handle_id
 
@@ -257,7 +231,7 @@ class NixClient:
         # local objects.
         return self.codec.decode(
             resp, "result", m["return_type"],
-            lambda hid: RemoteObj(self, m["return_type"], hid))
+            lambda hid: self.proxy(m["return_type"], hid))
 
 
 async def connect(host="127.0.0.1", port=50051, claim=None) -> NixClient:

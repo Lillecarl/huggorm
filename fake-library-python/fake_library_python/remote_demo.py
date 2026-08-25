@@ -2,6 +2,10 @@
 Remote demo: same async surface as async_demo, but every operation
 crosses a gRPC socket. Wire-values come back as real local copies;
 proxies stay remote behind handles.
+
+Every object the client hands back is a generated class with real
+methods, so the same function can be typed against a protocol and take
+either an in-process wrapper or one of these.
 """
 
 import asyncio
@@ -30,7 +34,8 @@ async def main():
 
     print("\n=== proxies stay remote behind handles ===")
     drv = await remote_store.query_derivation(await remote_store.add_text_to_store("demo.drv", "DrvDemo"))
-    print("drv handle:", drv.handle_id[:12], "| wire:", drv.wire)
+    print("drv handle:", drv.handle_id[:12], "| wire:", drv._wire,
+          "| class:", type(drv).__name__)
     print(await drv.describe())
     await state.force(await state.parse_expr("42"))  # proxy arg over the wire
     v = await state.eval_expr('"hello over grpc"')
@@ -40,15 +45,33 @@ async def main():
     # Shared store methods are declared once, on StoreService, so a
     # caller works a store without knowing which kind answered.
     for h in (local, remote_store):
-        print(f"  {h._cls:12} get_uri -> {await h.get_uri()}"
-              f"  (via {h._resolve('get_uri')['rpc']['path']})")
+        print(f"  {type(h).__name__:16} get_uri -> {await h.get_uri()}"
+              f"  (via {type(h)._rpc['get_uri']['rpc']['path']})")
     print("  describe(store) over the wire:",
           await client.call_function("describe", local))
 
+    print("\n=== one function, either location, no branching ===")
+    # Typed against the generated protocol. It never asks whether the
+    # store answering is in this process or on the far side of the
+    # socket - and a typechecker sees the whole surface either way.
+    from fake_library_generated import StoreLike
+
+    async def report(store: StoreLike) -> str:
+        path = await store.add_text_to_store("shared.txt", "either location")
+        return f"{await store.get_uri()}: {path.to_string()}"
+
+    print(" remote:", await report(local))
+
+    from fake_library_generated import AsyncLocalStore
+    in_process = AsyncLocalStore()
+    print(" local: ", await report(in_process))
+    await in_process.aclose()
+
     print("\n=== cleanup ===")
-    await client.release(local)
-    await client.release(remote_store)
-    await client.release(state)
+    # aclose() means the same thing on both sides: let the object go.
+    await local.aclose()
+    await remote_store.aclose()
+    await state.aclose()
     print("released")
 
 

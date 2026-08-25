@@ -44,7 +44,7 @@ async def main():
 
         # Capability: anyone holding the ID may call; lifetime is what
         # tokens govern. b can use a's handle.
-        cross = remote.RemoteObj(b, "LocalStore", store_a.handle_id)
+        cross = b.proxy("LocalStore", store_a.handle_id)
         uri = await cross.get_uri()
         check("handle usable across connections", uri == "local")
 
@@ -54,7 +54,7 @@ async def main():
         # that releasing handle "" fails - which proves nothing.
         hid_a = store_a.handle_id
         await a.release(store_a)
-        again = remote.RemoteObj(a, "LocalStore", hid_a)
+        again = a.proxy("LocalStore", hid_a)
         threw = None
         try:
             await a.release(again)
@@ -75,7 +75,7 @@ async def main():
         tok_b = b.token
 
         async def b_calls(hid):
-            probe = remote.RemoteObj(b, "LocalStore", hid)
+            probe = b.proxy("LocalStore", hid)
             return await probe.get_uri()
 
         # a's first lease was consumed by the successful release above.
@@ -117,7 +117,7 @@ async def main():
         hid_drv = drv.handle_id
         await a.release(drv)
         # Now the graph is unreferenced: both entries drop together.
-        phantom_drv = remote.RemoteObj(a, "Derivation", hid_drv)
+        phantom_drv = a.proxy("Derivation", hid_drv)
         threw = None
         try:
             await phantom_drv.describe()
@@ -151,7 +151,7 @@ async def main():
 
         c = await remote.connect("127.0.0.1", port, claim=a.token)
         check("claim adopts the detached token", c.token == a.token)
-        claimed_thunk = remote.RemoteObj(c, "Value", thunk.handle_id)
+        claimed_thunk = c.proxy("Value", thunk.handle_id)
         check("escrowed objects survive connection death",
               await claimed_thunk.integer() == 42)
 
@@ -161,7 +161,7 @@ async def main():
         # one back, so no number of Releases ever reached zero and every
         # detach/claim round trip leaked its handle for good.
         await c.release(claimed_thunk)
-        phantom_claimed = remote.RemoteObj(c, "Value", hid_thunk)
+        phantom_claimed = c.proxy("Value", hid_thunk)
         threw = None
         try:
             await phantom_claimed.integer()
@@ -175,7 +175,7 @@ async def main():
         doomed = await d.acquire("LocalStore")
         d.stop_pinging()
         await asyncio.sleep(TTL * 1.5 + 1.0)
-        phantom = remote.RemoteObj(c, "LocalStore", doomed.handle_id)
+        phantom = c.proxy("LocalStore", doomed.handle_id)
         threw = None
         try:
             await phantom.get_uri()

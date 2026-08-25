@@ -156,8 +156,16 @@ async def main():
         rstore = await client.acquire("RemoteStore")
         drv = await rstore.query_derivation(
             await rstore.add_text_to_store("demo.drv", "DrvDemo"))
-        check("proxy stays remote", isinstance(drv, remote.RemoteObj)
-              and drv.wire == "proxy")
+        from fake_library_generated import RPC_CLASSES, RPCDerivation
+        check("proxy stays remote", isinstance(drv, RPCDerivation)
+              and drv._wire == "proxy")
+        # The generated class carries real methods, so a missing one is
+        # a plain AttributeError from Python - not a manifest lookup
+        # that produced a coroutine either way.
+        check("generated client class, not a __getattr__ proxy",
+              not hasattr(remote, "RemoteObj")
+              and type(drv).__module__ == "fake_library_generated.rpc",
+              type(drv).__module__)
         desc = await drv.describe()
         check("proxy method executes on producer thread", "seen 1x" in desc, desc)
 
@@ -212,7 +220,7 @@ async def main():
         tmp = await client.acquire("LocalStore")
         ghost_id = tmp.handle_id
         await client.release(tmp)
-        ghost = remote.RemoteObj(client, "LocalStore", ghost_id)
+        ghost = client.proxy("LocalStore", ghost_id)
         threw = None
         try:
             await ghost.get_uri()
@@ -221,7 +229,7 @@ async def main():
         check("released handle fails typed",
               threw is not None and threw["cause_type"] == "KeyError", threw)
 
-        phantom = remote.RemoteObj(client, "LocalStore", "0" * 32)
+        phantom = client.proxy("LocalStore", "0" * 32)
         threw = None
         try:
             await phantom.get_uri()
@@ -238,9 +246,11 @@ async def main():
             h = await client.acquire(kind)
             check(f"inherited method on {kind}", await h.get_uri() == want)
             check(f"{kind} dispatches get_uri through StoreService",
-                  h._resolve("get_uri")["rpc"]["path"]
+                  type(h)._rpc["get_uri"]["rpc"]["path"]
                   == "/nixmock.v1.StoreService/get_uri",
-                  h._resolve("get_uri")["rpc"]["path"])
+                  type(h)._rpc["get_uri"]["rpc"]["path"])
+            check(f"{kind} client class inherits from the base's",
+                  isinstance(h, RPC_CLASSES["Store"]), type(h).__name__)
             await client.release(h)
 
         # query_derivation is NOT guaranteed: the pool policy drops it
@@ -251,12 +261,25 @@ async def main():
             pool_store.query_derivation
         except AttributeError as e:
             threw = str(e)
-        # It must be missing, and the error must list what IS offered
-        # across the chain - which is Store's guaranteed four.
+        # It is simply not on the class, so Python raises before any
+        # call is made. The generated surface and the manifest agree by
+        # construction; the conformance gate pins that.
         check("un-guaranteed method absent from the pool subclass",
-              threw is not None and "query_derivation" not in threw.split("offers")[1],
-              threw)
+              threw is not None and "query_derivation" in threw, threw)
+        check("...but present on the affine one",
+              hasattr(RPC_CLASSES["RemoteStore"], "query_derivation"))
         await client.release(pool_store)
+
+        # A wire-value is not remotely constructible: there is no handle
+        # to construct into. It is built locally and passed as an
+        # argument, which the build_derivation check above already did.
+        threw = None
+        try:
+            await client.acquire("DerivedPath")
+        except ValueError as e:
+            threw = str(e)
+        check("wire-value refuses remote construction",
+              threw is not None and "DerivedPath" in threw, threw)
 
         # ---- free functions over the wire --------------------------------
         # No handle: a module-level function has no instance. Only the
@@ -351,7 +374,12 @@ async def main():
 
         print("\nALL REMOTE CHECKS PASSED")
 
-        await client.release(store)
+        # aclose() is the shared way to let an object go: locally it
+        # shuts the runner's thread down, remotely it hands the lease
+        # back. Same call either side, which is what puts it on the
+        # protocol.
+        await store.aclose()
+        check("aclose releases the lease remotely", store.handle_id is None)
         await client.release(rstore)
         await client.release(state)
     finally:
