@@ -43,6 +43,8 @@ class Dispatcher:
         self.pool = pool
         self.manifest = manifest
         self.table = HandleTable(ttl=lease_ttl)
+        # Runner-shutdown tasks in flight; see _on_drop.
+        self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
         self.codec = WireCodec(manifest)
         self.mapping: dict[str, grpclib.const.Handler] = {}
@@ -57,15 +59,25 @@ class Dispatcher:
                     self._service(cls_name, proto)
         self._free_service()
 
-    @staticmethod
-    def _on_drop(obj: Any) -> None:
-        # Fire-and-forget runner shutdown; sweep runs on the loop.
+    def _on_drop(self, obj: Any) -> None:
+        """Shut a dropped wrapper's runner down, off the sweep.
+
+        The task is RETAINED. asyncio holds only a weak reference to a
+        running task, so a fire-and-forget one can be collected before
+        it ever runs - and this is the path that shuts an affine
+        thread down, which is also where that thread leaves the
+        collector's list. Losing it silently costs both."""
         async def _close() -> None:
             try:
                 await obj.aclose()
             except Exception:
+                # Nothing to report it to: the connection that owned
+                # this handle is already gone.
                 pass
-        asyncio.ensure_future(_close())
+
+        task = asyncio.ensure_future(_close())
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
 
     def msg(self, name: str) -> Any:
         return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
@@ -93,11 +105,13 @@ class Dispatcher:
                 await handler(stream)
             except WrapperError as e:
                 raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.UNKNOWN, json.dumps(e.to_dict()))
+                    grpclib.const.Status.UNKNOWN,
+                    json.dumps(e.to_dict())) from e
             except Exception as e:
                 internal = InternalError(f"{label} failed", cause=e)
                 raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.UNKNOWN, json.dumps(internal.to_dict()))
+                    grpclib.const.Status.UNKNOWN,
+                    json.dumps(internal.to_dict())) from e
         return guard
 
     def _service(self, cls_name: str, proto: dict[str, Any]) -> None:
@@ -205,7 +219,7 @@ class Dispatcher:
                     internal = InternalError(f"Session/{fn.__name__} failed", cause=e)
                     raise grpclib.exceptions.GRPCError(
                         grpclib.const.Status.UNKNOWN,
-                        json.dumps(internal.to_dict()))
+                        json.dumps(internal.to_dict())) from e
             return guarded
 
         async def release_many(stream: Any) -> None:
