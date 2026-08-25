@@ -8,6 +8,8 @@ emitter needs arrives in the dict produced by model.extract_wrapper.
 import ast
 from typing import Any
 
+from codegen.wiretypes import names_in
+
 # One class, method or function as a plain dict. See model.Proto.
 Proto = dict[str, Any]
 
@@ -21,12 +23,6 @@ RUNNER_BY_THREADING = {
 # invisible on Python 3.14 (PEP 649 lazy annotations), fatal below.
 _BUILTIN_TYPES = {"None", "Any", "str", "int", "float", "bool", "bytes",
                   "object", "dict", "list", "tuple", "set"}
-
-
-def _names_in(type_str: str) -> set[str]:
-    """Every named type inside one annotation string."""
-    node = ast.parse(type_str, mode="eval").body
-    return {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
 
 
 def _param_ann(type_str: str, async_types: set[str]) -> str:
@@ -88,7 +84,7 @@ def _emitted_annotations(proto: Proto, async_types: set[str],
 def _annotation_names(annotations: list[str]) -> set[str]:
     out: set[str] = set()
     for a in annotations:
-        out |= _names_in(a)
+        out |= names_in(a)
     return out
 
 

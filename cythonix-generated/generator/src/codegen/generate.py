@@ -38,7 +38,7 @@ from codegen.model import (
     unbound_pxd_classes,
 )
 from codegen.pxd import extract_api
-from codegen.wiretypes import MANIFEST_SCHEMA
+from codegen.wiretypes import MANIFEST_SCHEMA, names_in
 
 # See model.Proto: one class, method or function as a plain dict.
 Proto = dict[str, Any]
@@ -432,13 +432,17 @@ def main(argv: list[str] | None = None) -> None:
     for module in modules:
         mine = [p for p in all_protos if p["module"] == module]
         mine_free = [p for p in free_protos if p["module"] == module]
-        # Types this module names but does not define.
-        mentioned = {p["type"] for pr in mine for m in pr["methods"]
-                     for p in m["params"]}
-        mentioned |= {m["return_type"] for pr in mine for m in pr["methods"]}
-        mentioned |= {p["type"] for pr in mine for p in pr["ctor"]}
-        mentioned |= {p["type"] for pr in mine_free for p in pr["params"]}
-        mentioned |= {pr["return_type"] for pr in mine_free}
+        # Types this module names but does not define. Read through
+        # the subscripts, not off the head: a method returning
+        # `list[StorePath]` names StorePath as surely as one returning
+        # StorePath does, and the stub needs the import either way.
+        written = [p["type"] for pr in mine for m in pr["methods"]
+                   for p in m["params"]]
+        written += [m["return_type"] for pr in mine for m in pr["methods"]]
+        written += [p["type"] for pr in mine for p in pr["ctor"]]
+        written += [p["type"] for pr in mine_free for p in pr["params"]]
+        written += [pr["return_type"] for pr in mine_free]
+        mentioned = {n for t in written for n in names_in(t)}
         foreign = {n: home[n] for n in mentioned
                    if n in home and home[n] != module}
         short = module.rsplit(".", 1)[-1]

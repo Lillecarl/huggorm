@@ -37,7 +37,7 @@ def test_pxd_renders_every_type() -> None:
     None, and the codegen emitted a method that claimed to return
     nothing - a silent lie of exactly the kind the unmapped-type rule
     one layer up exists to stop. A template renders as itself now, so
-    map_c_type refuses it by name until something maps it."""
+    map_c_type either has a spelling for it or refuses it by name."""
     from codegen.model import map_c_type
     from codegen.pxd import extract_api
 
@@ -59,14 +59,22 @@ cdef extern from "x.hpp" nogil:
     # is what the "void" answer was ever for.
     assert info["ctors"] == [[]], info["ctors"]
 
-    # ...and the layer above refuses it by name rather than believing
-    # it returns None.
+    # ...and the layer above maps the one container the surface can
+    # spell, element first. A pointer element maps like a value one:
+    # holding each element by pointer is a question about C++, not
+    # about the surface.
+    assert map_c_type("vector[string]", {}) == "list[str]"
+    assert map_c_type("vector[CThing*]&", {"CThing": "Thing"}) == "list[Thing]"
+
+    # Every other template is still refused by name rather than
+    # believed to return None. std::set has the same Python spelling as
+    # a vector and would lose the distinction; nothing maps it yet.
     try:
-        map_c_type("vector[string]", {"CThing": "Thing"})
+        map_c_type("set[CThing]", {"CThing": "Thing"})
     except ValueError as e:
-        assert "vector[string]" in str(e), e
+        assert "set[CThing]" in str(e), e
     else:
-        raise AssertionError("map_c_type accepted a template type")
+        raise AssertionError("map_c_type accepted an unmapped template")
 
 
 def test_annotation_rendering() -> None:
@@ -477,11 +485,19 @@ async def test_behavior() -> None:
     from codegen.grpc_schema import wire_blocker
 
     kinds = {"Value": "proxy", "MockStorePath": "value"}
+    # A container of PROXIES stays refused whichever container it is:
+    # one lease per element is not something anything grants in bulk.
+    # Neither container nests in the other - proto3 has no repeated map
+    # field and no map of repeated values - and a bare one says nothing
+    # about what it holds. set and tuple have no field at all.
     for shape in ("dict", "dict[int, str]", "dict[str, dict[str, int]]",
-                  "dict[str, Value]", "list", "Nowhere"):
+                  "dict[str, list[int]]", "dict[str, Value]",
+                  "list", "list[Value]", "list[list[int]]",
+                  "list[dict[str, int]]", "set[int]", "Nowhere"):
         assert wire_blocker(shape, kinds), f"{shape} should be blocked"
     for shape in ("str", "int", "Value", "MockStorePath", "dict[str, int]",
-                  "dict[str, MockStorePath]"):
+                  "dict[str, MockStorePath]", "list[int]",
+                  "list[MockStorePath]"):
         assert not wire_blocker(shape, kinds), (shape, wire_blocker(shape, kinds))
 
     # Closing an affine wrapper shuts its dedicated thread down, and

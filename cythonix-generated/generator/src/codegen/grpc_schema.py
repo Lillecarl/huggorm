@@ -26,7 +26,14 @@ from typing import Any
 
 from google.protobuf import descriptor_pb2
 
-from codegen.wiretypes import MAP_KEY, SCALAR_NAMES, entry_name, map_value
+from codegen.wiretypes import (
+    MAP_KEY,
+    SCALAR_NAMES,
+    entry_name,
+    head,
+    list_value,
+    map_value,
+)
 
 Proto = dict[str, Any]
 
@@ -57,14 +64,25 @@ def _add_field(msg: Any, name: str, number: int, type_str: str,
                kinds: dict[str, str]) -> Any:
     """Append one field of the declared surface type.
 
-    A map is the one shape that cannot be described by a type constant
-    alone: proto3 spells it as a repeated field of a message the
-    containing type carries, so this builds that message too. Every
-    other case is a lookup."""
-    value_type = map_value(type_str)
-    if value_type is None:
-        pt, message = _msg_arg_type(type_str, kinds)
-        return _field(msg, name, number, proto_type=pt, type_name=message)
+    Three shapes, and only the first is a plain lookup. A list is a
+    repeated field of its element type. A map cannot be described by a
+    type constant at all: proto3 spells it as a repeated field of a
+    message the containing type carries, so this builds that message
+    too."""
+    if (value_type := map_value(type_str)) is not None:
+        return _add_map_field(msg, name, number, value_type, kinds)
+    if (item_type := list_value(type_str)) is not None:
+        pt, message = _msg_arg_type(item_type, kinds)
+        f = _field(msg, name, number, proto_type=pt, type_name=message)
+        f.label = f.LABEL_REPEATED
+        return f
+    pt, message = _msg_arg_type(type_str, kinds)
+    return _field(msg, name, number, proto_type=pt, type_name=message)
+
+
+def _add_map_field(msg: Any, name: str, number: int, value_type: str,
+                   kinds: dict[str, str]) -> Any:
+    """A `map<string, V>` field, plus the entry message it needs."""
     entry = msg.nested_type.add()
     entry.name = entry_name(name)
     entry.options.map_entry = True
@@ -127,19 +145,26 @@ def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
     what is missing."""
     try:
         value_type = map_value(type_str)
+        item_type = list_value(type_str)
     except TypeError as e:
         return str(e)
-    if value_type is not None:
-        if kinds.get(value_type) == "proxy":
-            return (f"{type_str}: a map of proxies would grant one lease per "
-                    f"entry, and nothing grants leases in bulk (tasks/031)")
-        type_str = value_type
+    # A container of PROXIES stays refused, whichever container it is.
+    # The element type is what actually goes in the field, so from here
+    # on it is the type under test.
+    for element in (value_type, item_type):
+        if element is None:
+            continue
+        if kinds.get(element) == "proxy":
+            return (f"{type_str}: a container of proxies would grant one "
+                    f"lease per element, and nothing grants leases in bulk "
+                    f"(tasks/031)")
+        type_str = element
     try:
         _msg_arg_type(type_str, kinds)
     except TypeError:
-        if type_str in ("list", "tuple", "set"):
-            return (f"{type_str} has no wire representation; the schema has "
-                    f"no repeated or struct type yet")
+        if head(type_str) in ("tuple", "set", "frozenset"):
+            return (f"{type_str} has no wire representation; a protobuf "
+                    f"field is a scalar, a message, a map or a repeated one")
         return (f"{type_str} is not in the manifest, so it has no wire "
                 f"policy (an excluded base class, most likely - see "
                 f"tasks/018)")

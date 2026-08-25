@@ -11,6 +11,8 @@ import inspect
 from types import ModuleType
 from typing import Any, get_args, get_origin, get_type_hints
 
+from codegen.wiretypes import names_in
+
 # One class or function, reflected into the plain dict every layer
 # above reads. Named rather than spelled dict[str, Any] everywhere:
 # it is the contract between the sources and the emitter, and the one
@@ -111,9 +113,21 @@ def unbound_pxd_classes(api: Api, mapping: dict[str, str]) -> list[str]:
     return sorted(set(api["classes"]) - set(mapping))
 
 
+# The C++ containers the Python surface has a spelling for. A
+# std::vector is a list, and a list is a repeated protobuf field. Only
+# this one so far: std::set has the same Python spelling but loses the
+# distinction, and std::map needs a key type the surface can carry.
+_CONTAINERS = {"vector": "list"}
+
+
 def map_c_type(raw: str, mapping: dict[str, str]) -> str:
     """Map a raw pxd type ('string', 'const CStorePath&', 'CValue*')
-    to the Python annotation used by protocol dicts."""
+    to the Python annotation used by protocol dicts.
+
+    A container maps element-first, and a pointer element maps like a
+    value one: `vector[CStorePath *]` is `list[StorePath]`, because
+    whether the binding holds each element by pointer is a question
+    about C++ and not about the surface."""
     t = raw.strip()
     if t.startswith("const "):
         t = t[6:]
@@ -123,6 +137,10 @@ def map_c_type(raw: str, mapping: dict[str, str]) -> str:
         return _PRIMITIVES[t]
     if t in mapping:
         return mapping[t]
+    container, _, rest = t.partition("[")
+    if container in _CONTAINERS and rest.endswith("]"):
+        return (f"{_CONTAINERS[container]}"
+                f"[{map_c_type(rest[:-1], mapping)}]")
     raise ValueError(
         f"unmapped pxd type {raw!r}: neither a primitive nor a class any "
         f"binding claims with _binds")
@@ -463,16 +481,6 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
     return bad
 
 
-def _names_in(type_str: str) -> set[str]:
-    """Every type named inside one annotation string, subscripts
-    included. `dict[str, Value]` names Value; reading the head alone
-    says `dict` and misses it."""
-    import ast as _ast
-
-    node = _ast.parse(type_str, mode="eval").body
-    return {n.id for n in _ast.walk(node) if isinstance(n, _ast.Name)}
-
-
 def check_wrap_contract(protos: list[Proto]) -> list[str]:
     """An unwrapped class must be self-contained.
 
@@ -528,7 +536,7 @@ def check_collection_contract(protos: list[Proto]) -> list[str]:
             rt = m["return_type"]
             if rt in wrapped:
                 continue  # a single wrapped object is the supported case
-            for named in sorted(_names_in(rt) & wrapped):
+            for named in sorted(names_in(rt) & wrapped):
                 bad.append(
                     f"{proto['name']}.{m['name']} returns {rt}, a collection "
                     f"holding {named}. Nothing attaches a runner to the "
@@ -604,10 +612,14 @@ def returned_types_from_api(api: Api, bindings_module: ModuleType,
     names: set[str] = set()
     for info in api["classes"].values():
         for m in info["methods"]:
-            py = map_c_type(m["ret"], mapping)
-            if py not in bound:
-                continue  # a scalar
-            kls = getattr(bindings_module, py, None)
-            if isinstance(kls, type) and hasattr(kls, "_threading"):
-                names.add(py)
+            # Every name in the return type, not the type itself: a
+            # method returning list[MockStorePath] hands back
+            # MockStorePaths as surely as one returning a single
+            # MockStorePath does.
+            for py in names_in(map_c_type(m["ret"], mapping)):
+                if py not in bound:
+                    continue  # a scalar, or the container itself
+                kls = getattr(bindings_module, py, None)
+                if isinstance(kls, type) and hasattr(kls, "_threading"):
+                    names.add(py)
     return [getattr(bindings_module, n) for n in sorted(names)]

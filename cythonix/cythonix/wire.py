@@ -25,7 +25,7 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any, ClassVar
 
-from cythonix_generated._wiretypes import SCALAR_NAMES, map_value
+from cythonix_generated._wiretypes import SCALAR_NAMES, list_value, map_value
 
 # str/int/bool as a lookup. Annotated because the inferred value type is
 # the join of three unrelated classes, which is `type[object]` - and
@@ -55,13 +55,15 @@ class WireCodec:
 
     # -- classification ---------------------------------------------------
     def kind(self, type_str: str) -> str:
-        """"none", "scalar", "map", "value" or "proxy"."""
+        """"none", "scalar", "map", "list", "value" or "proxy"."""
         if type_str == "None":
             return "none"
         if type_str in SCALAR_NAMES:
             return "scalar"
         if map_value(type_str) is not None:
             return "map"
+        if list_value(type_str) is not None:
+            return "list"
         try:
             return self.kinds[type_str]
         except KeyError:
@@ -132,6 +134,35 @@ class WireCodec:
         if vtype is None:
             raise TypeError(f"{type_str!r} is not a map")
         return vtype
+
+    # -- lists ------------------------------------------------------------
+    # A repeated field, which is the whole difference from a map: there
+    # is no entry message, so a scalar list extends and a message list
+    # adds. Both directions keep ORDER, unlike a map, because a
+    # repeated field has one and Nix lists depend on it.
+    def list_to_msg(self, type_str: str, seq: list[Any], field: Any) -> None:
+        itype = self._list_item(type_str)
+        if self.kind(itype) == "value":
+            for item in seq:
+                # Same as a map entry: a message element is filled in
+                # place, never assigned.
+                self.value_to_msg(itype, item, field.add())
+        else:
+            cast = _SCALARS[itype]
+            field.extend(cast(v) for v in seq)
+
+    def list_from_msg(self, type_str: str, field: Any) -> list[Any]:
+        itype = self._list_item(type_str)
+        if self.kind(itype) == "value":
+            return [self.value_from_msg(itype, m) for m in field]
+        return list(field)
+
+    @staticmethod
+    def _list_item(type_str: str) -> str:
+        itype = list_value(type_str)
+        if itype is None:
+            raise TypeError(f"{type_str!r} is not a list")
+        return itype
 
     # -- the recursive value message ----------------------------------
     # A value that holds values. Not built from a _wire_fields
@@ -229,6 +260,8 @@ class WireCodec:
             setattr(container, field, _SCALARS[type_str](value))
         elif kind == "map":
             self.map_to_msg(type_str, value, getattr(container, field))
+        elif kind == "list":
+            self.list_to_msg(type_str, value, getattr(container, field))
         elif kind == "value":
             self.value_to_msg(type_str, value, getattr(container, field))
         else:
@@ -255,6 +288,8 @@ class WireCodec:
             return None if optional and not raw else raw
         if kind == "map":
             return self.map_from_msg(type_str, raw)
+        if kind == "list":
+            return self.list_from_msg(type_str, raw)
         if kind == "value":
             return self.value_from_msg(type_str, raw)
         return proxy_obj(raw.id)
