@@ -1,5 +1,6 @@
 #include "fake_library/eval.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <stdexcept>
@@ -14,6 +15,18 @@ namespace {
 void pretend_eval_work(int ms)
 {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+// Attributes are kept in name order, so lookup is a binary search and
+// an index walk is the alphabetical listing Nix guarantees. Returns the
+// first entry not ordered before `name`; the caller checks whether it
+// actually matches.
+template <typename Attrs>
+auto find_attr(Attrs & attrs, const std::string & name)
+{
+    return std::lower_bound(
+        attrs.begin(), attrs.end(), name,
+        [](const auto & entry, const std::string & key) { return entry.first < key; });
 }
 
 std::string trim(const std::string & s)
@@ -120,29 +133,34 @@ Value * Value::at(size_t index) const
     return list_[index];
 }
 
-std::vector<std::string> Value::names() const
+std::string Value::name_at(size_t index) const
 {
     want(Kind::Attrs, "an attribute set");
-    // std::map iterates in key order, so the caller gets a stable
-    // listing without sorting it again.
-    std::vector<std::string> out;
-    out.reserve(attrs_.size());
-    for (const auto & [name, _] : attrs_)
-        out.push_back(name);
-    return out;
+    if (index >= attrs_.size())
+        throw std::runtime_error("attribute index out of range");
+    return attrs_[index].first;
+}
+
+Value * Value::value_at(size_t index) const
+{
+    want(Kind::Attrs, "an attribute set");
+    if (index >= attrs_.size())
+        throw std::runtime_error("attribute index out of range");
+    return attrs_[index].second;
 }
 
 bool Value::has(const std::string & name) const
 {
     want(Kind::Attrs, "an attribute set");
-    return attrs_.find(name) != attrs_.end();
+    const auto it = find_attr(attrs_, name);
+    return it != attrs_.end() && it->first == name;
 }
 
 Value * Value::get(const std::string & name) const
 {
     want(Kind::Attrs, "an attribute set");
-    const auto it = attrs_.find(name);
-    if (it == attrs_.end())
+    const auto it = find_attr(attrs_, name);
+    if (it == attrs_.end() || it->first != name)
         throw std::runtime_error("attribute '" + name + "' is missing");
     return it->second;
 }
@@ -193,34 +211,43 @@ Value * EvalState::make_string(const std::string & v)
 
 Value * EvalState::make_bool(bool v) { return new Value(Value::make(v)); }
 
-Value * EvalState::make_list(const std::vector<Value *> & items)
+Value * EvalState::make_list()
 {
-    // Allocate the value FIRST, then fill it. Its List member allocates
-    // from the GC heap, and the collector can only see those nodes
-    // through a value it can already reach.
     Value * out = new Value();
     out->kind_ = Value::Kind::List;
     out->forced_ = true;
-    for (Value * item : items) {
-        if (item == nullptr)
-            throw std::invalid_argument("null element in a list");
-        out->list_.push_back(item);
-    }
     return out;
 }
 
-Value * EvalState::make_attrs(const std::vector<std::pair<std::string, Value *>> & items)
+void EvalState::list_append(Value * list, Value * item)
+{
+    if (list == nullptr || item == nullptr)
+        throw std::invalid_argument("null value");
+    list->want(Value::Kind::List, "a list");
+    // The element is reachable from `list` the moment this returns, and
+    // `list` is already reachable from whoever holds it. Nothing is
+    // ever visible only to a temporary.
+    list->list_.push_back(item);
+}
+
+Value * EvalState::make_attrs()
 {
     Value * out = new Value();
     out->kind_ = Value::Kind::Attrs;
     out->forced_ = true;
-    for (const auto & [name, item] : items) {
-        if (item == nullptr)
-            throw std::invalid_argument("null value for attribute '" + name + "'");
-        // Last one wins, matching an attribute set built by assignment.
-        out->attrs_[name] = item;
-    }
     return out;
+}
+
+void EvalState::attrs_set(Value * attrs, const std::string & name, Value * item)
+{
+    if (attrs == nullptr || item == nullptr)
+        throw std::invalid_argument("null value");
+    attrs->want(Value::Kind::Attrs, "an attribute set");
+    const auto it = find_attr(attrs->attrs_, name);
+    if (it != attrs->attrs_.end() && it->first == name)
+        it->second = item;
+    else
+        attrs->attrs_.insert(it, {name, item});
 }
 
 }  // namespace fake_library

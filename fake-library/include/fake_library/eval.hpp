@@ -19,7 +19,6 @@
 // reimplementing Nix's syntax would buy nothing the wire and lifetime
 // paths do not already get from a builder.
 
-#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,9 +48,17 @@ public:
     // Collections. The elements are values in their own right and each
     // may be an unforced thunk: forcing a list forces the list, not
     // what is in it, exactly as in libexpr.
+    //
+    // Index-based, and no container in any signature. The pxd is what
+    // declares this API to Cython, and a template type in it renders
+    // as itself and maps to nothing - so a binding surface built out of
+    // scalars and Value pointers is the one a declaration can carry.
     size_t size() const;                            // list or attrs
     Value * at(size_t index) const;                 // list
-    std::vector<std::string> names() const;         // attrs, sorted
+    // Attribute sets are kept in NAME ORDER, so walking the index
+    // yields the alphabetical listing Nix guarantees.
+    std::string name_at(size_t index) const;        // attrs
+    Value * value_at(size_t index) const;           // attrs
     bool has(const std::string & name) const;       // attrs
     Value * get(const std::string & name) const;    // attrs
 
@@ -59,18 +66,23 @@ private:
     friend class EvalState;
     enum class Kind { Int, String, Bool, List, Attrs };
 
-    // The collector must SEE these pointers, so their nodes are
-    // allocated from the GC heap. A plain std::vector<Value *> holds
-    // its elements in malloc memory, which Boehm does not scan: the
-    // children would be collected while this value still pointed at
-    // them, and the next access would read freed memory.
+    // The collector must SEE these pointers, so their storage comes
+    // from the GC heap. A plain std::vector<Value *> holds its elements
+    // in malloc memory, which Boehm does not scan: the children would
+    // be collected while this value still pointed at them, and the next
+    // access would read freed memory.
     //
     // gc_allocator, not traceable_allocator: a Value derives from `gc`
-    // and never runs its destructor, so a container that had to be
-    // freed by hand would never be. GC memory needs no freeing.
+    // and never runs its destructor, so storage that had to be freed by
+    // hand would never be. GC memory needs no freeing. (The same reason
+    // a long std::string in a Value leaks its buffer - true of str_
+    // since the mock was written. Real Nix sidesteps both by interning
+    // attribute names into symbols.)
     using List = std::vector<Value *, gc_allocator<Value *>>;
-    using Attrs = std::map<std::string, Value *, std::less<>,
-                           gc_allocator<std::pair<const std::string, Value *>>>;
+    // A sorted array, like nix::Bindings - not a tree. Lookup binary
+    // searches it; an index walk is the alphabetical order for free.
+    using Attr = std::pair<std::string, Value *>;
+    using Attrs = std::vector<Attr, gc_allocator<Attr>>;
 
     Kind kind_ = Kind::Int;
     bool forced_ = false;
@@ -110,11 +122,20 @@ public:
     // than it hands back scalars, and the wire has to carry one; these
     // produce the shapes without a parser for them. All return forced
     // values: a thunk is what parse_expr is for.
+    //
+    // Collections are filled one element at a time. A builder taking a
+    // container could not be declared in the pxd, and building in place
+    // is also what keeps every intermediate reachable: the collector
+    // sees the elements through the value they were added to.
     Value * make_int(long long v);
     Value * make_string(const std::string & v);
     Value * make_bool(bool v);
-    Value * make_list(const std::vector<Value *> & items);
-    Value * make_attrs(const std::vector<std::pair<std::string, Value *>> & items);
+    Value * make_list();
+    void list_append(Value * list, Value * item);
+    Value * make_attrs();
+    // Setting a name that is already there replaces its value, matching
+    // an attribute set built by assignment.
+    void attrs_set(Value * attrs, const std::string & name, Value * item);
 
 private:
     Value parse_(const std::string & expr) const;

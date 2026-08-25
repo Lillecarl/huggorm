@@ -199,6 +199,28 @@ async def main() -> None:
         v = await state.eval_expr('"hello over grpc"')
         check("eval round trip", await v.string_value() == "hello over grpc")
 
+        # Collections over the wire. Every element is a value in its own
+        # right, so walking an attribute set is a chain of handles: a
+        # proxy argument going out, a proxy return coming back, and each
+        # child pinning the parent that produced it.
+        attrs = await state.make_attrs()
+        await state.attrs_set(attrs, "zebra", await state.make_int(1))
+        await state.attrs_set(attrs, "apple", await state.make_string("first"))
+        check("an attribute set crosses as a proxy",
+              await attrs.type_name() == "attrs" and await attrs.size() == 2)
+        # Nix attribute sets are alphabetical, and the order survives the
+        # wire because it is the storage order, not a detail of the
+        # message.
+        check("attribute names come back alphabetical",
+              [await attrs.name_at(i) for i in range(2)] == ["apple", "zebra"])
+        check("an attribute value is a handle of its own",
+              await (await attrs.get("apple")).string_value() == "first")
+        xs = await state.make_list()
+        await state.list_append(xs, await state.make_int(7))
+        await state.attrs_set(attrs, "xs", xs)
+        check("nested collections walk over the wire",
+              await (await (await attrs.get("xs")).at(0)).integer() == 7)
+
         # bint-returning methods cross as real booleans (regression:
         # 'bint' used to leak into the schema and map to an opaque
         # Handle, killing the RPC server-side).

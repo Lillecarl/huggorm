@@ -22,6 +22,17 @@ cdef extern from "fake_library/eval.hpp" nogil:
         int64_t integer() except +
         string string_value() except +
         bint boolean() except +
+        # Collections, by index. No container appears in any signature:
+        # a template type renders as itself here and maps to nothing, so
+        # the declared surface is scalars and Value pointers.
+        size_t size() except +
+        CValue * at(size_t index) except +
+        # Attributes are stored in name order, so an index walk is the
+        # alphabetical listing Nix guarantees.
+        string name_at(size_t index) except +
+        CValue * value_at(size_t index) except +
+        bint has(string name) except +
+        CValue * get(string name) except +
 
     cdef cppclass CEvalState "fake_library::EvalState":
         CEvalState(string store_uri)
@@ -32,6 +43,19 @@ cdef extern from "fake_library/eval.hpp" nogil:
         CValue * parse_expr(string expr) except + nogil
         CValue * eval_expr(string expr) except + nogil
         void force(CValue * v) except + nogil
+        # Builders. Nix hands back attribute sets far more often than
+        # scalars, and the wire has to carry one; these produce the
+        # shapes without a parser for them. Collections fill one element
+        # at a time, which is also what keeps every intermediate
+        # reachable: the collector sees an element through the value it
+        # was added to.
+        CValue * make_int(int64_t v) except + nogil
+        CValue * make_string(string v) except + nogil
+        CValue * make_bool(bint v) except + nogil
+        CValue * make_list() except + nogil
+        void list_append(CValue * target, CValue * item) except + nogil
+        CValue * make_attrs() except + nogil
+        void attrs_set(CValue * target, string name, CValue * item) except + nogil
 
     void gc_init "fake_library::gcenv::init" ()
     void gc_register_current_thread "fake_library::gcenv::register_current_thread" ()

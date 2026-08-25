@@ -16,6 +16,7 @@ entry point; runs after codegen-generate, stdlib only:
 import argparse
 import ast
 import asyncio
+import gc
 import importlib
 import json
 import pathlib
@@ -440,6 +441,75 @@ async def test_behavior() -> None:
     # closed just above, so collect here.
     await flg.collect_garbage()
     assert fake_library.gc_stats()["heap_size"] > 0
+
+    # ---- collections ------------------------------------------------
+    # An attribute set is BUILT, not parsed: the expression language
+    # stays a toy, and reimplementing Nix's syntax would buy nothing
+    # the wire and lifetime paths do not get from a builder.
+    builder = AsyncEvalState("local")
+    attrs = await builder.make_attrs()
+    for name, number in (("zebra", 1), ("apple", 2), ("mango", 3)):
+        await builder.attrs_set(attrs, name, await builder.make_int(number))
+    assert await attrs.type_name() == "attrs"
+    assert await attrs.size() == 3
+
+    # Nix attribute sets are alphabetical, so an index walk IS the
+    # listing order (Carl, 2026-08-25). The C++ side keeps a sorted
+    # array, like nix::Bindings.
+    names = [await attrs.name_at(i) for i in range(await attrs.size())]
+    assert names == ["apple", "mango", "zebra"], names
+    assert [await (await attrs.value_at(i)).integer() for i in range(3)] == [2, 3, 1]
+    assert await attrs.has("mango") and not await attrs.has("durian")
+    assert await (await attrs.get("apple")).integer() == 2
+
+    # Setting a name twice replaces its value, like assignment.
+    await builder.attrs_set(attrs, "apple", await builder.make_int(99))
+    assert await attrs.size() == 3
+    assert await (await attrs.get("apple")).integer() == 99
+
+    # Nesting: a list inside an attribute set, holding values that are
+    # values in their own right.
+    xs = await builder.make_list()
+    for word in ("one", "two"):
+        await builder.list_append(xs, await builder.make_string(word))
+    await builder.attrs_set(attrs, "xs", xs)
+    assert await (await (await attrs.get("xs")).at(1)).string_value() == "two"
+
+    # The collector must SEE the children through the parent. A plain
+    # std::vector<Value *> inside a GC-allocated Value would hold them
+    # in malloc memory, which Boehm does not scan: they would be
+    # collected while the parent still pointed at them. Drop every
+    # Python reference, collect, then churn hard enough that a freed
+    # block would be handed out again - and read the tree back.
+    del xs
+    gc.collect()
+    await flg.collect_garbage()
+    churn = [await builder.make_int(i) for i in range(500)]
+    del churn
+    gc.collect()
+    await flg.collect_garbage()
+    assert await attrs.size() == 4
+    assert await (await attrs.get("apple")).integer() == 99
+    assert await (await (await attrs.get("xs")).at(0)).string_value() == "one"
+    assert [await attrs.name_at(i) for i in range(4)] == [
+        "apple", "mango", "xs", "zebra"]
+
+    # Wrong-kind and out-of-range access say which, on every accessor.
+    # Built one at a time: a tuple of coroutines leaves the untried ones
+    # unawaited the moment the first raises.
+    for make in (lambda: attrs.integer(),
+                 lambda: attrs.at(0),
+                 lambda: attrs.name_at(99)):
+        try:
+            await make()
+        except Exception as e:
+            # The runtime wraps a binding failure in InternalError, so
+            # the C++ text is on the cause, not the message.
+            why = str(e.__cause__ or e)
+            assert "is not" in why or "out of range" in why, why
+        else:
+            raise AssertionError("wrong-kind access succeeded")
+    await builder.aclose()
 
     # The hierarchy: the base guarantees what every subclass keeps, and
     # a caller holding one need not know which it has. query_derivation

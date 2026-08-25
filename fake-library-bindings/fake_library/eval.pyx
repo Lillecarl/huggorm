@@ -33,6 +33,19 @@ from fake_library.c_eval cimport (
 gc_init()
 
 
+cdef Value _bridge(CValue * ptr):
+    """A Python wrapper over one GC-resident value.
+
+    The caller must have registered this thread first: the bridge cell
+    comes from the collector, and allocating from an unregistered
+    thread races with a collection. `ptr` itself survives that
+    allocation because a registered thread's stack is scanned."""
+    cdef Value v = Value.__new__(Value)
+    v._cell = <CValue **>GC_malloc_uncollectable(sizeof(CValue *))
+    v._cell[0] = ptr
+    return v
+
+
 cdef class Value:
     _threading = "affine"
     # The C++ declaration this class binds; see store.pyx.
@@ -84,6 +97,44 @@ cdef class Value:
     def boolean(self) -> bint:
         return self._cell[0].boolean()
 
+    # Collections. Reading is by index, which is also how the
+    # alphabetical order of an attribute set reaches Python: the C++
+    # side keeps attributes in name order, like nix::Bindings.
+    #
+    # A list[Value] or dict[str, Value] accessor is deliberately absent.
+    # It needs a collection of PROXIES, which is the recursive value
+    # message (tasks/030), not another loop here.
+
+    def size(self) -> int:
+        """Elements in a list, or attributes in an attribute set."""
+        return self._cell[0].size()
+
+    def at(self, index: int) -> Value:
+        """One element of a list. It may still be a thunk: forcing a
+        list forces the list, not what is in it."""
+        gc_register_current_thread()
+        return _bridge(self._cell[0].at(index))
+
+    def name_at(self, index: int) -> str:
+        """One attribute name, in alphabetical order."""
+        return self._cell[0].name_at(index).decode('utf-8')
+
+    def value_at(self, index: int) -> Value:
+        """One attribute value, in alphabetical order of name."""
+        gc_register_current_thread()
+        return _bridge(self._cell[0].value_at(index))
+
+    def has(self, str name) -> bint:
+        """Whether this attribute set carries that name."""
+        cdef string c_name = name.encode('utf-8')
+        return self._cell[0].has(c_name)
+
+    def get(self, str name) -> Value:
+        """One attribute by name. Raises when it is missing."""
+        cdef string c_name = name.encode('utf-8')
+        gc_register_current_thread()
+        return _bridge(self._cell[0].get(c_name))
+
 
 cdef class EvalState:
     cdef CEvalState* _ptr
@@ -108,24 +159,22 @@ cdef class EvalState:
     def parse_expr(self, str expr) -> Value:
         """Parse without evaluating: the result is an unforced thunk."""
         cdef string c_expr = expr.encode('utf-8')
-        cdef Value v = Value.__new__(Value)
+        cdef CValue * out
         # This may run on a runner thread created by Python: register
         # it with the collector before touching GC memory.
         gc_register_current_thread()
-        v._cell = <CValue **>GC_malloc_uncollectable(sizeof(CValue *))
         with nogil:
-            v._cell[0] = self._ptr.parse_expr(c_expr)
-        return v
+            out = self._ptr.parse_expr(c_expr)
+        return _bridge(out)
 
     def eval_expr(self, str expr) -> Value:
         """Parse and evaluate: slow, fully forced result."""
         cdef string c_expr = expr.encode('utf-8')
-        cdef Value v = Value.__new__(Value)
+        cdef CValue * out
         gc_register_current_thread()
-        v._cell = <CValue **>GC_malloc_uncollectable(sizeof(CValue *))
         with nogil:
-            v._cell[0] = self._ptr.eval_expr(c_expr)
-        return v
+            out = self._ptr.eval_expr(c_expr)
+        return _bridge(out)
 
     def force(self, Value v) -> None:
         """Force a value in place. Idempotent."""
@@ -133,6 +182,49 @@ cdef class EvalState:
         # route this call through any worker of the state's runner.
         gc_register_current_thread()
         self._ptr.force(v._cell[0])
+
+    # Builders. The expression language is a toy and stays one: an
+    # attribute set is BUILT here rather than parsed, because
+    # reimplementing Nix's syntax would buy nothing the wire and
+    # lifetime paths do not already get from a builder.
+
+    def make_int(self, value: int) -> Value:
+        """A forced integer value."""
+        gc_register_current_thread()
+        return _bridge(self._ptr.make_int(value))
+
+    def make_string(self, str value) -> Value:
+        """A forced string value."""
+        cdef string c_value = value.encode('utf-8')
+        gc_register_current_thread()
+        return _bridge(self._ptr.make_string(c_value))
+
+    def make_bool(self, value: bint) -> Value:
+        """A forced boolean value."""
+        gc_register_current_thread()
+        return _bridge(self._ptr.make_bool(value))
+
+    def make_list(self) -> Value:
+        """An empty list. Fill it with list_append."""
+        gc_register_current_thread()
+        return _bridge(self._ptr.make_list())
+
+    def list_append(self, Value target, Value item) -> None:
+        """Add one element to a list, in place."""
+        gc_register_current_thread()
+        self._ptr.list_append(target._cell[0], item._cell[0])
+
+    def make_attrs(self) -> Value:
+        """An empty attribute set. Fill it with attrs_set."""
+        gc_register_current_thread()
+        return _bridge(self._ptr.make_attrs())
+
+    def attrs_set(self, Value target, str name, Value item) -> None:
+        """Set one attribute, in place. Setting a name twice replaces
+        its value, matching an attribute set built by assignment."""
+        cdef string c_name = name.encode('utf-8')
+        gc_register_current_thread()
+        self._ptr.attrs_set(target._cell[0], c_name, item._cell[0])
 
 
 def gc_stats() -> dict[str, int]:
