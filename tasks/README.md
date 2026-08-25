@@ -14,22 +14,30 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 013 (lint and typecheck) is next. Every piece it needs now exists:
-  027 gave the bindings stubs, 017 gave consumers protocols to be
-  checked against, and a mypy run over a consumer is already clean and
-  already catches the five mistakes it should. What remains is wiring
-  it into the build and annotating _runtime.py, which is the cause of
-  three quarters of the errors left in the emitted package. Note that
-  the run needs --python-executable, not MYPYPATH: mypy honours a
-  -stubs package only in a real site-packages (see 027).
+- 030 (dicts on the wire) is next, and it is unblocked by a fact
+  rather than by work: Nix attribute keys are strings, so map<string,V>
+  covers every dict this API returns. It is the last thing standing
+  between the surface and an evaluation server, because an attribute
+  set is what Nix evaluation mostly hands back.
+- 015 (the real-Nix spike) is the other direction, and everything it
+  needs is now in place: a settled surface, a lifecycle that does not
+  leak, and a build that lints and typechecks what it produces.
+- 029 (TypedDicts for the protocol dicts) is a design question, not a
+  defect - and probably wants a stage-by-stage refactor rather than an
+  annotation change.
 - 026 (typed proxy parameters) is a design question, not a defect. It
   is the one place the two locations genuinely disagree.
 - 015 (real-Nix spike) substitutes into the surface 017 settled.
 - 008 (transitive policy), 012 (test blind spots), 022 (proto field
-  stability), and the derivation half of 025 are hardening. 022 grew:
-  free-function requests number their fields positionally too.
+  stability), and the derivation half of 025 are hardening. 022 grew
+  twice: free-function requests number their fields positionally too,
+  and the manifest's "schema": 1 is written by the generator and read
+  by nobody.
 - 014 (transport shims) and 016 (evaluation server) are the
   destinations.
+
+Every build lints and typechecks the code its package owns, and
+`nix run --file . check` does the whole tree in about a second (013).
 
 ## What the codegen emits
 

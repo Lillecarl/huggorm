@@ -1,0 +1,144 @@
+# Add lint + typecheck to the toolchain
+
+The project has no ruff/mypy/pyright setup and no C++ static analysis;
+the 2026-08-23 review found dead code, duplicate definitions and
+type leaks that linters would have flagged.
+
+Fix: add ruff (generator + fake-library-python), mypy or pyright for
+the non-generated modules (generated code excluded), and clang-tidy or
+at least -Wall fixes pass for the mock. Wire into a `nix run` check
+and CI-able script.
+
+## Update 2026-08-25
+
+Structural gates now exist where a linter cannot reach, all failing
+the build:
+
+- emitted modules must import exactly the names they use (this is what
+  caught the sync Derivation arriving unused in every wrapper);
+- emitted modules and classes must carry a real docstring;
+- no module above the bindings may name a manifest class in a string
+  literal (test_remote);
+- the emitter-runtime symbol contract (011);
+- the wire contract: policy, fields, helpers and threading must agree.
+
+The 2026-08-25 review still found by hand what a linter would have
+flagged in a second: a dead _PRIMITIVES table in pxd.py, a dead `hide`
+parameter, a dead `import asyncio` inside a function, unused imports
+in custom.py. That is the argument for actually adding ruff.
+
+Remaining, unchanged: ruff over generator + fake-library-python
+(generated package excluded - the smoke gates cover it), mypy or
+pyright over the hand-written modules, and a -Wall/clang-tidy pass
+over the mock. The generated wrappers are now typed honestly enough
+for mypy to be worth pointing at consumers (see 017).
+
+## Update 2026-08-25 (second)
+
+017 pointed mypy --strict at the emitted package for the first time,
+which produced a concrete inventory rather than an intention. A
+consumer typed against the generated protocols is CLEAN. The package
+itself is not, and the errors group cleanly:
+
+    _runtime.py       38   untyped defs, untyped calls, bare type-args
+    rpc.py            19   Any returns from client.invoke; untyped client
+    async_*.py        21   Any returns from _runner.call; _runner unknown
+                           on the abstract base; untyped __init__
+    free_functions.py  4   Any returns; bare `dict` from gc_stats
+    bindings           2   no stubs for the .so (see 027)
+
+Most of it has one cause: `_runtime.py` is hand-written and carries no
+annotations, so every call into it returns Any and every emitted
+method that forwards to it reports no-any-return. Annotating the
+runtime is therefore the first move, not the last - it collapses three
+of those five rows.
+
+Two follow from it: the emitted classes should declare `_runner`
+(mypy cannot see it on the abstract base, which never assigns it), and
+the rpc classes should type their `client` parameter - a small
+Protocol declaring invoke and release, which keeps the dependency
+pointing the right way.
+
+027 covers the bindings row and is independent of this task.
+
+## Done 2026-08-25
+
+Both tools are in, both gate every build, and everything they cover is
+clean.
+
+### zuban rather than mypy
+
+Carl asked for zuban to be explored, and it wins on the only axis that
+was in question. It is mypy-compatible in the strict sense: the same
+flags, and byte-identical diagnostics on every comparison run here -
+the emitted package, a correct consumer, and a file of five deliberate
+mistakes. It is about thirty times faster:
+
+    mypy 2.1.0   2.15s     zuban 0.9.1   0.06s     (same 11 files, same 2 errors)
+
+That is the difference between a check you run on every build and one
+you run when you remember.
+
+One trap: passing a glob of *.py makes zuban treat each file as a
+standalone module and invent import errors. Pass the DIRECTORY. mypy
+infers the package from __init__.py either way.
+
+### What it found
+
+The generated package went 95 -> 0 and the hand-written layer 132 -> 0,
+but the count is not the point. These are the findings that were not
+annotations:
+
+- the reaper's shutdown task was fire-and-forget, and asyncio holds
+  only a weak reference to a running task, so it could be collected
+  before it ran. That is the path that shuts an affine runner down, and
+  therefore also where its thread leaves the collector's list (ruff
+  RUF006);
+- run_remote called Task.exception() twice, once to test and once to
+  raise, and exception() raises rather than returns if the task was
+  cancelled between the two;
+- HandleTable.on_drop was typed None by being assigned None, so the
+  server installing a callback on it was an error;
+- json.loads(e.message) - grpclib's GRPCError.message is Optional;
+- BaseRunner never declared aclose(), which every subclass has and
+  every emitted wrapper calls;
+- two names meaning two things in one function, in generate.py and in
+  the smoke test;
+- a dead import, a dead local, and a closure written in a loop body;
+- two GRPCError raises inside except clauses with no cause attached.
+
+### The gates
+
+    codegen                 the generator's own source
+    fake-library-generated  the emitted package and its stubs
+    fake-library-python     the hand-written layer and both suites
+
+plus `nix run --file . check` for the whole tree without a rebuild,
+which is slightly broader - the per-package gates leave the setup.py
+files uncovered, and it caught one of those immediately.
+
+Verified by perturbation: removing a single parameter annotation fails
+the build naming the file and line.
+
+### Decisions taken
+
+Line length 100, not ruff's 88. The prose here wraps near 72 and the
+code sits under 100; 88 reported thirty-odd lines that were fine, which
+is how a rule gets ignored.
+
+bandit and blind-except are not selected. Three places catch broadly on
+purpose, each with a comment saying why. A rule silenced everywhere it
+fires measures nothing.
+
+The generated package gets no ruff. The smoke gates are stricter about
+what matters there and say things a linter cannot.
+
+protobuf ships no stubs for its own generated descriptor module, so
+five call sites carry a targeted ignore naming the reason rather than
+the error code being switched off across a package.
+
+### Not done
+
+The C++ side. -Wall and clang-tidy over the mock are still open, and
+they belong to whoever owns that code - which stops being us when the
+mock is replaced by real Nix (tasks/015).
