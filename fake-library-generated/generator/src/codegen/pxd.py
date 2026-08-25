@@ -19,16 +19,17 @@ extracted source, NOT against any checkout):
 from io import StringIO
 from typing import Any
 
-Proto = dict[str, Any]
-
 from Cython.Compiler import Parsing
 from Cython.Compiler.Scanning import PyrexScanner
+
 # StringSourceDescriptor is public in practice and absent from
 # Cython's __all__, so a typechecker cannot see it.
 from Cython.Compiler.TreeFragment import (
     StringParseContext,
     StringSourceDescriptor,  # type: ignore[attr-defined]
 )
+
+Proto = dict[str, Any]
 
 # No type table here on purpose: this module reports the raw C names and
 # model.py owns the mapping, so the two cannot drift apart.
@@ -39,7 +40,8 @@ def parse_pxd_module(name: str, text: str) -> Any:
     # Cython ships no annotations, so every call into it is untyped.
     scope = context.find_module(name, need_pxd=False)  # type: ignore[no-untyped-call]
     src = StringSourceDescriptor(name, text)
-    scanner = PyrexScanner(StringIO(text), src, source_encoding="UTF-8", scope=scope, context=context)
+    scanner = PyrexScanner(StringIO(text), src, source_encoding="UTF-8",
+                           scope=scope, context=context)
     tree = Parsing.p_module(scanner, True, name, ctx=Parsing.Ctx())
     tree.scope = scope
     return tree

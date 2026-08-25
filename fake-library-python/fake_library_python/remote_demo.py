@@ -33,7 +33,8 @@ async def main() -> None:
     print(f"built: {built.to_string()} valid: {await local.is_valid_path(built)}")
 
     print("\n=== proxies stay remote behind handles ===")
-    drv = await remote_store.query_derivation(await remote_store.add_text_to_store("demo.drv", "DrvDemo"))
+    drv = await remote_store.query_derivation(
+        await remote_store.add_text_to_store("demo.drv", "DrvDemo"))
     print("drv handle:", drv.handle_id[:12], "| wire:", drv._wire,
           "| class:", type(drv).__name__)
     print(await drv.describe())

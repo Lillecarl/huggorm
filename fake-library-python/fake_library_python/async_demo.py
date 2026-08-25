@@ -6,10 +6,10 @@ import asyncio
 
 from fake_library import DerivedPath
 from fake_library_generated import (
+    AsyncEvalState,
     AsyncLocalStore,
     AsyncRemoteStore,
     AsyncStore,
-    AsyncEvalState,
 )
 from fake_library_generated._runtime import InternalError
 
@@ -50,7 +50,7 @@ async def main() -> None:
     )
     printed = []
     for r in results:
-        if isinstance(r, str) or isinstance(r, bool):
+        if isinstance(r, str | bool):
             printed.append(r)
         else:
             printed.append(r.to_string())
@@ -62,7 +62,8 @@ async def main() -> None:
     drv = await remote.query_derivation(drv_path)
     print(await drv.describe())
     print(await drv.describe())
-    print(f"drv workers: {sorted(drv._runner.workers_seen)} (store's: {sorted(remote._runner.workers_seen)})")
+    print(f"drv workers: {sorted(drv._runner.workers_seen)} "
+          f"(store's: {sorted(remote._runner.workers_seen)})")
     print(f"queries: {await drv.queries()}")
 
     out = await local.build_derivation(DerivedPath(drv_path, "out"))
@@ -95,7 +96,8 @@ async def main() -> None:
     print(f"gc: {stats['collections']} collections, heap {stats['heap_size'] >> 10} KiB,"
           f" value in GC heap: {await v.is_gc_managed()}")
 
-    print(f"value workers: {sorted(v._runner.workers_seen)} (state's: {sorted(state._runner.workers_seen)})")
+    print(f"value workers: {sorted(v._runner.workers_seen)} "
+          f"(state's: {sorted(state._runner.workers_seen)})")
 
     t0 = asyncio.get_running_loop().time()
     await asyncio.gather(state.eval_expr("1"), state.eval_expr("2"))

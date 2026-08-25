@@ -22,15 +22,16 @@ location.
 """
 
 import asyncio
+import json
 import threading
 import weakref
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import grpclib
 import grpclib.client
 import grpclib.const
 import grpclib.exceptions
-import json
 from google.protobuf import message_factory
 
 from . import grpc_pb as schema
@@ -242,7 +243,7 @@ class NixClient:
                 f"({', '.join(p['name'] for p in ctor)}), got {len(args)}")
 
         req = self.msg(proto["acquire"]["req"])()
-        for p, val in zip(ctor, args):
+        for p, val in zip(ctor, args, strict=False):
             if val is None:
                 continue  # optional, left at the proto3 default
             self.codec.encode(req, p["name"], p["type"], val,
@@ -278,7 +279,7 @@ class NixClient:
                 + "; ".join(proto["wire_blockers"]))
 
         req = self.msg(proto["rpc"]["req"])()
-        for p, val in zip(proto["params"], args):
+        for p, val in zip(proto["params"], args, strict=True):
             self.codec.encode(req, p["name"], p["type"], val,
                               lambda obj: obj.handle_id)
         resp = await self._rpc(proto["rpc"]["path"], req, proto["rpc"]["resp"])
@@ -305,7 +306,7 @@ class NixClient:
         # this method mentions no concrete type: a proxy arg contributes
         # its handle id, a wire-value serializes through its declared
         # parts, a scalar goes in as itself.
-        for p, val in zip(m["params"], args):
+        for p, val in zip(m["params"], args, strict=True):
             self.codec.encode(req, p["name"], p["type"], val,
                               lambda obj: obj.handle_id)
 

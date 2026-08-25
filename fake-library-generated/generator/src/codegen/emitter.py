@@ -840,9 +840,11 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
                 values=[_spec(m) for m in proto["methods"]])
             if base:
                 specs = ast.Dict(
-                    keys=[None] + specs.keys,
-                    values=[ast.Attribute(value=ast.Name(id=rpc_class_name(base)),
-                                          attr="_rpc")] + specs.values)
+                    keys=[None, *specs.keys],
+                    values=[
+                        ast.Attribute(value=ast.Name(id=rpc_class_name(base)),
+                                      attr="_rpc"),
+                        *specs.values])
             cls.body.append(ast.AnnAssign(
                 target=ast.Name(id="_rpc"),
                 annotation=_ann("dict[str, dict[str, Any]]", f"{name}._rpc"),

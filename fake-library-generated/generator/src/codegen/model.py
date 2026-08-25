@@ -6,6 +6,7 @@ by the caller. The dict shape is the contract between the sources
 (the bindings pxd + the installed bindings) and the emitter (emitter.py).
 """
 
+import contextlib
 import inspect
 from types import ModuleType
 from typing import Any, get_type_hints
@@ -111,7 +112,7 @@ def map_c_type(raw: str, mapping: dict[str, str]) -> str:
     t = raw.strip()
     if t.startswith("const "):
         t = t[6:]
-    if t.endswith("&") or t.endswith("*"):
+    if t.endswith(("&", "*")):
         t = t[:-1].rstrip()
     if t in _PRIMITIVES:
         return _PRIMITIVES[t]
@@ -478,10 +479,10 @@ def _reader_method(name: str, val: Any) -> Proto:
     doc = ""
     fget = getattr(val, "fget", None)
     if fget is not None:
-        try:
-            ret = _normalize(_annotation_name(inspect.signature(fget).return_annotation))
-        except (TypeError, ValueError):
-            pass
+        # An unreadable signature just means the type stays Any.
+        with contextlib.suppress(TypeError, ValueError):
+            ret = _normalize(
+                _annotation_name(inspect.signature(fget).return_annotation))
         doc = inspect.getdoc(fget) or inspect.getdoc(val) or ""
     return {"name": name, "params": [], "return_type": ret, "doc": doc}
 

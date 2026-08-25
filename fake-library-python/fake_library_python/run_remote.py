@@ -5,7 +5,7 @@ import logging
 
 logging.basicConfig(level=logging.ERROR)
 
-from fake_library_python import server, remote_demo
+from fake_library_python import remote_demo, server
 
 
 async def main() -> None:

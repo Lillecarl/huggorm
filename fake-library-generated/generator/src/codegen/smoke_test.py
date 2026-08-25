@@ -52,10 +52,10 @@ async def test_behavior() -> None:
     import fake_library
     from fake_library import DerivedPath, StorePath
     from fake_library_generated import (
-        AsyncLocalStore,
-        AsyncRemoteStore,
         AsyncDerivation,
         AsyncEvalState,
+        AsyncLocalStore,
+        AsyncRemoteStore,
         AsyncValue,
     )
     from fake_library_generated._runtime import InternalError

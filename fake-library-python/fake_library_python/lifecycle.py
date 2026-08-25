@@ -25,7 +25,8 @@ Model (tasks/002):
 
 import time
 import uuid
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 ANON = "\x00anon"
 
@@ -41,7 +42,7 @@ def _new_id() -> str:
 class Entry:
     """One live handle: the wrapper object plus its lease bookkeeping."""
 
-    __slots__ = ("obj", "leases", "parents", "children")
+    __slots__ = ("children", "leases", "obj", "parents")
 
     def __init__(self, obj: Any) -> None:
         self.obj = obj
@@ -51,7 +52,7 @@ class Entry:
 
 
 class Connection:
-    __slots__ = ("leases", "last_seen")
+    __slots__ = ("last_seen", "leases")
 
     def __init__(self) -> None:
         self.leases: dict[str, int] = {}

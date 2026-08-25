@@ -1,5 +1,6 @@
 import os
-from setuptools import setup, Extension
+
+from setuptools import Extension, setup
 
 # Nix will set FAKE_LIBRARY env to the fake-library derivation.
 # Fallback to /nix/store lookup is not needed; we error if missing.
@@ -7,7 +8,9 @@ fake_lib = os.environ.get("FAKE_LIBRARY")
 if not fake_lib:
     # For ad-hoc `pip install -e .` outside Nix, try to find via pkg-config
     # but we keep it simple and require the env.
-    raise RuntimeError("FAKE_LIBRARY env var not set — build via Nix, or set FAKE_LIBRARY=/path/to/fake-library")
+    raise RuntimeError(
+        "FAKE_LIBRARY env var not set - build via Nix, or set "
+        "FAKE_LIBRARY=/path/to/fake-library")
 
 ext = Extension(
     "fake_library.store",

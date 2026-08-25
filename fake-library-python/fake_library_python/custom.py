@@ -11,11 +11,11 @@
 #    goes through C++ virtual dispatch and sees the Python get_uri.
 
 from fake_library import (
-    Store,
+    DerivedPath,
     LocalStore,
     RemoteStore,
+    Store,
     StorePath,
-    DerivedPath,
     describe,
 )
 

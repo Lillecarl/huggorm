@@ -115,7 +115,7 @@ def _hierarchy(
 
     Returns (base_of, shared_of, complaints).
     """
-    by_class = dict(zip(wrapper_classes, protos))
+    by_class = dict(zip(wrapper_classes, protos, strict=True))
     emitted = set(wrapper_classes)
     base_of: dict[str, str] = {}
     children: dict[str, list[Proto]] = {}
@@ -234,7 +234,8 @@ def main(argv: list[str] | None = None) -> None:
             proto["methods"] = [m for m in proto["methods"] if m["return_type"] not in affine_bound]
             dropped = before - len(proto["methods"])
             if dropped:
-                print(f"dropped {dropped} affine-returning method(s) from pool wrapper {proto['name']}")
+                print(f"dropped {dropped} affine-returning method(s) "
+                      f"from pool wrapper {proto['name']}")
 
     base_of, shared_of, complaints = _hierarchy(wrapper_classes, protos)
     if complaints:
@@ -282,7 +283,8 @@ def main(argv: list[str] | None = None) -> None:
         fname = f"async_{proto['name'].lower()}.py"
         code = ast.unparse(wrapper_module(proto, returned_policies, async_types))
         (out / fname).write_text(code + "\n")
-        print(f"generated {fname} for {proto['name']} ({proto['threading']}, {len(proto['methods'])} methods)")
+        print(f"generated {fname} for {proto['name']} "
+              f"({proto['threading']}, {len(proto['methods'])} methods)")
 
     free_protos = [extract_free_function(fn, api, mapping)
                    for fn in _free_functions(bindings)]
@@ -337,7 +339,8 @@ def main(argv: list[str] | None = None) -> None:
                 for p in m["params"]:
                     if p["type"] == "Any":
                         unresolved.append(
-                            f"{cls_name}.{m['name']} param {p['name']!r} (live annotation and pxd both silent)")
+                            f"{cls_name}.{m['name']} param {p['name']!r} "
+                        f"(live annotation and pxd both silent)")
                 if m["return_type"] == "Any":
                     unresolved.append(f"{cls_name}.{m['name']} return type")
     if unresolved:

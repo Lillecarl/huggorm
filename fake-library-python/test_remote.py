@@ -407,10 +407,10 @@ async def main() -> None:
         server.terminate()
         try:
             await asyncio.wait_for(server.wait(), 5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             server.kill()
         await drain_task
-        if any("Application error" in l for l in logs):
+        if any("Application error" in line for line in logs):
             print("\n--- server reported application errors ---")
         print(f"\n--- server log ({len(logs)} lines, last 10) ---")
         for line in logs[-10:]:

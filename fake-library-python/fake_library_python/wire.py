@@ -21,8 +21,9 @@ RemoteObj and reads ids back off one.
 """
 
 import importlib
+from collections.abc import Callable
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any
 
 # str/int/bool as a lookup. Annotated because the inferred value type is
 # the join of three unrelated classes, which is `type[object]` - and
@@ -86,7 +87,7 @@ class WireCodec:
             raise TypeError(
                 f"{type_str}._parts() returned {len(parts)} value(s) for "
                 f"{len(declared)} declared _wire_fields")
-        for (fname, ftype), val in zip(declared, parts):
+        for (fname, ftype), val in zip(declared, parts, strict=True):
             optional = ftype.endswith("?")
             ftype = ftype.removesuffix("?")
             if val is None:

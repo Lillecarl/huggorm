@@ -273,7 +273,7 @@ async def main() -> None:
         server.terminate()
         try:
             await asyncio.wait_for(server.wait(), 5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             server.kill()
 
 

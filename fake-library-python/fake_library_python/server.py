@@ -10,9 +10,10 @@ hand-written per method.
 """
 
 import asyncio
+import contextlib
 import json
-from collections.abc import Awaitable, Iterable
-from typing import Any, Callable
+from collections.abc import Awaitable, Callable, Iterable
+from typing import Any
 
 import grpclib
 import grpclib.const
@@ -24,7 +25,6 @@ from grpclib.reflection.service import ServerReflection
 from . import grpc_pb as schema
 from .lifecycle import TOKEN_HEADER, HandleTable
 from .wire import WireCodec
-
 
 # One grpclib handler: it reads the stream and answers on it.
 Handler = Callable[[Any], Awaitable[None]]
@@ -68,12 +68,10 @@ class Dispatcher:
         thread down, which is also where that thread leaves the
         collector's list. Losing it silently costs both."""
         async def _close() -> None:
-            try:
+            # Nothing to report a failure to: the connection that owned
+            # this handle is already gone.
+            with contextlib.suppress(Exception):
                 await obj.aclose()
-            except Exception:
-                # Nothing to report it to: the connection that owned
-                # this handle is already gone.
-                pass
 
         task = asyncio.ensure_future(_close())
         self._closing.add(task)
@@ -252,7 +250,7 @@ class Dispatcher:
 
         async def bind(stream: Any) -> None:
             req = await stream.recv_message()
-            claim = getattr(req, "claim_token") or None
+            claim = req.claim_token or None
             resp = self.msg("ConnResp")()
             resp.token = self.table.bind(claim)
             resp.lease_ttl = self.table.ttl or 0.0
@@ -260,15 +258,15 @@ class Dispatcher:
 
         async def ping(stream: Any) -> None:
             req = await stream.recv_message()
-            self.table._conn_for(getattr(req, "token"))
+            self.table._conn_for(req.token)
             ack = self.msg("AckResp")()
             ack.ok = True
             await stream.send_message(ack)
 
         async def share(stream: Any) -> None:
             req = await stream.recv_message()
-            self.table.share(_tok(stream), getattr(req, "to_token"),
-                             req.handle.id, mode=getattr(req, "mode") or "copy")
+            self.table.share(_tok(stream), req.to_token,
+                             req.handle.id, mode=req.mode or "copy")
             ack = self.msg("AckResp")()
             ack.ok = True
             await stream.send_message(ack)
@@ -277,7 +275,7 @@ class Dispatcher:
             req = await stream.recv_message()
             token = _tok(stream)
             hid = req.target.id if req.HasField("target") else None
-            if hid is None and not getattr(req, "all"):
+            if hid is None and not req.all:
                 raise ValueError("detach needs a target handle or all=true")
             moved = self.table.detach(token, hid)
             ack = self.msg("AckResp")()

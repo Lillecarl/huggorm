@@ -26,7 +26,8 @@ import asyncio
 import concurrent.futures
 import copy
 import threading
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 _POOL: concurrent.futures.ThreadPoolExecutor | None = None
 _POOL_LOCK = threading.Lock()
