@@ -4,6 +4,7 @@
   fake-library,
   fake-library-bindings,
   fake-library-generated,
+  grpcurl,
   ...
 }:
 python3Packages.buildPythonPackage {
@@ -24,6 +25,26 @@ python3Packages.buildPythonPackage {
     python3Packages.grpclib
     python3Packages.protobuf
   ];
+
+  # The integration suites used to run only when someone typed
+  # `nix run --file . ourPython -- test_remote.py`. Nothing built them,
+  # so a green suite proved nothing about the last commit. They run
+  # here now, over a real gRPC socket on loopback.
+  #
+  # grpcurl is the external-tool arm: test_remote drives the same
+  # reflection-served schema from outside Python, which is what keeps
+  # the emitted descriptors honest.
+  nativeCheckInputs = [ grpcurl ];
+
+  checkPhase = ''
+    runHook preCheck
+    export HOME=$TMPDIR
+    echo "--- test_remote ---"
+    ${python3Packages.python.interpreter} test_remote.py
+    echo "--- test_lifecycle ---"
+    ${python3Packages.python.interpreter} test_lifecycle.py
+    runHook postCheck
+  '';
 
   pythonImportsCheck = [
     "fake_library_python"
