@@ -1,0 +1,92 @@
+# A parameter's default should reach every generated surface
+
+Found while binding `add_to_store`. The codegen carried a parameter's
+NAME and TYPE and nothing else, so a Cython default would have existed
+on the sync binding and on none of the four surfaces above it. That is
+worse than no default at all: the local call and the remote call would
+disagree about what a two-argument call means.
+
+So `Store.add_to_store` shipped with `method` and `hash_algo`
+mandatory, and the docstring said why. This closes that.
+
+## Where a default belongs
+
+On the SIGNATURE, and nowhere else.
+
+Every generated surface writes the same default, so a caller who omits
+the argument gets the same value in-process and over RPC. By the time
+a call reaches the wire, every argument is present - the client filled
+it in before the request was built.
+
+That is the whole design, and it is what avoids the alternative. The
+alternative was to send absence and resolve it on the server, which
+needs field presence: proto3 has none for scalars, so an omitted
+string arrives as `""` and is indistinguishable from an empty one
+someone meant. Synthesising `proto3_optional` fields would have bought
+a distinction nothing needs.
+
+Two consequences worth stating:
+
+- the wire is untouched. No new field, no presence, no schema change.
+- the call spec embedded in the RPC client DROPS the default, next to
+  the docstring. Carrying it would suggest the runtime fills one in,
+  and the runtime never sees one.
+
+## What a default may be
+
+The surfaces write the default as SOURCE, so it must be source they
+can write. `model.default_source` decides:
+
+- an enum member becomes the member: `ContentAddressMethod.NAR`. Not
+  `repr`, which gives `'nar'` - a StrEnum member IS a string, so that
+  calls correctly and a typechecker rejects it.
+- a literal becomes its `repr`, checked by reading it back. That is
+  not ceremony: `repr(float("inf"))` is `inf`, a NameError in the
+  module it would be written into.
+- `None` is refused, with a message. It is the one that looks like it
+  should work: the surface has no optional spelling, so a None default
+  would typecheck here and fail at the first call that took it.
+- anything else stops the build, naming the parameter.
+
+An emitted default also feeds import collection. A default names types
+just as an annotation does, and the annotation only happens to name
+the same one here.
+
+## What holds it
+
+- `test_conformance` compares defaults across protocol, in-process
+  wrapper and RPC client, beside names and annotations. A default is
+  part of what a call MEANS, so three surfaces agreeing on types and
+  differing here answer the same short call differently depending on
+  where the object lives. Perturbed: dropping the protocol's defaults
+  fails the build naming `Store.add_to_store`.
+- `_hierarchy` compares them between a base and its subclasses, for
+  the same reason one level down.
+- `test_a_default_is_written_or_refused` holds the four rules above.
+- two behaviour tests, one local and one remote, assert the short call
+  lands on the same store path as the spelled-out one - and that a
+  DIFFERENT method gives a different path, so "the default matches
+  NAR" cannot pass by the argument being ignored. Perturbed: flipping
+  the binding's default to FLAT fails both.
+
+## Done
+
+`Store.add_to_store` defaults to `ContentAddressMethod.NAR` and
+`HashAlgorithm.SHA256`. Neither is a judgement made here: both are read
+off `addToStoreFromDump`, which declares `hashMethod = NixArchive` and
+`hashAlgo = SHA256`. A caller who omits them gets what Nix itself
+would have done, which is also what `nix-store --add` does.
+
+## Not done
+
+CONSTRUCTOR defaults still work the other way. `constructor_signature`
+derives an `optional` flag from C++ overload arity, and an optional
+parameter defaults to None and is skipped on the wire. That mechanism
+predates this one and is a different question - a pxd can declare
+`f(int x = 3)`, and reading it would make the two agree. Worth doing
+when a constructor first wants a real default.
+
+The refusal of a None default is the honest limit, not a design
+choice. When the surface learns an optional type - a `dict[str, V]`
+value already round-trips absence through `HasField` - a None default
+becomes writable and this refusal should go.

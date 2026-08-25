@@ -52,6 +52,12 @@ Findings reference two architectural reviews, 2026-08-23 and
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
+- 039 (parameter defaults) is done. A default is a fact about the
+  signature: every generated surface writes the same one, so the wire
+  never has to say "absent" and needs no field presence. What may be
+  written is checked - an enum member, or a literal that reads back as
+  itself - and everything else stops the build. Constructor defaults
+  still go the other way, through the overload-derived `optional`.
 - 037 (tests outside the sandbox) has its mechanism: a `live` marker
   naming what a test needs, hermetic by default so a forgotten mark
   fails loudly in the build, and `nix run --file . test` for the whole
