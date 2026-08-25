@@ -137,3 +137,38 @@ runner, so the mint callback has to reach the target wrapper. Affine
 returned types can only attach to their producer's thread, so a free
 function that yields a nested affine proxy has no home for it and must
 fail loudly.
+
+## Decided 2026-08-25: inbound grants, idempotently
+
+Carl: "The reason for these is when you're sharing handles between
+processes against the same server. The new client would make requests
+against these handles and then it holds them as well."
+
+That answers the second of my two objections rather than dodging it: a
+client becoming an owner by using a handle it was not given IS the
+point. A handle id is the access capability, so passing one between
+two processes out of band is a legitimate way to share an object, and
+the second process should keep it alive by calling through it.
+
+The first objection - that a client passing back a handle it already
+holds would owe two releases - dissolves once the grant is
+IDEMPOTENT. `touch()` grants at most one lease per connection per
+handle, however many times the connection names it. A counted grant
+would make the lease total a function of how often an object was
+passed as an argument, which no caller can reason about and no client
+could balance: the client releases once per client-side object, not
+once per call.
+
+Every inbound path goes through `Dispatcher.resolve`: the request's
+own `self` handle, every proxy parameter, and a constructor's proxy
+arguments alike.
+
+Two smaller consequences, both tested:
+
+- an unknown or dropped id grants nothing and raises, so naming a
+  handle cannot mint a holder for one that never existed;
+- a connection that detached a handle and then calls through it takes
+  ownership back. Detach says "I am done owning this"; calling says
+  otherwise.
+
+That closes 031. The recursive half became tasks/030.

@@ -23,9 +23,8 @@ Findings reference two architectural reviews, 2026-08-23 and
   turned out to be incoherent (nothing to rebuild it from on the far
   side) and is refused at build time, so the recursive codec lands
   with the message that can actually hold one.
-- 031 (recursive handle tracking) is down to its contested half:
-  whether receiving a handle should grant a lease. Identity mapping
-  and the wire-value boundary are done.
+- 031 (recursive handle tracking) is closed. Identity mapping, the
+  wire-value boundary, and idempotent grants on every inbound handle.
 - 015 (the real-Nix spike) is the other direction, and everything it
   needs is now in place: a settled surface, a lifecycle that does not
   leak, and a build that lints and typechecks what it produces.

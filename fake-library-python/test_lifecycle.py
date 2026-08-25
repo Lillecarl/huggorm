@@ -49,6 +49,32 @@ async def main() -> None:
         uri = await cross.get_uri()
         check("handle usable across connections", uri == "local")
 
+        # ...and naming it makes b a HOLDER. Two processes share one
+        # object by passing its id between them however they like: the
+        # second one calls, and the object stays alive for it without
+        # the first arranging anything.
+        shared = await a.acquire("LocalStore")
+        hid_s = shared.handle_id
+        borrowed = b.proxy("LocalStore", hid_s)
+        check("the borrower can call", await borrowed.get_uri() == "local")
+        # Calling again owes no second release. A lease that counted
+        # calls would be one no client could balance: the client
+        # releases once per client-side object, not once per call.
+        await borrowed.get_uri()
+        await borrowed.get_uri()
+        await a.release(shared)
+        check("the object outlives the connection that acquired it",
+              await borrowed.get_uri() == "local")
+        await b.release(borrowed)
+        phantom = b.proxy("LocalStore", hid_s)
+        gone: Any = None
+        try:
+            await phantom.get_uri()
+        except InternalError as e:
+            gone = e.to_dict()
+        check("one release from the borrower drops it",
+              gone is not None and gone["cause_type"] == "KeyError", gone)
+
         # Release once, then release the SAME handle id through a fresh
         # object. Reusing store_a sent an empty id the second time (the
         # client blanks handle_id on success), so this used to assert

@@ -89,6 +89,20 @@ class Dispatcher:
     def get(self, hid: str) -> Any:
         return self.table.get(hid)
 
+    def resolve(self, hid: str, token: str) -> Any:
+        """The object behind a handle a request named, and a lease on
+        it for the connection that named it.
+
+        A handle id is the access capability, so a connection able to
+        name one is entitled to use it - and using it is what makes it
+        a holder. Two processes can then share one object by passing
+        the id between them however they like: the second one calls,
+        and the object stays alive for it without the first having to
+        arrange anything. The grant is idempotent, so a connection that
+        already holds the handle owes no second release."""
+        self.table.touch(token, hid)
+        return self.table.get(hid)
+
     # -- handler construction ----------------------------------------------
     @staticmethod
     def _wrap(handler: Handler, label: str) -> Handler:
@@ -123,9 +137,12 @@ class Dispatcher:
             async def handler(stream: Any, m: dict[str, Any] = m,
                               resp_cls: Any = resp_cls) -> None:
                 req = await stream.recv_message()
-                target = self.get(req.self.id)
-                args = [self.codec.decode(req, p["name"], p["type"], self.get)
-                        for p in m["params"]]
+                token = _tok(stream)
+                target = self.resolve(req.self.id, token)
+                args = [
+                    self.codec.decode(req, p["name"], p["type"],
+                                      lambda hid: self.resolve(hid, token))
+                    for p in m["params"]]
                 result = await getattr(target, m["name"])(*args)
                 resp = resp_cls()
                 # Proxy returns pin their producer (parents=[self]) and
@@ -133,7 +150,7 @@ class Dispatcher:
                 # serialized by the manifest-driven codec.
                 self.codec.encode(
                     resp, "result", m["return_type"], result,
-                    lambda obj: self.put(obj, _tok(stream), parents=[req.self.id]))
+                    lambda obj: self.put(obj, token, parents=[req.self.id]))
                 await stream.send_message(resp)
 
             self.mapping[m["rpc"]["path"]] = grpclib.const.Handler(
@@ -159,11 +176,13 @@ class Dispatcher:
                           proto: dict[str, Any] = proto,
                           handle_cls: Any = handle_cls) -> None:
             req = await stream.recv_message()
-            args = [self.codec.decode(req, p["name"], p["type"], self.get,
+            token = _tok(stream)
+            args = [self.codec.decode(req, p["name"], p["type"],
+                                      lambda hid: self.resolve(hid, token),
                                       optional=p["optional"])
                     for p in proto["ctor"]]
             resp = handle_cls()
-            resp.id = self.put(wrapper_cls(*args), _tok(stream))
+            resp.id = self.put(wrapper_cls(*args), token)
             await stream.send_message(resp)
 
         self.mapping[proto["acquire"]["path"]] = grpclib.const.Handler(
@@ -191,12 +210,15 @@ class Dispatcher:
                               proto: dict[str, Any] = proto,
                               resp_cls: Any = resp_cls) -> None:
                 req = await stream.recv_message()
-                args = [self.codec.decode(req, p["name"], p["type"], self.get)
-                        for p in proto["params"]]
+                token = _tok(stream)
+                args = [
+                    self.codec.decode(req, p["name"], p["type"],
+                                      lambda hid: self.resolve(hid, token))
+                    for p in proto["params"]]
                 result = await fn(*args)
                 resp = resp_cls()
                 self.codec.encode(resp, "result", proto["return_type"], result,
-                                  lambda obj: self.put(obj, _tok(stream)))
+                                  lambda obj: self.put(obj, token))
                 await stream.send_message(resp)
 
             self.mapping[proto["rpc"]["path"]] = grpclib.const.Handler(

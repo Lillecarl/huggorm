@@ -21,6 +21,11 @@ Model (tasks/002):
   creators can exit entirely and their successors adopt the objects.
 - Share duplicates (copy) or moves (transfer) one lease onto another
   LIVE connection - the fork-handover primitive.
+- Naming a handle makes you a holder. A handle id is the access
+  capability, so a connection that can name one is entitled to use it,
+  and using it is what makes it an owner. That is what keeps an object
+  alive for a second process that was handed the id out of band: it
+  calls, it holds. The grant is idempotent - see touch().
 - One handle per object per connection. Handing the same object to the
   same connection twice returns the handle it already has and adds a
   lease, instead of minting a second id. A message can carry the same
@@ -164,6 +169,34 @@ class HandleTable:
             if not bucket:
                 del self._by_obj[token]
         entry.tokens.discard(token)
+
+    def touch(self, token: str, hid: str) -> bool:
+        """Make this connection a holder of a handle it named. Returns
+        whether that granted a lease.
+
+        At most ONE lease per connection per handle, however many times
+        the connection names it. A counted grant would make the lease
+        total a function of how often an object was passed as an
+        argument, which no caller can reason about and no client can
+        balance: a client releases once per client-side object, not
+        once per call.
+
+        A connection that detached this handle and then calls through
+        it takes ownership back. Detach means "I am done owning this";
+        calling says otherwise."""
+        if hid not in self.entries:
+            raise KeyError(f"unknown handle {hid[:8]}")
+        key = token or ANON
+        conn = self._conn_for(key)
+        if conn.leases.get(hid):
+            return False
+        self._grant(key, hid, 1)
+        # Only when this connection has no handle for the object yet.
+        # Overwriting would point a later put() at the handle someone
+        # else minted, in place of the one this connection was given.
+        if id(self.entries[hid].obj) not in self._by_obj.get(key, {}):
+            self._index(key, hid)
+        return True
 
     def get(self, hid: str) -> Any:
         return self.entries[hid].obj

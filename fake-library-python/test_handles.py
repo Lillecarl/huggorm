@@ -233,6 +233,65 @@ def test_anonymous_holder() -> None:
     check("and it is keyed by ANON", ANON in t.connections)
 
 
+def test_touch_grants_once() -> None:
+    """Naming a handle makes you a holder, and naming it again does
+    not make you two."""
+    t = table()
+    a, b = t.bind(), t.bind()
+    obj = Obj("shared out of band")
+    ha = t.put(obj, a)
+
+    check("the borrower is granted on first use", t.touch(b, ha) is True)
+    t.audit()
+    check("and not on the second", t.touch(b, ha) is False)
+    check("or the tenth", not any(t.touch(b, ha) for _ in range(10)))
+    t.audit()
+    check("so it owes exactly one release", t.connections[b].leases[ha] == 1)
+    check("the acquirer's own use grants nothing", t.touch(a, ha) is False)
+    t.audit()
+
+    t.release(a, ha)
+    t.audit()
+    check("the object outlives its acquirer", ha in t.entries)
+    t.release(b, ha)
+    t.audit()
+    check("and drops when the borrower lets go", ha not in t.entries)
+
+
+def test_touch_refuses_an_unknown_handle() -> None:
+    """A dropped or forged id must not create anything. Granting on a
+    name alone would let a caller mint holders for handles that never
+    existed."""
+    t = table()
+    a = t.bind()
+    try:
+        t.touch(a, "0" * 32)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("touched a handle that does not exist")
+    t.audit()
+    check("an unknown handle grants nothing", not t.connections[a].leases)
+
+
+def test_touch_takes_ownership_back_after_detach() -> None:
+    """Detach says "I am done owning this". Calling through it says
+    otherwise, so the lease comes back out of escrow's shadow as a
+    fresh one."""
+    t = table()
+    a = t.bind()
+    obj = Obj("detached then used")
+    ha = t.put(obj, a)
+    t.detach(a, ha)
+    t.audit()
+    check("detach left the connection holding nothing",
+          ha not in t.connections[a].leases)
+    check("calling through it grants again", t.touch(a, ha) is True)
+    t.audit()
+    check("escrow still holds the detached lease",
+          t.escrow[a][ha] == 1 and t.entries[ha].leases == 2)
+
+
 def test_manifest_schema_is_checked() -> None:
     """A manifest from another generator must be refused, not read.
 
@@ -269,6 +328,9 @@ def main() -> None:
         test_producer_pinning_with_a_reused_child,
         test_audit_catches_an_invented_lease,
         test_anonymous_holder,
+        test_touch_grants_once,
+        test_touch_refuses_an_unknown_handle,
+        test_touch_takes_ownership_back_after_detach,
         test_manifest_schema_is_checked,
     ]
     for fn in tests:
