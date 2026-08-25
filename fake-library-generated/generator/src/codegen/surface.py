@@ -29,6 +29,10 @@ records why - the same way wire_blocker reports a type the schema
 cannot carry, rather than pretending.
 """
 
+from typing import Any
+
+Proto = dict[str, Any]
+
 PROTOCOL_MODULE = "protocols"
 RPC_MODULE = "rpc"
 
@@ -55,7 +59,7 @@ def rpc_class_name(cls_name: str) -> str:
     return f"RPC{cls_name}"
 
 
-def wrapped_names(manifest: dict) -> set[str]:
+def wrapped_names(manifest: Proto) -> set[str]:
     """Every class the codegen wraps, across both groups."""
     return {
         name
@@ -65,7 +69,7 @@ def wrapped_names(manifest: dict) -> set[str]:
     }
 
 
-def protocol_blockers(method: dict, wrapped: set[str]) -> list[str]:
+def protocol_blockers(method: Proto, wrapped: set[str]) -> list[str]:
     """Why this method cannot appear on the protocol, or [] if it can."""
     return [
         f"parameter {p['name']!r}: {p['type']} travels as a proxy, so the "
@@ -77,7 +81,7 @@ def protocol_blockers(method: dict, wrapped: set[str]) -> list[str]:
     ]
 
 
-def order(manifest: dict) -> list[dict]:
+def order(manifest: Proto) -> list[Proto]:
     """The wrapped protocol dicts, bases before subclasses.
 
     Only class inheritance needs the order - annotations are lazy in
@@ -90,9 +94,10 @@ def order(manifest: dict) -> list[dict]:
         if proto["wrapped"]
     ]
     by_name = {p["name"]: p for p in protos}
-    out, placed = [], set()
+    out: list[Proto] = []
+    placed: set[str] = set()
 
-    def place(proto):
+    def place(proto: Proto) -> None:
         if proto["name"] in placed:
             return
         placed.add(proto["name"])
@@ -106,7 +111,7 @@ def order(manifest: dict) -> list[dict]:
     return out
 
 
-def annotate(manifest: dict) -> dict:
+def annotate(manifest: Proto) -> Proto:
     """Stamp the surface names onto the manifest, in place."""
     wrapped = wrapped_names(manifest)
     for group in ("wrappers", "returned_types"):
@@ -121,7 +126,7 @@ def annotate(manifest: dict) -> dict:
     return manifest
 
 
-def check_adoptable(manifest: dict, adoptable: set[str]) -> list[str]:
+def check_adoptable(manifest: Proto, adoptable: set[str]) -> list[str]:
     """Every wrapped return type must be one the emitter can adopt.
 
     The in-process wrapper hands a produced object to Async<T>(obj,

@@ -17,18 +17,27 @@ extracted source, NOT against any checkout):
 """
 
 from io import StringIO
+from typing import Any
+
+Proto = dict[str, Any]
 
 from Cython.Compiler import Parsing
 from Cython.Compiler.Scanning import PyrexScanner
-from Cython.Compiler.TreeFragment import StringParseContext, StringSourceDescriptor
+# StringSourceDescriptor is public in practice and absent from
+# Cython's __all__, so a typechecker cannot see it.
+from Cython.Compiler.TreeFragment import (
+    StringParseContext,
+    StringSourceDescriptor,  # type: ignore[attr-defined]
+)
 
 # No type table here on purpose: this module reports the raw C names and
 # model.py owns the mapping, so the two cannot drift apart.
 
 
-def parse_pxd_module(name: str, text: str):
+def parse_pxd_module(name: str, text: str) -> Any:
     context = StringParseContext(name)
-    scope = context.find_module(name, need_pxd=False)
+    # Cython ships no annotations, so every call into it is untyped.
+    scope = context.find_module(name, need_pxd=False)  # type: ignore[no-untyped-call]
     src = StringSourceDescriptor(name, text)
     scanner = PyrexScanner(StringIO(text), src, source_encoding="UTF-8", scope=scope, context=context)
     tree = Parsing.p_module(scanner, True, name, ctx=Parsing.Ctx())
@@ -36,12 +45,12 @@ def parse_pxd_module(name: str, text: str):
     return tree
 
 
-def _stats(node):
+def _stats(node: Any) -> list[Any]:
     s = getattr(node, "stats", None)
     return s if isinstance(s, list) else [node]
 
 
-def _unwrap(node):
+def _unwrap(node: Any) -> Any:
     """Strip CReference/CConst wrappers from declarator/type nodes."""
     ref = const = False
     seen = 0
@@ -58,17 +67,17 @@ def _unwrap(node):
     return node, ref, const
 
 
-def _type_name(node) -> str:
+def _type_name(node: Any) -> str:
     t = type(node).__name__
     if t == "CConstOrVolatileTypeNode":
         return _type_name(node.base_type)
     n = getattr(node, "name", None)
     if n is None:
         return "void"  # bare return / untyped
-    return n
+    return str(n)
 
 
-def _func_info(var_node):
+def _func_info(var_node: Any) -> Proto | None:
     bt = var_node.base_type
     for dclr in var_node.declarators:
         d, seen = dclr, 0
@@ -98,8 +107,8 @@ def _func_info(var_node):
     return None
 
 
-def _is_ctor(func: dict, class_cython_name: str) -> bool:
-    return func["name"] == class_cython_name
+def _is_ctor(func: Proto, class_cython_name: str) -> bool:
+    return bool(func["name"] == class_cython_name)
 
 
 def _bare(type_name: str) -> str:
@@ -110,7 +119,7 @@ def _bare(type_name: str) -> str:
     return t.rstrip("&*").strip()
 
 
-def _is_copy_ctor(func: dict, class_cython_name: str) -> bool:
+def _is_copy_ctor(func: Proto, class_cython_name: str) -> bool:
     """A one-argument constructor taking its own class. Pure binding
     glue - no Python surface ever calls it - so it never reaches the
     overload set."""
@@ -118,7 +127,8 @@ def _is_copy_ctor(func: dict, class_cython_name: str) -> bool:
             and _bare(func["params"][0][1]) == class_cython_name)
 
 
-def extract_api(pxd_text: str, module_name: str = "c_declarations") -> dict:
+def extract_api(pxd_text: str,
+                module_name: str = "c_declarations") -> dict[str, Any]:
     """
     Parse pxd text into:
     {
@@ -143,7 +153,10 @@ def extract_api(pxd_text: str, module_name: str = "c_declarations") -> dict:
     module stays free of policy).
     """
     tree = parse_pxd_module(module_name, pxd_text)
-    api = {"header": None, "classes": {}, "free_functions": []}
+    # Three value shapes under one roof - a header string, a dict of
+    # classes, a list of free functions - so the top-level value type
+    # is Any and each read narrows it.
+    api: dict[str, Any] = {"header": None, "classes": {}, "free_functions": []}
     for st in _stats(tree.body):
         if type(st).__name__ != "CDefExternNode":
             continue

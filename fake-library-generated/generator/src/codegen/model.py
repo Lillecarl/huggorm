@@ -7,7 +7,15 @@ by the caller. The dict shape is the contract between the sources
 """
 
 import inspect
+from types import ModuleType
 from typing import Any, get_type_hints
+
+# One class or function, reflected into the plain dict every layer
+# above reads. Named rather than spelled dict[str, Any] everywhere:
+# it is the contract between the sources and the emitter, and the one
+# place to tighten if it becomes a TypedDict (tasks/029).
+Proto = dict[str, Any]
+Api = dict[str, Any]
 
 _PRIMITIVES = {
     "string": "str",
@@ -45,7 +53,7 @@ def _normalize(t: str) -> str:
     return _C_ALIASES.get(t, t)
 
 
-def binding_map(bindings_module) -> dict[str, str]:
+def binding_map(bindings_module: ModuleType) -> dict[str, str]:
     """pxd declaration name -> Python binding name, from the `_binds`
     each cdef class declares.
 
@@ -73,7 +81,7 @@ def binding_map(bindings_module) -> dict[str, str]:
     return out
 
 
-def check_binding_map(api: dict, mapping: dict[str, str]) -> list[str]:
+def check_binding_map(api: Api, mapping: dict[str, str]) -> list[str]:
     """Complaints about the pxd and the bindings disagreeing.
 
     Claiming a class the pxd does not declare is always a mistake - a
@@ -93,7 +101,7 @@ def check_binding_map(api: dict, mapping: dict[str, str]) -> list[str]:
     return bad
 
 
-def unbound_pxd_classes(api: dict, mapping: dict[str, str]) -> list[str]:
+def unbound_pxd_classes(api: Api, mapping: dict[str, str]) -> list[str]:
     return sorted(set(api["classes"]) - set(mapping))
 
 
@@ -114,7 +122,7 @@ def map_c_type(raw: str, mapping: dict[str, str]) -> str:
         f"binding claims with _binds")
 
 
-def _annotation_name(ann) -> str:
+def _annotation_name(ann: Any) -> str:
     """Stringify one annotation. The empty-check lives HERE so callers
     can pass either the resolved hint or the raw annotation - passing
     sig.return_annotation as a 'sentinel' argument was the bug that
@@ -126,7 +134,7 @@ def _annotation_name(ann) -> str:
     return getattr(ann, "__name__", str(ann))
 
 
-def extract_method(func) -> dict:
+def extract_method(func: Any) -> Proto:
     sig = inspect.signature(func)
     params = list(sig.parameters.values())[1:]  # drop self
     try:
@@ -144,7 +152,9 @@ def extract_method(func) -> dict:
     }
 
 
-def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
+def extract_wrapper(cls: type, api: Api | None = None,
+                    mapping: dict[str, str] | None = None,
+                    constructible: bool = False) -> Proto:
     """
     Reflect the live Python surface across the fake_library MRO chain:
     every public method and property the bindings actually expose, with
@@ -177,7 +187,7 @@ def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
             methods.append(_reader_method(name, val))
         # anything else (plain class attrs) is not part of the surface
 
-    ctor: list[dict] = []
+    ctor: list[Proto] = []
     if api is not None and mapping is not None:
         # Returned types are produced, never constructed - their
         # __init__ raises - so their C++ overloads describe nothing a
@@ -187,7 +197,7 @@ def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
         # into a single wrong pair of optional strings.
         if constructible:
             ctor = constructor_signature(cls, api, mapping)
-        table = _pxd_signature_table(cls, api, mapping)
+        table: Proto = _pxd_signature_table(cls, api, mapping)
         for m in methods:
             known = table.get(m["name"])
             if not known:
@@ -241,7 +251,8 @@ def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
     }
 
 
-def constructor_signature(cls, api: dict, mapping: dict[str, str]) -> list[dict]:
+def constructor_signature(cls: type, api: Api,
+                          mapping: dict[str, str]) -> list[Proto]:
     """The typed parameter list for constructing `cls`.
 
     The pxd is the ONLY source. Cython exposes no signature for
@@ -298,7 +309,8 @@ def constructor_signature(cls, api: dict, mapping: dict[str, str]) -> list[dict]
     ]
 
 
-def extract_free_function(fn, api: dict, mapping: dict[str, str]) -> dict:
+def extract_free_function(fn: Any, api: Api,
+                          mapping: dict[str, str]) -> Proto:
     """Protocol dict for a module-level binding function.
 
     Free functions introspect FAR better than cdef classes: real
@@ -355,7 +367,7 @@ def extract_free_function(fn, api: dict, mapping: dict[str, str]) -> dict:
     }
 
 
-def check_wire_contract(protos: list[dict]) -> list[str]:
+def check_wire_contract(protos: list[Proto]) -> list[str]:
     """The wire policy and the serialization contract must agree.
 
     A "value" type promises the RPC layer it can be rebuilt from its
@@ -394,7 +406,7 @@ def check_wire_contract(protos: list[dict]) -> list[str]:
     return bad
 
 
-def check_wrap_contract(protos: list[dict]) -> list[str]:
+def check_wrap_contract(protos: list[Proto]) -> list[str]:
     """An unwrapped class must be self-contained.
 
     Not wrapping a class means callers touch the sync binding object
@@ -424,7 +436,8 @@ def check_wrap_contract(protos: list[dict]) -> list[str]:
     return bad
 
 
-def _pxd_signature_table(cls, api: dict, mapping: dict[str, str]) -> dict:
+def _pxd_signature_table(cls: type, api: Api,
+                         mapping: dict[str, str]) -> Proto:
     """method name -> {'params': [python type names], 'ret': python type
     name or None}, gathered from every fake_library base in the MRO,
     using the pxd declarations.
@@ -434,7 +447,7 @@ def _pxd_signature_table(cls, api: dict, mapping: dict[str, str]) -> dict:
     let whichever class the file happened to declare first win - the
     base, as it happens, which is the opposite of what extract_wrapper
     promises."""
-    out: dict[str, dict] = {}
+    out: dict[str, Proto] = {}
     for k in cls.__mro__:
         if getattr(k, "__module__", "").split(".")[0] != "fake_library":
             continue
@@ -458,7 +471,7 @@ def _pxd_signature_table(cls, api: dict, mapping: dict[str, str]) -> dict:
     return out
 
 
-def _reader_method(name: str, val) -> dict:
+def _reader_method(name: str, val: Any) -> Proto:
     """Protocol dict for a readable attribute: a zero-arg read. Setters
     are not surfaced yet."""
     ret = "Any"
@@ -473,7 +486,7 @@ def _reader_method(name: str, val) -> dict:
     return {"name": name, "params": [], "return_type": ret, "doc": doc}
 
 
-def returned_types_from_api(api: dict, bindings_module,
+def returned_types_from_api(api: Api, bindings_module: ModuleType,
                             mapping: dict[str, str]) -> list[type]:
     """Binding classes that appear as a method return type in the pxd
     AND carry a _threading marker — values handed back across the

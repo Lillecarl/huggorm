@@ -22,7 +22,11 @@ client read them instead of each recomputing the convention. A rename
 here reaches both sides at build time rather than at first call.
 """
 
+from typing import Any
+
 from google.protobuf import descriptor_pb2
+
+Proto = dict[str, Any]
 
 PKG = "nixmock.v1"
 FILE = "nixmock/v1/api.proto"
@@ -32,7 +36,8 @@ SCALARS = {"str": "string", "int": "sint64", "bool": "bool"}
 HANDLE = "Handle"
 
 
-def _field(msg, name, number, type_name=None, proto_type=None):
+def _field(msg: Any, name: str, number: int, type_name: str | None = None,
+           proto_type: int | None = None) -> Any:
     """Append one field to a DescriptorProto message."""
     f = msg.field.add()
     f.name, f.number = name, number
@@ -45,9 +50,9 @@ def _field(msg, name, number, type_name=None, proto_type=None):
     return f
 
 
-def _scalar_const(name):
+def _scalar_const(name: str) -> int:
     t = descriptor_pb2.FieldDescriptorProto()
-    return getattr(t, "TYPE_" + name.upper())
+    return int(getattr(t, "TYPE_" + name.upper()))
 
 
 # -- naming: the one place the conventions live ---------------------------
@@ -103,7 +108,7 @@ def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
     return None
 
 
-def annotate(manifest: dict) -> dict:
+def annotate(manifest: Proto) -> Proto:
     """Stamp the wire names onto the manifest, in place.
 
     Every consumer previously re-derived them from the same convention
@@ -162,7 +167,7 @@ def annotate(manifest: dict) -> dict:
 
 # -- schema ---------------------------------------------------------------
 
-def _wire_kinds(manifest: dict) -> dict[str, str]:
+def _wire_kinds(manifest: Proto) -> dict[str, str]:
     """Surface type name -> "value" | "proxy", across both groups."""
     return {
         name: proto["wire"]
@@ -171,7 +176,8 @@ def _wire_kinds(manifest: dict) -> dict[str, str]:
     }
 
 
-def _msg_arg_type(type_str, kinds):
+def _msg_arg_type(type_str: str,
+                  kinds: dict[str, str]) -> tuple[int | None, str | None]:
     """Surface type string -> (proto_type_const|None, message_name|None)."""
     if type_str == "None":
         return None, None
@@ -187,7 +193,7 @@ def _msg_arg_type(type_str, kinds):
         f"class carrying a _wire policy. Declare _wire on the binding.")
 
 
-def _add_common(file_dp, manifest):
+def _add_common(file_dp: Any, manifest: Proto) -> None:
     handle = file_dp.message_type.add()
     handle.name = HANDLE
     _field(handle, "id", 1, proto_type=_scalar_const("string"))
@@ -206,7 +212,8 @@ def _add_common(file_dp, manifest):
                 _field(m, fname, n, proto_type=pt, type_name=msg)
 
 
-def _add_service(file_dp, cls_name, proto, kinds):
+def _add_service(file_dp: Any, cls_name: str, proto: Proto,
+                 kinds: dict[str, str]) -> None:
     svc = file_dp.service.add()
     svc.name = proto["service"]
 
@@ -243,7 +250,7 @@ def _add_service(file_dp, cls_name, proto, kinds):
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
-def _add_session(f):
+def _add_session(f: Any) -> None:
     sess = f.service.add()
     sess.name = "Session"
 
@@ -320,7 +327,8 @@ def _add_session(f):
     relm.output_type = f".{PKG}.ReleaseManyResp"
 
 
-def _add_free_service(file_dp, manifest, kinds):
+def _add_free_service(file_dp: Any, manifest: Proto,
+                      kinds: dict[str, str]) -> None:
     """One service for every free function the wire can represent."""
     wired = {n: p for n, p in manifest.get("free_functions", {}).items()
              if "rpc" in p}
@@ -353,7 +361,7 @@ def _add_free_service(file_dp, manifest, kinds):
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
-def build_fdset(manifest: dict) -> bytes:
+def build_fdset(manifest: Proto) -> bytes:
     fds = descriptor_pb2.FileDescriptorSet()
     f = fds.file.add()
     f.name = FILE
@@ -370,4 +378,4 @@ def build_fdset(manifest: dict) -> bytes:
             if proto["wrapped"]:
                 _add_service(f, cls_name, proto, kinds)
     _add_free_service(f, manifest, kinds)
-    return fds.SerializeToString()
+    return bytes(fds.SerializeToString())
