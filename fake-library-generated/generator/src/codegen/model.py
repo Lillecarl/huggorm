@@ -232,6 +232,12 @@ def extract_wrapper(cls: type, api: Api | None = None,
         # adding a wire-value type means editing the pyx and nothing
         # else. Empty for proxies, which travel as handles.
         "wire_fields": [list(f) for f in getattr(cls, "_wire_fields", ())],
+        # How to walk this type as a TREE, when it is one. A value that
+        # holds values cannot be described by _wire_fields: the shape is
+        # recursive and its arms are the wire kinds themselves. The RPC
+        # layer reads this instead of naming the class or its accessors
+        # (tasks/030). Absent for everything that is not a tree.
+        **({"tree": dict(cls.__dict__["_tree"])} if "_tree" in cls.__dict__ else {}),
         # Does this class need an async wrapper at all? Only two things
         # a wrapper buys: a hop onto a home thread, and releasing the
         # GIL around a call that waits. A pool class whose methods

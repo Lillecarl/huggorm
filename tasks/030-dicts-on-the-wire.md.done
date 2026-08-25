@@ -139,7 +139,7 @@ Two things fell out of it:
   its async wrapper. A Value that holds Values is the first thing with
   that shape, and the conformance gate named all three methods.
 
-## What is left: the recursive message
+## Was left: the recursive message
 
 `Value.attrs() -> dict[str, Value]` and `Value.items() -> list[Value]`
 are deliberately absent. They need a collection of PROXIES, which is
@@ -158,3 +158,97 @@ attribute set hands the client hundreds of handles to release. The
 client's finalizers do balance it (tasks/028), but the round trip that
 saved N calls costs N handles, which may argue for the depth limit
 being small by default.
+
+## Done 2026-08-25: Realize
+
+Carl settled the two open points. Trees are not that deep in practice
+as long as a value is visited once, and Nix's own JSON printer already
+declines to dig into a derivation. He also asked the sharper question:
+is depth root-to-branch, or does sideways expansion count?
+
+Sideways counts, and it is the one that bites. `nixpkgs` holds a
+hundred thousand attributes one level down, so a depth bound says
+nothing about the size of the answer. `Realize` takes both:
+
+- `depth` counts levels EXPANDED, 1 being the root alone. It says how
+  much shape the caller wants. Zero would be the natural spelling for
+  "the root alone" and proto3 cannot tell zero from unset, which is
+  why it is 1-based;
+- `budget` is the hard stop, in nodes. It bounds the message and the
+  lease count together, whatever shape the tree has.
+
+Both frontiers answer the same way - a proxy - so a bounded answer, a
+lazy one and a shared one all have one shape.
+
+It forces NOTHING. What is already forced serializes; a thunk crosses
+as a handle and the caller forces it with the rpc that already exists.
+So the answer cannot raise halfway down a half-built message, and it
+composes with force rather than duplicating it. Real Nix's
+printValueAsJSON is the other choice: strict forces everything and is
+bounded only by max-call-depth, and non-strict ERRORS on the first
+thunk rather than handing one back. The proxy arm is what lets this
+one do better than either.
+
+### Verified against upstream
+
+src/libexpr/value-to-json.cc, in the source read earlier:
+
+- attributes serialize in `lexicographicOrder`, which is Carl's
+  alphabetical point again;
+- an attribute set carrying `outPath` serializes AS that attribute -
+  that is the "does not dig into derivations" rule. The mock has no
+  analogue, because a Derivation here is its own proxy class rather
+  than an attribute set. Real Nix will need it, and it wants to be a
+  declaration next to the binding like the rest of the walk;
+- there is NO visit tracking upstream. A shared subtree is serialized
+  once per occurrence, so Carl's suggestion is an improvement on
+  upstream rather than a copy of it.
+
+### Two things that only showed up when it ran
+
+`id()` is not identity. A binding builds a fresh Python wrapper per
+access, so two wrappers over one value differ - and a wrapper that
+dies hands its `id()` to the next one, which reads as "already seen"
+and truncates a tree that was never visited. That is a live bug that
+looked like a working feature: the first realize returned a proxy
+where a list belonged. Identity is now declared (`_tree["identity"]`),
+and only the binding can say where it lives.
+
+Walking from the client is a call per node, and every one is a network
+round trip plus a thread handover. `BaseRunner.run` submits one
+function to the target's own executor, so the whole tree costs one
+hop. `call` dispatches a method by name and cannot express that.
+
+### What the generator still does not know
+
+Nothing about values. The walk is declared next to the binding as
+`_tree` - which accessor says what a node is, which reads each scalar
+kind, how to reach list elements and attribute pairs, and what makes
+two nodes the same node - and reaches the server through the manifest.
+`server.py` names no type and no method, and the no-hardcoded-domain-
+types gate still passes.
+
+## Also closed by it: a hole the same shape
+
+Realize made it obvious that a collection of wrapped types has no
+owner. `dict[str, Value]` as a method return type-checked, built,
+emitted `map<string, Handle>` - and then handed back bare sync objects
+in process while failing on the first call over the wire. Every layer
+attaches a runner to ONE object: the async wrapper writes
+`AsyncX(result, self._runner)`, the server puts one handle, the client
+builds one proxy. None of them walks a container.
+
+`check_collection_contract` refuses it at build time and says what to
+do instead. It is not an oversight to fix later: a collection of
+remote objects IS a value tree, which is what Realize answers, and
+that is protocol rather than something a return annotation can ask
+for.
+
+Finding it turned up a second inconsistency. `_annotation_name` used
+`__name__`, which answers with the head of a subscripted generic, so
+`dict[str, int]` became `dict`. Whether that happened depended on
+which path resolved the annotation: a free function's stayed the
+written string and kept its parameters, a method's resolved to a real
+generic and lost them. The same declaration meant two different things
+depending on where it appeared. `gc_stats` worked only because it is a
+free function.

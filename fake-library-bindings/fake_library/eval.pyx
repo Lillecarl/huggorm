@@ -9,6 +9,7 @@
 # affine-value-as-parameter case.
 
 from libcpp.string cimport string
+from libc.stdint cimport uintptr_t
 from cython.operator cimport dereference as deref
 
 from fake_library.c_eval cimport (
@@ -55,6 +56,30 @@ cdef class Value:
     # serialize forced scalars; until then, proxy.
     _wire = "proxy"
 
+    # How a value TREE is walked, read by the RPC layer so that no
+    # layer above this file knows what a Value is or which of its
+    # methods do what (tasks/030). `kind` names the accessor that says
+    # what this node is; its answer selects one of the branches below.
+    # A kind named nowhere here - a thunk - crosses as a proxy, which
+    # is exactly the laziness the wire cannot serialize.
+    _tree = {
+        "kind": "type_name",
+        # What makes two nodes THE SAME node. A fresh Python wrapper is
+        # built for every access, so Python identity says nothing: two
+        # wrappers over one value differ, and a wrapper that dies hands
+        # its id() to the next one. The underlying object is the
+        # identity, and only this file can say where it lives.
+        "identity": "_identity",
+        # kind reported by `kind` -> [wire type, accessor]. The wire
+        # type is what picks the arm, so the layer above reads a
+        # declared type name rather than a label this file invented.
+        "scalars": {"int": ["int", "integer"],
+                    "string": ["str", "string_value"],
+                    "bool": ["bool", "boolean"]},
+        "list": {"size": "size", "item": "at"},
+        "attrs": {"size": "size", "name": "name_at", "value": "value_at"},
+    }
+
     # Single bridge field: an uncollectable GC cell holding the CValue
     # pointer. The collector scans the cell, so the value stays alive
     # exactly as long as this wrapper does - and becomes reclaimable,
@@ -79,6 +104,15 @@ cdef class Value:
         if self._cell != NULL:
             gc_register_current_thread()
             GC_free(self._cell)
+
+    def _identity(self) -> int:
+        """The underlying value's address, as a number.
+
+        Private: it is not surface, so the codegen leaves it out of
+        every generated form. The tree walk uses it to visit a shared
+        value once - values are immutable and shared freely, so without
+        it a diamond is copied and a cycle never ends."""
+        return <uintptr_t>self._cell[0]
 
     def is_gc_managed(self) -> bint:
         """True when this value lives inside a GC-allocated block.

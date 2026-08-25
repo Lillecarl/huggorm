@@ -37,6 +37,90 @@ def _tok(stream: Any) -> str:
     return value.decode() if isinstance(value, bytes) else value
 
 
+# A realize with no bounds asked for. Small on purpose: every node the
+# walk stops at costs the caller a lease, and a caller that wants more
+# can say so.
+DEFAULT_DEPTH = 8
+DEFAULT_BUDGET = 1000
+
+
+class TreeWalk:
+    """One pass over a value that holds values, on that value's OWN
+    thread.
+
+    Everything it knows about the type comes from `spec`, which the
+    binding declares and the manifest carries: which accessor says what
+    a node is, which accessor reads each scalar kind, and how to reach
+    the elements of a list or an attribute set. This class names no
+    type and no method.
+
+    It runs in ONE hop for the whole tree. A node per round trip would
+    put a thread handover between every attribute, which is the cost
+    the affine model exists to avoid paying repeatedly.
+
+    Three things stop it, and all three produce the same answer - a
+    proxy:
+
+    - a kind the declaration does not name. That is a thunk, and a
+      thunk is exactly what cannot be serialized;
+    - a node already visited. Values are immutable and shared freely,
+      so without this a diamond is copied twice and a cycle never
+      ends. The repeated position still carries a handle, and identity
+      mapping means it is the SAME handle - so the sharing survives
+      rather than being flattened away;
+    - a node past the depth, or one the budget ran out on.
+    """
+
+    def __init__(self, spec: dict[str, Any], depth: int, budget: int) -> None:
+        self.spec = spec
+        self.depth = depth
+        self.left = budget
+        self.seen: set[Any] = set()
+        self.truncated = False
+
+    def _key(self, obj: Any) -> Any:
+        """What makes two nodes the same node.
+
+        Declared, because Python identity is not it wherever a binding
+        builds a fresh wrapper per access: two wrappers over one object
+        differ, and a wrapper that dies hands its id() to the next one -
+        which reads as "already seen" and truncates a tree that was
+        never visited."""
+        how = self.spec.get("identity")
+        return getattr(obj, how)() if how else id(obj)
+
+    def node(self, obj: Any, depth: int) -> Any:
+        key = self._key(obj)
+        # `depth` counts levels EXPANDED, so 1 is the root alone. Zero
+        # would be the natural spelling for that, and proto3 cannot
+        # tell a zero from an unset field - the same limitation
+        # _wire_fields marks with a trailing "?".
+        if self.left <= 0 or depth >= self.depth or key in self.seen:
+            self.truncated = True
+            return ("proxy", type(obj).__name__, obj)
+        self.left -= 1
+        self.seen.add(key)
+        kind = getattr(obj, self.spec["kind"])()
+        scalar = self.spec["scalars"].get(kind)
+        if scalar is not None:
+            type_str, reader = scalar
+            return ("scalar", type_str, getattr(obj, reader)())
+        if kind == "list":
+            how = self.spec["list"]
+            size = getattr(obj, how["size"])()
+            item = getattr(obj, how["item"])
+            return ("list", [self.node(item(i), depth + 1) for i in range(size)])
+        if kind == "attrs":
+            how = self.spec["attrs"]
+            size = getattr(obj, how["size"])()
+            name, value = getattr(obj, how["name"]), getattr(obj, how["value"])
+            return ("attrs", {name(i): self.node(value(i), depth + 1)
+                              for i in range(size)})
+        # A kind nothing describes: it stays where it is.
+        self.truncated = True
+        return ("proxy", type(obj).__name__, obj)
+
+
 class Dispatcher:
     def __init__(self, pool: Any, manifest: dict[str, Any],
                  lease_ttl: float = 120.0) -> None:
@@ -47,6 +131,20 @@ class Dispatcher:
         self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
         self.codec = WireCodec(manifest)
+        # Which classes are value TREES, and how to walk one. Declared
+        # next to the binding; this module names none of them.
+        self.trees: dict[str, dict[str, Any]] = {
+            name: proto["tree"]
+            for group in ("wrappers", "returned_types")
+            for name, proto in manifest[group].items()
+            if "tree" in proto
+        }
+        self.async_classes: dict[str, str] = {
+            name: proto["async_class"]
+            for group in ("wrappers", "returned_types")
+            for name, proto in manifest[group].items()
+            if "async_class" in proto
+        }
         self.mapping: dict[str, grpclib.const.Handler] = {}
         self._session()
         for group in ("wrappers", "returned_types"):
@@ -125,6 +223,25 @@ class Dispatcher:
                     grpclib.const.Status.UNKNOWN,
                     json.dumps(internal.to_dict())) from e
         return guard
+
+    def adopt(self, obj: Any, parent: Any) -> Any:
+        """The async wrapper for a bare binding object.
+
+        A handle resolves to a wrapper: the server calls methods on one
+        and the reaper closes one. A value found INSIDE another value
+        arrives as the sync object, so it needs its wrapper before it
+        can have a handle - attached to the producer's runner, because
+        an affine object may only be touched on the thread it was born
+        on."""
+        import fake_library_generated as flg
+
+        name = type(obj).__name__
+        cls = self.async_classes.get(name)
+        if cls is None:
+            raise TypeError(
+                f"{name} has no async wrapper, so it cannot be handed out "
+                f"as a handle")
+        return getattr(flg, cls)(obj, parent._runner)
 
     def _service(self, cls_name: str, proto: dict[str, Any]) -> None:
         if "acquire" in proto:
@@ -304,8 +421,47 @@ class Dispatcher:
             ack.ok = moved > 0
             await stream.send_message(ack)
 
+        async def realize(stream: Any) -> None:
+            """One round trip for a whole value tree.
+
+            Walking a value from the client is a call per node, and
+            every one of them is a network round trip plus a thread
+            handover. This walks it once, on the value's own thread,
+            and answers with the tree.
+
+            It forces nothing. What is already forced serializes; a
+            thunk crosses as a handle, and the caller forces it with
+            the call that already exists. So the answer is bounded, it
+            cannot raise halfway down a half-built message, and it
+            composes with force rather than duplicating it."""
+            req = await stream.recv_message()
+            token = _tok(stream)
+            target = self.resolve(req.handle.id, token)
+            spec = self.trees.get(type(target).__name__.removeprefix("Async"))
+            if spec is None:
+                raise TypeError(
+                    f"{req.handle.id[:8]} is not a value tree: its type "
+                    f"declares no walk")
+            walk = TreeWalk(spec,
+                            req.depth if req.depth > 0 else DEFAULT_DEPTH,
+                            req.budget if req.budget > 0 else DEFAULT_BUDGET)
+            # ONE hop for the whole tree, on the value's own thread.
+            tree = await target._runner.run(lambda obj: walk.node(obj, 0))
+            resp = self.msg("RealizeResp")()
+            # Every node the walk stopped at leases to the caller and
+            # pins the root, exactly as a proxy return does.
+            self.codec.tree_to_msg(
+                tree, resp.root,
+                lambda _cls, obj: self.put(self.adopt(obj, target), token,
+                                           parents=[req.handle.id]))
+            resp.nodes = len(walk.seen)
+            resp.truncated = walk.truncated
+            await stream.send_message(resp)
+
         Handle = self.msg("Handle")
         for name, fn, req_cls, resp_cls in (
+            ("Realize", realize, self.msg("RealizeReq"),
+             self.msg("RealizeResp")),
             ("Release", release, Handle, Handle),
             ("ReleaseMany", release_many, self.msg("ReleaseManyReq"),
              self.msg("ReleaseManyResp")),

@@ -160,7 +160,7 @@ async def main() -> None:
         rstore = await client.acquire("RemoteStore")
         drv = await rstore.query_derivation(
             await rstore.add_text_to_store("demo.drv", "DrvDemo"))
-        from fake_library_generated import RPC_CLASSES, RPCDerivation
+        from fake_library_generated import RPC_CLASSES, RPCDerivation, RPCValue
         check("proxy stays remote", isinstance(drv, RPCDerivation)
               and drv._wire == "proxy")
         # The generated class carries real methods, so a missing one is
@@ -220,6 +220,59 @@ async def main() -> None:
         await state.attrs_set(attrs, "xs", xs)
         check("nested collections walk over the wire",
               await (await (await attrs.get("xs")).at(0)).integer() == 7)
+
+        # ...and the whole tree in ONE round trip. Walking it a call at
+        # a time costs a round trip and a thread handover per node.
+        tree = await client.realize(attrs)
+        check("realize returns the shape, not handles",
+              tree == {"apple": "first", "xs": [7], "zebra": 1}, tree)
+        check("realize keeps attribute names alphabetical",
+              list(tree) == ["apple", "xs", "zebra"], list(tree))
+
+        # It forces NOTHING. A thunk is exactly what cannot be
+        # serialized, so it crosses as a proxy and the caller forces it
+        # with the call that already exists.
+        lazy = await state.make_attrs()
+        await state.attrs_set(lazy, "later", await state.parse_expr("42"))
+        held = await client.realize(lazy)
+        check("a thunk comes back as a proxy",
+              isinstance(held["later"], RPCValue), type(held["later"]).__name__)
+        await state.force(held["later"])
+        check("forcing the proxy and realizing again goes further",
+              (await client.realize(lazy)) == {"later": 42})
+
+        # Bounds. depth stops the walk going deep; budget stops it
+        # going wide, which is the one that bites - an attribute set
+        # can hold a hundred thousand entries at depth one.
+        flat = await client.realize(attrs, depth=1)
+        check("depth 1 gives the root's shape and proxies every child",
+              set(flat) == {"apple", "xs", "zebra"}
+              and all(isinstance(v, RPCValue) for v in flat.values()), flat)
+        shallow = await client.realize(attrs, depth=2)
+        check("depth 2 expands the children and stops below them",
+              shallow["zebra"] == 1 and shallow["apple"] == "first"
+              and isinstance(shallow["xs"][0], RPCValue), shallow)
+        wide = await state.make_attrs()
+        for i in range(20):
+            await state.attrs_set(wide, f"k{i:02d}", await state.make_int(i))
+        # 1 for the root, then 3 children before it runs out.
+        capped = await client.realize(wide, budget=4)
+        kept = [k for k, v in capped.items() if not isinstance(v, RPCValue)]
+        check("budget stops the walk sideways", len(kept) == 3, kept)
+        check("everything past the budget is still reachable",
+              await capped["k19"].integer() == 19)
+
+        # A value shared by two positions is ONE handle, not two trees.
+        # Values are immutable and shared freely, so without visit
+        # tracking a diamond is copied and a cycle never ends.
+        shared = await state.make_list()
+        twice = await state.make_attrs()
+        await state.attrs_set(twice, "a", shared)
+        await state.attrs_set(twice, "b", shared)
+        diamond = await client.realize(twice)
+        expanded = [k for k, v in diamond.items() if not isinstance(v, RPCValue)]
+        check("a repeated value crosses once, as a handle the second time",
+              expanded == ["a"] and diamond["a"] == [], diamond)
 
         # bint-returning methods cross as real booleans (regression:
         # 'bint' used to leak into the schema and map to an opaque
@@ -428,6 +481,34 @@ async def main() -> None:
             base = json.loads(out)["result"]["base_name"]
             check("grpcurl typed call returns StorePath",
                   base.endswith("via-grpcurl.txt"), base)
+
+            # The recursive value message, through a tool that has only
+            # the descriptor this build emitted. A oneof holding a map
+            # of itself is the shape most likely to be built wrong, and
+            # a wrong one still round-trips inside Python.
+            rc, out, err = await run_tool(
+                grpcurl_bin, symbol="nixmock.v1.EvalStateService/Acquire",
+                payload='{"store_uri":"local"}')
+            ev = json.loads(out)["id"]
+
+            async def ev_call(method: str, **fields: Any) -> Any:
+                _rc, o, _e = await run_tool(
+                    grpcurl_bin, symbol=f"nixmock.v1.EvalStateService/{method}",
+                    payload=json.dumps({"self": {"id": ev}, **fields}))
+                return json.loads(o) if o.strip() else {}
+
+            bag = (await ev_call("make_attrs"))["result"]["id"]
+            seven = (await ev_call("make_int", value=7))["result"]["id"]
+            await ev_call("attrs_set", target={"id": bag}, name="n",
+                          item={"id": seven})
+            rc, out, err = await run_tool(
+                grpcurl_bin, symbol="nixmock.v1.Session/Realize",
+                payload=json.dumps({"handle": {"id": bag}}))
+            realized: dict[str, Any] = json.loads(out) if rc == 0 else {}
+            check("grpcurl reads the recursive value message",
+                  realized.get("root", {}).get("attrs", {})
+                  .get("entries", {}).get("n", {}).get("i") == "7",
+                  f"rc={rc} out={out[:160]!r} err={err[:120]!r}")
 
             # ...and the same rpc, same handle-shaped request, against a
             # RemoteStore. One service, either implementation.

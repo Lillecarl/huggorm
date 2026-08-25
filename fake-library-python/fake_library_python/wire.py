@@ -23,7 +23,7 @@ RemoteObj and reads ids back off one.
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import Any
+from typing import Any, ClassVar
 
 from fake_library_generated._wiretypes import SCALAR_NAMES, map_value
 
@@ -132,6 +132,75 @@ class WireCodec:
         if vtype is None:
             raise TypeError(f"{type_str!r} is not a map")
         return vtype
+
+    # -- the recursive value message ----------------------------------
+    # A value that holds values. Not built from a _wire_fields
+    # declaration: the shape is recursive and its arms are the wire
+    # KINDS themselves. What this module does NOT know is how to walk
+    # one - that comes from a declaration next to the binding, through
+    # the manifest, and arrives here already walked (tasks/030).
+    #
+    # The plain shape both sides speak:
+    #   ("scalar", "int", 5)     a leaf, by declared type
+    #   ("proxy", "Value", obj)  a node that stays remote
+    #   ("list", [node, ...])
+    #   ("attrs", {name: node})
+    ARMS: ClassVar[dict[str, str]] = {
+        "str": "s", "int": "i", "bool": "b", "float": "f"}
+
+    def tree_to_msg(self, node: Any, msg: Any,
+                    proxy_id: Callable[[str, Any], str]) -> None:
+        """Fill a NixValue message from one walked node."""
+        what = node[0]
+        if what == "scalar":
+            _, type_str, val = node
+            try:
+                arm = self.ARMS[type_str]
+            except KeyError:
+                raise TypeError(
+                    f"{type_str!r} has no arm in the value message; it is "
+                    f"not one of {sorted(self.ARMS)}") from None
+            setattr(msg, arm, _SCALARS.get(type_str, float)(val))
+        elif what == "proxy":
+            _, cls, obj = node
+            msg.proxy.handle.id = proxy_id(cls, obj)
+            # A handle does not say what it is, and no layer above the
+            # bindings may name a class. The walk knows, so it says.
+            msg.proxy.cls = cls
+        elif what == "list":
+            # Touch the arm even when empty: proto3 would otherwise
+            # leave the oneof unset and the far side could not tell an
+            # empty list from a missing value.
+            msg.list.SetInParent()
+            for item in node[1]:
+                self.tree_to_msg(item, msg.list.items.add(), proxy_id)
+        elif what == "attrs":
+            msg.attrs.SetInParent()
+            for name, item in node[1].items():
+                self.tree_to_msg(item, msg.attrs.entries[name], proxy_id)
+        else:
+            raise TypeError(f"unknown value-tree node {what!r}")
+
+    def tree_from_msg(self, msg: Any,
+                      proxy_obj: Callable[[str, str], Any]) -> Any:
+        """Rebuild a Python value from a NixValue message.
+
+        Scalars come back as themselves, a list as a list, an attribute
+        set as a dict, and anything the far side would not serialize as
+        a proxy object. Attribute names are sorted: Nix attribute sets
+        are alphabetical and a protobuf map has no order, so the order
+        is restored here rather than trusted."""
+        arm = msg.WhichOneof("v")
+        if arm is None:
+            raise TypeError("value message carries no arm")
+        if arm == "proxy":
+            return proxy_obj(msg.proxy.cls, msg.proxy.handle.id)
+        if arm == "list":
+            return [self.tree_from_msg(i, proxy_obj) for i in msg.list.items]
+        if arm == "attrs":
+            return {k: self.tree_from_msg(msg.attrs.entries[k], proxy_obj)
+                    for k in sorted(msg.attrs.entries)}
+        return getattr(msg, arm)
 
     def value_from_msg(self, type_str: str, msg: Any) -> Any:
         """Rebuild a sync binding object from its message."""

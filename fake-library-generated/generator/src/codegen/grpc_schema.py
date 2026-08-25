@@ -360,6 +360,92 @@ def _add_session(f: Any) -> None:
     relm.input_type = f".{PKG}.ReleaseManyReq"
     relm.output_type = f".{PKG}.ReleaseManyResp"
 
+    _add_value_tree(f, sess)
+
+
+# -- the recursive value message ------------------------------------------
+
+VALUE = "NixValue"
+
+
+def _add_value_tree(f: Any, sess: Any) -> None:
+    """A value that holds values, and the rpc that fetches one.
+
+    Hand-written, like the rest of Session. This message cannot come
+    out of a _wire_fields declaration the way StorePath's does: it is
+    recursive, and its arms are the wire KINDS themselves rather than a
+    list of typed fields. The generator stays unaware of it; what it
+    does know - which class is a tree and how to walk one - reaches the
+    server through the manifest, from a declaration next to the
+    binding.
+
+    The proxy arm is where laziness lives. A thunk cannot be
+    serialized, so it crosses as a handle and the caller forces it with
+    another call. The same arm carries every node the walk stopped at,
+    so a bounded answer and a lazy one have one shape."""
+    proxy = f.message_type.add()
+    proxy.name = "NixProxy"
+    _field(proxy, "handle", 1, type_name=HANDLE)
+    # The handle alone does not say what it is, and no layer above the
+    # bindings may name a class. The walk knows, so it says.
+    _field(proxy, "cls", 2, proto_type=_scalar_const("string"))
+
+    lst = f.message_type.add()
+    lst.name = "NixList"
+    field = _field(lst, "items", 1, type_name=VALUE)
+    field.label = field.LABEL_REPEATED
+
+    attrs = f.message_type.add()
+    attrs.name = "NixAttrs"
+    entry = attrs.nested_type.add()
+    entry.name = entry_name("entries")
+    entry.options.map_entry = True
+    _field(entry, "key", 1, proto_type=_scalar_const(SCALARS[MAP_KEY]))
+    _field(entry, "value", 2, type_name=VALUE)
+    field = _field(attrs, "entries", 1, type_name=f"{attrs.name}.{entry.name}")
+    field.label = field.LABEL_REPEATED
+
+    value = f.message_type.add()
+    value.name = VALUE
+    arm = value.oneof_decl.add()
+    arm.name = "v"
+    for n, (fname, ptype, msg) in enumerate([
+        ("s", "string", None),
+        ("i", "sint64", None),
+        ("b", "bool", None),
+        ("f", "double", None),
+        ("proxy", None, proxy.name),
+        ("list", None, lst.name),
+        ("attrs", None, attrs.name),
+    ], start=1):
+        field = _field(value, fname, n,
+                       proto_type=_scalar_const(ptype) if ptype else None,
+                       type_name=msg)
+        field.oneof_index = 0
+
+    req = f.message_type.add()
+    req.name = "RealizeReq"
+    _field(req, "handle", 1, type_name=HANDLE)
+    # Two bounds, because a tree is unbounded in two directions and
+    # they are not the same problem. depth counts levels EXPANDED, so 1
+    # is the root alone; budget is the hard stop, because a single
+    # attribute set can hold a hundred thousand entries one level down.
+    # Every node the walk stops at costs the caller a lease, which is
+    # why both default small.
+    _field(req, "depth", 2, proto_type=_scalar_const("sint64"))
+    _field(req, "budget", 3, proto_type=_scalar_const("sint64"))
+
+    resp = f.message_type.add()
+    resp.name = "RealizeResp"
+    _field(resp, "root", 1, type_name=VALUE)
+    _field(resp, "nodes", 2, proto_type=_scalar_const("sint64"))
+    _field(resp, "truncated", 3, proto_type=_scalar_const("bool"))
+
+    rlz = sess.method.add()
+    rlz.name = "Realize"
+    rlz.input_type = f".{PKG}.RealizeReq"
+    rlz.output_type = f".{PKG}.RealizeResp"
+
 
 def _add_free_service(file_dp: Any, manifest: Proto,
                       kinds: dict[str, str]) -> None:

@@ -263,6 +263,35 @@ class NixClient:
         self._untrack(obj.handle_id)
         obj.handle_id = None
 
+    async def realize(self, obj: Any, depth: int = 0,
+                      budget: int = 0) -> Any:
+        """A whole value tree in one round trip.
+
+        Walking a value one call at a time costs a round trip and a
+        thread handover per node. This asks the server to walk it once
+        and hand back the shape: scalars as themselves, a list as a
+        list, an attribute set as a dict in name order.
+
+        Nothing is forced. A thunk comes back as a proxy, and so does
+        every node the walk stopped at - past `depth`, past `budget`,
+        or already seen elsewhere in the tree. Force one and realize it
+        again to go further.
+
+        depth and budget are both bounds because a tree is unbounded in
+        two directions. depth counts levels EXPANDED, so 1 is the root
+        alone and every child a proxy. budget stops it going wide,
+        which is the one that actually bites: an attribute set can hold
+        a hundred thousand entries one level down. Zero means the
+        server's default."""
+        if obj.handle_id is None:
+            raise ValueError("this handle was already released")
+        req = self.msg("RealizeReq")()
+        req.handle.id = obj.handle_id
+        req.depth, req.budget = depth, budget
+        resp = await self._rpc(f"/{schema.PKG}.Session/Realize", req,
+                               "RealizeResp")
+        return self.codec.tree_from_msg(resp.root, self.proxy)
+
     async def call_function(self, name: str, *args: Any) -> Any:
         """Call one of the bindings' module-level functions remotely.
 

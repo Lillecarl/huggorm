@@ -230,6 +230,28 @@ class BaseRunner:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(self._executor(), self._resolve)
 
+    async def run(self, fn: Callable[[Any], Any]) -> Any:
+        """Run one function against the target, on the target's own
+        executor.
+
+        `call` dispatches a method by name, which costs a thread
+        handover per call. This is for work that has to visit an object
+        many times - walking a value that holds values - and must not
+        pay a handover for every visit. The function runs on the home
+        thread, so everything it touches is on that thread too."""
+        await self.materialize()
+        loop = asyncio.get_running_loop()
+
+        def invoke() -> Any:
+            try:
+                return fn(self.ensure())
+            except Exception as e:
+                if hasattr(e, "to_dict"):
+                    raise
+                raise InternalError("run failed", cause=e) from e
+
+        return await loop.run_in_executor(self._executor(), invoke)
+
     async def call(self, method: str, args: list[Any]) -> Any:
         await _materialize_args(args)
         loop = asyncio.get_running_loop()

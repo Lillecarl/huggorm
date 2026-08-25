@@ -14,14 +14,9 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 030 (attribute sets on the wire) unblocks the evaluation server,
-  because an attrset is what Nix evaluation mostly hands back. Two of
-  three parts are done: dict[str, V] crosses as map<string, V>, and
-  the mock evaluator holds lists and attribute sets. What remains is
-  the recursive NixValue message - the decided shape, not a map of
-  maps - and the open question there is not the message but the rpc
-  that carries it: how much of a tree a client asks for at once, and
-  how many leases that hands it.
+- 030 (attribute sets on the wire) is closed, which unblocks the
+  evaluation server: an attrset is what Nix evaluation mostly hands
+  back, and Realize now fetches one in a single round trip.
 - 031 (recursive handle tracking) is closed. Identity mapping, the
   wire-value boundary, and idempotent grants on every inbound handle.
 - 015 (the real-Nix spike) is the other direction, and everything it
