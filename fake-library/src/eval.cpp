@@ -69,35 +69,82 @@ std::string Value::type_name() const
         case Kind::Int: return "int";
         case Kind::String: return "string";
         case Kind::Bool: return "bool";
+        case Kind::List: return "list";
+        case Kind::Attrs: return "attrs";
     }
     return "unknown";
 }
 
-long long Value::integer() const
+void Value::want(Kind k, const char * what) const
 {
     if (!forced_)
         throw std::runtime_error("value is a thunk");
-    if (kind_ != Kind::Int)
-        throw std::runtime_error("value is not an integer");
+    if (kind_ != k)
+        throw std::runtime_error(std::string("value is not ") + what);
+}
+
+long long Value::integer() const
+{
+    want(Kind::Int, "an integer");
     return int_;
 }
 
 std::string Value::string_value() const
 {
-    if (!forced_)
-        throw std::runtime_error("value is a thunk");
-    if (kind_ != Kind::String)
-        throw std::runtime_error("value is not a string");
+    want(Kind::String, "a string");
     return str_;
 }
 
 bool Value::boolean() const
 {
+    want(Kind::Bool, "a boolean");
+    return bool_;
+}
+
+size_t Value::size() const
+{
     if (!forced_)
         throw std::runtime_error("value is a thunk");
-    if (kind_ != Kind::Bool)
-        throw std::runtime_error("value is not a boolean");
-    return bool_;
+    if (kind_ == Kind::List)
+        return list_.size();
+    if (kind_ == Kind::Attrs)
+        return attrs_.size();
+    throw std::runtime_error("value is not a list or an attribute set");
+}
+
+Value * Value::at(size_t index) const
+{
+    want(Kind::List, "a list");
+    if (index >= list_.size())
+        throw std::runtime_error("list index out of range");
+    return list_[index];
+}
+
+std::vector<std::string> Value::names() const
+{
+    want(Kind::Attrs, "an attribute set");
+    // std::map iterates in key order, so the caller gets a stable
+    // listing without sorting it again.
+    std::vector<std::string> out;
+    out.reserve(attrs_.size());
+    for (const auto & [name, _] : attrs_)
+        out.push_back(name);
+    return out;
+}
+
+bool Value::has(const std::string & name) const
+{
+    want(Kind::Attrs, "an attribute set");
+    return attrs_.find(name) != attrs_.end();
+}
+
+Value * Value::get(const std::string & name) const
+{
+    want(Kind::Attrs, "an attribute set");
+    const auto it = attrs_.find(name);
+    if (it == attrs_.end())
+        throw std::runtime_error("attribute '" + name + "' is missing");
+    return it->second;
 }
 
 EvalState::EvalState(std::string store_uri) : store_uri_(std::move(store_uri))
@@ -136,5 +183,44 @@ Value * EvalState::eval_expr(const std::string & expr)
 }
 
 void EvalState::force(Value * v) { v->force(); }
+
+Value * EvalState::make_int(long long v) { return new Value(Value::make(v, true)); }
+
+Value * EvalState::make_string(const std::string & v)
+{
+    return new Value(Value::make(v, true));
+}
+
+Value * EvalState::make_bool(bool v) { return new Value(Value::make(v)); }
+
+Value * EvalState::make_list(const std::vector<Value *> & items)
+{
+    // Allocate the value FIRST, then fill it. Its List member allocates
+    // from the GC heap, and the collector can only see those nodes
+    // through a value it can already reach.
+    Value * out = new Value();
+    out->kind_ = Value::Kind::List;
+    out->forced_ = true;
+    for (Value * item : items) {
+        if (item == nullptr)
+            throw std::invalid_argument("null element in a list");
+        out->list_.push_back(item);
+    }
+    return out;
+}
+
+Value * EvalState::make_attrs(const std::vector<std::pair<std::string, Value *>> & items)
+{
+    Value * out = new Value();
+    out->kind_ = Value::Kind::Attrs;
+    out->forced_ = true;
+    for (const auto & [name, item] : items) {
+        if (item == nullptr)
+            throw std::invalid_argument("null value for attribute '" + name + "'");
+        // Last one wins, matching an attribute set built by assignment.
+        out->attrs_[name] = item;
+    }
+    return out;
+}
 
 }  // namespace fake_library

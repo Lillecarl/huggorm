@@ -70,13 +70,46 @@ def _unwrap(node: Any) -> Any:
 
 
 def _type_name(node: Any) -> str:
+    """Render one type node as the pxd spells it.
+
+    A shape this cannot render RAISES. It used to answer "void" for
+    anything without a plain name, which is right for a constructor and
+    a silent lie for everything else: a `vector[string]` return came out
+    as void, mapped to None, and the codegen emitted a method that
+    claimed to return nothing. Unmapped types are already fatal one
+    layer up; this is the same rule one layer down."""
     t = type(node).__name__
     if t == "CConstOrVolatileTypeNode":
         return _type_name(node.base_type)
+    if t == "TemplatedTypeNode":
+        args = ", ".join(_type_name(a) for a in (node.positional_args or []))
+        return f"{_type_name(node.base_type_node)}[{args}]"
+    if t == "CComplexBaseTypeNode":
+        # A template argument that is more than a name: `CValue *` in
+        # `vector[CValue *]`, and const/reference spellings of it.
+        out = _type_name(node.base_type)
+        d = node.declarator
+        while d is not None and type(d).__name__ != "CNameDeclaratorNode":
+            dt = type(d).__name__
+            if dt == "CPtrDeclaratorNode":
+                out += "*"
+            elif dt == "CReferenceDeclaratorNode":
+                out += "&"
+            elif dt == "CConstDeclaratorNode":
+                out = "const " + out
+            else:
+                raise ValueError(
+                    f"pxd declares a template argument this parser cannot "
+                    f"render: {dt}")
+            d = getattr(d, "base", None)
+        return out
     n = getattr(node, "name", None)
-    if n is None:
-        return "void"  # bare return / untyped
-    return str(n)
+    if n is not None:
+        return str(n)
+    if t == "CSimpleBaseTypeNode":
+        return "void"  # a bare return: a constructor
+    raise ValueError(
+        f"pxd declares a type this parser cannot render: {t}")
 
 
 def _func_info(var_node: Any) -> Proto | None:

@@ -28,6 +28,46 @@ def test_parse(out: pathlib.Path) -> None:
         ast.parse(py.read_text(), filename=str(py))
 
 
+def test_pxd_renders_every_type() -> None:
+    """The pxd parser must never answer "void" for a type it does not
+    recognise.
+
+    It used to. A `vector[string]` return rendered as void, mapped to
+    None, and the codegen emitted a method that claimed to return
+    nothing - a silent lie of exactly the kind the unmapped-type rule
+    one layer up exists to stop. A template renders as itself now, so
+    map_c_type refuses it by name until something maps it."""
+    from codegen.model import map_c_type
+    from codegen.pxd import extract_api
+
+    src = """# cython: language_level=3
+from libcpp.string cimport string
+from libcpp.vector cimport vector
+
+cdef extern from "x.hpp" nogil:
+    cdef cppclass CThing "ns::Thing":
+        CThing() except +
+        vector[string] names() except +
+        void take(const vector[CThing *] & items) except +
+"""
+    info = extract_api(src)["classes"]["CThing"]
+    methods = {m["name"]: m for m in info["methods"]}
+    assert methods["names"]["ret"] == "vector[string]", methods["names"]
+    assert methods["take"]["params"] == [("items", "vector[CThing*]&")], methods["take"]
+    # A constructor genuinely has no return type. It still parses, which
+    # is what the "void" answer was ever for.
+    assert info["ctors"] == [[]], info["ctors"]
+
+    # ...and the layer above refuses it by name rather than believing
+    # it returns None.
+    try:
+        map_c_type("vector[string]", {"CThing": "Thing"})
+    except ValueError as e:
+        assert "vector[string]" in str(e), e
+    else:
+        raise AssertionError("map_c_type accepted a template type")
+
+
 def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference
     the runtime only via `from _runtime import X`; a rename on either
@@ -858,6 +898,7 @@ def main(argv: list[str] | None = None) -> None:
     out = pathlib.Path(args.out).resolve()
 
     test_parse(out)
+    test_pxd_renders_every_type()
 
     # Import the generated package from its parent dir, shadowing any
     # installed copy. Bindings (fake_library) come from PYTHONPATH.
