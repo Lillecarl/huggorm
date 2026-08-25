@@ -46,4 +46,14 @@ select = [
 "**/run_remote.py" = ["E402"]
 
 [lint.isort]
-known-first-party = ["codegen", "fake_library", "fake_library_generated", "fake_library_python"]
+# test_remote holds the shared harness the other suites import. Left
+# undeclared it is third-party at the repo root and first-party in the
+# package build, so the two runs demand opposite orderings of the same
+# file and one of them always fails.
+known-first-party = [
+  "codegen",
+  "fake_library",
+  "fake_library_generated",
+  "fake_library_python",
+  "test_remote",
+]
