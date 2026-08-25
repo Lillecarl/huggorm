@@ -149,6 +149,44 @@ def map_c_type(raw: str, mapping: dict[str, str]) -> str:
         f"binding claims with _binds")
 
 
+# The package a binding class comes from. A class from here is written
+# bare, because every emitted module imports it from the package root;
+# a class from anywhere else has to say where it lives.
+BINDINGS_PKG = "cythonix_bindings"
+
+
+def _qualified(cls: Any) -> str:
+    """One resolved class, as the annotation that would name it.
+
+    `__name__` alone is wrong for anything the emitted modules do not
+    import from cythonix_bindings. `pathlib.Path` resolves to a class
+    whose `__name__` is `Path`, and an emitted `-> Path` is a
+    NameError - or worse, an import of `Path` from the bindings.
+
+    That went unnoticed because it depends on something unrelated:
+    get_type_hints resolves a whole function at once, so a method with
+    a `StorePath` parameter fails to resolve (StorePath is a cimport,
+    not a Python global) and keeps its written strings, while a method
+    whose annotations all resolve loses every module. The same
+    declaration meant two different things depending on its
+    NEIGHBOURS.
+
+    The module HEAD, not `__module__`, because that is what the author
+    wrote and what a reader can import: `pathlib.Path` is really
+    `pathlib._local.Path` on 3.14, and the private path is no annotation
+    to emit. Checked rather than assumed - if the head does not
+    re-export the class, the full module path is the honest answer."""
+    name: str = cls.__name__
+    mod = getattr(cls, "__module__", "") or ""
+    if mod == "builtins" or mod.split(".")[0] in ("", BINDINGS_PKG):
+        return name
+    head = mod.split(".")[0]
+    with contextlib.suppress(Exception):
+        if getattr(importlib.import_module(head), name, None) is cls:
+            return f"{head}.{name}"
+    return f"{mod}.{name}"
+
+
 def _annotation_name(ann: Any) -> str:
     """Stringify one annotation. The empty-check lives HERE so callers
     can pass either the resolved hint or the raw annotation - passing
@@ -161,7 +199,10 @@ def _annotation_name(ann: Any) -> str:
     depended on which path resolved the annotation: a free function's
     stayed the written string and kept its parameters, a method's
     resolved to a real generic and lost them, so the same declaration
-    meant two different things depending on where it was written."""
+    meant two different things depending on where it was written.
+
+    A resolved CLASS renders through _qualified, so a type from
+    outside the bindings keeps the module that says where it lives."""
     if ann is inspect.Signature.empty:
         return "Any"
     if ann is None or getattr(ann, "__name__", None) == "NoneType":
@@ -170,6 +211,8 @@ def _annotation_name(ann: Any) -> str:
     if origin is not None:
         inner = ", ".join(_annotation_name(a) for a in get_args(ann))
         return f"{_annotation_name(origin)}[{inner}]"
+    if isinstance(ann, type):
+        return _qualified(ann)
     return getattr(ann, "__name__", str(ann))
 
 

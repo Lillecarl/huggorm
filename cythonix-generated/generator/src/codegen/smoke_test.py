@@ -130,6 +130,44 @@ def test_declarations_are_found_by_binds() -> None:
     assert table["m"] == {"params": ["str"], "ret": "bool"}, table
 
 
+def test_a_resolved_class_keeps_its_module() -> None:
+    """An annotation must not depend on its NEIGHBOURS.
+
+    get_type_hints resolves a whole function at once. A method with a
+    `StorePath` parameter fails to resolve - StorePath is a cimport,
+    not a Python global - so its written strings survive; one whose
+    annotations all resolve gets real classes, and `__name__` on a
+    class drops the module it lives in. So `-> pathlib.Path` meant
+    `pathlib.Path` or `Path` depending on what else the method
+    declared, and the second emits a NameError.
+
+    The module HEAD is what gets written, because that is what an
+    author writes and what a reader can import - checked, not assumed,
+    so a class the head does not re-export gets its full path."""
+    import collections.abc
+    import datetime
+    import pathlib
+
+    from codegen.model import _annotation_name
+
+    assert _annotation_name(pathlib.Path) == "pathlib.Path"
+    assert _annotation_name(datetime.datetime) == "datetime.datetime"
+
+    # A builtin stays bare, and so does a binding class: every emitted
+    # module imports those from the package root.
+    from cythonix_bindings import StorePath
+
+    assert _annotation_name(str) == "str"
+    assert _annotation_name(StorePath) == "StorePath"
+    assert _annotation_name(dict[str, int]) == "dict[str, int]"
+
+    # collections.Sequence has not existed since 3.10, so the head is
+    # the wrong answer here and the full path is the right one.
+    assert getattr(collections, "Sequence", None) is None
+    assert (_annotation_name(collections.abc.Sequence)
+            == "collections.abc.Sequence")
+
+
 def test_a_default_is_written_or_refused() -> None:
     """What a parameter default may be, and what happens to the rest.
 
@@ -1113,6 +1151,7 @@ def main(argv: list[str] | None = None) -> None:
     test_pxd_renders_every_type()
     test_annotation_rendering()
     test_declarations_are_found_by_binds()
+    test_a_resolved_class_keeps_its_module()
     test_a_default_is_written_or_refused()
 
     # Import the generated package from its parent dir, shadowing any
