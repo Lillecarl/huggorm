@@ -3,6 +3,7 @@
 }:
 rec {
   inherit pkgs;
+  inherit (pkgs) lib;
   # fake-library should be a C++ project with "complex types", it doesn't have to do anything useful
   fake-library = pkgs.callPackage ./fake-library { };
   # this is Cython bindings into fake-library, should contain pxd and pyx (I believe)
@@ -31,4 +32,14 @@ rec {
       fake-library-python
     ]
   );
+  shell = pkgs.mkShell {
+    packages = [
+      ourPython
+      pkgs.zuban
+    ];
+    shellHook = # bash
+    ''
+      export PYBIN="${lib.getExe ourPython}"
+    '';
+  };
 }
