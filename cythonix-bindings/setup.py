@@ -66,11 +66,17 @@ ext_eval = Extension(
 
 # The first REAL Nix type, beside the mock rather than replacing it
 # (tasks/015). Nothing about it goes through FAKE_LIBRARY.
+_nix = pkg_config("nix-store")
+# ...plus this directory, for nix_error.hpp. It sits beside the
+# sources rather than in the extension because it is C++ that Cython
+# calls, not Cython: `except +translate_nix_error` names a function.
+_nix["include_dirs"] = [os.path.dirname(os.path.abspath(__file__))] + _nix["include_dirs"]
+
 ext_path = Extension(
     "cythonix_bindings.path",
     sources=["cythonix_bindings/path.pyx"],
     language="c++",
-    **pkg_config("nix-store"),
+    **_nix,
 )
 
 setup(

@@ -447,6 +447,14 @@ def main(argv: list[str] | None = None) -> None:
         exported[module] = [p["name"] for p in mine] + [p["name"] for p in mine_free]
     (stub_dir / "__init__.pyi").write_text(
         ast.unparse(stub_init_module(exported)) + "\n")
+    # PARTIAL, and the word is load-bearing. A stubs package normally
+    # REPLACES the runtime one for a typechecker, so a hand-written
+    # Python module in the bindings - errors.py - would vanish behind
+    # stubs that never mention it. Partial says "fall back to the real
+    # package for anything not stubbed here", which is exactly right:
+    # these stubs exist because a compiled extension carries no
+    # signatures, and a .py file needs no help.
+    (stub_dir / "py.typed").write_text("partial\n")
     print(f"generated {STUB_PACKAGE}/ for {len(modules)} binding module(s): "
           + ", ".join(sorted(m.rsplit('.', 1)[-1] for m in modules)))
 

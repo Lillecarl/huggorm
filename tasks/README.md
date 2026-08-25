@@ -38,8 +38,8 @@ Findings reference two architectural reviews, 2026-08-23 and
   the rest waits on 014, because grpclib is an asyncio library.
 - 015 (real Nix) is under way: nix::StorePath is bound, validated by
   libstore, and crossing the wire. The next questions are typed errors
-  (a nix::Error arrives as RuntimeError, with ANSI escapes in it) and
-  which type comes next. Building function values into
+  (done: typed, plain, and the colour kept as a field) and which type
+  comes next. A typed nix error does not survive the wire yet. Building function values into
   the mock was the point where mock fidelity stopped paying: it was
   reimplementing libexpr to prove things libexpr already does.
 - 034 (functions as values) waits on 015. Its analysis is about the

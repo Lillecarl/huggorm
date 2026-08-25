@@ -17,6 +17,7 @@ import pytest
 from cythonix import grpc_pb
 from cythonix.wire import WireCodec
 from cythonix_bindings import StorePath
+from cythonix_bindings.errors import BadStorePath, NixError
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
 
@@ -37,10 +38,45 @@ def test_derivations_are_recognised() -> None:
 def test_validation_comes_from_libstore() -> None:
     """The whole reason to bind the real thing rather than reimplement
     it. Nothing in this repo knows what makes a store path valid."""
-    with pytest.raises(RuntimeError, match="too short to be a valid store path"):
+    with pytest.raises(BadStorePath, match="too short to be a valid store path"):
         StorePath("not-a-store-path")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(BadStorePath):
         StorePath("0" * 32 + "-bad name with spaces")
+
+
+def test_a_nix_error_keeps_its_type() -> None:
+    """Cython's bare `except +` maps anything it does not recognise
+    onto RuntimeError, which loses every distinction libstore drew.
+    `except +translate_nix_error` is the hook that keeps them, and the
+    hierarchy mirrors nix's own so catching the base still works."""
+    with pytest.raises(NixError) as caught:
+        StorePath("nope")
+    assert isinstance(caught.value, BadStorePath)
+    assert not isinstance(caught.value, RuntimeError), "the old behaviour"
+
+
+def test_error_messages_carry_no_terminal_escapes() -> None:
+    """libstore writes its messages in colour whether or not anything
+    is a terminal, so what() comes back holding escape codes. They are
+    stripped at the boundary: they are wrong in a traceback and wrong
+    over the wire, and every reader downstream would have to know."""
+    with pytest.raises(NixError) as caught:
+        StorePath("nope")
+    assert "\x1b" not in str(caught.value), repr(str(caught.value))
+
+
+def test_the_colour_is_kept_beside_the_plain_message() -> None:
+    """It exists so an error can be PRINTED to a terminal, which is
+    the one place it is useful. Stripping it at the boundary and
+    nowhere else would take that from every caller who has a tty."""
+    with pytest.raises(NixError) as caught:
+        StorePath("nope")
+    err = caught.value
+    assert "\x1b[" in err.colored, repr(err.colored)
+    assert err.message == str(err)
+    # Same message, one dressed and one not.
+    assert "too short to be a valid store path" in err.colored
+    assert "too short to be a valid store path" in err.message
 
 
 def test_accessors_do_not_hand_back_views() -> None:

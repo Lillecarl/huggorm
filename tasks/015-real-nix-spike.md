@@ -173,15 +173,46 @@ Modules mirror Nix's own header layout rather than inventing one:
 `c_path.pxd`. When the mock leaves, `store.pyx` and `eval.pyx` are
 free for `nix/store/store-api.hh` and `nix/expr/eval.hh`.
 
-### Two things to decide before the next type
+### Errors keep their type, and their colour
 
-- **A nix::Error arrives in Python as RuntimeError.** Cython's
-  `except +` maps anything that is not a std exception it knows onto
-  RuntimeError, so `BadStorePath` loses its type on the way. The typed
-  error path this repo already has (WrapperError.to_dict) wants a
-  `except +translate_nix_error` handler instead, which is the
-  documented Cython hook for exactly this.
-- **The message carries ANSI escapes.** libstore formats errors with
-  colour, so the RuntimeError string holds `\x1b[31;1merror:\x1b[0m`.
-  That is wrong in a Python traceback and wrong over the wire. Nix has
-  a setting for it; find it before the errors start mattering.
+Both of the things above are done, because every type from here
+inherits whatever this boundary does.
+
+`except +translate_nix_error` names a C++ function Cython calls from
+inside `catch(...)`, and whatever Python error it sets is what the
+caller sees. `nix_error.hpp` catches most-derived first and raises out
+of `cythonix_bindings.errors`, whose hierarchy mirrors libnixutil's
+own: `BadStorePathName` under `BadStorePath` under `NixError`, so
+catching the middle one still catches the leaf. The classes are
+imported lazily, on the first failure, so nothing runs while the
+package is still importing itself.
+
+The message is carried TWICE. Carl: "The color should be available as
+a field, useful when printing error messages to users tty (which is
+why it exists)." So `str(e)` is stripped - escape codes are wrong in a
+traceback and wrong over the wire - and `e.colored` is exactly what
+libstore wrote. Stripping at the boundary and nowhere else would take
+the colour from every caller who has a terminal.
+
+Only what a binding can actually raise is listed. Adding a Nix type
+means adding whatever it throws, beside the catch that produces it.
+
+### One thing that surfaced with it
+
+A stubs package REPLACES the runtime package for a typechecker, so
+`errors.py` - hand-written Python, right there in the bindings -
+vanished behind stubs that never mention it. The stubs are marked
+`partial` now, which is PEP 561's answer: fall back to the real
+package for anything not stubbed. That is exactly right here. These
+stubs exist because a compiled extension carries no signatures, and a
+.py file needs no help.
+
+### Still open
+
+A typed Nix error does not survive the WIRE yet. The server wraps an
+unknown exception in InternalError with `cause_type` and
+`cause_message`, and the client rebuilds the cause by NAME from a map
+of builtins - so a `BadStorePath` arrives as a plain Exception with
+the right message and the wrong type. Teaching that map about the nix
+errors means the generated runtime importing from the bindings, which
+it does not do today.
