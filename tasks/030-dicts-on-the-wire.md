@@ -77,3 +77,40 @@ whole design already rests on, one level deeper - and it is why this
 message cannot be generated from a `_wire_fields` declaration the way
 StorePath's is. It is recursive, and its arms are the wire kinds
 themselves.
+
+## Done 2026-08-25: the flat map
+
+`dict[str, V]` crosses as `map<string, V>`. `gc_stats` was the last
+function with no RPC surface and now has one, proven end to end and
+through grpcurl - which only has the descriptor this build emitted, so
+a wrong synthesised entry message fails there even when it parses in
+Python.
+
+What it took, against the sketch above:
+
+- `_annotation_name` needed no change. It already renders a
+  subscripted generic in full, so `dict[str, int]` reached the
+  manifest intact and the emitter, which parses annotations with
+  `ast`, already wrote it into the async form and the stub.
+- `_msg_arg_type` was the wrong place. proto3 spells a map as a
+  repeated field of a message the containing type carries, so the
+  builder has to CREATE something, not classify. `_add_field` does
+  that and every field now goes through it.
+- `wire_blocker` reports what a map cannot do in its own words: a bare
+  `dict`, a non-string key, a map of maps, a map of proxies.
+- The codec grew `map_to_msg` / `map_from_msg` beside the wire-value
+  pair they mirror.
+
+New: `codegen/wiretypes.py`, copied into the package as
+`_wiretypes.py` the way `_runtime.py` is. Reading `dict[str, int]` as
+a map is the one piece of knowledge the manifest cannot carry, because
+it is about how an annotation is SPELLED rather than about the types.
+The schema builder needs it at build time and the codec at run time,
+so they read one definition instead of two.
+
+Two things stay blocked on purpose, both waiting on the recursive
+value message:
+
+- a map of maps. proto3 will not synthesise the wrapper.
+- a map of proxies. Every entry would be a lease, and nothing grants
+  leases in bulk (tasks/031).

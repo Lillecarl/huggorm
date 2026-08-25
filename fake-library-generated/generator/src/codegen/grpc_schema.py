@@ -26,12 +26,15 @@ from typing import Any
 
 from google.protobuf import descriptor_pb2
 
+from codegen.wiretypes import MAP_KEY, SCALAR_NAMES, entry_name, map_value
+
 Proto = dict[str, Any]
 
 PKG = "nixmock.v1"
 FILE = "nixmock/v1/api.proto"
 
 SCALARS = {"str": "string", "int": "sint64", "bool": "bool"}
+assert set(SCALARS) == set(SCALAR_NAMES), "scalar tables disagree"
 
 HANDLE = "Handle"
 
@@ -47,6 +50,29 @@ def _field(msg: Any, name: str, number: int, type_name: str | None = None,
     else:
         f.type = f.TYPE_MESSAGE
         f.type_name = f".{PKG}.{type_name}"
+    return f
+
+
+def _add_field(msg: Any, name: str, number: int, type_str: str,
+               kinds: dict[str, str]) -> Any:
+    """Append one field of the declared surface type.
+
+    A map is the one shape that cannot be described by a type constant
+    alone: proto3 spells it as a repeated field of a message the
+    containing type carries, so this builds that message too. Every
+    other case is a lookup."""
+    value_type = map_value(type_str)
+    if value_type is None:
+        pt, message = _msg_arg_type(type_str, kinds)
+        return _field(msg, name, number, proto_type=pt, type_name=message)
+    entry = msg.nested_type.add()
+    entry.name = entry_name(name)
+    entry.options.map_entry = True
+    _field(entry, "key", 1, proto_type=_scalar_const(SCALARS[MAP_KEY]))
+    vt, vmessage = _msg_arg_type(value_type, kinds)
+    _field(entry, "value", 2, proto_type=vt, type_name=vmessage)
+    f = _field(msg, name, number, type_name=f"{msg.name}.{entry.name}")
+    f.label = f.LABEL_REPEATED
     return f
 
 
@@ -100,11 +126,20 @@ def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
     today still gets its in-process wrapper and the build says exactly
     what is missing."""
     try:
+        value_type = map_value(type_str)
+    except TypeError as e:
+        return str(e)
+    if value_type is not None:
+        if kinds.get(value_type) == "proxy":
+            return (f"{type_str}: a map of proxies would grant one lease per "
+                    f"entry, and nothing grants leases in bulk (tasks/031)")
+        type_str = value_type
+    try:
         _msg_arg_type(type_str, kinds)
     except TypeError:
-        if type_str in ("dict", "list", "tuple", "set"):
+        if type_str in ("list", "tuple", "set"):
             return (f"{type_str} has no wire representation; the schema has "
-                    f"no map or struct type yet")
+                    f"no repeated or struct type yet")
         return (f"{type_str} is not in the manifest, so it has no wire "
                 f"policy (an excluded base class, most likely - see "
                 f"tasks/018)")
@@ -211,8 +246,7 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
             m.name = value_msg_name(cls_name)
             for n, (fname, ftype) in enumerate(proto["wire_fields"], start=1):
                 # Optionality is a codec concern, not a proto3 one.
-                pt, msg = _msg_arg_type(ftype.removesuffix("?"), kinds)
-                _field(m, fname, n, proto_type=pt, type_name=msg)
+                _add_field(m, fname, n, ftype.removesuffix("?"), kinds)
 
 
 def _add_service(file_dp: Any, cls_name: str, proto: Proto,
@@ -224,8 +258,7 @@ def _add_service(file_dp: Any, cls_name: str, proto: Proto,
         req = file_dp.message_type.add()
         req.name = proto["acquire"]["req"]
         for n, param in enumerate(proto["ctor"], start=1):
-            pt, msg = _msg_arg_type(param["type"], kinds)
-            _field(req, param["name"], n, proto_type=pt, type_name=msg)
+            _add_field(req, param["name"], n, param["type"], kinds)
         rpc = svc.method.add()
         rpc.name = ACQUIRE
         rpc.input_type = f".{PKG}.{req.name}"
@@ -240,16 +273,14 @@ def _add_service(file_dp: Any, cls_name: str, proto: Proto,
         _field(req, "self", 1, type_name=HANDLE)
         n = 2
         for p in m["params"]:
-            pt, msg = _msg_arg_type(p["type"], kinds)
-            _field(req, p["name"], n, proto_type=pt, type_name=msg)
+            _add_field(req, p["name"], n, p["type"], kinds)
             n += 1
         rpc.input_type = f".{PKG}.{req.name}"
 
         resp = file_dp.message_type.add()
         resp.name = m["rpc"]["resp"]
-        rt, rmsg = _msg_arg_type(m["return_type"], kinds)
-        if rt is not None or rmsg is not None:
-            _field(resp, "result", 1, proto_type=rt, type_name=rmsg)
+        if m["return_type"] != "None":
+            _add_field(resp, "result", 1, m["return_type"], kinds)
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
@@ -352,15 +383,13 @@ def _add_free_service(file_dp: Any, manifest: Proto,
         req.name = proto["rpc"]["req"]
         # No `self` field: there is no instance to address.
         for n, p in enumerate(proto["params"], start=1):
-            pt, msg = _msg_arg_type(p["type"], kinds)
-            _field(req, p["name"], n, proto_type=pt, type_name=msg)
+            _add_field(req, p["name"], n, p["type"], kinds)
         rpc.input_type = f".{PKG}.{req.name}"
 
         resp = file_dp.message_type.add()
         resp.name = proto["rpc"]["resp"]
-        rt, rmsg = _msg_arg_type(proto["return_type"], kinds)
-        if rt is not None or rmsg is not None:
-            _field(resp, "result", 1, proto_type=rt, type_name=rmsg)
+        if proto["return_type"] != "None":
+            _add_field(resp, "result", 1, proto["return_type"], kinds)
         rpc.output_type = f".{PKG}.{resp.name}"
 
 

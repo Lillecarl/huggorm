@@ -131,6 +131,7 @@ async def main() -> None:
         await wait_port(PORT)
 
         # ---- Python client: proxy/value matrix --------------------------
+        import fake_library
         from fake_library import DerivedPath
         from fake_library_generated._runtime import InternalError
         from fake_library_python import remote
@@ -315,13 +316,25 @@ async def main() -> None:
         check("proxy arg resolves against a different remote object",
               await loose.integer() == 7)
         await other_state.aclose()
+        # A dict crosses as a protobuf map. Nix attribute names are
+        # always strings, so map<string, V> covers every dict this API
+        # returns; the value type comes from the declaration, which is
+        # the same annotation the typechecker reads (tasks/030).
+        stats = await client.call_function("gc_stats")
+        check("a dict return crosses as a map",
+              isinstance(stats, dict) and stats["heap_size"] > 0, stats)
+        check("map entries keep their declared value type",
+              all(isinstance(k, str) for k in stats)
+              and all(isinstance(v, int) for v in stats.values()), stats)
+        check("the map agrees with the in-process call",
+              set(stats) == set(fake_library.gc_stats()), sorted(stats))
         threw = None
         try:
-            await client.call_function("gc_stats")
+            await client.call_function("gc_release_thread")
         except TypeError as e:
             threw = str(e)
-        check("unrepresentable free function says why",
-              threw is not None and "dict" in threw, threw)
+        check("a function with no RPC surface says why",
+              threw is not None and "threading policy" in threw, threw)
         threw = None
         try:
             await client.call_function("nope")
@@ -365,6 +378,19 @@ async def main() -> None:
                 payload='{}')
             check("grpcurl calls a free function", rc == 0,
                   f"rc={rc} out={out[:80]!r} err={err[:120]!r}")
+
+            # A map field, read by a tool that only has the descriptor
+            # this build emitted. proto3 spells a map as a repeated
+            # entry message, so a wrong synthesised entry type parses
+            # in Python and still fails here.
+            rc, out, err = await run_tool(
+                grpcurl_bin, symbol="nixmock.v1.FunctionsService/gc_stats",
+                payload='{}')
+            counters: dict[str, Any] = (
+                json.loads(out).get("result", {}) if rc == 0 else {})
+            check("grpcurl reads a map return",
+                  int(counters.get("heap_size", 0)) > 0,
+                  f"rc={rc} out={out[:120]!r} err={err[:120]!r}")
 
             # Shared store methods live on StoreService, the one place
             # they are declared. An external tool calls a store without

@@ -367,10 +367,28 @@ async def test_behavior() -> None:
     # reason when it cannot. describe takes a Store, which used to be
     # excluded from generation and so had no wire policy; now that Store
     # is a generated base it crosses like any other proxy. gc_stats
-    # still returns a dict the schema has no type for.
+    # returns dict[str, int], which is a protobuf map now that the
+    # declaration says what the entries hold (tasks/030).
     assert not free["collect_garbage"]["wire_blockers"]
     assert not free["describe"]["wire_blockers"], free["describe"]["wire_blockers"]
-    assert free["gc_stats"]["wire_blockers"]
+    assert not free["gc_stats"]["wire_blockers"], free["gc_stats"]["wire_blockers"]
+    assert free["gc_stats"]["return_type"] == "dict[str, int]"
+    assert "rpc" in free["gc_stats"]
+
+    # gc_stats was the last function with no RPC surface, so the
+    # blocker path now has nothing left to report. Exercise it
+    # directly, or the mechanism that keeps an unrepresentable type out
+    # of the schema goes untested the moment everything is
+    # representable.
+    from codegen.grpc_schema import wire_blocker
+
+    kinds = {"Value": "proxy", "StorePath": "value"}
+    for shape in ("dict", "dict[int, str]", "dict[str, dict[str, int]]",
+                  "dict[str, Value]", "list", "Nowhere"):
+        assert wire_blocker(shape, kinds), f"{shape} should be blocked"
+    for shape in ("str", "int", "Value", "StorePath", "dict[str, int]",
+                  "dict[str, StorePath]"):
+        assert not wire_blocker(shape, kinds), (shape, wire_blocker(shape, kinds))
 
     # Closing an affine wrapper shuts its dedicated thread down, and
     # that thread must leave the collector's list before it dies. Boehm

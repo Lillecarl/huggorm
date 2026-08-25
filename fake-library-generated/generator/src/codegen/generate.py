@@ -452,7 +452,12 @@ def main(argv: list[str] | None = None) -> None:
     (out / "grpc_schema.pb").write_bytes(build_fdset(manifest))
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
 
-    shutil.copy(pathlib.Path(__file__).parent / "runtime.py", out / "_runtime.py")
+    here = pathlib.Path(__file__).parent
+    shutil.copy(here / "runtime.py", out / "_runtime.py")
+    # The codec reads declared type strings at run time and the schema
+    # builder reads them at build time. One definition, copied, rather
+    # than two that agree until one of them changes.
+    shutil.copy(here / "wiretypes.py", out / "_wiretypes.py")
     print(f"copied runtime into {out}")
 
     # PEP 561: without this marker a typechecker skips an INSTALLED

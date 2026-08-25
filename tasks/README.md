@@ -15,8 +15,10 @@ Findings reference two architectural reviews, 2026-08-23 and
 ## Open, roughly by what blocks what
 
 - 030 (attribute sets on the wire) unblocks the evaluation server,
-  because an attrset is what Nix evaluation mostly hands back. Shape
-  decided: a recursive NixValue message, not a map of maps. It now
+  because an attrset is what Nix evaluation mostly hands back. The
+  flat half is done: dict[str, V] crosses as map<string, V>, and
+  nothing is left with no RPC surface. What remains is the recursive
+  NixValue message, which is the decided shape - not a map of maps. It now
   carries the rest of 031 too: a proxy nested in a _wire_fields value
   turned out to be incoherent (nothing to rebuild it from on the far
   side) and is refused at build time, so the recursive codec lands

@@ -25,6 +25,8 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
+from fake_library_generated._wiretypes import SCALAR_NAMES, map_value
+
 # str/int/bool as a lookup. Annotated because the inferred value type is
 # the join of three unrelated classes, which is `type[object]` - and
 # object takes no constructor arguments.
@@ -53,11 +55,13 @@ class WireCodec:
 
     # -- classification ---------------------------------------------------
     def kind(self, type_str: str) -> str:
-        """"none", "scalar", "value" or "proxy"."""
+        """"none", "scalar", "map", "value" or "proxy"."""
         if type_str == "None":
             return "none"
-        if type_str in ("str", "int", "bool"):
+        if type_str in SCALAR_NAMES:
             return "scalar"
+        if map_value(type_str) is not None:
+            return "map"
         try:
             return self.kinds[type_str]
         except KeyError:
@@ -99,6 +103,36 @@ class WireCodec:
             else:
                 setattr(msg, fname, val)
 
+    # -- maps -------------------------------------------------------------
+    # An attribute set has string keys, always, so `map<string, V>`
+    # covers every dict this API returns (tasks/030). The value type
+    # comes from the declaration - `dict[str, int]`, not a bare `dict`
+    # - which is the same annotation the typechecker reads.
+    def map_to_msg(self, type_str: str, obj: dict[str, Any], msg: Any) -> None:
+        vtype = self._map_value(type_str)
+        if self.kind(vtype) == "value":
+            for key, val in obj.items():
+                # A message-valued map entry is filled in place; there
+                # is no assigning one.
+                self.value_to_msg(vtype, val, msg[key])
+        else:
+            cast = _SCALARS[vtype]
+            for key, val in obj.items():
+                msg[key] = cast(val)
+
+    def map_from_msg(self, type_str: str, msg: Any) -> dict[str, Any]:
+        vtype = self._map_value(type_str)
+        if self.kind(vtype) == "value":
+            return {k: self.value_from_msg(vtype, v) for k, v in msg.items()}
+        return dict(msg)
+
+    @staticmethod
+    def _map_value(type_str: str) -> str:
+        vtype = map_value(type_str)
+        if vtype is None:
+            raise TypeError(f"{type_str!r} is not a map")
+        return vtype
+
     def value_from_msg(self, type_str: str, msg: Any) -> Any:
         """Rebuild a sync binding object from its message."""
         args = []
@@ -124,6 +158,8 @@ class WireCodec:
             return
         if kind == "scalar":
             setattr(container, field, _SCALARS[type_str](value))
+        elif kind == "map":
+            self.map_to_msg(type_str, value, getattr(container, field))
         elif kind == "value":
             self.value_to_msg(type_str, value, getattr(container, field))
         else:
@@ -148,6 +184,8 @@ class WireCodec:
         raw = getattr(container, field)
         if kind == "scalar":
             return None if optional and not raw else raw
+        if kind == "map":
+            return self.map_from_msg(type_str, raw)
         if kind == "value":
             return self.value_from_msg(type_str, raw)
         return proxy_obj(raw.id)
