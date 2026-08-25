@@ -48,6 +48,7 @@ def test_runtime_contract(out: pathlib.Path):
 
 
 async def test_behavior():
+    import fake_library
     from fake_library import DerivedPath, StorePath
     from fake_library_generated import (
         AsyncLocalStore,
@@ -348,6 +349,17 @@ async def test_behavior():
     assert not free["describe"]["wire_blockers"], free["describe"]["wire_blockers"]
     assert free["gc_stats"]["wire_blockers"]
 
+    # Closing an affine wrapper shuts its dedicated thread down, and
+    # that thread must leave the collector's list before it dies. Boehm
+    # stops the world by signalling every registered thread and waiting
+    # for each to answer; a dead one never answers, so the next
+    # collection aborted the PROCESS with "Signals delivery fails
+    # constantly". Nothing caught it because every existing aclose
+    # happened after the last collection. Two affine wrappers were
+    # closed just above, so collect here.
+    await flg.collect_garbage()
+    assert fake_library.gc_stats()["heap_size"] > 0
+
     # The hierarchy: the base guarantees what every subclass keeps, and
     # a caller holding one need not know which it has. query_derivation
     # is NOT guaranteed - the pool policy drops it from LocalStore - so
@@ -383,7 +395,6 @@ async def test_behavior():
     # from gc.h prove the collector is ACTIVE and that this exact value
     # lives inside a GC-allocated block. A no-op integration could not
     # produce either fact.
-    import fake_library
     stats = fake_library.gc_stats()
     assert stats["heap_size"] > 0 and stats["total_bytes"] > 0
     assert await v.is_gc_managed()

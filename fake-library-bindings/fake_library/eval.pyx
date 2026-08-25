@@ -24,6 +24,7 @@ from fake_library.c_eval cimport (
     GC_malloc_uncollectable,
     gc_init,
     gc_register_current_thread,
+    gc_unregister_current_thread,
     gc_collect,
 )
 
@@ -153,6 +154,22 @@ def collect_garbage() -> None:
     (asyncio.to_thread)."""
     gc_register_current_thread()
     gc_collect()
+
+
+def gc_release_thread():
+    """Take the CURRENT thread off the collector's list.
+
+    Runtime plumbing, not domain surface: it carries no _threading
+    marker, so the codegen leaves it alone and it has no async or RPC
+    form. A thread that registered must call this as its last GC
+    action before it exits.
+
+    Boehm stops the world by signalling every registered thread and
+    waiting for each to answer. A thread that exits while still
+    registered never answers, and the next collection aborts the
+    process. That is what a dedicated affine executor does when its
+    wrapper is closed."""
+    gc_unregister_current_thread()
 
 
 # See store.pyx: the marker opts a module-level function into the

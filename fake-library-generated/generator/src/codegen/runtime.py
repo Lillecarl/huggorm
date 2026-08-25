@@ -192,6 +192,17 @@ class BaseRunner:
         return await loop.run_in_executor(self._executor(), lambda: self._invoke(method, args))
 
 
+def _release_gc_thread():
+    """Run ON a dying dedicated thread, as its last action.
+
+    The bindings are imported here rather than at module scope: the
+    runtime otherwise knows nothing about them, and this is the one
+    thing it cannot do without them."""
+    import fake_library
+
+    fake_library.gc_release_thread()
+
+
 class AffineRunner(BaseRunner):
     """All operations (including construction) run on one dedicated thread."""
 
@@ -207,6 +218,14 @@ class AffineRunner(BaseRunner):
         return self._pool
 
     async def aclose(self):
+        # The dedicated thread is about to die, so it has to leave the
+        # collector's list first - on itself, as its last GC action.
+        # Skipping that left a dead thread registered, and the next
+        # collection aborted the whole process (the server's reaper
+        # closes affine wrappers, so this reached production paths).
+        # Submitted BEFORE shutdown, so it is the last work this
+        # single-worker executor accepts and runs.
+        self._pool.submit(_release_gc_thread)
         # Blocking shutdown is acceptable here: the queue is empty once
         # pending awaits finish. Move to a thread if this ever matters.
         self._pool.shutdown(wait=True)

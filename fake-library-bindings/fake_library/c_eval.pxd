@@ -35,6 +35,7 @@ cdef extern from "fake_library/eval.hpp" nogil:
 
     void gc_init "fake_library::gcenv::init" ()
     void gc_register_current_thread "fake_library::gcenv::register_current_thread" ()
+    void gc_unregister_current_thread "fake_library::gcenv::unregister_current_thread" ()
     void gc_collect "fake_library::gcenv::collect" ()
 
 # Bound directly - no wrapper layer. Safe only AFTER gc.h has been

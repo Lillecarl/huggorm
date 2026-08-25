@@ -7,7 +7,7 @@ from .store import (
     DerivedPath,
     describe,
 )
-from .eval import EvalState, Value, collect_garbage, gc_stats
+from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
 
 __all__ = [
     "Store",
@@ -19,6 +19,7 @@ __all__ = [
     "EvalState",
     "Value",
     "collect_garbage",
+    "gc_release_thread",
     "gc_stats",
     "describe",
 ]

@@ -58,18 +58,45 @@ inline void init()
 // pthread interception. Each must register before touching GC memory -
 // allocation from an unregistered thread races with collection.
 //
-// Registration is idempotent per thread. We never unregister: these
-// threads live as long as the executor pool, and unregistering is only
-// correct immediately before thread exit, which we do not control.
+// Registration is idempotent per thread. The flag records whether WE
+// registered this thread: GC_register_my_thread answers GC_DUPLICATE
+// for a thread the collector already knows (the main thread, or one it
+// created itself), and unregistering such a thread is not ours to do.
+inline bool & owns_registration()
+{
+    static thread_local bool flag = false;
+    return flag;
+}
+
 inline void register_current_thread()
 {
-    static thread_local int registered = [] {
-        struct GC_stack_base sb;
-        GC_get_stack_base(&sb);
-        GC_register_my_thread(&sb);
-        return 0;
-    }();
-    (void)registered;
+    if (owns_registration())
+        return;
+    struct GC_stack_base sb;
+    GC_get_stack_base(&sb);
+    if (GC_register_my_thread(&sb) == GC_SUCCESS)
+        owns_registration() = true;
+}
+
+// A thread we registered must unregister immediately before it exits.
+//
+// This used to say we never unregister, on the grounds that these
+// threads live as long as the executor pool. That is true of the
+// shared pool and false of a dedicated one: closing an affine wrapper
+// shuts its single-thread executor down, and the thread died still on
+// the collector's list. Boehm stops the world by signalling every
+// registered thread and waiting for each to answer. A dead one never
+// does, so the next collection aborted the process with "Signals
+// delivery fails constantly" - including on the server, whose reaper
+// closes affine wrappers on its own.
+//
+// Correct ONLY on the thread itself, as its last GC action.
+inline void unregister_current_thread()
+{
+    if (!owns_registration())
+        return;
+    GC_unregister_my_thread();
+    owns_registration() = false;
 }
 
 inline void collect()
