@@ -1,0 +1,105 @@
+# A dropped client object should release its lease
+
+Raised by Carl (2026-08-25): "The RPC client is keeping server-side
+values alive, once they go out of scope/destroyed/whatever on the RPC
+client it should send an RPC that it's been forgotten by the client so
+the server can garbage collect when there are no holders left."
+
+## Confirmed
+
+Probed against a running server: acquire an EvalState, produce 50
+Values, drop every client-side reference, gc.collect().
+
+    dropped 50 client objects; 50/50 still live server-side
+
+That is the whole of the current behaviour. `sweep()` reaps a
+CONNECTION that has gone silent past the TTL, and nothing else. A
+client that pings - which the client does, on a timer, precisely so it
+is not swept - keeps every handle it has ever been granted until it
+disconnects. A long-running evaluation server (016) would grow without
+bound, and the objects behind those handles are Values pinning their
+EvalState through the parent graph.
+
+Explicit `release()` and `aclose()` work. They are just not what a
+Python caller does: a caller drops a name and expects the resource to
+follow.
+
+## The shape of the fix
+
+The server side needs nothing. `release()` already decrements, `_reap()`
+already cascades, and the entry survives while any lease or live child
+remains. This is entirely about the client noticing.
+
+    weakref.finalize(obj, ...) -> enqueue the handle id
+    the flush turns the queue into one rpc
+
+Four hazards, none of them optional:
+
+1. **Aliasing.** `client.proxy(cls, hid)` can build two Python objects
+   for one handle - test_lifecycle does it seven times deliberately.
+   Per-object finalizers would then have the first drop release a
+   handle the second object still uses. The client needs a refcount
+   per handle id, releasing only at zero. In normal traffic this never
+   arises (`put()` mints a fresh id per return, so one handle has one
+   object), but `proxy()` is public API.
+
+2. **Finalizers cannot await.** A finalize callback runs on whichever
+   thread dropped the last reference, possibly during interpreter
+   shutdown. It can only enqueue. The flush belongs on the existing
+   ping loop, which already runs on the event loop on a timer, plus
+   opportunistically before another rpc.
+
+3. **Resurrection between enqueue and flush.** A handle queued for
+   release, then `proxy()`d again before the flush, must not be
+   released. Check the refcount is still zero at flush time, not at
+   enqueue time.
+
+4. **Double release.** The object may already have been `aclose()`d,
+   which blanks `handle_id`. The finalizer must be cancelled there, or
+   the flush must skip a blanked id.
+
+Batching wants a `ReleaseMany` on Session taking repeated Handle -
+one rpc per flush rather than one per dropped object. That is a schema
+change in `_add_session`.
+
+## What stays
+
+The TTL sweep remains the backstop and must: finalizers do not run at
+interpreter shutdown reliably, a reference cycle may never collect, and
+a killed client sends nothing at all. Connection death releasing
+everything is the guarantee; this is the optimisation that keeps a
+live connection from growing.
+
+Escrow is unaffected - detached leases are unowned by design.
+
+## Watch out for
+
+test_lifecycle forges proxies from raw handle ids and then asserts
+exact lease counts. Adding finalizers changes what those objects do
+when they go out of scope, so each of those seven sites needs
+rechecking rather than assuming it still means what it meant.
+
+## Done 2026-08-25
+
+All four hazards handled, each with a test that fails when the guard
+is removed. Verified by perturbation: dropping the per-handle refcount
+makes the aliasing check fail on the twin's first call, with the
+handle already released.
+
+    before: dropped 50 client objects; 50/50 still live server-side
+    after:  0/50
+
+The flush lives on the ping loop. `flush_dropped()` is public for a
+caller that wants it now, and returns how many leases went back.
+
+### Not done, deliberately
+
+Piggybacking. Dropped ids could ride on the next request the client
+already makes, instead of a separate rpc. That removes the flush's
+round trip entirely, at the cost of putting lifecycle state in every
+request message - so it is a protocol change, not a client change.
+Worth it only if the extra rpc ever shows up in a measurement.
+
+Responsiveness is bounded by the ping interval (ttl/4, capped at 15s).
+A caller that needs a handle gone sooner closes it explicitly, which
+is unchanged and immediate.

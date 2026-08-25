@@ -63,8 +63,9 @@ the same knowledge by hand. The generator reads all of them:
     _abstract    True for a generated base       inheritance   (018)
     _blocking    False if no method can wait     wrap or not   (025)
 
-Module-level functions declare `_threading` (which is what opts them
-into the surface) and `_binds`. "pool" is their only legal policy: no
+Module-level functions declare `_threading` and `_binds`. Every public
+one is in the manifest either way; the policy decides only whether it
+gets an async form and an rpc, and "pool" is the only legal one - no
 instance, so no thread to be affine to (021).
 
 Constructor signatures come from the pxd, which is the only place they
