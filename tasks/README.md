@@ -14,11 +14,13 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 030 (dicts on the wire) is next, and it is unblocked by a fact
-  rather than by work: Nix attribute keys are strings, so map<string,V>
-  covers every dict this API returns. It is the last thing standing
-  between the surface and an evaluation server, because an attribute
-  set is what Nix evaluation mostly hands back.
+- 031 (recursive handle tracking) comes before 030 now. A recursive
+  NixValue message carries a Handle in one of its arms, so proxies
+  appear at arbitrary depth - and the identity-mapping 031 needs is
+  what stops one object in a hundred attrs becoming a hundred leases.
+- 030 (attribute sets on the wire) then unblocks the evaluation
+  server, because an attrset is what Nix evaluation mostly hands back.
+  Shape decided: a recursive NixValue message, not a map of maps.
 - 015 (the real-Nix spike) is the other direction, and everything it
   needs is now in place: a settled surface, a lifecycle that does not
   leak, and a build that lints and typechecks what it produces.
@@ -33,6 +35,12 @@ Findings reference two architectural reviews, 2026-08-23 and
   twice: free-function requests number their fields positionally too,
   and the manifest's "schema": 1 is written by the generator and read
   by nobody.
+- 032 (log callbacks) and 033 (primops in Python) are the two places
+  the flow reverses: C++ calling into Python, on Nix's schedule and
+  Nix's thread. Neither can be generated from a binding declaration,
+  and 033 is the harder one - a primop runs inside evaluation, so it
+  cannot hop threads, cannot await, and its arguments do not outlive
+  the call.
 - 014 (transport shims) and 016 (evaluation server) are the
   destinations.
 

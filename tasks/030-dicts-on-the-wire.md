@@ -43,6 +43,37 @@ nothing currently grants leases in bulk. Start with scalar values and
 say so.
 
 Nested dicts. `map<string, X>` cannot hold another map directly in
-proto3; it needs a wrapper message. Nix nests attribute sets freely,
-so this will come up - probably as a recursive Value message rather
-than a map, which is a different design and worth its own decision.
+proto3; it needs a wrapper message.
+
+## Decided 2026-08-25
+
+Carl: a recursive Value message is the correct way to do it, not a
+map of maps.
+
+That settles the shape and makes the flat-map version a stepping
+stone rather than the destination:
+
+    message NixValue {
+      oneof v {
+        string  s     = 1;
+        sint64  i     = 2;
+        bool    b     = 3;
+        double  f     = 4;
+        Handle  proxy = 5;   // a Value that stays remote
+        NixList list  = 6;
+        NixAttrs attrs = 7;  // map<string, NixValue>
+      }
+    }
+
+Which changes the order of work. A recursive message carrying a Handle
+in one of its arms means proxies appear at arbitrary depth, so 031
+(recursive handle tracking, and the identity-mapping that has to
+precede it) is a prerequisite rather than a parallel concern.
+
+It also means the `proxy` arm is where laziness lives: a thunk cannot
+be serialized, so an unforced value crosses as a handle and the client
+forces it with another call. That is the same value/proxy split the
+whole design already rests on, one level deeper - and it is why this
+message cannot be generated from a `_wire_fields` declaration the way
+StorePath's is. It is recursive, and its arms are the wire kinds
+themselves.
