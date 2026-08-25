@@ -263,7 +263,15 @@ class WireCodec:
             ftype = ftype.removesuffix("?")
             raw = getattr(msg, fname)
             if self.kind(ftype) == "value":
-                args.append(self.value_from_msg(ftype, raw))
+                # A message field HAS presence, so an optional one
+                # reads back as absent rather than as a default-built
+                # object. Without this an unset StorePath rebuilt from
+                # an empty base name, which raises rather than
+                # answering None.
+                if optional and not msg.HasField(fname):
+                    args.append(None)
+                else:
+                    args.append(self.value_from_msg(ftype, raw))
             else:
                 # proto3 cannot distinguish unset from default, so the
                 # "?" marker decides how to read an empty one back.
