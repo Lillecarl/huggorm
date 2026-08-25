@@ -12,7 +12,7 @@ let
   # cythonix-bindings in build-system of the package below, which is
   # exactly how setuptools PEP 517 build requirements are meant to work.
   codegen = python3Packages.buildPythonPackage {
-    pname = "fake-library-codegen";
+    pname = "cythonix-codegen";
     version = "0.1.0";
     pyproject = true;
     src = ./generator;
