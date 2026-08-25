@@ -31,8 +31,8 @@ class NixError(Exception):
     # because every error here IS a nix::Error and carries the same two
     # strings. The same word as a wire value's declaration, meaning the
     # same thing - the parts this object can be rebuilt from - though
-    # an error travels as JSON in the gRPC status rather than as a
-    # message of its own (tasks/036).
+    # an error travels in the gRPC status details rather than as a
+    # response message of its own (tasks/036).
     _wire_fields = (("message", "str"), ("colored", "str"))
 
     def __init__(self, message: str, colored: str | None = None) -> None:
@@ -52,6 +52,21 @@ class SysError(NixError):
     purpose: a Python `SystemError` would shadow a builtin, and an
     `except SystemError` catching the wrong thing is exactly the kind
     of silence this hierarchy exists to remove."""
+
+
+class Unsupported(NixError):
+    """nix::Unsupported - this store cannot do that at all.
+
+    Not a failure of the call: a statement about the store. nix::Store
+    gives a default implementation for methods only some stores can
+    answer, and that default throws this. A substituter has no list of
+    every path it holds, and a binary cache has no directory on this
+    filesystem - both are honest, and both are different from an
+    operation that went wrong.
+
+    Worth its own class rather than a message to match, because the
+    right response usually differs: a caller can fall back to another
+    store, and cannot fall back from a genuine error."""
 
 
 class BadStorePath(NixError):

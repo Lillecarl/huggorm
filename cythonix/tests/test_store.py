@@ -13,7 +13,12 @@ import pytest
 
 from cythonix_bindings import ContentAddressMethod as CA
 from cythonix_bindings import HashAlgorithm, Store, StorePath
-from cythonix_bindings.errors import BadStorePath, NixError, UsageError
+from cythonix_bindings.errors import (
+    BadStorePath,
+    NixError,
+    Unsupported,
+    UsageError,
+)
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
 
@@ -56,8 +61,12 @@ def test_a_store_need_not_answer_for_all_its_paths(store: Store) -> None:
     """nix::Store's own queryAllValidPaths raises rather than returning
     nothing, and only the local and remote stores override it. That is
     honest: a substituter has no such list to give, and an empty answer
-    would be a lie rather than a limitation."""
-    with pytest.raises(NixError, match="not supported by store"):
+    would be a lie rather than a limitation.
+
+    Unsupported, not NixError. The distinction is worth catching by
+    type: a caller can fall back to another store when this one cannot
+    answer, and cannot fall back from a call that went wrong."""
+    with pytest.raises(Unsupported, match="not supported by store"):
         store.query_all_valid_paths()
 
 

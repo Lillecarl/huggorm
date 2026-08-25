@@ -18,6 +18,7 @@
 #include <new>
 #include <string>
 
+#include "nix/store/store-api.hh"
 #include "nix/store/store-dir-config.hh"
 #include "nix/util/error.hh"
 #include "nix/util/terminal.hh"
@@ -87,6 +88,11 @@ inline void translate_nix_error()
         // The wider class, so nix::SysError and nix::WinError land
         // here too rather than falling through to NixError.
         raise_as("SysError", e);
+    } catch (const nix::Unsupported & e) {
+        // A statement about the store, not about the call. Straight
+        // off nix::Error, so it sits beside SystemError rather than
+        // under it.
+        raise_as("Unsupported", e);
     } catch (const nix::Error & e) {
         raise_as("NixError", e);
     } catch (const std::bad_alloc &) {
