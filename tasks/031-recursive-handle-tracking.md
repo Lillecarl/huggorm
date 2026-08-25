@@ -85,3 +85,55 @@ partly because the server can hand out several handles for one thing.
    shape.
 3. check_wire_contract stops accepting a proxy field it cannot carry,
    until (2) lands.
+
+## Done 2026-08-25: step 1
+
+`put()` indexes each connection's objects by identity. A repeat put
+returns the handle that connection already has and adds a lease.
+`share()` indexes the target, `bind()` re-indexes what it claims from
+escrow, and both a drop and a connection death clear their rows.
+
+`test_handles.py` drives the table directly and calls `audit()` after
+every step. `audit()` existed and nothing called it, so the invariant
+it holds proved nothing.
+
+## Revised 2026-08-25: step 3 is the answer for _wire_fields, not step 2
+
+Step 2 said "recursive proxy encode/decode in the codec". Writing it
+turned up the reason it cannot exist for a `_wire_fields` value.
+
+A wire-value is rebuilt on the far side by `_from_parts`, which builds
+a real C++ object and needs a real local object for every part:
+
+    @classmethod
+    def _from_parts(cls, StorePath path, str output):
+        d._ptr = new CDerivedPath(deref(path._ptr), ...)
+
+A proxy is exactly the thing that has NO object on the far side. So a
+value carrying a proxy is reconstructible only in the process that
+already holds the proxy, which is the one process that never needs to
+decode it. The schema would carry it - `_msg_arg_type` turns a proxy
+into a Handle field wherever it appears - and the encode half is easy.
+The decode half has nowhere to land.
+
+That is a design boundary, not a missing feature: **a wire-value
+copies all the way down.** `check_wire_contract` now says so at build
+time, naming the field and the reason.
+
+Nesting is still coming, through 030 rather than here. `NixValue` is a
+union of the wire KINDS, and its proxy arm decodes to a client-side
+proxy object rather than to a binding class - which is a target a
+handle can actually land on. The primitive that work needs is the same
+one drafted here: a proxy callback pair that carries the declared type
+alongside the value, so a handle minted at depth knows what class to
+adopt into. It belongs in the 030 codec, where the decode side is
+coherent.
+
+Which leaves the server-side half of step 2 for 030 as well: a proxy
+nested in a message arrives as a bare SYNC binding object, and the
+handle table holds async wrappers (it resolves handles for method
+calls and calls `aclose` on a drop). Minting one needs the producing
+runner, so the mint callback has to reach the target wrapper. Affine
+returned types can only attach to their producer's thread, so a free
+function that yields a nested affine proxy has no home for it and must
+fail loudly.

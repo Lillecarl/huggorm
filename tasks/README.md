@@ -14,13 +14,16 @@ Findings reference two architectural reviews, 2026-08-23 and
 
 ## Open, roughly by what blocks what
 
-- 031 (recursive handle tracking) comes before 030 now. A recursive
-  NixValue message carries a Handle in one of its arms, so proxies
-  appear at arbitrary depth - and the identity-mapping 031 needs is
-  what stops one object in a hundred attrs becoming a hundred leases.
-- 030 (attribute sets on the wire) then unblocks the evaluation
-  server, because an attrset is what Nix evaluation mostly hands back.
-  Shape decided: a recursive NixValue message, not a map of maps.
+- 030 (attribute sets on the wire) unblocks the evaluation server,
+  because an attrset is what Nix evaluation mostly hands back. Shape
+  decided: a recursive NixValue message, not a map of maps. It now
+  carries the rest of 031 too: a proxy nested in a _wire_fields value
+  turned out to be incoherent (nothing to rebuild it from on the far
+  side) and is refused at build time, so the recursive codec lands
+  with the message that can actually hold one.
+- 031 (recursive handle tracking) is down to its contested half:
+  whether receiving a handle should grant a lease. Identity mapping
+  and the wire-value boundary are done.
 - 015 (the real-Nix spike) is the other direction, and everything it
   needs is now in place: a settled surface, a lifecycle that does not
   leak, and a build that lints and typechecks what it produces.

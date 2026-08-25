@@ -379,6 +379,7 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
 
     Returns a list of complaints; empty means the contract holds."""
     known = {p["name"] for p in protos}
+    kinds = {p["name"]: p["wire"] for p in protos}
     bad = []
     for proto in protos:
         name, fields = proto["name"], proto["wire_fields"]
@@ -401,6 +402,21 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
             ftype = ftype.removesuffix("?")
             if ftype not in _PRIMITIVES.values() and ftype not in known:
                 bad.append(f"{name}._wire_fields {fname!r}: unknown field type {ftype!r}")
+            elif kinds.get(ftype) == "proxy":
+                # The schema would carry it: _msg_arg_type turns a proxy
+                # into a Handle field wherever it appears. The codec
+                # cannot, and not by omission. A wire-value is rebuilt
+                # on the far side by _from_parts, which needs a real
+                # local object for every part - and a proxy is exactly
+                # the thing that has no object on the far side. Nesting
+                # one here produces a type that only its own process can
+                # reconstruct. Say so at build time rather than at the
+                # first call that touches the field (tasks/031).
+                bad.append(
+                    f"{name}._wire_fields {fname!r}: {ftype} is a proxy, so "
+                    f"_from_parts has nothing to rebuild it from on the far "
+                    f"side. A wire-value copies all the way down. Carry the "
+                    f"proxy as a method parameter or return instead.")
         for helper in ("_parts", "_from_parts"):
             if helper not in proto["_helpers"]:
                 bad.append(f"{name}: wire-value needs a {helper} round-trip helper")
