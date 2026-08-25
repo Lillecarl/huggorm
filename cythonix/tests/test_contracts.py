@@ -6,6 +6,8 @@ import ast
 import pathlib
 from typing import Any
 
+import pytest
+
 
 def test_no_hardcoded_domain_types(manifest: dict[str, Any]) -> None:
     """No layer above the bindings may name a domain type.
@@ -83,3 +85,30 @@ def test_every_declared_error_has_a_message(manifest: dict[str, Any]) -> None:
             f"{PKG}.{name}Fault")
         assert [f.name for f in desc.fields] == [
             fname for fname, _ in proto["wire_fields"]], name
+
+
+def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
+    """A value read off the wire comes back typed.
+
+    A StrEnum crosses as a plain string - it IS one - so nothing about
+    the transport changes. What the manifest's enum table buys is the
+    other direction: the codec knows which class to rebuild, so a
+    caller gets ContentAddressMethod.FLAT rather than "flat", and a
+    value that is not a member raises here instead of reaching
+    libstore.
+
+    Needs no server: this is the converter both sides use."""
+    from cythonix.wire import WireCodec
+    from cythonix_bindings import ContentAddressMethod
+
+    codec = WireCodec(manifest)
+    assert manifest["enums"], "the bindings declare no vocabularies"
+    assert codec.kind("ContentAddressMethod") == "scalar"
+
+    rebuild = codec.scalar("ContentAddressMethod")
+    assert rebuild("flat") is ContentAddressMethod.FLAT
+    with pytest.raises(ValueError, match="not a valid"):
+        rebuild("nonsense")
+
+    # ...and a built-in scalar still resolves to the builtin.
+    assert codec.scalar("bytes") is bytes

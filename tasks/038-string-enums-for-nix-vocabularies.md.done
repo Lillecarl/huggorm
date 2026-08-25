@@ -12,6 +12,29 @@ calling this has nothing to tell them so. An invented value fails at
 the call, with a good message, which is the wrong end of the loop: an
 editor should have offered the four.
 
+## Can it live in a pxd or a pyx?
+
+Carl asked. The answer is yes for a pyx and no for a pxd, and neither
+is where it ended up.
+
+A `StrEnum` compiles inside a `.pyx` and works completely - probed,
+not assumed: real `EnumType` metaclass, `isinstance(member, str)`,
+`str()` gives the value, lookup and rejection both correct. Cython
+runs the metaclass and `__prepare__` like any other Python class.
+
+A `.pxd` cannot. A pxd declares C-level things for `cimport`, and a
+StrEnum is a Python object with a metaclass - there is nothing to
+declare. Cython's `cpdef enum` IS pxd-able and is the wrong type: it
+is int-valued, and this vocabulary is strings.
+
+It went in a plain `.py` anyway, beside `errors.py`. Compiling a
+vocabulary into a shared object buys nothing - no C++ is involved -
+and a `.py` module needs no generated stub for a typechecker to read
+it, because `py.typed` says `partial`. The one thing a pyx would add
+is deriving the values from libstore at import, and that trades static
+member visibility for rename-detection the round-trip test already
+gives.
+
 ## Why a StrEnum is the right shape
 
 A `StrEnum` member IS a str at runtime. So NOTHING about the transport
@@ -41,11 +64,12 @@ From there it is one table in the manifest and four readers:
 - the emitter: already works. `_cythonix_bindings_import` emits
   `from cythonix_bindings import X` for any annotated name that is not
   a builtin, so exporting the enum from `__init__` is enough.
-- `stub_module`: **this is the gap.** Its `foreign` map is built from
-  `home`, which holds only wrapper and returned-type modules. An enum
-  is in neither, so the stub would NAME the type and not import it.
-  Whatever fix this gets should cover any bindings-level type that is
-  not a wrapper - the enums are just the first.
+- `stub_module`: I called this the obstacle and overstated it. `home`
+  is a plain dict mapping type name to module, so adding the enums to
+  it is two lines and `store.pyi` gets `from .content_address import
+  ContentAddressMethod` for free. `__init__.pyi` needed one more,
+  because it must re-export exactly what the package exports - and a
+  gate already held that, which is how it was found.
 
 ## Checking the values are Nix's
 
@@ -63,3 +87,18 @@ what it should claim.
 
 `ContentAddressMethod` and `HashAlgorithm`, matching the C++ types
 `addToStoreFromDump` takes. No `Nix` prefix.
+
+## What it cost, in the end
+
+Four readers and a table, none of them large. The wire did not move at
+all: no new field type, no schema change beyond "this name is a
+string".
+
+Two things came out better than expected. A value read off the wire
+comes back TYPED, because the codec knows which class to rebuild - and
+a non-member raises at the client rather than reaching libstore. And
+the round-trip test says something sharper than "these are valid": it
+asserts libstore never answers "unknown" for a declared member, so
+succeeding and refusing-because-the-FEATURE-is-off are both fine.
+`git` and `blake3` are experimental, and "disabled" is the answer that
+proves the word was recognised.

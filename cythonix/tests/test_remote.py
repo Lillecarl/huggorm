@@ -13,7 +13,8 @@ import anyio
 import pytest
 
 import cythonix_bindings
-from cythonix_bindings import MockDerivedPath
+from cythonix_bindings import ContentAddressMethod as CA
+from cythonix_bindings import HashAlgorithm, MockDerivedPath
 from cythonix_bindings.errors import BadStorePath
 from cythonix_generated import RPC_CLASSES, RPCMockDerivation
 from cythonix_generated._runtime import InternalError
@@ -324,14 +325,15 @@ async def test_bytes_cross_as_bytes(client: Any, tmp_path: Any) -> None:
     it does only if nothing tried to decode it on the way."""
     store = await client.acquire("Store", str(tmp_path))
     blob = bytes(range(256))
-    path = await store.add_to_store("blob", blob, "flat", "sha256")
+    path = await store.add_to_store(
+        "blob", blob, CA.FLAT, HashAlgorithm.SHA256)
 
     # The name is the hash of exactly those bytes, so computing the
     # same path locally is what proves they survived. Nothing here
     # compares the payload to itself.
     local = cythonix_bindings.Store(str(tmp_path))
     assert path.to_string() == local.add_to_store(
-        "blob", blob, "flat", "sha256").to_string()
+        "blob", blob, CA.FLAT, HashAlgorithm.SHA256).to_string()
     assert await store.is_valid_path(path)
     await store.aclose()
 

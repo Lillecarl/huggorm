@@ -11,7 +11,8 @@ import pathlib
 
 import pytest
 
-from cythonix_bindings import Store, StorePath
+from cythonix_bindings import ContentAddressMethod as CA
+from cythonix_bindings import HashAlgorithm, Store, StorePath
 from cythonix_bindings.errors import BadStorePath, NixError, UsageError
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
@@ -91,18 +92,22 @@ def test_a_store_takes_bytes_and_names_the_result(chroot: Store) -> None:
     and it is why `data` is bytes rather than str: the hash is of
     exactly these bytes, and an encoding guess would change the name
     of the thing."""
-    path = chroot.add_to_store("greeting", b"hello world\n", "text", "sha256")
+    path = chroot.add_to_store(
+        "greeting", b"hello world\n", CA.TEXT, HashAlgorithm.SHA256)
     assert path.name() == "greeting"
     assert chroot.is_valid_path(path)
 
-    again = chroot.add_to_store("greeting", b"hello world\n", "text", "sha256")
+    again = chroot.add_to_store(
+        "greeting", b"hello world\n", CA.TEXT, HashAlgorithm.SHA256)
     assert again.to_string() == path.to_string()
 
-    other = chroot.add_to_store("greeting", b"goodbye\n", "text", "sha256")
+    other = chroot.add_to_store(
+        "greeting", b"goodbye\n", CA.TEXT, HashAlgorithm.SHA256)
     assert other.to_string() != path.to_string()
 
     # ...and the method is part of the name too, not a formality.
-    flat = chroot.add_to_store("greeting", b"hello world\n", "flat", "sha256")
+    flat = chroot.add_to_store(
+        "greeting", b"hello world\n", CA.FLAT, HashAlgorithm.SHA256)
     assert flat.to_string() != path.to_string()
 
 
@@ -120,7 +125,7 @@ def test_a_store_hands_back_every_path_it_holds(chroot: Store) -> None:
     (tasks/037). It does not any more."""
     names = ["alpha", "beta", "gamma"]
     for name in names:
-        chroot.add_to_store(name, name.encode(), "text", "sha256")
+        chroot.add_to_store(name, name.encode(), CA.TEXT, HashAlgorithm.SHA256)
 
     held = chroot.query_all_valid_paths()
     assert sorted(p.name() for p in held) == names
@@ -138,11 +143,60 @@ def test_the_store_names_the_vocabulary_it_accepts(chroot: Store) -> None:
 
     So an invented one fails with libstore's own message, listing what
     it would have taken - which no table in this repo has to hold, and
-    so cannot get out of date."""
+    so cannot get out of date. The enums exist for the editor; libstore
+    stays the authority, and a str still works at runtime because a
+    StrEnum member IS one."""
     with pytest.raises(UsageError, match="expect `flat`, `nar`, or `git`"):
-        chroot.add_to_store("x", b"y", "nonsense", "sha256")
+        chroot.add_to_store(
+            "x", b"y", "nonsense", HashAlgorithm.SHA256)  # type: ignore[arg-type]
     with pytest.raises(UsageError, match="unknown hash algorithm"):
-        chroot.add_to_store("x", b"y", "text", "md6")
+        chroot.add_to_store("x", b"y", CA.TEXT, "md6")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("method", list(CA))
+def test_every_declared_method_is_a_word_libstore_knows(
+        chroot: Store, method: CA) -> None:
+    """The vocabulary is Nix's, so Nix is what checks it.
+
+    A real round trip through libstore, not a table compared to
+    another table. What it asserts is narrow and exact: libstore never
+    answers "unknown" for a member declared here. Succeeding is one
+    acceptable answer; refusing because the FEATURE is off is the
+    other - `git` and `blake3` are experimental, and "disabled" says
+    the word was recognised.
+
+    It cannot catch a method Nix ADDS. C++ has no reflection, so any
+    member list is hand-written wherever it lives, and this checks the
+    half that can be checked: a typo, a rename, a removal."""
+    try:
+        chroot.add_to_store("probe", b"x", method, HashAlgorithm.SHA256)
+    except NixError as e:
+        assert "experimental Nix feature" in str(e), (method, str(e))
+
+
+@pytest.mark.parametrize("algo", list(HashAlgorithm))
+def test_every_declared_algorithm_is_a_word_libstore_knows(
+        chroot: Store, algo: HashAlgorithm) -> None:
+    """The same round trip, for the other vocabulary."""
+    try:
+        chroot.add_to_store("probe", b"x", CA.FLAT, algo)
+    except NixError as e:
+        assert "experimental Nix feature" in str(e), (algo, str(e))
+
+
+def test_a_member_is_the_string(chroot: Store) -> None:
+    """A StrEnum member IS the string, which is what keeps these a
+    convenience rather than a layer.
+
+    A typechecker asks for the enum, because that is the declared
+    type and it is what makes an editor useful. At RUNTIME a plain
+    string is the same call, so nothing that already works stops
+    working - including a value that came from a config file."""
+    assert isinstance(CA.TEXT, str) and CA.TEXT == "text"
+    typed = chroot.add_to_store("same", b"x", CA.TEXT, HashAlgorithm.SHA256)
+    plain = chroot.add_to_store(
+        "same", b"x", "text", "sha256")  # type: ignore[arg-type]
+    assert typed.to_string() == plain.to_string()
 
 
 def test_bytes_are_bytes(chroot: Store) -> None:
@@ -151,7 +205,9 @@ def test_bytes_are_bytes(chroot: Store) -> None:
     Guessing utf-8 would put a different byte string in the store than
     the caller passed, under a name that is the hash of the guess."""
     with pytest.raises(TypeError):
-        chroot.add_to_store("x", "not bytes", "text", "sha256")  # type: ignore[arg-type]
+        chroot.add_to_store(
+            "x", "not bytes",  # type: ignore[arg-type]
+            CA.TEXT, HashAlgorithm.SHA256)
 
 
 @pytest.mark.live

@@ -24,6 +24,14 @@ from cythonix_bindings.c_store cimport (
 )
 from cythonix_bindings.path cimport StorePath
 
+# The vocabularies libstore parses, as types. A StrEnum member IS the
+# string, so this is the same call either way - it exists so an editor
+# can offer the options and a typo fails before the call.
+from cythonix_bindings.content_address import (
+    ContentAddressMethod,
+    HashAlgorithm,
+)
+
 # Before anything reaches libstore. Importing this module is the first
 # moment that can happen, and libstore aborts rather than raises if it
 # has not - so there is no later point that would still be safe.
@@ -80,18 +88,23 @@ cdef class Store:
             out = store.is_valid_path(deref(p))
         return out
 
-    def add_to_store(self, name: str, data: bytes, method: str,
-                     hash_algo: str) -> StorePath:
+    def add_to_store(self, name: str, data: bytes,
+                     method: ContentAddressMethod,
+                     hash_algo: HashAlgorithm) -> StorePath:
         """Add one file's contents to the store, and name the result.
 
         `data` is a regular file's CONTENTS - bytes, not text, because
         a store holds files and the hash that names the path is a hash
         of exactly these bytes.
 
-        `method` and `hash_algo` are Nix's own words, parsed by Nix:
-        "flat", "nar", "git" or "text", and "sha256" and friends. An
-        invented one raises, with libstore's message, rather than
-        being quietly corrected here.
+        `method` and `hash_algo` are Nix's own words, parsed by Nix.
+        They are StrEnums, so a member IS the string and a plain
+        "flat" is the same call - the types exist so an editor offers
+        the options. A word libstore does not know still raises with
+        libstore's message rather than being corrected here, and one
+        it knows but has gated says so instead: `git` and `blake3` are
+        experimental features, and "disabled" is a different answer
+        from "unknown".
 
         Neither has a default. A default would exist on this method
         and on no generated wrapper - the codegen carries a parameter's

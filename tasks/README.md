@@ -47,10 +47,11 @@ Findings reference two architectural reviews, 2026-08-23 and
   status text. Building function values into
   the mock was the point where mock fidelity stopped paying: it was
   reimplementing libexpr to prove things libexpr already does.
-- 038 (string enums) is a DX task with one real obstacle. A StrEnum is
-  a str, so the wire changes not at all; the work is the codegen
-  recognising the name, and the stub generator's foreign-import map,
-  which today knows only wrapper and returned-type modules.
+- 038 (string enums) is done. ContentAddressMethod and HashAlgorithm
+  are StrEnums in the bindings, found by reflection with no
+  declaration of their own, and the wire did not move: a member is a
+  str. A value read off the wire comes back typed, and libstore stays
+  the authority on what the words mean.
 - 037 (tests outside the sandbox) has its mechanism: a `live` marker
   naming what a test needs, hermetic by default so a forgotten mark
   fails loudly in the build, and `nix run --file . test` for the whole

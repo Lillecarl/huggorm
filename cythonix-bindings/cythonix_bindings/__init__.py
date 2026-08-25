@@ -41,6 +41,7 @@ counterpart lands and takes the plain name, so the prefix is a map of
 what is left to do; when it is gone, so is the mock.
 """
 
+from .content_address import ContentAddressMethod, HashAlgorithm
 from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
 from .mock_store import (
     MockDerivation,
@@ -62,7 +63,9 @@ from .store import Store
 _errors_module = "cythonix_bindings.errors"
 
 __all__ = [
+    "ContentAddressMethod",
     "EvalState",
+    "HashAlgorithm",
     "MockDerivation",
     "MockDerivedPath",
     "MockLocalStore",
