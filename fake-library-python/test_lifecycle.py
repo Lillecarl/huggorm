@@ -12,13 +12,14 @@ Run:  nix run --file . ourPython -- test_lifecycle.py
 
 import asyncio
 import sys
+from typing import Any
 
 from test_remote import check, free_port, wait_port
 
 TTL = 3.0
 
 
-async def spawn_server(port):
+async def spawn_server(port: int) -> Any:
     server = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "fake_library_python.server",
         "127.0.0.1", str(port), str(TTL),
@@ -27,7 +28,7 @@ async def spawn_server(port):
     return server
 
 
-async def main():
+async def main() -> None:
     from fake_library_generated._runtime import InternalError
     from fake_library_python import remote
 
@@ -55,7 +56,7 @@ async def main():
         hid_a = store_a.handle_id
         await a.release(store_a)
         again = a.proxy("LocalStore", hid_a)
-        threw = None
+        threw: Any = None
         try:
             await a.release(again)
         except InternalError as e:
@@ -73,8 +74,10 @@ async def main():
 
         # ---- share: copy and transfer --------------------------------
         tok_b = b.token
+        # connect() binds, so a token exists from here on.
+        assert tok_b is not None
 
-        async def b_calls(hid):
+        async def b_calls(hid: str) -> Any:
             probe = b.proxy("LocalStore", hid)
             return await probe.get_uri()
 

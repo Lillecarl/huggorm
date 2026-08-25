@@ -19,19 +19,20 @@ import pathlib
 import shutil
 import socket
 import sys
+from typing import Any
 
 HOST = "127.0.0.1"
 PORT = None
 
 
-def check(name, cond, detail=""):
+def check(name: str, cond: Any, detail: Any = "") -> None:
     marker = "PASS" if cond else "FAIL"
     print(f"[{marker}] {name}" + (f" :: {detail}" if detail else ""))
     if not cond:
         raise AssertionError(name)
 
 
-def find_grpcurl():
+def find_grpcurl() -> str | None:
     if os.environ.get("GRPCURL"):
         return os.environ["GRPCURL"]
     w = shutil.which("grpcurl")
@@ -41,16 +42,16 @@ def find_grpcurl():
     return cands[-1] if cands else None
 
 
-def free_port():
+def free_port() -> int:
     s = socket.socket()
     s.bind((HOST, 0))
-    port = s.getsockname()[1]
+    port = int(s.getsockname()[1])
     s.close()
     return port
 
 
-async def wait_port(port, timeout=20):
-    async def probe():
+async def wait_port(port: int, timeout: float = 20) -> None:
+    async def probe() -> None:
         while True:
             try:
                 _, w = await asyncio.open_connection(HOST, port)
@@ -61,7 +62,9 @@ async def wait_port(port, timeout=20):
     await asyncio.wait_for(probe(), timeout)
 
 
-async def run_tool(binpath, symbol=None, payload=None, timeout=20):
+async def run_tool(binpath: str, symbol: str | None = None,
+                   payload: str | None = None,
+                   timeout: float = 20) -> tuple[int | None, str, str]:
     """grpcurl [-d payload] host:port [symbol]"""
     argv = [binpath, "-plaintext"]
     if payload is not None:
@@ -76,7 +79,7 @@ async def run_tool(binpath, symbol=None, payload=None, timeout=20):
     return proc.returncode, out.decode(), err.decode()
 
 
-async def drain(stream, sink):
+async def drain(stream: Any, sink: list[str]) -> None:
     while True:
         line = await stream.readline()
         if not line:
@@ -84,7 +87,7 @@ async def drain(stream, sink):
         sink.append(line.decode(errors="replace"))
 
 
-def check_no_hardcoded_domain_types():
+def check_no_hardcoded_domain_types() -> None:
     """No layer above the bindings may name a domain type.
 
     Wire policy is declared next to the binding and reaches the schema,
@@ -113,7 +116,7 @@ def check_no_hardcoded_domain_types():
           "; ".join(offenders))
 
 
-async def main():
+async def main() -> None:
     global PORT
     PORT = free_port()
     grpcurl_bin = find_grpcurl()
@@ -175,7 +178,7 @@ async def main():
         before_desc = await drv.describe()
         await asyncio.wait_for(drv.set_env("wire_added", "1"), 10)
         after_desc = await drv.describe()
-        def _env_count(d):
+        def _env_count(d: str) -> int:
             return int(d.split("(")[1].split()[0])
         check("backfilled Any params call over the wire",
               _env_count(after_desc) == _env_count(before_desc) + 1,
@@ -183,7 +186,7 @@ async def main():
 
         state = await client.acquire("EvalState", "local")
         thunk = await state.parse_expr("42")
-        threw = False
+        threw: Any = False
         try:
             await thunk.integer()
         except InternalError:
