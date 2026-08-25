@@ -105,7 +105,8 @@ def main(argv=None):
         extract_wrapper(kls, api=api, mapping=mapping) for kls in returned_classes
     ]
     returned_policies = {p["name"]: p["threading"] for p in returned_protos}
-    protos = [extract_wrapper(svc, api=api, mapping=mapping) for svc in wrapper_classes]
+    protos = [extract_wrapper(svc, api=api, mapping=mapping, constructible=True)
+              for svc in wrapper_classes]
 
     # policy enforcement: a pool wrapper may not return affine types at
     # all - drop them from the surface entirely.

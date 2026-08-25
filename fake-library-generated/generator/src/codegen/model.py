@@ -144,7 +144,7 @@ def extract_method(func) -> dict:
     }
 
 
-def extract_wrapper(cls, api=None, mapping=None) -> dict:
+def extract_wrapper(cls, api=None, mapping=None, constructible=False) -> dict:
     """
     Reflect the live Python surface across the fake_library MRO chain:
     every public method and property the bindings actually expose, with
@@ -177,7 +177,16 @@ def extract_wrapper(cls, api=None, mapping=None) -> dict:
             methods.append(_reader_method(name, val))
         # anything else (plain class attrs) is not part of the surface
 
+    ctor: list[dict] = []
     if api is not None and mapping is not None:
+        # Returned types are produced, never constructed - their
+        # __init__ raises - so their C++ overloads describe nothing a
+        # caller can reach. Deriving a signature for them would ship a
+        # plausible lie: StorePath's (string) means a base name while
+        # its (string, string) means hash-plus-name, and the two merge
+        # into a single wrong pair of optional strings.
+        if constructible:
+            ctor = constructor_signature(cls, api, mapping)
         table = _pxd_signature_table(cls, api, mapping)
         for m in methods:
             known = table.get(m["name"])
@@ -207,8 +216,68 @@ def extract_wrapper(cls, api=None, mapping=None) -> dict:
         # Private round-trip helpers present on the class. Not part of
         # the surface; the contract check reads them.
         "_helpers": sorted(h for h in ("_parts", "_from_parts") if hasattr(cls, h)),
+        # Typed construction, straight from the pxd - the only place a
+        # Cython constructor's signature is visible at all.
+        "ctor": ctor,
         "methods": methods,
     }
+
+
+def constructor_signature(cls, api: dict, mapping: dict[str, str]) -> list[dict]:
+    """The typed parameter list for constructing `cls`.
+
+    The pxd is the ONLY source. Cython exposes no signature for
+    __cinit__ - no __text_signature__, nothing in __dict__ - so
+    inspect.signature reports (self, /, *args, **kwargs) for every
+    binding class alike. Reflection cannot contribute one bit here,
+    which is why the server's old "does the constructor need
+    arguments?" check was a constant True wearing a disguise.
+
+    C++ gives an overload SET where Python takes one signature. They
+    reconcile when the overloads are type-prefix compatible - each a
+    positional prefix of the next - which is what an optional-argument
+    constructor looks like once C++ has spelled it out:
+
+        CDerivedPath(CStorePath)
+        CDerivedPath(CStorePath, string)   ->  (path, output=None)
+
+    Parameters past the shortest overload are optional. Names come from
+    the longest overload; C++ overloads often rename (path/drv_path)
+    and the longest one is the most descriptive.
+
+    Raises when the overloads do NOT reconcile, naming the class. That
+    is a real ambiguity - CStorePath's (string) means a base name while
+    its (string, string) means hash-plus-name - and the author has to
+    say which one Python offers.
+
+    A class with no declared constructor takes none: C++ gives it an
+    implicit default and the binding's __cinit__ matches.
+    """
+    info = api["classes"].get(cls.__dict__.get("_binds", ""))
+    if info is None:
+        return []
+    overloads = sorted(info["ctors"], key=len)
+    if not overloads:
+        return []
+    longest = overloads[-1]
+    for shorter in overloads[:-1]:
+        for i, (_, ptype) in enumerate(shorter):
+            if map_c_type(ptype, mapping) != map_c_type(longest[i][1], mapping):
+                raise ValueError(
+                    f"{cls.__name__}: constructor overloads do not reconcile "
+                    f"into one Python signature. Overload "
+                    f"{[t for _, t in shorter]} is not a prefix of "
+                    f"{[t for _, t in longest]}; they differ at position {i}. "
+                    f"Declare which one the binding offers.")
+    required = len(overloads[0])
+    return [
+        {
+            "name": pname,
+            "type": map_c_type(ptype, mapping),
+            "optional": i >= required,
+        }
+        for i, (pname, ptype) in enumerate(longest)
+    ]
 
 
 def check_wire_contract(protos: list[dict]) -> list[str]:

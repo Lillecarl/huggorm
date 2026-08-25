@@ -102,6 +102,22 @@ def _is_ctor(func: dict, class_cython_name: str) -> bool:
     return func["name"] == class_cython_name
 
 
+def _bare(type_name: str) -> str:
+    """Strip const/reference/pointer decoration from a raw C type."""
+    t = type_name.strip()
+    if t.startswith("const "):
+        t = t[6:]
+    return t.rstrip("&*").strip()
+
+
+def _is_copy_ctor(func: dict, class_cython_name: str) -> bool:
+    """A one-argument constructor taking its own class. Pure binding
+    glue - no Python surface ever calls it - so it never reaches the
+    overload set."""
+    return (len(func["params"]) == 1
+            and _bare(func["params"][0][1]) == class_cython_name)
+
+
 def extract_api(pxd_text: str, module_name: str = "c_declarations") -> dict:
     """
     Parse pxd text into:
@@ -109,10 +125,20 @@ def extract_api(pxd_text: str, module_name: str = "c_declarations") -> dict:
       'header': str,
       'nogil': bool-per-class dict? (block-level; reported once),
       'classes': {cython_name: {'cpp': quoted cname, 'bases': [cython names],
-                                'methods': [{name, params[(n,t)], ret, throws}]}},
+                                'methods': [{name, params[(n,t)], ret, throws}],
+                                'ctors': [[(n, t), ...], ...]}},
       'free_functions': [...]
     }
-    Ctors and copy-ctors are dropped; they are binding-layer concerns.
+    Constructors are reported SEPARATELY from methods, never mixed in:
+    they share the class's name, so a merged list would carry a method
+    called CStorePath. They used to be dropped outright, which left the
+    pxd - the only machine-readable record of them, since Cython
+    exposes no signature for __cinit__ - unable to type construction at
+    all.
+
+    Copy constructors are excluded from the set: they are binding glue
+    with no Python surface. Overloads arrive in declaration order.
+
     Raw C type names are preserved (mapping happens in model.py so this
     module stays free of policy).
     """
@@ -125,16 +151,21 @@ def extract_api(pxd_text: str, module_name: str = "c_declarations") -> dict:
         for e in _stats(st.body):
             t = type(e).__name__
             if t == "CppClassNode":
-                methods = []
+                methods, ctors = [], []
                 for v in e.attributes or []:
                     f = _func_info(v)
-                    if f is None or _is_ctor(f, e.name):
+                    if f is None:
+                        continue
+                    if _is_ctor(f, e.name):
+                        if not _is_copy_ctor(f, e.name):
+                            ctors.append(f["params"])
                         continue
                     methods.append(f)
                 api["classes"][e.name] = {
                     "cpp": e.cname,
                     "bases": [b.name for b in (e.base_classes or [])],
                     "methods": methods,
+                    "ctors": ctors,
                 }
             elif t == "CFuncDefNode":
                 # free functions arrive as CFuncDefNode with direct fields
