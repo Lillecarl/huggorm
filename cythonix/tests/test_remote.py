@@ -360,6 +360,35 @@ async def test_a_default_means_the_same_thing_remotely(
     await store.aclose()
 
 
+async def test_a_path_is_read_on_the_store_side(
+        client: Any, tmp_path: Any) -> None:
+    """add_path_to_store names a file the STORE reads, not one the
+    caller sends.
+
+    The string crosses and libstore opens it on the far side. Here
+    both sides share a filesystem, so what this can assert is that the
+    path really was read and hashed rather than treated as bytes: the
+    remote answer matches a LOCAL add of the same directory, and a
+    directory has no bytes form at all.
+
+    `add_to_store` is the call that carries contents across. This one
+    is for a path the store can already reach - which is exactly what
+    a daemon-side build input is."""
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "a.txt").write_text("hello\n")
+    (src / "sub" / "b.txt").write_text("world\n")
+
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    path = await store.add_path_to_store("tree", str(src))
+
+    local = cythonix_bindings.Store(str(tmp_path / "store"))
+    assert path.to_string() == local.add_path_to_store(
+        "tree", str(src)).to_string()
+    assert await store.is_valid_path(path)
+    await store.aclose()
+
+
 async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
     with pytest.raises(TypeError, match="threading policy"):
         await client.call_function("gc_release_thread")

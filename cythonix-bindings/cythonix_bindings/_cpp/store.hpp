@@ -13,6 +13,7 @@
 // be described in a pxd without declaring the whole config type, which
 // is a far larger surface than the one string that is wanted.
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,7 +23,9 @@
 #include "nix/store/store-open.hh"
 #include "nix/util/file-content-address.hh"
 #include "nix/util/hash.hh"
+#include "nix/util/posix-source-accessor.hh"
 #include "nix/util/serialise.hh"
+#include "nix/util/source-path.hh"
 
 namespace cythonix {
 
@@ -115,6 +118,39 @@ inline nix::StorePath * add_to_store(
         dump,
         name,
         nix::FileSerialisationMethod::Flat,
+        nix::ContentAddressMethod::parse(method),
+        nix::parseHashAlgo(hash_algo)));
+}
+
+/**
+ * Add a FILE OR DIRECTORY from the filesystem to the store.
+ *
+ * The other overload of addToStore, and the one `nix-store --add`
+ * uses. It takes a nix::SourcePath, which is an accessor plus a path
+ * inside it - the abstraction that lets Nix read a source out of a
+ * tarball or a git tree as easily as off the disk. Cython has no
+ * declaration for either half, and neither has a default constructor,
+ * so the path arrives here as a string and the accessor is built here.
+ *
+ * weakly_canonical, and upstream asks for it: createAtRoot does NOT
+ * canonicalise, deliberately, because it cannot know whether a caller
+ * wants a symlink resolved. Weak canonicalisation is the minimum for
+ * the SourcePath to reach the file at all, and it does not require the
+ * path to exist - libstore gives the error for a missing one, which is
+ * a better error than std::filesystem would.
+ */
+inline nix::StorePath * add_path_to_store(
+    nix::Store & store,
+    const std::string & name,
+    const std::string & path,
+    const std::string & method,
+    const std::string & hash_algo)
+{
+    auto source = nix::PosixSourceAccessor::createAtRoot(
+        std::filesystem::weakly_canonical(std::filesystem::path{path}));
+    return new nix::StorePath(store.addToStore(
+        name,
+        source,
         nix::ContentAddressMethod::parse(method),
         nix::parseHashAlgo(hash_algo)));
 }

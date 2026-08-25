@@ -15,6 +15,7 @@ from libcpp.vector cimport vector
 from cythonix_bindings.c_path cimport CStorePath
 from cythonix_bindings.c_store cimport (
     CStore,
+    add_path_to_store,
     add_to_store,
     init_libstore,
     open_store,
@@ -131,6 +132,46 @@ cdef class Store:
         cdef CStorePath* out
         with nogil:
             out = add_to_store(deref(store), c_name, c_data, c_method, c_algo)
+        cdef StorePath sp = StorePath.__new__(StorePath)
+        sp._ptr = out
+        return sp
+
+    def add_path_to_store(self, name: str, path: str,
+                          method: ContentAddressMethod = ContentAddressMethod.NAR,
+                          hash_algo: HashAlgorithm = HashAlgorithm.SHA256
+                          ) -> StorePath:
+        """Add a file or a directory from the filesystem to the store.
+
+        The other half of `add_to_store`. That one takes a regular
+        file's contents; this one takes a path and reads it, which is
+        the only way to add a DIRECTORY - a directory has no contents
+        to hand over as bytes, and `nar` is the only method that can
+        describe one.
+
+        `path` names a file on the filesystem THE STORE READS. In
+        process that is this machine. Over RPC it is the server's, and
+        no client path is sent: the argument crosses as the string it
+        is, and libstore opens it on the far side. That is libstore's
+        own meaning, not a limit added here - `add_to_store` is the
+        call that carries bytes across.
+
+        The defaults are libstore's, read off this overload of
+        addToStore: `nar` and `sha256`, the same pair `nix-store --add`
+        uses.
+
+        A missing path fails with libstore's message. The shim
+        canonicalises weakly, which upstream asks for and which does
+        not require the path to exist - so the error comes from the
+        layer that knows what it was for."""
+        cdef string c_name = name.encode('utf-8')
+        cdef string c_path = path.encode('utf-8')
+        cdef string c_method = method.encode('utf-8')
+        cdef string c_algo = hash_algo.encode('utf-8')
+        cdef CStore* store = self._get()
+        cdef CStorePath* out
+        with nogil:
+            out = add_path_to_store(
+                deref(store), c_name, c_path, c_method, c_algo)
         cdef StorePath sp = StorePath.__new__(StorePath)
         sp._ptr = out
         return sp

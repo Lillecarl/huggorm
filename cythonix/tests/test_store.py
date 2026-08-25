@@ -74,6 +74,20 @@ def test_a_local_store_answers_with_a_list(tmp_path: pathlib.Path) -> None:
     assert store.query_all_valid_paths() == []
 
 
+def chroot_dir(root: pathlib.Path, store: Store,
+               path: StorePath) -> pathlib.Path:
+    """Where a chroot store really put one path.
+
+    printStorePath answers with the VIRTUAL location - a chroot store
+    keeps /nix/store as its store directory - so reading the files back
+    means joining the root onto it.
+
+    `root` is passed in, not read from the store. get_uri answers
+    "local", which is what upstream means by calling it human readable:
+    it is not a store reference and it does not round-trip."""
+    return root / store.print_store_path(path).lstrip("/")
+
+
 @pytest.fixture
 def chroot(tmp_path: pathlib.Path) -> Store:
     """A real LocalStore rooted somewhere writable.
@@ -130,6 +144,68 @@ def test_the_defaults_are_libstores_own(chroot: Store) -> None:
     flat = chroot.add_to_store(
         "greeting", b"hello world\n", CA.FLAT, HashAlgorithm.SHA256)
     assert flat.to_string() != short.to_string()
+
+
+@pytest.fixture
+def source(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A small tree to add. Beside the store root, not inside it: a
+    chroot store's real directory is <root>/nix/store."""
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "a.txt").write_text("hello\n")
+    (src / "sub" / "b.txt").write_text("world\n")
+    return src
+
+
+def test_a_store_takes_a_path_and_reads_it(
+        chroot: Store, source: pathlib.Path,
+        tmp_path: pathlib.Path) -> None:
+    """add_path_to_store, on a DIRECTORY.
+
+    The reason this overload exists. A directory has no contents to
+    hand over as bytes, so `add_to_store` cannot take one at all - and
+    `nar` is the only method that can describe a tree, which is why it
+    is the default.
+
+    A chroot store keeps `/nix/store` as its store directory and puts
+    the files under <root>/nix/store, so the printed path is virtual
+    and the real one is the root joined onto it."""
+    path = chroot.add_path_to_store("tree", str(source))
+    assert path.name() == "tree"
+    assert chroot.is_valid_path(path)
+
+    real = chroot_dir(tmp_path, chroot, path)
+    assert sorted(p.name for p in real.iterdir()) == ["a.txt", "sub"]
+    assert (real / "sub" / "b.txt").read_text() == "world\n"
+
+
+def test_the_two_overloads_agree_about_one_file(
+        chroot: Store, source: pathlib.Path) -> None:
+    """A regular file added either way lands on the same path.
+
+    Which is the sharpest thing that can be said about them: the name
+    is the hash of the contents, so agreeing means both really saw the
+    same bytes under the same method. Checked for both, because the
+    method changes the hash and could hide a disagreement."""
+    for method in (CA.FLAT, CA.NAR):
+        by_path = chroot.add_path_to_store(
+            "one", str(source / "a.txt"), method, HashAlgorithm.SHA256)
+        by_bytes = chroot.add_to_store(
+            "one", b"hello\n", method, HashAlgorithm.SHA256)
+        assert by_path.to_string() == by_bytes.to_string(), method
+
+
+def test_a_missing_path_is_libstores_error(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    """The shim canonicalises weakly, which does not require the path
+    to exist. So the error comes from the layer that knows what the
+    path was for.
+
+    The doubled slash is upstream's, not this binding's: `nix-store
+    --add /nowhere` prints it too. It comes from rendering a path in
+    an accessor rooted at `/`."""
+    with pytest.raises(NixError, match="does not exist"):
+        chroot.add_path_to_store("nope", str(tmp_path / "missing"))
 
 
 def test_a_store_hands_back_every_path_it_holds(chroot: Store) -> None:
