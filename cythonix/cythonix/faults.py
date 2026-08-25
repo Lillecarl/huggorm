@@ -28,6 +28,7 @@ through protobuf's DEFAULT symbol database, and these descriptors live
 in a private pool built from grpc_schema.pb at import.
 """
 
+import builtins
 import importlib
 from collections.abc import Sequence
 from types import ModuleType
@@ -200,15 +201,33 @@ class FaultCodec:
         return None
 
 
-# What a cause becomes when nothing typed it. The builtins a binding
-# raises through the runtime, and Exception for anything else - the
-# same approximation this layer has always made, now confined to the
-# case it is actually for.
-_BUILTINS: dict[str, type[BaseException]] = {
-    "ValueError": ValueError, "TypeError": TypeError,
-    "RuntimeError": RuntimeError, "KeyError": KeyError, "OSError": OSError,
-}
-
-
 def _approximate(type_name: str, message: str) -> BaseException:
-    return _BUILTINS.get(type_name, Exception)(message)
+    """What a cause becomes when nothing typed it.
+
+    A binding raises builtins as well as nix errors - a ValueError for
+    a store that was never opened, a KeyError for a handle nobody
+    leased - and those carry no declared parts, so only the name
+    crosses.
+
+    Looked up in `builtins` rather than in a table kept here. A table
+    is a list of types living above the bindings, which is the
+    duplication this design exists to remove, and it was wrong in both
+    directions: five entries, so every other builtin silently became a
+    bare Exception, and no way for a sixth to be added except by
+    editing this file.
+
+    The lookup is not "any name the peer sends". It must resolve in
+    `builtins` AND be an exception class, so a name that is neither -
+    or one from any other module - never reaches a constructor.
+
+    A builtin whose constructor wants more than a message, such as
+    UnicodeDecodeError, degrades to an Exception naming it. That still
+    beats what the table did with an unlisted name, which was to drop
+    the type entirely and keep only the text."""
+    kls = getattr(builtins, type_name, None)
+    if isinstance(kls, type) and issubclass(kls, BaseException):
+        try:
+            return kls(message)
+        except Exception:
+            pass
+    return Exception(f"{type_name}: {message}" if type_name else message)

@@ -142,3 +142,36 @@ def test_a_method_with_no_wire_form_is_absent_everywhere(
         assert hasattr(AsyncStore, name), f"{name} lost its wrapper too"
         assert not hasattr(RPCStore, name), f"{name} is on the rpc client"
         assert name not in RPCStore._rpc, f"{name} has a call spec"
+
+
+def test_an_untyped_cause_rebuilds_from_builtins_only() -> None:
+    """The approximation names no types of its own.
+
+    It used to hold a table of five builtins, which was wrong twice:
+    every OTHER builtin silently became a bare Exception, and adding
+    one meant editing a file above the bindings.
+
+    The rule is now one sentence - resolve in `builtins`, and only if
+    it is an exception class - so what may be constructed is bounded
+    without anything keeping a list. Nothing else the peer names gets
+    near a constructor, and a name that vanished before is now kept in
+    the message."""
+    from cythonix.faults import _approximate
+
+    # A builtin exception rebuilds as itself.
+    for name in ("ValueError", "KeyError", "OSError", "IndexError",
+                 "ZeroDivisionError", "StopAsyncIteration"):
+        out = _approximate(name, "boom")
+        assert type(out).__name__ == name, out
+
+    # A builtin that is NOT an exception is never constructed...
+    for name in ("print", "dict", "object", "type"):
+        assert type(_approximate(name, "boom")) is Exception, name
+    # ...nor is anything that is not a builtin at all.
+    for name in ("Store", "NixError", "os.system", ""):
+        assert type(_approximate(name, "boom")) is Exception, name
+
+    # A builtin whose constructor wants more than a message degrades
+    # rather than raising, and the name survives in the text.
+    out = _approximate("UnicodeDecodeError", "boom")
+    assert type(out) is Exception and "UnicodeDecodeError" in str(out)
