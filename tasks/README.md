@@ -52,6 +52,12 @@ Findings reference two architectural reviews, 2026-08-23 and
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
+- 040 (store paths as filesystem paths) is open, and it is the next
+  DX question. Inheritance is settled: a cdef class cannot subclass
+  pathlib.Path, and anyio.Path is a wrapper rather than a subclass.
+  What is left is where the answer belongs - a StorePath knows no
+  directory, and toRealPath is on LocalFSStore because a binary cache
+  has no real path at all.
 - 039 (parameter defaults) is done. A default is a fact about the
   signature: every generated surface writes the same one, so the wire
   never has to say "absent" and needs no field presence. What may be
