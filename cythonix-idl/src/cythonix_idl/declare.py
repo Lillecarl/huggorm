@@ -44,6 +44,16 @@ class Cxx:
 Str = Annotated[str, Cxx("string")]
 StrView = Annotated[str, Cxx("string_view", copy="view")]
 Bint = Annotated[bool, Cxx("bint")]
+# Widths. Python has one integer type and C++ has many, so a plain
+# `int` says what a CALLER sees and nothing about what crosses. These
+# say both: `int` above the boundary, a fixed width at it.
+#
+# Which width is not a preference. `nar_size` is upstream's uint64_t
+# and `registration_time` is a time_t the shim narrows to int64_t, so
+# a declaration that said `int` for both would leave the emitter to
+# guess, and it would guess the same for two fields that differ.
+U64 = Annotated[int, Cxx("uint64_t")]
+I64 = Annotated[int, Cxx("int64_t")]
 
 
 @dataclass(frozen=True)

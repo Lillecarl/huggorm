@@ -56,16 +56,36 @@ def _doc(text: str, level: int) -> list[str]:
     return out
 
 
+# How each C++ spelling reads in a pyx signature. `bint` is Cython's
+# own bool and reads as one; std::string and string_view are both a
+# `str` by the time a caller sees them, because a view is copied at
+# the boundary; a fixed width is a Python int.
+PYX_SPELLING = {
+    "string": "str",
+    "string_view": "str",
+    "bint": "bint",
+    "uint64_t": "int",
+    "int64_t": "int",
+}
+
+
 def _py_type(t: Type) -> str:
     """How a declared type is spelled in a pyx signature.
 
-    Not the C++ spelling: `bint` is Cython's own bool and reads as one
-    in an annotation, while std::string and string_view are both `str`
-    by the time a caller sees them. A type with no C++ behind it - a
-    produced value's field - is already Python and says so itself."""
+    A type with no C++ behind it - a produced value's field - is
+    already Python and says so itself.
+
+    One with a C++ spelling this table does not know REFUSES. It used
+    to fall through to `str`, which is a guess that compiles: a
+    declaration naming a width nobody had taught the emitter would
+    have emitted a binding whose signature said the wrong thing."""
     if t.cxx is None:
         return "bint" if t.python == "bool" else t.python
-    return "bint" if t.cxx.spelling == "bint" else "str"
+    if t.cxx.spelling not in PYX_SPELLING:
+        raise TypeError(
+            f"'{t.cxx.spelling}' has no pyx spelling. Add it to "
+            f"emit.PYX_SPELLING once the boundary knows how to marshal it.")
+    return PYX_SPELLING[t.cxx.spelling]
 
 
 # -- c_<name>.pxd ---------------------------------------------------------

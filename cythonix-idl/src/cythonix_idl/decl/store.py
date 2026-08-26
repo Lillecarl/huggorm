@@ -8,6 +8,8 @@ what makes this testable in a build sandbox.
 """
 
 from cythonix_idl.declare import (
+    I64,
+    U64,
     Bint,
     Str,
     binding,
@@ -42,7 +44,7 @@ class PathInfo:
         """The hash of the path's NAR serialisation, algorithm first:
         `sha256:<base32>`, the same spelling `nix path-info` prints."""
 
-    def nar_size(self) -> int:
+    def nar_size(self) -> U64:
         """The size of that NAR in bytes. Not the size on disk."""
 
     def deriver(self) -> "StorePath | None":
@@ -51,7 +53,7 @@ class PathInfo:
         None is a real answer, not a gap: a path added straight to the
         store was not built by anything."""
 
-    def registration_time(self) -> int:
+    def registration_time(self) -> I64:
         """When the store learnt about this path, as a Unix time."""
 
     def ultimate(self) -> bool:

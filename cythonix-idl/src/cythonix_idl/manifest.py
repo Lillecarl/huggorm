@@ -56,6 +56,11 @@ PYTHON = {
     # pointer rather than an exception.
     "string_view": "str",
     "bint": "bool",
+    # Widths. Python has one integer type, so both read as `int` here
+    # - the width is a fact about the crossing, not about the value a
+    # caller holds.
+    "uint64_t": "int",
+    "int64_t": "int",
 }
 
 # What a wire value defines, and what makes it define each one. Read
