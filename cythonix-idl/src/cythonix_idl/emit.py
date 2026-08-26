@@ -171,13 +171,31 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
     is Python work, and it must already be done."""
     decls, args = [], []
     for name, t in m.params:
-        if t.bound:
+        if t.python.startswith("list[") and t.bound:
+            # A LIST of a bound type crosses as base names. A pxd
+            # cannot declare the std::set libstore takes, and a base
+            # name is what a store path IS - so the vector of strings
+            # is the honest crossing point rather than a compromise.
+            decls.append(f"{INDENT * 2}cdef vector[string] c_{name} = "
+                         f"_base_names({name})")
+            args.append(f"c_{name}")
+        elif t.bound:
             # Another declared class. Its pointer is what C++ wants,
             # and `_get()` is the guard that says so when it is NULL.
-            # The parameter is already typed in the signature, so the
-            # call needs no second local to reach `_get` through.
-            decls.append(f"{INDENT * 2}cdef C{t.python}* c_{name} = "
-                         f"{name}._get()")
+            #
+            # Reached through a typed local when the signature is
+            # Python-style, and directly when it is Cython-style. That
+            # is the same split as the annotation itself: a
+            # shim-backed method writes `path: StorePath`, which
+            # Cython leaves as an object, so `path._get()` does not
+            # compile until something says what it is.
+            if m.cxx_body:
+                decls.append(f"{INDENT * 2}cdef {t.python} b_{name} = {name}")
+                decls.append(f"{INDENT * 2}cdef C{t.python}* c_{name} = "
+                             f"b_{name}._get()")
+            else:
+                decls.append(f"{INDENT * 2}cdef C{t.python}* c_{name} = "
+                             f"{name}._get()")
             args.append(f"deref(c_{name})")
         elif t.cxx is not None and t.cxx.spelling == "string":
             decls.append(
@@ -190,6 +208,11 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
 
 def _marshal_out(t: Type, expr: str) -> str:
     """One C++ result as the Python object the signature promised."""
+    if t.python.startswith("list[") and t.bound:
+        # The inverse of the parameter rule: base names in, objects
+        # out, and one helper for every call that returns a set
+        # because every one of them crosses the same way.
+        return f"_store_paths({expr})"
     if t.cxx is None:
         raise TypeError(f"no C++ spelling for a return of {t.python}")
     if t.cxx.copy == "view":
@@ -258,10 +281,19 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None) -> list[str]:
     if waiting:
         # A call that can wait releases the GIL around itself, so the
         # rest of the process keeps running while it does.
-        lines += [f"{INDENT * 2}cdef {m.ret.cxx.spelling} out",
+        # The C type the result lands in before the GIL comes back.
+        # A bound container arrives flattened, so the temporary holds
+        # what the shim actually returns rather than what the Python
+        # signature promises.
+        if m.ret.python.startswith("list[") and m.ret.bound:
+            held, temp = "vector[string]", "found"
+        else:
+            assert m.ret.cxx is not None
+            held, temp = m.ret.cxx.spelling, "out"
+        lines += [f"{INDENT * 2}cdef {held} {temp}",
                   f"{INDENT * 2}with nogil:",
-                  f"{INDENT * 3}out = {call}"]
-        result = "out"
+                  f"{INDENT * 3}{temp} = {call}"]
+        result = temp
     else:
         result = call
     lines.append(f"{INDENT * 2}return {_marshal_out(m.ret, result)}")
@@ -553,25 +585,86 @@ CXX_PARAM = {"string": "const std::string &", "string_view": "std::string_view",
              "bint": "bool"}
 
 
+def _cxx_of(t: Type, position: str) -> str:
+    """One declared type, as the shim spells it.
+
+    A bound CONTAINER flattens. `std::set<nix::StorePath>` cannot be
+    declared in a pxd at all, and a store path is a base name, so a
+    vector of strings is what crosses - which is the same rule the
+    Cython side marshals by, written once for both."""
+    table = CXX_RETURN if position == "return" else CXX_PARAM
+    if t.python.startswith("list[") and t.bound:
+        return ("std::vector<std::string>" if position == "return"
+                else "const std::vector<std::string> &")
+    if t.bound:
+        return f"const nix::{t.python} &"
+    if t.cxx is None:
+        raise TypeError(f"{t.python} has no C++ spelling")
+    return table.get(t.cxx.spelling, t.cxx.spelling)
+
+
 def _shim_signature(cls: Class, m: Method) -> str:
     """One shim, as C++ declares it."""
-    assert m.ret is not None and m.ret.cxx is not None
-    ret = CXX_RETURN.get(m.ret.cxx.spelling, m.ret.cxx.spelling)
+    assert m.ret is not None
+    ret = _cxx_of(m.ret, "return")
     # Non-const, always. A const reference would document that a call
     # only reads, but the declaration does not carry that fact and a
     # non-const reference binds to the object this binding holds in
     # every case - so guessing const would be a compile error waiting
     # for the first method that mutates.
     args = [f"{cls.decl.cxx} & s"]
-    for name, t in m.params:
-        if t.bound:
-            args.append(f"const nix::{t.python} & {name}")
-        elif t.cxx is not None:
-            args.append(f"{CXX_PARAM.get(t.cxx.spelling, t.cxx.spelling)} "
-                        f"{name}")
-        else:
-            raise TypeError(f"{m.name}: parameter {name} has no C++ spelling")
+    args += [f"{_cxx_of(t, 'param')} {name}" for name, t in m.params]
     return f"inline {ret} {m.name}({', '.join(args)})"
+
+
+# The two conversions a bound CONTAINER needs, in C++.
+#
+# Not per-declaration and not per-class: a pxd can declare a vector
+# and cannot declare a std::set, and a base name is what a store path
+# IS. That pair of facts is the emitter's, so the pair of functions is
+# too - a declaration names them the way a pyx names `_view`, and
+# neither file writes them.
+FLATTENING = """
+/**
+ * Base names to the set libstore takes.
+ *
+ * nix::StorePath's own constructor parses each name, so a malformed
+ * one raises here rather than reaching the store.
+ */
+inline nix::StorePathSet store_path_set(const std::vector<std::string> & names)
+{
+    nix::StorePathSet out;
+    for (auto & name : names)
+        out.insert(nix::StorePath(name));
+    return out;
+}
+
+/**
+ * The mirror: a StorePathSet as the base names it holds.
+ *
+ * The re-parse on the way back in is a check on a name the store
+ * itself just gave. It buys a crossing point with no ownership in it,
+ * which is twenty lines of Cython that cannot then leak.
+ *
+ * The order is the set's, which is sorted. Nothing here sorts.
+ */
+inline std::vector<std::string> base_names(const nix::StorePathSet & paths)
+{
+    std::vector<std::string> out;
+    out.reserve(paths.size());
+    for (auto & path : paths)
+        out.push_back(std::string(path.to_string()));
+    return out;
+}
+"""
+
+
+def _flattens(cls: Class) -> bool:
+    """Whether anything here crosses as a container of bound values."""
+    return any(t.bound and t.python.startswith("list[")
+               for m in cls.methods
+               for t in [*(p.type for p in m.params),
+                         *([m.ret] if m.ret is not None else [])])
 
 
 def shim_hpp(cls: Class, module: str, doc: str) -> str:
@@ -604,10 +697,12 @@ def shim_hpp(cls: Class, module: str, doc: str) -> str:
     ]
     out += [f"// {line}".rstrip()
             for line in inspect.cleandoc(doc).splitlines()]
-    out += ["", "#include <string>", ""]
+    out += ["", "#include <string>", "#include <vector>", ""]
     for path in sorted({cls.decl.header} - {""}):
         out.append(f'#include "{path}"')
     out += ["", "namespace cythonix {", ""]
+    if _flattens(cls):
+        out += [*FLATTENING.strip().splitlines(), ""]
     for m in cls.methods:
         if not m.cxx_body:
             continue

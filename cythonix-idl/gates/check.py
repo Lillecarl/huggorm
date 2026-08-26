@@ -64,6 +64,10 @@ ACCEPTED: tuple[tuple[str, str, str, str], ...] = (
      "the type; the emitter names every hoisted receiver the same, "
      "because it writes one for every blocking call and a name per "
      "type would be a table to keep."),
+    ("Store", "sp", "b_path",
+     "the local a Python-annotated parameter is typed through. The "
+     "human named it after the type; the emitter names it after the "
+     "parameter, like every other local it writes."),
     ("Store", "p", "c_path",
      "the local holding a parameter's pointer, named after the "
      "parameter it came from rather than abbreviated."),
@@ -391,6 +395,22 @@ def check_shim(decl_path: pathlib.Path, hpp_name: str,
     cls = next(c for c in mod.classes if c.name == cls_name)
     actual = allow_text((BINDINGS / "_cpp" / hpp_name).read_text(), hpp_name)
     problems, agree, declared = [], 0, 0
+    # The two helpers the emitter writes for itself, checked like any
+    # other. They are not declared anywhere, so nothing else would
+    # notice if they stopped matching the C++ this repo compiles.
+    for helper in ("store_path_set", "base_names"):
+        want = cxx_only(shim_body(actual, helper))
+        got = cxx_only(shim_body(emit.FLATTENING, helper))
+        if not want:
+            continue
+        declared += 1
+        if want == got:
+            agree += 1
+            continue
+        problems.append(f"{hpp_name}:{helper}: the emitter's copy differs")
+        for a, b in zip(want, got, strict=False):
+            if a != b:
+                problems += [f"    the repo: {a}", f"    emitted:  {b}"]
     for m in cls.methods:
         if not m.cxx_body:
             continue

@@ -187,3 +187,68 @@ class Store:
         same meaning `add_path_to_store` already carries.
 
         Raises BadStorePath when the links run out somewhere else."""
+
+    @cxx_body("""return base_names(s.queryAllValidPaths());""")
+    def query_all_valid_paths(self) -> "list[StorePath]":
+        """Every path this store holds.
+
+        Not every store answers it. nix::Store's own implementation
+        raises "not supported by store", and only the local and remote
+        stores override it - which is honest, because a substituter has
+        no such list to give.
+
+        Sorted, because libstore answers with a set."""
+
+    @cxx_body("""return base_names(s.queryValidDerivers(path));""")
+    def query_valid_derivers(
+        self,
+        path: "StorePath",
+    ) -> "list[StorePath]":
+        """Every derivation this store still holds that has `path` as
+        an output.
+
+        A different question from `PathInfo.deriver`, which names the
+        .drv that actually BUILT this path - and which may be gone. A
+        path that several derivations can produce has several derivers,
+        and one whose .drv was collected has none.
+
+        Empty is a normal answer. nix::Store's own implementation
+        returns an empty set rather than raising, so a store that does
+        not track this says nothing rather than failing."""
+
+    @cxx_body("""return base_names(s.queryValidPaths(store_path_set(paths)));""")
+    def query_valid_paths(
+        self,
+        paths: "list[StorePath]",
+    ) -> "list[StorePath]":
+        """Which of these paths this store actually holds.
+
+        The set form of `is_valid_path`, and not merely a loop over
+        it: a store that talks to a daemon answers the whole set in
+        one round trip.
+
+        Nothing is substituted. libstore's overload takes a flag that
+        would go and FETCH what is missing, which is a different
+        operation with a different cost - it belongs in its own
+        binding rather than in a boolean here.
+
+        Sorted, and shorter than what went in when the store is
+        missing something."""
+
+    @cxx_body("""nix::StorePathSet referrers;
+        s.queryReferrers(path, referrers);
+        return base_names(referrers);""")
+    def query_referrers(
+        self,
+        path: "StorePath",
+    ) -> "list[StorePath]":
+        """Which store paths point AT this one.
+
+        The inverse of `PathInfo.references`, and the direction a
+        garbage collector reads: a path with referrers is one something
+        else still needs.
+
+        Only a store with a database can answer. nix::Store's own
+        implementation raises "not supported by store", the way
+        `query_all_valid_paths` does, because a substituter has no such
+        index."""
