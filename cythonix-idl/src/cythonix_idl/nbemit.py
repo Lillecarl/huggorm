@@ -874,7 +874,41 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     return [f"{INDENT * 2}.def(nb::init<{types}>(){args})"]
 
 
-def bind_function(cls: Class, known: dict[str, Class] | None = None) -> str:
+def _factory(cls: Class, functions: Sequence[Method],
+             known: dict[str, Class] | None = None) -> list[str]:
+    """`nb::new_`, for a class something else makes.
+
+    nix::Store is abstract and its implementation is chosen by a URI,
+    so there is no constructor to bind - and `Store(uri)` is still the
+    Python surface, because that is what the declaration's `__init__`
+    says. `nb::new_` is exactly that shape: a factory returning a
+    handle, bound as `__new__`.
+
+    Both halves are declared, in two places that already had to
+    agree. `@produced(by="open_store")` names the factory by its
+    PYTHON name; the free function called `open_store` names the C++
+    it binds. So this resolves one through the other and neither
+    declaration repeats the other's spelling."""
+    if cls.ctor is None:
+        return []
+    made = next((f for f in functions if f.name == cls.decl.built_by), None)
+    if made is None:
+        # A factory this declaration does not carry. The class is
+        # still bound; it just offers no way in, which is the honest
+        # answer until the factory is declared too.
+        return []
+    args = "".join(f', "{n}"_a' for n, _ in cls.ctor.params)
+    line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){args}"
+    if not cls.ctor.doc:
+        return [line + ")"]
+    # One line, however the declaration wrapped it: a C++ string
+    # literal has no continuation and gluing two is noise.
+    doc = " ".join(cls.ctor.doc.split()).replace("\\", "\\\\").replace('"', r'\"')
+    return [line + ",", f'{INDENT * 3}     "{doc}")']
+
+
+def bind_function(cls: Class, known: dict[str, Class] | None = None,
+                  functions: Sequence[Method] = ()) -> str:
     """The whole `bind_<name>` function for one declared class.
 
     A function per class, because that is the seam nanopynix already
@@ -900,9 +934,11 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None) -> str:
         if body:
             body[-1] += ";"
         return "\n".join([*lines, *body, "}"]) + "\n"
-    # No nb::init when something else builds one: offering a
-    # constructor would advertise a way in that does not exist.
-    body = [] if decl.built_by else _ctor(cls, known)
+    # No nb::init when something else builds one: there is no
+    # constructor to call. A FACTORY takes its place where the
+    # declaration names one.
+    body = (_factory(cls, functions, known) if decl.built_by
+            else _ctor(cls, known))
     skipped = refused(cls, known)
     for m in cls.methods:
         if m.name in skipped:
@@ -1041,7 +1077,7 @@ def module(classes: Sequence[Class],
     # to be complete before the compiler reads the lambda.
     head += records(classes, known)
     out = "\n".join(head) + "\n" + "\n".join(
-        bind_function(cls, known) for cls in classes)
+        bind_function(cls, known, functions) for cls in classes)
     return out + ("\n" + free_functions(tuple(functions), known)
                   if functions else "")
 
