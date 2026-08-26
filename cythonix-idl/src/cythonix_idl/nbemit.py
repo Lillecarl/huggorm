@@ -94,7 +94,7 @@ def _self(cls: Class) -> str:
     return "".join(c for c in cls.name if c.isupper()).lower() or "self"
 
 
-def _param(t: Type, known: dict[str, str] | None = None
+def _param(t: Type, known: dict[str, Class] | None = None
            ) -> tuple[str, str | None]:
     """The C++ spelling of a declared type, and the caster it needs.
 
@@ -107,7 +107,18 @@ def _param(t: Type, known: dict[str, str] | None = None
             raise TypeError(
                 f"'{t.python}' names a class this run has not read. Pass its "
                 f"declaration too, so the C++ spelling can be resolved.")
-        return f"const {known[t.python]} &", None
+        other = known[t.python]
+        if other.is_words:
+            # A vocabulary. The member IS the string a Nix parser
+            # takes, so it crosses as one - the same crossing the
+            # Cython backend makes, because it is a fact about the
+            # words rather than about either binding.
+            return CXX_PARAM["string"]
+        if not other.decl.cxx:
+            raise TypeError(
+                f"'{t.python}' has no C++ type behind it. Only a class with "
+                f"@binding(cxx=...) can cross as one.")
+        return f"const {other.decl.cxx} &", None
     if t.cxx is None or t.cxx.spelling not in CXX_PARAM:
         raise TypeError(
             f"'{t.python}' has no C++ parameter spelling. A bound class "
@@ -199,7 +210,7 @@ def _extras(cls: Class, m: Method) -> str:
     return "".join(f", {x}" for x in out)
 
 
-def _method(cls: Class, m: Method, known: dict[str, str] | None = None
+def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
             ) -> list[str]:
     """One `.def`, bound by POINTER wherever nanobind allows it.
 
@@ -228,7 +239,7 @@ def _method(cls: Class, m: Method, known: dict[str, str] | None = None
             f"{_extras(cls, m)})"]
 
 
-def _ctor(cls: Class, known: dict[str, str] | None = None) -> list[str]:
+def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     """`nb::init<...>`, with the declared parameter named for Python.
 
     `"name"_a` is what makes the parameter usable as a keyword, so the
@@ -423,7 +434,7 @@ def _unused_record(cls: Class) -> list[str]:
     return out
 
 
-def bind_function(cls: Class, known: dict[str, str] | None = None) -> str:
+def bind_function(cls: Class, known: dict[str, Class] | None = None) -> str:
     """The whole `bind_<name>` function for one declared class.
 
     A function per class, because that is the seam nanopynix already
@@ -450,7 +461,7 @@ def bind_function(cls: Class, known: dict[str, str] | None = None) -> str:
     return "\n".join([*lines, *body, "}"]) + "\n"
 
 
-def free_function(fn: Method, known: dict[str, str] | None = None) -> list[str]:
+def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str]:
     """One `m.def`, for a function that belongs to no class.
 
     nanopynix has 72 of these and they are one shape:
@@ -479,7 +490,7 @@ def free_function(fn: Method, known: dict[str, str] | None = None) -> list[str]:
 
 
 def free_functions(fns: tuple[Method, ...],
-                   known: dict[str, str] | None = None) -> str:
+                   known: dict[str, Class] | None = None) -> str:
     """Every free binding, in one function the module can call.
 
     The same seam a class gets. nanopynix's NB_MODULE already calls
