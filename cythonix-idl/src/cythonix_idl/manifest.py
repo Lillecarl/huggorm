@@ -42,7 +42,18 @@ import inspect
 from typing import Any
 
 from cythonix_idl.declare import Decl
-from cythonix_idl.read import Class, Method, Type
+from cythonix_idl.read import Class, Method, Param, Type
+
+# The names a proxy's RPC surface is spelled with. Derived from the
+# class name in every case, so the whole surface is knowable from a
+# declaration - but the WORDS are the generator's, so they are named
+# here rather than written into a format string five times.
+PROTO_PACKAGE = "cythonix.v1"
+SERVICE = "Service"
+ACQUIRE = "Acquire"
+PROTOCOL = "Like"
+ASYNC = "Async"
+RPC = "RPC"
 
 # C++ spelling -> the Python type the manifest names. A second table
 # from `emit._py_type`, and deliberately: that one spells a pyx
@@ -107,20 +118,27 @@ def _type(t: Type | None) -> str:
         raise TypeError(
             f"'{t.cxx.spelling}' has no Python spelling. Add it to "
             f"manifest.PYTHON once the boundary knows how to marshal it.")
-    return PYTHON[t.cxx.spelling]
+    # The DECLARATION's spelling wins where the two disagree. A
+    # std::string is a `str` most of the time, and is `bytes` or a
+    # `pathlib.Path` where the alias says so - the table gives the
+    # usual reading, and only the alias knows when it is not the one.
+    return t.python if t.python != "bool" else PYTHON[t.cxx.spelling]
 
 
-def _param(name: str, t: Type) -> dict[str, Any]:
-    # `default: None` always: C++ default arguments are not in the
-    # vocabulary yet, and a declaration cannot express one. When it
-    # can, this reads it rather than assuming.
-    return {"name": name, "type": _type(t), "default": None}
+def _param(p: Param) -> dict[str, Any]:
+    """One parameter, as the manifest carries it.
+
+    The default is the SOURCE of the expression, which is what
+    reflection reads back too: a StrEnum member is written as the
+    member and not as its value, because `'nar'` in a signature says
+    nothing about which vocabulary it came from."""
+    return {"name": p.name, "type": _type(p.type), "default": p.default}
 
 
 def _method(m: Method) -> dict[str, Any]:
     return {
         "name": m.name,
-        "params": [_param(n, t) for n, t in m.params],
+        "params": [_param(p) for p in m.params],
         "return_type": _type(m.ret),
         # Cleaned, unlike the class docstring below. That asymmetry is
         # the current manifest's, not this module's: model.py reads a
@@ -209,6 +227,7 @@ def entry(cls: Class, package: str, module: str,
     filled in yet."""
     decl = cls.decl
     threading = decl.threading
+    wire = decl.wire or "proxy"
     return {
         "name": cls.name,
         # The one fact the declaration cannot hold: which package the
@@ -235,7 +254,7 @@ def entry(cls: Class, package: str, module: str,
         "produced": cls.is_value,
         # "proxy" is the safe default on both sides: stateful until a
         # declaration proves otherwise.
-        "wire": decl.wire or "proxy",
+        "wire": wire,
         "wire_fields": _wire_fields(cls),
         "blocking": decl.blocking,
         # Two things a wrapper buys: a hop onto a home thread, and
@@ -243,14 +262,33 @@ def entry(cls: Class, package: str, module: str,
         # whose methods cannot block needs neither.
         "wrapped": threading == "affine" or decl.blocking,
         "dunders": dunders(decl),
-        "ctor": [_param(n, t) for n, t in
+        "ctor": [_param(p) for p in
                  (cls.ctor.params if cls.ctor is not None else ())],
         "methods": [_method(m) for m in cls.methods],
-        # Both are written by later stages of the real generator: the
-        # async twin's base and the proto message name. The message
-        # name is derivable here; async_base is a package-level fact.
+        # Written by a later stage of the real generator, and a
+        # package-level fact rather than a class one.
         "async_base": None,
-        "message": f"{cls.name}Msg" if final else None,
+        # A proxy and a value carry DIFFERENT keys here, not the same
+        # keys with different values. A value crosses as a message; a
+        # proxy stays where it is and is reached through a service,
+        # so it has a service, a way to acquire one, a protocol, and
+        # the two generated classes that speak it.
+        #
+        # Every name is derived from the class's own. The generator
+        # builds them the same way, which is what makes a proxy's
+        # whole RPC surface knowable from the declaration.
+        **({
+            "service": f"{cls.name}{SERVICE}",
+            "acquire": {
+                "path": f"/{PROTO_PACKAGE}.{cls.name}{SERVICE}/{ACQUIRE}",
+                "req": f"{cls.name}_{ACQUIRE}Req",
+            },
+            "protocol": f"{cls.name}{PROTOCOL}",
+            "async_class": f"{ASYNC}{cls.name}",
+            "rpc_class": f"{RPC}{cls.name}",
+        } if wire == "proxy" else {
+            "message": f"{cls.name}Msg" if final else None,
+        }),
         # The round-trip helpers a wire value carries. Derived, not
         # reflected: `emit.produced_pyx` writes both for every produced
         # value and `emit._round_trip` writes both for a constructed
