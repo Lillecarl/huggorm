@@ -1,0 +1,112 @@
+# The store as a graph
+
+`references` landed in 041 and made a store path more than a name. It
+was still only one edge, read one way, one path at a time. This is the
+rest of the shape.
+
+## What a set of store paths costs to return
+
+`query_all_valid_paths` answered with a `std::vector<nix::StorePath *>`
+- one heap-allocated StorePath per element, owned by the binding. It
+spared a re-parse, and it cost twenty lines of Cython:
+
+    for i in range(found.size()):
+        path = StorePath.__new__(StorePath)
+        path._ptr = found[i]
+        found[i] = NULL          # ownership handed over
+        out.append(path)
+    finally:
+        for i in range(found.size()):
+            leftover = found[i]
+            if leftover is not NULL:
+                del leftover     # whatever never reached a wrapper
+
+Correct, and correct once. There are now six set-returning calls, and
+a leak written into any of them is invisible until a store gets big.
+
+Meanwhile `PathInfo.references` - added a day earlier - crossed as a
+vector of base NAMES and rebuilt each StorePath in three lines. Two
+patterns for one job, in one file.
+
+So a StorePathSet crosses as its base names. `base_names` in the shim
+is the mirror of `store_path_set`; `_store_paths` in the pyx is the
+one place a set comes back into Python, and `references` goes through
+it too.
+
+The re-parse this costs is a 32-character check on a name the store
+itself just gave. That is work nobody measures, traded for a leak
+nobody can write - and it is why the five calls below are three lines
+each.
+
+## The edges
+
+**`query_referrers`** is the inverse of `PathInfo.references`. One
+says what a path points at, the other what points at it. Together they
+are the edge in both directions, which is what lets a caller walk
+either way - and the direction a garbage collector reads, because a
+path with referrers is one something else still needs.
+
+Only a store with a database answers. `nix::Store`'s own
+implementation raises "not supported by store", the way
+`query_all_valid_paths` does, because a substituter has no such index.
+
+**`query_valid_derivers`** is NOT `PathInfo.deriver`. That one names
+the .drv that actually built this path and may be gone; these are the
+ones the store still holds and could build it with. `nix::Store`'s own
+implementation returns an EMPTY set rather than raising, so a store
+that does not track this says nothing rather than failing.
+
+The live test asserts the difference precisely: every deriver is a
+.drv, and the remembered one is among them only WHEN the store still
+holds it. Unconditional would fail on any machine that has run a
+collection, which is most of them.
+
+## The closure
+
+**`compute_fs_closure`** is what `nix-store --query --requisites`
+answers, and it is the reason one edge was worth binding: `c` reaches
+`a` through `b`, which reading `references` once cannot tell you. It
+includes the paths it starts from, and several starting points merge
+into one set rather than concatenating.
+
+`flip_direction` walks referrers instead, so the answer is what would
+BREAK if these paths went away. `include_outputs` and
+`include_derivers` widen the walk at a .drv - the first follows a
+derivation to what it builds, the second follows a path back to what
+could build it. Both default off, which is what `nix-store -qR` does.
+
+Sorted, because libstore answers with a set. So the order is NOT
+topological, and the docstring says so rather than letting a caller
+assume build order.
+
+**`query_valid_paths`** is the set form of `is_valid_path`, and not
+merely a loop over it: a store that talks to a daemon answers the
+whole set in one round trip. No substitution - libstore's overload
+takes a flag that would go and FETCH what is missing, which is a
+different operation with a different cost and deserves its own
+binding rather than a boolean hidden in this one.
+
+## What the closure proved about the wire
+
+It is the first call whose LIST crosses in both directions of one rpc.
+`references` went out as a parameter; `query_referrers` came back as a
+return; a closure does both, so the last untested combination is now
+covered.
+
+Its bool parameters ride along, and the remote test asserts the short
+call and the spelled-out one mean the same thing - which is what 039
+said a default has to guarantee.
+
+## Not bound, and why
+
+`queryDerivationOutputs` and `queryDerivationOutputMap` both need a
+real .drv, and a hermetic one is not cheap: `checkDerivationOutputs`
+validates that the output path matches the hash computed from the
+derivation itself, so a hand-written ATerm has to be self-consistent
+or the store refuses it.
+
+The map one is worth reaching for anyway. `OutputPathMap` is
+`map<string, StorePath>`, and a map of wire VALUES has machinery -
+`map_to_msg` fills a message-valued entry in place - that nothing yet
+exercises. `gc_stats` is a `dict[str, int]`, so only the scalar arm is
+covered today.

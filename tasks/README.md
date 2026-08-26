@@ -52,6 +52,13 @@ Findings reference two architectural reviews, 2026-08-23 and
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
+- 044 (the store as a graph) is done. references had one edge, one
+  way, one path at a time; query_referrers is its inverse and
+  compute_fs_closure is the transitive reading that makes either worth
+  having. query_valid_derivers and query_valid_paths come with them.
+  The enabling change is that a StorePathSet now crosses as base
+  NAMES: it retired twenty lines of manual pointer ownership in Cython
+  that would otherwise have been copied five times.
 - 043 (an optional return) is done. `T | None` is a return type the
   surface can spell, and it needs no new wire machinery: a protobuf
   message field has presence, so an unset one IS the None. A scalar,
