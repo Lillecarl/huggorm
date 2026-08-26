@@ -47,9 +47,10 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # Its first half, which keeps the sub-path. A string because the
     # answer is in the store's terms, not this machine's.
     string follow_links_to_store(const CStore & store, string path) except +translate_nix_error
-    # A vector of POINTERS for the same reason, one level down: the
-    # binding owns every element it takes out.
-    vector[CStorePath *] query_all_valid_paths(CStore & store) except +translate_nix_error
+    # Base NAMES, not pointers. A pxd cannot declare the std::set
+    # libstore answers with, and a name is what a StorePath is - see
+    # _cpp/store.hpp for why this stopped being a vector of pointers.
+    vector[string] query_all_valid_paths(CStore & store) except +translate_nix_error
     # The enums arrive as the strings Nix parses, so the vocabulary -
     # and the error for a wrong one - stays Nix's.
     # `references` is what this path points AT. Nix is told them; it

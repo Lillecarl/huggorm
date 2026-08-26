@@ -354,18 +354,36 @@ inline std::string real_path(nix::Store & store, const nix::StorePath & path)
     return fs->toRealPath(path).string();
 }
 
-inline std::vector<nix::StorePath *> query_all_valid_paths(nix::Store & store)
+/**
+ * A StorePathSet as the base names it holds.
+ *
+ * The mirror of store_path_set, and a vector of STRINGS for the same
+ * reason that one takes strings: a pxd can declare a vector and cannot
+ * declare a std::set, and a base name is what a StorePath is.
+ *
+ * It used to be a vector of owned StorePath pointers, which spared the
+ * binding a re-parse and cost it twenty lines of Cython that blanked
+ * each slot as it handed ownership over and freed whatever was left.
+ * One such loop per set-returning call, and there are now several. The
+ * re-parse is a 32-character check on a name the store itself just
+ * gave, so this trades work nobody measures for a leak nobody can
+ * write.
+ *
+ * The order is the set's, which is sorted. Nothing here sorts.
+ */
+inline std::vector<std::string> base_names(const nix::StorePathSet & paths)
 {
-    std::vector<nix::StorePath *> out;
-    try {
-        for (auto & path : store.queryAllValidPaths())
-            out.push_back(new nix::StorePath(path));
-    } catch (...) {
-        for (auto * path : out)
-            delete path;
-        throw;
-    }
+    std::vector<std::string> out;
+    out.reserve(paths.size());
+    for (auto & path : paths)
+        out.push_back(std::string(path.to_string()));
     return out;
 }
+
+inline std::vector<std::string> query_all_valid_paths(nix::Store & store)
+{
+    return base_names(store.queryAllValidPaths());
+}
+
 
 }  // namespace cythonix

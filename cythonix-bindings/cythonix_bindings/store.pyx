@@ -49,6 +49,20 @@ from cythonix_bindings.content_address import (
 init_libstore()
 
 
+cdef list _store_paths(const vector[string] & names):
+    """A vector of base names as a list of StorePath.
+
+    The inverse of `_base_names`, and the one place a set of store
+    paths comes back into Python. Every set-returning call answers with
+    base names for the reason `_cpp/store.hpp` gives, so every one of
+    them lands here rather than growing its own loop."""
+    cdef list out = []
+    cdef size_t i
+    for i in range(names.size()):
+        out.append(StorePath(names[i].decode('utf-8')))
+    return out
+
+
 cdef class StoreLocation:
     """Where one file sits: which store path holds it, and where
     inside.
@@ -425,29 +439,12 @@ cdef class Store:
         stores override it - which is honest, because a substituter has
         no such list to give.
 
-        Each element arrives as a pointer this binding owns, so the
-        loop hands ownership to a wrapper and blanks the slot. Whatever
-        never reached a wrapper is freed on the way out."""
+        Sorted, because libstore answers with a set."""
         cdef CStore* store = self._get()
-        cdef vector[CStorePath *] found
-        cdef CStorePath* leftover
-        cdef size_t i
-        cdef StorePath path
+        cdef vector[string] found
         with nogil:
             found = query_all_valid_paths(deref(store))
-        out = []
-        try:
-            for i in range(found.size()):
-                path = StorePath.__new__(StorePath)
-                path._ptr = found[i]
-                found[i] = NULL
-                out.append(path)
-        finally:
-            for i in range(found.size()):
-                leftover = found[i]
-                if leftover is not NULL:
-                    del leftover
-        return out
+        return _store_paths(found)
 
     def real_path(self, path: StorePath) -> pathlib.Path:
         """Where this store object's files really are.
@@ -502,10 +499,7 @@ cdef class Store:
         cdef object deriver = None
         if not out.deriver.empty():
             deriver = StorePath(out.deriver.decode('utf-8'))
-        cdef list references = []
         cdef list sigs = []
-        for ref in out.references:
-            references.append(StorePath(ref.decode('utf-8')))
         for sig in out.sigs:
             sigs.append(sig.decode('utf-8'))
         return PathInfo._from_parts(
@@ -515,7 +509,7 @@ cdef class Store:
             deriver,
             out.registration_time,
             out.ultimate,
-            references,
+            _store_paths(out.references),
             sigs)
 
     def to_store_path(self, path: str) -> StoreLocation:
