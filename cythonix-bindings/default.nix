@@ -5,6 +5,11 @@
   boehmgc,
   nix,
   pkg-config,
+  # The source tree to compile. NOT ./. any more: some of these
+  # modules have no hand-written source, and their .pyx is emitted
+  # from a declaration before the build starts. The root default.nix
+  # builds that tree and passes it in.
+  src,
   ...
 }:
 let
@@ -25,7 +30,7 @@ python3Packages.buildPythonPackage {
   pname = "cythonix-bindings";
   version = "0.1.0";
   pyproject = true;
-  src = ./.;
+  inherit src;
 
   build-system = with python3Packages; [
     setuptools

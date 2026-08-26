@@ -6,8 +6,39 @@ rec {
   inherit (pkgs) lib;
   # fake-library should be a C++ project with "complex types", it doesn't have to do anything useful
   fake-library = pkgs.callPackage ./fake-library { };
+  # The declaration emitter, as the build sees it: just the machinery
+  # and the declarations, with none of the gates, the probes or the
+  # notes. Named file by file rather than by directory because the
+  # spike's working dir also holds emitted output and a __pycache__,
+  # and either one would change this derivation's hash on every run.
+  idl = lib.fileset.toSource {
+    root = ./spike-idl;
+    fileset = lib.fileset.unions [
+      ./spike-idl/generate.py
+      ./spike-idl/emit.py
+      ./spike-idl/read.py
+      ./spike-idl/declare.py
+      ./spike-idl/decl
+    ];
+  };
+  # The binding source that actually gets compiled.
+  #
+  # This is the step that makes the declaration load-bearing. Before
+  # it, the emitter wrote its files beside the hand-written ones and a
+  # gate diffed them - which proves the emitter COULD have written the
+  # binding. Here it DOES: `path.pyx`, `path.pxd` and `c_path.pxd` are
+  # not in the repo at all, and the only thing standing behind
+  # `cythonix_bindings.path` is `spike-idl/decl/path.py`.
+  bindings-src = pkgs.runCommand "cythonix-bindings-src" { } ''
+    cp -r ${./cythonix-bindings} $out
+    chmod -R u+w $out
+    ${lib.getExe python} ${idl}/generate.py $out/cythonix_bindings
+  '';
   # this is Cython bindings into fake-library, should contain pxd and pyx (I believe)
-  cythonix-bindings = pkgs.callPackage ./cythonix-bindings { inherit fake-library; };
+  cythonix-bindings = pkgs.callPackage ./cythonix-bindings {
+    inherit fake-library;
+    src = bindings-src;
+  };
   # this is a Python library that uses cythonix-bindings
   cythonix = pkgs.callPackage ./cythonix {
     inherit fake-library;

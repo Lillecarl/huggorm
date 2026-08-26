@@ -5,11 +5,17 @@ Two claims, checked the same way: emit from the declaration, diff
 against the artefact the real build produced by another route, and
 print what does not match.
 
-1. **The Cython.** `path.pyx`, `path.pxd` and `c_path.pxd` against the
-   hand-written files in `cythonix-bindings`. Comments and docstring
-   wording differ, because a human wrote those and the emitter did
-   not. What may NOT differ is a single line of code, so this
-   compares the two with comments and docstrings stripped.
+1. **The Cython.** Each declared class against the hand-written class
+   in `cythonix-bindings`. Comments and docstring wording differ,
+   because a human wrote those and the emitter did not. What may NOT
+   differ is a single line of code, so this compares the two with
+   comments and docstrings stripped.
+
+   This half SHRINKS as the spike wins. `path` has already left it:
+   the build emits its three files from `decl/path.py` and the repo
+   holds none of them, so there is nothing to diff and the claim is
+   proven by the compiler and the suite instead. A module still
+   listed here is a module the emitter has not taken over yet.
 
 2. **The manifest.** The `StorePath` wrapper entry against the one in
    the built `manifest.json`, which `model.py` produced by importing
@@ -43,9 +49,6 @@ BINDINGS = ROOT / "cythonix-bindings" / "cythonix_bindings"
 # bargain the custom hatch makes, because an allowance nobody counts
 # is where the real divergence goes to hide.
 ACCEPTED = (
-    ("path.pyx", "c_name", "c_base_name",
-     "a local variable. The human named it after the type, the emitter "
-     "derives it from the parameter."),
     ("PathInfo", "info", "out",
      "a local variable in _from_parts. The human named it after the "
      "class, the emitter names it the same in every produced value."),
@@ -186,10 +189,24 @@ def check_cython(decl_path: pathlib.Path) -> list[str]:
     cls = mod.classes[0]
     files = emit.cython_files(cls, mod.name, mod.doc)
     problems = []
+    missing = [f for f in files if not (BINDINGS / f).exists()]
+    if len(missing) == len(files):
+        # The whole module is emitted by the build now. There is no
+        # hand-written file left to diff against, and inventing one
+        # would only compare the emitter to itself. What proves this
+        # module instead is downstream: it compiles, the manifest
+        # below agrees with what reflection found in the compiled
+        # .so, and the suite passes against it.
+        print(f"  {mod.name}: BUILT FROM THE DECLARATION - "
+              f"{', '.join(sorted(files))} are not in the repo. "
+              f"Proven by the build, not by a diff.")
+        return []
     for fname, emitted in files.items():
         actual = BINDINGS / fname
         if not actual.exists():
-            problems.append(f"{fname}: nothing to compare against")
+            problems.append(f"{fname}: nothing to compare against, but "
+                            f"{sorted(set(files) - set(missing))} is - so "
+                            f"this module is half generated and half not")
             continue
         want, got = code_only(actual.read_text()), code_only(emitted)
         want = allow(want, fname)
