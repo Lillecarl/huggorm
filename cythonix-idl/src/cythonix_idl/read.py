@@ -164,6 +164,9 @@ class Method:
     reads: str = ""
     # Verbatim C++ for an accessor nothing can derive, from @cxx_body.
     cxx_body: str = ""
+    # Headers this method's BODY needs, beyond its class's, from
+    # @needs. Empty when the signature already names everything.
+    headers: tuple[str, ...] = ()
     # The call that produces a POD, from @cxx_parts. One or more C++
     # statements; the emitter writes the struct and the return around
     # them.
@@ -442,6 +445,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                      for d in node.decorator_list),
         reads=getattr(marked, "_reads", ""),
         cxx_body=getattr(marked, "_cxx_body", ""),
+        headers=tuple(getattr(marked, "_needs", ())),
         parts_prelude=getattr(marked, "_cxx_parts", ("", {}))[0],
         parts=tuple(getattr(marked, "_cxx_parts", ("", {}))[1].items()),
     )

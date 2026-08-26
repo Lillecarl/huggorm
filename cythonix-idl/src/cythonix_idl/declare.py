@@ -300,6 +300,25 @@ def cxx_parts[F: Callable[..., Any]](
     return apply
 
 
+def needs[F: Callable[..., Any]](*headers: str) -> Callable[[F], F]:
+    """C++ headers this method's body needs, beyond its class's.
+
+    `@header` on a class names where the bound TYPE is declared, and
+    that is the one header every method has in common. A body reaches
+    further: `real_path` casts to nix::LocalFSStore, `add_to_store`
+    builds a nix::StringSource, and neither type appears anywhere in
+    the signature for an emitter to derive from.
+
+    So the declaration says them. Not a list to keep in step with
+    anything - a body that stops using a type stops naming it - and
+    without it an emitted module fails to compile with a message
+    about a type nobody can find the declaration for."""
+    def apply(fn: F) -> F:
+        fn._needs = headers  # type: ignore[attr-defined]
+        return fn
+    return apply
+
+
 def instant[F: Callable[..., Any]](fn: F) -> F:
     """This method cannot wait, on a class whose calls generally can.
 

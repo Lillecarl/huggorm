@@ -252,8 +252,12 @@ def includes(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     if cls.decl.wire == "value" and cls.decl.text:
         # std::hash lives in <functional>, and the value hash uses it.
         out.append("#include <functional>")
-    if cls.decl.header:
-        out.append(f'#include "{cls.decl.header}"')
+    # The class's header, then whatever the bodies reach past it.
+    # Sorted and de-duplicated, because two methods needing one
+    # header is normal and the order of a declaration's methods is
+    # not an order for includes.
+    wanted = {cls.decl.header} | {h for m in cls.methods for h in m.headers}
+    out += [f'#include "{h}"' for h in sorted(wanted - {""})]
     return out
 
 
