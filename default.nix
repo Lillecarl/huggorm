@@ -51,7 +51,18 @@ rec {
       src=$(python3 -c 'import nanobind; print(nanobind.source_dir())')
       pyinc=$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
       ext=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
-      $CXX -std=c++23 -O1 -fPIC -shared -fvisibility=hidden         -I"$inc" -I"$pyinc" -I"$inc/../ext/robin_map/include"         $(pkg-config --cflags nix-store)         path_nb.cpp "$src/nb_combined.cpp"         $(pkg-config --libs nix-store)         -o "path$ext"
+      # -I on the bindings directory for _cpp/errors.hpp, which is
+      # C++ that neither backend owns: it maps a nix exception onto
+      # the right class in cythonix_bindings.errors. Cython reaches it
+      # through `except +translate_nix_error`; nanobind through one
+      # registered translator.
+      $CXX -std=c++23 -O1 -fPIC -shared -fvisibility=hidden \
+        -I"$inc" -I"$pyinc" -I"$inc/../ext/robin_map/include" \
+        -I"${./cythonix-bindings}" \
+        $(pkg-config --cflags nix-store) \
+        path_nb.cpp "$src/nb_combined.cpp" \
+        $(pkg-config --libs nix-store) \
+        -o "path$ext"
     '';
     installPhase = ''
       mkdir -p $out

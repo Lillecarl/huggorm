@@ -511,12 +511,46 @@ def extension(cls: Class, name: str) -> str:
     gradually keeps its own entry point and calls the generated bind
     function; a project that has finished takes this."""
     return "\n".join([
+        '#include "cythonix_bindings/_cpp/errors.hpp"',
         module(cls),
+        TRANSLATOR,
         f"NB_MODULE({name}, m) {{",
+        f"{INDENT}register_nix_errors();",
         f"{INDENT}bind_{cls.name.lower()}(m);",
         "}",
         "",
     ])
+
+
+# Every declared method can raise a nix exception, so every module
+# has to turn one into the right Python class. The two backends do
+# that at different granularities and from one piece of C++.
+#
+# Cython writes `except +translate_nix_error` on every method in the
+# pxd, so the hook runs per call. nanobind registers a translator
+# ONCE for the module, and it runs for any binding in it. Same fact,
+# two spellings, and neither is in the declaration - a nix binding
+# translates nix errors, which is not a choice a declaration makes.
+#
+# The ladder itself is shared rather than emitted twice. `errors.hpp`
+# maps nix::BadStorePath onto cythonix_bindings.errors.BadStorePath
+# and strips libstore's terminal escapes; nothing about that is
+# Cython's, and writing it a second time in this file would be one
+# fact in two places with no gate between them.
+TRANSLATOR = """
+static void register_nix_errors() {
+    nb::register_exception_translator(
+        [](const std::exception_ptr &p, void *) {
+            try {
+                std::rethrow_exception(p);
+            } catch (...) {
+                // Sets the Python error from inside catch(...), which
+                // is the same position Cython calls it from.
+                cythonix::translate_nix_error();
+            }
+        });
+}
+"""
 
 
 def census(cls: Class) -> dict[str, int]:

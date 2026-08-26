@@ -81,15 +81,13 @@ KNOWN: dict[str, str] = {}
 # purpose: one says "this is fine", the other says "this is work".
 # Emptying this table is what makes removing Cython a decision rather
 # than a gamble.
-NOT_YET: dict[str, str] = {
-    "bad-name": "error translation. Cython carries `except "
-                "+translate_nix_error` on every declaration, which maps "
-                "a nix exception onto the right Python class and strips "
-                "libstore's terminal escapes. nanobind registers a "
-                "translator ONCE per module instead, and the emitter "
-                "does not write one - so a caller gets RuntimeError "
-                "with raw ANSI in the message.",
-}
+#
+# It IS empty. Every difference it held was the nanobind emitter
+# falling short, and each one is closed: the repr now names its
+# fields, a value copies, and a nix exception arrives as the class
+# `cythonix_bindings.errors` declares with libstore's terminal
+# escapes stripped. Sixteen of sixteen answers agree.
+NOT_YET: dict[str, str] = {}
 
 
 def main() -> int:
