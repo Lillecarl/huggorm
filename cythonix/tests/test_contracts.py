@@ -312,3 +312,72 @@ def test_an_untyped_cause_rebuilds_from_builtins_only() -> None:
     # rather than raising, and the name survives in the text.
     out = _approximate("UnicodeDecodeError", "boom")
     assert type(out) is Exception and "UnicodeDecodeError" in str(out)
+
+
+def test_a_declared_order_is_an_order_that_works(
+        manifest: dict[str, Any]) -> None:
+    """A type the manifest says compares must actually compare.
+
+    The stubs are generated from `dunders`, so a type listed there as
+    ordering typechecks under `sorted()`. For two of them that was a
+    promise nothing kept: `PathInfo` and `StoreLocation` define
+    `__eq__` and no ordering, Cython fills all six comparison slots
+    anyway, and reflection read the slots back as implemented
+    comparisons. `sorted(infos)` passed the typechecker and raised
+    TypeError (tasks/052).
+
+    Reflection cannot answer this - it measures what the compiler
+    emitted, not what the source said - so the fix was to take
+    `dunders` from the declaration. This is the test that says the fix
+    holds, and it asks the question the stub's reader will ask: if the
+    manifest says `<` works, does `<` work?"""
+    import importlib
+
+    checked = []
+    for group in ("wrappers", "returned_types"):
+        for name, entry in manifest[group].items():
+            if "__lt__" not in entry["dunders"]:
+                continue
+            module = importlib.import_module(entry["module"])
+            cls = getattr(module, name)
+            # Two of the same type, however this one is built. A value
+            # that cannot be constructed here is skipped rather than
+            # faked: the claim is about types a caller can hold.
+            try:
+                a, b = cls("0" * 32 + "-a"), cls("0" * 32 + "-b")
+            except Exception:
+                continue
+            assert (a < b) is not NotImplemented
+            assert sorted([b, a]) == [a, b]
+            checked.append(name)
+    # A test that checked nothing would pass forever.
+    assert checked, "no ordered type in the manifest was constructible"
+
+
+def test_reflection_would_still_get_the_order_wrong(
+        manifest: dict[str, Any]) -> None:
+    """Why `dunders` cannot be reflected, held as a fact.
+
+    A cdef class defining any rich comparison gets `tp_richcompare`,
+    and CPython fills all six comparison slots with wrappers. So for a
+    value type with `__eq__` and no ordering, `cls.__lt__` EXISTS and
+    refuses when called.
+
+    That is what made the reflected manifest wrong, and it is still
+    true - the fix was to stop asking the compiled class. This test
+    says so out loud: if it ever starts failing, the slot has stopped
+    being filled and `dunders` could be measured again."""
+    import importlib
+
+    found = []
+    for group in ("wrappers", "returned_types"):
+        for name, entry in manifest[group].items():
+            if entry["wire"] != "value" or "__lt__" in entry["dunders"]:
+                continue
+            module = importlib.import_module(entry["module"])
+            cls = getattr(module, name)
+            # The slot is there. Reflection sees it and calls it an
+            # implemented comparison; the declaration knows better.
+            assert getattr(cls, "__lt__", None) is not None, name
+            found.append(name)
+    assert found, "no value type without a declared order was found"

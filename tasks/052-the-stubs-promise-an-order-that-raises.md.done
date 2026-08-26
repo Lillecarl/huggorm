@@ -1,5 +1,12 @@
 # The stubs promise an order that raises
 
+**DONE.** `dunders` now comes from the declaration, so `PathInfo` and
+`StoreLocation` no longer claim an ordering they refuse. Two tests in
+`test_contracts.py` hold it: one asks every type the manifest says
+compares to actually compare, the other records that the comparison
+SLOT is still there on a type with no declared order - which is why
+reflection got this wrong and why it cannot be asked again.
+
 Found by the IDL spike, by deriving the manifest a second way and
 diffing the two (spike-idl/check.py).
 
