@@ -225,6 +225,7 @@ def check_produced(decl_path: pathlib.Path, pyx_name: str) -> list[str]:
             # is `@binding(cxx=...)`, and the two facts are separate.
             problems += check_methods(decl_path, pyx_name, cls.name)
             problems += check_shim(decl_path, f"{mod.name}.hpp", cls.name)
+            problems += check_pod_pxd(decl_path, f"c_{mod.name}.pxd", cls.name)
             continue
         want = code_only(class_body(actual, cls.name))
         if not want:
@@ -303,6 +304,10 @@ def check_methods(decl_path: pathlib.Path, pyx_name: str,
     mod = read(str(decl_path))
     actual = (BINDINGS / pyx_name).read_text()
     cls = next(c for c in mod.classes if c.name == cls_name)
+    # The produced values this module declares, by name. A method that
+    # returns one needs its FIELDS to emit the unpacking, so the
+    # emitter is handed the map rather than reading the file again.
+    values = {c.name: c for c in mod.classes if c.is_value}
     hand = [line.strip()[4:].split("(")[0]
             for line in class_body(actual, cls_name).splitlines()
             if line.strip().startswith("def ")]
@@ -321,7 +326,8 @@ def check_methods(decl_path: pathlib.Path, pyx_name: str,
             problems.append(f"{cls_name}.{m.name}: declared, but "
                             f"{pyx_name} has no such method")
             continue
-        got = code_only("\n".join(emit._accessor(m, cls.decl.blocking, cls)))
+        got = code_only("\n".join(
+            emit._accessor(m, cls.decl.blocking, cls, values)))
         want, got = _settled(want), _settled(got)
         if want == got:
             agree += 1
@@ -394,6 +400,23 @@ def shim_body(text: str, name: str) -> str:
     return "\n".join(out)
 
 
+def struct_body(text: str, name: str) -> str:
+    """One `struct` out of the hand-written header."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines)
+                  if line.strip() == f"struct {name}"), None)
+    if start is None:
+        return ""
+    out, depth, opened = [], 0, False
+    for line in lines[start:]:
+        out.append(line)
+        depth += line.count("{") - line.count("}")
+        opened = opened or "{" in line
+        if opened and depth == 0:
+            break
+    return "\n".join(out)
+
+
 def check_shim(decl_path: pathlib.Path, hpp_name: str,
                cls_name: str) -> list[str]:
     """The emitted C++ against the C++ this repo wrote by hand.
@@ -405,11 +428,30 @@ def check_shim(decl_path: pathlib.Path, hpp_name: str,
     mod = read(str(decl_path))
     cls = next(c for c in mod.classes if c.name == cls_name)
     actual = allow_text((BINDINGS / "_cpp" / hpp_name).read_text(), hpp_name)
+    values = {c.name: c for c in mod.classes if c.is_value}
     problems, agree, declared = [], 0, 0
+    # The POD each produced value crosses in. Derived whole from that
+    # value's own fields, so nothing declares it - which is exactly
+    # why it is worth diffing against the struct this repo compiles.
+    for name in dict.fromkeys(m.ret.python for m in cls.methods
+                              if m.parts and m.ret is not None):
+        want = cxx_only(struct_body(actual, f"{name}Parts"))
+        got = cxx_only("\n".join(emit.pod_struct(values[name])))
+        if not want:
+            problems.append(f"{hpp_name}: no struct named {name}Parts")
+            continue
+        declared += 1
+        if want == got:
+            agree += 1
+            continue
+        problems.append(f"{hpp_name}:{name}Parts: the emitted struct differs")
+        for a_, b_ in zip(want, got, strict=False):
+            if a_ != b_:
+                problems += [f"    the repo: {a_}", f"    emitted:  {b_}"]
     # The two helpers the emitter writes for itself, checked like any
     # other. They are not declared anywhere, so nothing else would
     # notice if they stopped matching the C++ this repo compiles.
-    for helper in ("store_path_set", "base_names"):
+    for helper in ("store_path_set", "base_names", "to_strings"):
         want = cxx_only(shim_body(actual, helper))
         got = cxx_only(shim_body(emit.FLATTENING, helper))
         if not want:
@@ -423,15 +465,17 @@ def check_shim(decl_path: pathlib.Path, hpp_name: str,
             if a != b:
                 problems += [f"    the repo: {a}", f"    emitted:  {b}"]
     for m in cls.methods:
-        if not m.cxx_body:
+        if not emit.shimmed(m):
             continue
         declared += 1
         want = cxx_only(shim_body(actual, m.name))
         if not want:
             problems.append(f"{hpp_name}: no shim named {m.name}")
             continue
-        got = cxx_only(emit._shim_signature(cls, m) + "\n{\n"
-                       + m.cxx_body.strip() + "\n}")
+        body = ("\n".join(emit._parts_body(cls, m, values)) if m.parts
+                else m.cxx_body.strip())
+        got = cxx_only(emit._shim_signature(cls, m, values)
+                       + "\n{\n" + body + "\n}")
         if want == got:
             agree += 1
             continue
@@ -442,6 +486,55 @@ def check_shim(decl_path: pathlib.Path, hpp_name: str,
                 problems.append(f"    emitted:  {b}")
     print(f"  {hpp_name}: {agree} of {declared} declared shims identical")
     return problems
+
+
+def check_pod_pxd(decl_path: pathlib.Path, pxd_name: str,
+                  cls_name: str) -> list[str]:
+    """The third artefact of a POD crossing, against the repo's pxd.
+
+    The struct is declared twice by necessity - once in C++ and once
+    for Cython - and the two must agree member for member or the
+    binding reads one field as another. Both come from the value's own
+    fields here, so the gate is what says the repo's pair still does.
+    """
+    mod = read(str(decl_path))
+    cls = next(c for c in mod.classes if c.name == cls_name)
+    values = {c.name: c for c in mod.classes if c.is_value}
+    actual = (BINDINGS / pxd_name).read_text()
+    problems, agree, declared = [], 0, 0
+    for name in dict.fromkeys(m.ret.python for m in cls.methods
+                              if m.parts and m.ret is not None):
+        want = code_only(pxd_struct(actual, f"C{name}"))
+        got = code_only("\n".join(emit.pod_pxd(values[name])))
+        if not want:
+            problems.append(f"{pxd_name}: no struct named C{name}")
+            continue
+        declared += 1
+        if want == got:
+            agree += 1
+            continue
+        problems.append(f"{pxd_name}:C{name}: the emitted struct differs")
+        for a_, b_ in zip(want, got, strict=False):
+            if a_ != b_:
+                problems += [f"    the repo: {a_}", f"    emitted:  {b_}"]
+    print(f"  {pxd_name}: {agree} of {declared} POD declarations identical")
+    return problems
+
+
+def pxd_struct(text: str, name: str) -> str:
+    """One `cdef struct` out of a hand-written pxd."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines)
+                  if line.strip().startswith(f"cdef struct {name} ")), None)
+    if start is None:
+        return ""
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    out = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        out.append(line)
+    return "\n".join(out)
 
 
 def check_cython(decl_path: pathlib.Path) -> list[str]:
