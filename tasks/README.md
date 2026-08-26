@@ -90,8 +90,10 @@ which was superseded rather than fixed.
   compute_fs_closure is the transitive reading that makes either worth
   having. query_valid_derivers and query_valid_paths come with them.
   The enabling change is that a StorePathSet now crosses as base
-  NAMES: it retired twenty lines of manual pointer ownership in Cython
-  that would otherwise have been copied five times.
+  NAMES: it retired twenty lines of manual pointer ownership that
+  would otherwise have been copied five times. It crosses as real
+  store paths now - nanobind casts the std::set - but the reason the
+  change was worth making stands.
 - 043 (an optional return) is done. `T | None` is a return type the
   surface can spell, and it needs no new wire machinery: a protobuf
   message field has presence, so an unset one IS the None. A scalar,
@@ -192,7 +194,6 @@ the same knowledge by hand. The generator reads all of them:
     _threading   pool | affine            execution policy
     _wire        value | proxy            does it serialize
     _wire_fields message shape + helpers  HOW it serializes  (023)
-    _binds       the pxd class it wraps   pxd <-> pyx link   (020)
     _async       False to exclude         generation opt-out
 
     _abstract    True for a generated base       inheritance   (018)
@@ -208,18 +209,27 @@ The PACKAGE declares two more, in its __init__:
 the sync type and the wrapper hands back the other, which is the one
 place the two surfaces should differ. It never reaches the wire.
 
-A class declares itself in its BODY, and that is forced rather than
-chosen. Cython refuses any decorator on a cdef class but
-`functools.total_ordering` and `dataclasses.dataclass` - "Cdef
-functions/classes cannot take arbitrary decorators" - and setting the
-attribute afterwards fails too, because an extension type is
-immutable.
+`_binds` was a tenth. It named the pxd declaration a pyx class bound,
+which is a fact about Cython rather than about the binding, so the
+nanobind emitter writes every other marker and not that one.
 
-Module-level functions declare the same two things with DECORATORS,
-which a `def` can take:
+A class carries its markers in its BODY, which used to be forced: a
+cdef class refuses any decorator but `functools.total_ordering` and
+`dataclasses.dataclass`, and setting the attribute afterwards fails
+because an extension type is immutable. It is no longer forced and
+the shape did not change - the emitter writes `cls.attr("_threading")`
+after the class, and a layer above reads the same thing.
+
+The DECLARATION spells all of it with decorators, because a
+declaration is plain Python:
+
+    @binding(threading="pool")    execution policy, and more
+    @wire_value(fields=...)       value, and how it serializes
+
+Module-level functions take the same two:
 
     @threading("pool")            execution policy
-    @binds("describe_store")      the pxd name, when it differs
+    @binds("describe_store")      the C++ name, when it differs
 
 They set the same attributes, so the generator reads one thing either
 way. They return the function itself and never a wrapper: the
@@ -232,5 +242,7 @@ decides only whether it gets an async form and an rpc, and "pool" is
 the only legal one - no instance, so no thread to be affine to (021).
 An undecorated function says exactly that by carrying no decorator.
 
-Constructor signatures come from the pxd, which is the only place they
-exist at all - Cython exposes no signature for __cinit__ (019).
+Constructor signatures come from the declaration, which is where they
+were decided. They used to come from the pxd, because that was the
+only place a Cython constructor's signature existed at all - Cython
+exposes no signature for __cinit__ (019).
