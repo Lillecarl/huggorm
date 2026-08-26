@@ -907,6 +907,49 @@ def _factory(cls: Class, functions: Sequence[Method],
     return [line + ",", f'{INDENT * 3}     "{doc}")']
 
 
+def markers(cls: Class) -> list[str]:
+    """The facts every layer above reads off the compiled class.
+
+    `emit.py` writes the same set into the pyx as class attributes,
+    from the same declaration. This is that sentence in the other
+    language, and it is what lets the generated layer - the async
+    wrappers, the protocols, the RPC stubs, the stubs - keep working
+    when the class underneath stops being Cython.
+
+    `_binds` is NOT here, and its absence is information. It names the
+    pxd declaration a pyx class binds, so it is a fact about Cython
+    rather than about the binding: there is no pxd, so there is
+    nothing to name.
+
+    `_wire_fields` comes from wherever the value keeps them. A
+    CONSTRUCTED value declares its fields, because the field name and
+    the accessor need not agree. A PRODUCED one declares none and
+    needs none: every accessor IS a field."""
+    decl = cls.decl
+    out = [f'{INDENT}cls.attr("_threading") = "{decl.threading}";',
+           f'{INDENT}cls.attr("_blocking") = '
+           f'{"true" if decl.blocking else "false"};']
+    # The EFFECTIVE value, not the declared one. "proxy" is the safe
+    # default on both sides - stateful until a declaration proves
+    # otherwise - and writing it out means a reader of the compiled
+    # class is told rather than left to know the default.
+    out.append(f'{INDENT}cls.attr("_wire") = "{decl.wire or "proxy"}";')
+    if cls.is_value:
+        out.append(f'{INDENT}cls.attr("_produced") = true;')
+    elif decl.built_by:
+        # Which free function makes one. A handle rather than a
+        # value: a value is produced and has no factory to name.
+        out.append(f'{INDENT}cls.attr("_ctor_from") = "{decl.built_by}";')
+    fields = ([(f.name, f.type) for f in decl.fields] or
+              [(m.name, m.ret.wire) for m in cls.methods
+               if cls.is_value and m.ret is not None])
+    if fields:
+        pairs = ", ".join(f'nb::make_tuple("{n}", "{t}")' for n, t in fields)
+        out.append(f'{INDENT}cls.attr("_wire_fields") = '
+                   f"nb::make_tuple({pairs});")
+    return out
+
+
 def bind_function(cls: Class, known: dict[str, Class] | None = None,
                   functions: Sequence[Method] = ()) -> str:
     """The whole `bind_<name>` function for one declared class.
@@ -921,7 +964,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
             f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
     held = _held(cls)
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
-             f'{INDENT}nb::class_<{held}>(m, "{cls.name}")']
+             f'{INDENT}auto cls = nb::class_<{held}>(m, "{cls.name}")']
     if cls.is_value:
         # A RECORD: the emitter declared the struct, so every accessor
         # is a member and the whole binding is derived from the field
@@ -933,7 +976,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         body += _value_semantics(cls)
         if body:
             body[-1] += ";"
-        return "\n".join([*lines, *body, "}"]) + "\n"
+        return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
     # No nb::init when something else builds one: there is no
     # constructor to call. A FACTORY takes its place where the
     # declaration names one.
@@ -950,7 +993,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
                  for line in source.splitlines()]
     if body:
         body[-1] += ";"
-    return "\n".join([*lines, *body, "}"]) + "\n"
+    return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
 
 
 def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str]:
