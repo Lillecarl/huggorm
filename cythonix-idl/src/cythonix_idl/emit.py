@@ -280,6 +280,19 @@ def _marshal_out(t: Type, expr: str,
     pad = INDENT * 2
     if t.python in values:
         return _from_parts(values[t.python], expr)
+    if t.bound and not t.python.startswith("list["):
+        # A bound object arrives as a pointer this binding now owns,
+        # so it is wrapped rather than converted: __new__ WITHOUT
+        # __init__, because the constructor would build a second
+        # object and there is already one.
+        inner = t.python.removesuffix("| None").strip()
+        ret = []
+        if t.python.endswith("| None"):
+            ret += [f"{pad}if {expr} is NULL:", f"{pad}{INDENT}return None"]
+        ret += [f"{pad}cdef {inner} owned = {inner}.__new__({inner})",
+                f"{pad}owned._ptr = {expr}",
+                f"{pad}return owned"]
+        return [], ret
     if t.python.startswith("list[") and t.bound:
         # The inverse of the parameter rule: base names in, objects
         # out, and one helper for every call that returns a set
@@ -399,6 +412,12 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None,
             # value itself is Python, and nothing Python may be built
             # while the GIL is released.
             held, temp = f"C{m.ret.python}", "out"
+        elif m.ret.bound:
+            # An owning pointer. A produced VALUE is bound too and is
+            # tested first: it crosses as the POD above, not as a
+            # pointer, because it holds no C++ object to point at.
+            held = f"C{m.ret.python.removesuffix('| None').strip()}*"
+            temp = "out"
         else:
             assert m.ret.cxx is not None
             held, temp = m.ret.cxx.spelling, "out"
@@ -709,7 +728,17 @@ def _cxx_of(t: Type, position: str) -> str:
         return ("std::vector<std::string>" if position == "return"
                 else "const std::vector<std::string> &")
     if t.bound:
-        return f"const nix::{t.python} &"
+        inner = t.python.removesuffix("| None").strip()
+        if position == "return":
+            # An OWNING pointer, and the only crossing there is.
+            # nix::StorePath is not default-constructible, so Cython
+            # cannot hold one by value and cannot declare a reference
+            # member either; the binding takes the pointer and its
+            # __dealloc__ frees it. `| None` says nullptr is a legal
+            # answer, which is the same fact as an empty base name in
+            # a POD - absence has to travel somehow.
+            return f"nix::{inner} *"
+        return f"const nix::{inner} &"
     if t.cxx is None:
         raise TypeError(f"{t.python} has no C++ spelling")
     return table.get(t.cxx.spelling, t.cxx.spelling)
