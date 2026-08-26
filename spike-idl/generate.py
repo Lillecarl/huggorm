@@ -22,22 +22,37 @@ binding. Running it here proves it DID.
 import pathlib
 import sys
 
-from emit import emit
+from emit import emit, produced_pxi
+from read import read
 
 HERE = pathlib.Path(__file__).resolve().parent
 
-# Every declaration the build compiles. Paths are relative to this
-# file, so the list reads the same from any working directory.
-DECLARATIONS = (
+# Declarations that own a WHOLE module. Each emits three files and
+# there is no hand-written source for it at all.
+MODULES = (
     "decl/path.py",
+)
+
+# Declarations the emitter has taken over only PART of, as
+# (declaration, include file). Each emits one `.pxi` holding its
+# produced values, and a hand-written `.pyx` splices it with
+# `include`. See emit.produced_pxi for why an include and not a
+# splice.
+INCLUDES = (
+    ("decl/store.py", "store_produced.pxi"),
 )
 
 
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
-    for name in DECLARATIONS:
+    for name in MODULES:
         print(f"{name} -> {out}")
         emit(str(HERE / name), str(out))
+    for name, fname in INCLUDES:
+        mod = read(str(HERE / name))
+        produced = [c.name for c in mod.classes if c.decl.built_by]
+        (out / fname).write_text(produced_pxi(mod, name))
+        print(f"{name} -> {out / fname}: {', '.join(produced)}")
     return 0
 
 

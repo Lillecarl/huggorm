@@ -48,20 +48,14 @@ BINDINGS = ROOT / "cythonix-bindings" / "cythonix_bindings"
 # not one. Listed and PRINTED rather than normalised away: the same
 # bargain the custom hatch makes, because an allowance nobody counts
 # is where the real divergence goes to hide.
-ACCEPTED = (
-    ("PathInfo", "info", "out",
-     "a local variable in _from_parts. The human named it after the "
-     "class, the emitter names it the same in every produced value."),
-    ("StoreLocation", "loc", "out",
-     "the same local, abbreviated differently - which is the argument "
-     "for deriving it."),
-    ("PathInfo", "def deriver(self) -> StorePath:",
-     "def deriver(self) -> StorePath | None:",
-     "the emitted annotation is RIGHT and the repo's is wrong. "
-     "PathInfo.deriver returns None for a path added straight to the "
-     "store, which its own docstring and its own wire_fields "
-     "(StorePath?) both say. See tasks/052."),
-)
+# Empty, and that is the point. Every entry this held was about a
+# class the emitter has since taken over, so the difference it
+# excused stopped existing: there is no hand-written PathInfo left to
+# name a local `info` where the emitter names it `out`.
+#
+# Kept as a mechanism rather than deleted, because the next
+# declaration to arrive will need it before it needs anything else.
+ACCEPTED: tuple[tuple[str, str, str, str], ...] = ()
 
 
 def code_only(text: str) -> list[str]:
@@ -161,7 +155,15 @@ def check_produced(decl_path: pathlib.Path, pyx_name: str) -> list[str]:
             continue
         want = code_only(class_body(actual, cls.name))
         if not want:
-            problems.append(f"{cls.name}: not found in {pyx_name}")
+            # The same story as path's, one class at a time. This
+            # class is emitted into a .pxi that the build writes and
+            # `{pyx_name}` includes, so there is no hand-written copy
+            # to diff. The manifest below still checks it, and that
+            # check now closes a loop: the declaration wrote the
+            # source, the compiler compiled it, reflection read the
+            # .so back, and the two manifests must still agree.
+            print(f"  {cls.name}: BUILT FROM THE DECLARATION - not in "
+                  f"{pyx_name}, which includes the emitted .pxi instead.")
             continue
         got = code_only("\n".join(emit.produced_pyx(cls)))
         want = allow(want, cls.name)
@@ -244,16 +246,19 @@ KNOWN_WRONG = {
 # above, because excusing the whole key would excuse every future
 # change to any of nine methods. Each entry pins BOTH values, so a
 # reflected entry that changes stops being excused and fails.
+#
+# `PathInfo.deriver` was here and is not any more. It was annotated
+# `-> StorePath` in the hand-written pyx while its own wire_fields
+# said `StorePath?`, so the two routes disagreed. The emitter now
+# WRITES that annotation, from the same wire_fields, so the .so
+# reflects `StorePath | None` and the disagreement is gone. That is
+# the spike paying out: a bug found by diffing two routes, then
+# closed by making one of them the source. See tasks/052.
 KNOWN_WRONG_RETURNS = {
     ("PathInfo", "ca"): (
         "typing.Union[str, None]", "str | None",
         "one type, two spellings. model.py reads a typing object and "
         "renders it; the declaration says what the source said."),
-    ("PathInfo", "deriver"): (
-        "StorePath", "StorePath | None",
-        "the reflected entry contradicts ITSELF: its own wire_fields "
-        "say StorePath?. The hand-written pyx annotates deriver without "
-        "the None its docstring documents returning."),
 }
 
 

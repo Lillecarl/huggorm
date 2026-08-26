@@ -33,7 +33,7 @@ import pathlib
 import sys
 
 from declare import Decl
-from read import Class, Method, Type, read
+from read import Class, Method, Module, Type, read
 
 INDENT = "    "
 
@@ -455,6 +455,45 @@ def produced_pxd(cls: Class) -> list[str]:
     out += [f"{INDENT}cdef object _{m.name}"
             for m in cls.methods if m.ret is not None]
     return out
+
+
+def produced_pxi(mod: Module, source: str) -> str:
+    """Every produced value in one declaration, as a Cython include.
+
+    A `.pxi` is a TEXTUAL include: `include "x.pxi"` splices the file
+    into the module that names it, before anything else looks at the
+    tree. So a class emitted here lands in the including module - same
+    `__module__`, same module-private `cdef` helpers around it,
+    nothing re-exported and nothing to import.
+
+    That is what makes it the right shape for a module the emitter has
+    taken over only PART of. `store.pyx` holds Store, which is
+    abstract in C++ and opened by a URI, so the emitter cannot write
+    it. It also held PathInfo and StoreLocation, which are plain
+    values and which the emitter can. An include splits those two
+    groups without moving a class between modules, which would change
+    a name every downstream reader already uses.
+
+    The alternative was to splice text into the .pyx at a marker. That
+    is the same job done by a script that must not lose a line, and it
+    was tried first: it compiled and left a test failing. A compiler
+    feature that already means "paste this here" is not worth
+    reimplementing."""
+    out = [
+        "# GENERATED. Do not edit.",
+        "#",
+        f"# Emitted from {source} by spike-idl/emit.py, and included",
+        "# textually by the module that names it. Every class here is a",
+        "# produced value: the store built it, so it holds Python slots",
+        "# and no C++ at all.",
+        "",
+    ]
+    for cls in mod.classes:
+        if not cls.decl.built_by:
+            continue
+        out += produced_pyx(cls)
+        out.append("")
+    return "\n".join(out) + "\n"
 
 
 def cython_files(cls: Class, module: str, doc: str) -> dict[str, str]:

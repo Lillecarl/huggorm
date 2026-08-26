@@ -67,3 +67,16 @@ A test belongs with it: for every value type in the manifest, if
   the pyx while its own `_wire_fields` say `StorePath?` and its
   docstring says it returns None. One of the two is wrong and the
   wire_fields is the one with a test behind it.
+
+  **That half is CLOSED.** Not by editing the pyx: the emitter now
+  writes `PathInfo`, from the declaration, and it derives the
+  annotation from the same wire types the wire uses. So the two
+  cannot disagree any more. `store.pyi` ships `def deriver(self) ->
+  StorePath | None` today, and `manifest.json` agrees.
+
+  The dunders half stays open, because it has a different cause. The
+  annotation was one fact written twice; the dunders are one fact
+  MEASURED, by a reflection that cannot see what the source said.
+  Writing the pyx does not help - the .so genuinely has all six
+  slots. Closing it means `model.py` reading the declaration instead
+  of the compiled module.
