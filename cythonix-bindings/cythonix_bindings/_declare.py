@@ -37,6 +37,16 @@ F = TypeVar("F", bound=Callable[..., Any])
 # there is no thread for it to be affine to. Named here as well as in
 # the generator because this is where the mistake gets made, and an
 # import-time error beats a build-time one.
+#
+# It cannot be shared with the generator, and that is the dependency
+# direction rather than an oversight: the generator imports the
+# bindings to reflect on them, so the bindings cannot import the
+# generator. `_wire = "value"` is duplicated for the same reason.
+#
+# Nothing drifts silently, though. The two spellings meet at every
+# decorated function: a change here fails at the import that applies
+# the decorator, and a change in the generator fails when it reads the
+# policy back. Perturbed both ways.
 POOL = "pool"
 
 
