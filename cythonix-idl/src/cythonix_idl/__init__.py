@@ -4,14 +4,15 @@ One document per bound area, in `decl/`. Nothing in there is ever
 executed: `read.py` parses it with `ast.parse`, so a declaration can
 name a C++ type this machine has never compiled.
 
-Three emitters read the same parsed declaration and none knows about
+Four emitters read the same parsed declaration and none knows about
 the others:
 
-- `emit.py` writes Cython - a `.pxd` pair and a `.pyx`, plus the C++
-  shim underneath them.
-- `nbemit.py` writes nanobind C++.
+- `nbemit.py` writes nanobind C++ - the binding itself.
 - `manifest.py` writes the manifest entry every generated Python
   surface above the bindings is built from.
+- `pyi.py` writes the type stub, by transforming the declaration's
+  own tree.
+- `pyenum.py` writes a vocabulary as a StrEnum module, the same way.
 
 It was `spike-idl/` while the question was whether this works. The
 build compiles what it emits now, and `cythonix_bindings.path` has no

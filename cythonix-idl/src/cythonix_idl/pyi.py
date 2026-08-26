@@ -1,9 +1,9 @@
 """Declaration -> type stub, by transforming the tree.
 
-The other emitters build TEXT, and for C++ and Cython they have to: a
-`.pyx` has no AST, and `cgen` models C++ declarations while a nanobind
-module body is one expression. There is no tree to transform, so a
-string builder is not a shortcut, it is the only shape available.
+`nbemit.py` builds TEXT, and for C++ it has to: `cgen` models C++
+declarations while a nanobind module body is one expression. There is
+no tree to transform, so a string builder is not a shortcut there, it
+is the only shape available.
 
 A `.pyi` is different. It is PYTHON, and the declaration is already
 Python - `def to_string(self) -> StrView: ...` with a docstring and an

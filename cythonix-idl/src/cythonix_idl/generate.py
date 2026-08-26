@@ -33,7 +33,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 # one C++ translation unit and there is no hand-written source for it
 # at all - no pyx, no pxd, no shim header.
 #
-# The `.pyx` route these two took is gone. Every workaround it needed
+# The `.pyx` route these took is gone. Every workaround it needed
 # went with it: a store path crossed as its base name and was parsed
 # back, absence was the empty string, a set became a vector of
 # strings, and a bound object came back as an owning raw pointer.
@@ -65,17 +65,17 @@ def nanobind_modules() -> tuple[str, ...]:
 
     The build loops over these to know what to emit and what to
     compile, and `setup.py` reads the same list. One place names
-    them, which is the same rule the Cython route followed."""
+    them, so a module cannot be emitted and then not compiled."""
     return tuple(pathlib.Path(name).stem for name in NANOBIND)
 
 
 def declared_entries() -> dict[str, dict]:
     """Every declared class, as the manifest entry it implies.
 
-    What `codegen` calls instead of reflecting. It builds its manifest
-    by parsing the pxd files and importing the compiled extension,
-    which is what puts every surface above it behind a C++ compiler.
-    Calling this lets it stop, one class at a time.
+    What `codegen` calls instead of reflecting. It used to build its
+    manifest by parsing the pxd files and importing the compiled
+    extension, which put every surface above it behind a C++
+    compiler. Calling this ended that, one class at a time.
 
     A function call, not a file. An earlier version wrote JSON and
     handed the path over, which bought nothing: the specification is
@@ -154,9 +154,9 @@ def declared_returned() -> list[str]:
     gets an `(obj, runner)` constructor so it can be adopted onto the
     runner that produced it.
 
-    `returned_types_from_api` answers the same question by walking the
-    pxd. There is no pxd for a nanobind module, and the declaration
-    knows: a class is returned when some declared method returns it.
+    The generator answered this by walking the pxd. There is no pxd
+    for a nanobind module, and the declaration knows anyway: a class
+    is returned when some declared method returns it.
 
     Every name in the return type, not the type itself. A method
     returning `list[StorePath]` hands back StorePaths as surely as one

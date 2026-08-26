@@ -1,10 +1,10 @@
 """
 Declaration -> nanobind C++.
 
-The second backend, and the reason the declaration exists. `emit.py`
-reads a `read.Class` and writes three Cython files; this reads the
-SAME `read.Class` and writes one C++ function. Neither is the other's
-input, and the declaration never learns which one ran.
+The one backend, and the reason the declaration exists. It reads a
+`read.Class` and writes one C++ function. The declaration is not C++
+and does not know it is being turned into any: an emitter reads it,
+and the declaration never learns which one.
 
 ## Why a targeted emitter works where a general one does not
 
@@ -75,11 +75,11 @@ CXX_PARAM = {
 # crosses as. Each entry is a caster nanobind ships, so nothing here
 # is flattened on the way through.
 #
-# This is where the two backends part company. Cython could declare
+# This is what decided the backend. The Cython route could declare
 # none of these - a pxd has no std::set, no std::optional and no
-# non-default-constructible member - so its emitter turned every one
-# of them into a string and parsed it back. nanobind casts them, so
-# a store path stays a store path from libstore to Python.
+# non-default-constructible member - so it turned every one of them
+# into a string and parsed it back. nanobind casts them, so a store
+# path stays a store path from libstore to Python.
 CXX_PYTHON = {
     "bytes": ("nb::bytes", None),
     "pathlib.Path": ("const std::filesystem::path &", "filesystem"),
@@ -91,9 +91,9 @@ CXX_PYTHON = {
 # `str` alone says only that Python sees a str.
 #
 # The difference is what `StrView` and `Path` need. Both are `str`-ish
-# to Python and both carry Cxx("string"), because a pxd can hold
-# nothing else - so a table that let either side win outright would
-# turn one of them into the wrong crossing.
+# to Python and both carry Cxx("string"), which is the coarsest of
+# the three answers - so a table that let either side win outright
+# would turn one of them into the wrong crossing.
 CXX_BUILTIN = {
     "str": ("const std::string &", "string"),
     "bool": ("bool", None),
@@ -202,7 +202,7 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
         return spelled, "string" if spelled == "std::string" else None
     # Three tables, in the order the declaration meant them. A Python
     # type nanobind casts natively wins outright - `pathlib.Path`
-    # carries Cxx("string") for the pxd's sake, and nanobind has a
+    # carries Cxx("string"), the coarse answer, and nanobind has a
     # filesystem caster. Then the alias, which is the declaration
     # naming a C++ spelling. Then the bare builtin, which names none.
     spelled, caster = "", None
@@ -255,9 +255,9 @@ def _param(t: Type, known: dict[str, Class] | None = None
         other = known[t.python]
         if other.is_words:
             # A vocabulary. The member IS the string a Nix parser
-            # takes, so it crosses as one - the same crossing the
-            # Cython backend makes, because it is a fact about the
-            # words rather than about either binding.
+            # takes, so it crosses as one. That is a fact about the
+            # words rather than about the binding, which is why the
+            # emitted module is plain Python with no C++ at all.
             return CXX_PARAM["string"]
         return f"const {_bare(other)} &", None
     if t.cxx is None or t.cxx.spelling not in CXX_PARAM:
@@ -395,8 +395,7 @@ def _default(pr, known: dict[str, Class] | None = None) -> str:
         # None, and the signature says so. The parameter arrives as a
         # std::optional and an emitted line turns it into an empty
         # container - so a caller who passes nothing and a caller who
-        # passes None get the same answer, which is what the Cython
-        # binding did.
+        # passes None get the same answer.
         return "nb::none()"
     if value[:1] in "'\"":
         # A string literal, RE-SPELLED. Python writes one either way
@@ -410,11 +409,10 @@ def _default(pr, known: dict[str, Class] | None = None) -> str:
 def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str:
     """The annotations that follow a `.def`, in nanobind's order.
 
-    `nb::call_guard<nb::gil_scoped_release>()` comes from the SAME
-    declared fact that makes the Cython emitter write `with nogil:` -
-    `blocking` on the class, or `@blocks` on the method. One decision,
-    two spellings, and the declaration never learns which backend read
-    it.
+    `nb::call_guard<nb::gil_scoped_release>()` comes from one declared
+    fact: `blocking` on the class, or `@blocks` on the method. The
+    declaration says a call can wait; how a backend spells the release
+    is the emitter's business.
 
     `"name"_a` follows, because a parameter's name is part of the
     Python signature rather than decoration, and `= value` after it
@@ -522,8 +520,7 @@ def _identity_semantics(cls: Class,
     `nb::repr(h.attr("path")())` asks MockStorePath for its own repr,
     so a part of any type renders without this emitter knowing what it
     is - which is what lets one line cover a str, a store path and a
-    list of them. `_value.py` gave the Cython side the same two
-    answers from the same declaration.
+    list of them.
 
     A list part is hashed as a TUPLE. A list is unhashable for the
     good reason that it can change, and this one cannot: it is a copy
@@ -556,7 +553,6 @@ def _identity_semantics(cls: Class,
         # `b.type().is(a.type())` rather than isinstance: a subclass
         # of a value type would carry parts this one does not compare,
         # so saying "equal" would be a claim the parts do not support.
-        # `_value.py` gave the Cython side the same two lines.
         #
         # NotImplemented rather than False for another type, which is
         # what lets the other side answer - and what `nb::is_operator`
@@ -713,9 +709,8 @@ def _repr_parts(cls: Class) -> str:
 def _value_semantics(cls: Class) -> list[str]:
     """What a wire value owes Python, in nanobind's spelling.
 
-    The same answers `_value.py` gives the Cython side, from the same
-    two declarations - so a value prints and compares as the thing it
-    IS on either backend, and neither emitter had to be told twice.
+    All of it from `@wire_value` and `@binding`, so a value prints and
+    compares as the thing it IS without a second declaration saying so.
 
     Every comparison carries `nb::is_operator()`. That is not a style
     choice: without it, comparing against an unrelated type raises
@@ -733,11 +728,9 @@ def _value_semantics(cls: Class) -> list[str]:
     if decl.wire == "value":
         # A value COPIES. Without these, copy.copy falls through to
         # pickle, which a bound C++ type cannot do - so a caller gets
-        # TypeError where the Cython backend hands back a copy.
+        # TypeError rather than a copy.
         #
-        # A bound value is immutable, so a deep copy IS a copy. The
-        # Cython emitter already says exactly that; this is the same
-        # sentence in the other language.
+        # A bound value is immutable, so a deep copy IS a copy.
         out += [f'{INDENT * 2}.def("__copy__", []({ref}) '
                 f"{{ return {held}({obj}); }})",
                 f'{INDENT * 2}.def("__deepcopy__", []({ref}, nb::dict) '
@@ -820,12 +813,12 @@ def _paragraph(doc: str) -> list[str]:
 def record(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     """The C++ struct a produced value crosses as.
 
-    Real types, every one. This is where the two backends part
-    company hardest: a pxd cannot declare a std::optional, a std::set
-    or a member with no default constructor, so the Cython emitter
-    turned a store path into its base name, absence into an empty
-    string and a set into a vector of strings - and Python then held
-    nine slots that had each been printed and re-parsed on the way.
+    Real types, every one. This is what the Cython route could not do:
+    a pxd cannot declare a std::optional, a std::set or a member with
+    no default constructor, so it turned a store path into its base
+    name, absence into an empty string and a set into a vector of
+    strings - and Python then held nine slots that had each been
+    printed and re-parsed on the way.
 
     Here a `nix::StorePath` stays one, `std::optional` carries
     absence, and a list of paths is a list of paths. Nothing is
@@ -915,9 +908,7 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     It still has to be RECONSTRUCTIBLE, because it crosses the wire
     and the far side has only the parts. So the constructor is bound
     privately, as `_from_parts`, which is exactly the name the wire
-    layer asks for. The Cython backend arrives at the same pair from
-    the other direction: an `__init__` that raises, and a classmethod
-    that goes through `__new__`."""
+    layer asks for."""
     fields = record_fields(cls, known)
     held = _held(cls)
     args = "".join(f', "{name}"_a' for name, _ in fields)
@@ -935,7 +926,7 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     ]
 
 
-# What `_from_parts` is for, in the Cython emitter's own words.
+# What `_from_parts` is for, in one sentence a caller can read.
 FROM_PARTS_DOC = "Wire-deserialization helper (private, never surfaced)."
 
 
@@ -993,9 +984,7 @@ def wire_fields(cls: Class) -> list[tuple[str, str, str]]:
             for m in cls.methods if m.ret is not None]
 
 
-# What `_parts` is for, in the words the Cython emitter already uses.
-# One sentence in two backends, so a caller reading either sees the
-# same thing.
+# What `_parts` is for, in one sentence a caller can read.
 PARTS_DOC = ("Wire-serialization helper (private): one value per "
              "_wire_fields entry, in order.")
 
@@ -1083,9 +1072,9 @@ def trampoline(cls: Class, known: dict[str, Class] | None = None) -> str:
     overrode `get_uri` in Python is never asked.
 
     nanobind ships the whole mechanism as two macros, so this emits
-    six lines where the Cython binding embedded forty - a hand-written
-    PyStore with PyGILState_Ensure, PyObject_CallMethod, a UTF-8
-    encode and the reference counting around all of it.
+    six lines. Reaching Python by hand takes forty: a PyStore with
+    PyGILState_Ensure, PyObject_CallMethod, a UTF-8 encode and the
+    reference counting around all of it.
 
     NB_TRAMPOLINE takes the arity because it sizes a small table of
     cached lookups. Derived, like everything else here: it is the
@@ -1121,14 +1110,12 @@ def trampoline(cls: Class, known: dict[str, Class] | None = None) -> str:
 def markers(cls: Class) -> list[str]:
     """The facts every layer above reads off the compiled class.
 
-    `emit.py` writes the same set into the pyx as class attributes,
-    from the same declaration. This is that sentence in the other
-    language, and it is what lets the generated layer - the async
-    wrappers, the protocols, the RPC stubs, the stubs - keep working
-    when the class underneath stops being Cython.
+    Every one comes off the declaration, and the generated layer -
+    the async wrappers, the protocols, the RPC stubs, the type stubs -
+    reads them off the compiled class rather than being told twice.
 
-    `_binds` is NOT here, and its absence is information. It names the
-    pxd declaration a pyx class binds, so it is a fact about Cython
+    `_binds` is NOT here, and its absence is information. It named the
+    pxd declaration a pyx class bound, so it was a fact about Cython
     rather than about the binding: there is no pxd, so there is
     nothing to name.
 
@@ -1185,10 +1172,9 @@ def markers(cls: Class) -> list[str]:
             #
             # `_from_parts` takes one value per _wire_fields entry, in
             # order, and hands back the value they make. That is
-            # exactly what the constructor takes - the Cython emitter
-            # refuses to derive the helper unless those two agree - so
-            # naming the class is the whole helper, and it cannot
-            # drift from the constructor.
+            # exactly what the constructor takes, so naming the class
+            # is the whole helper and it cannot drift from the
+            # constructor.
             #
             # A PRODUCED value has no public constructor to name: its
             # `__init__` raises, and `_from_parts` is bound beside it
@@ -1231,9 +1217,8 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         body = _record_ctor(cls, known)
         obj = _self(cls)
         # METHODS, not `def_ro` properties. The declaration writes
-        # `def path(self) -> StorePath`, and the Cython backend
-        # renders that as a method - so a caller writes `info.path()`
-        # on either. A property would read better and would be a
+        # `def path(self) -> StorePath`, so a caller writes
+        # `info.path()`. A property would read better and would be a
         # DIFFERENT surface, which is not a choice an emitter makes
         # on its own.
         body += [f'{INDENT * 2}.def("{name}", [](const {held} &{obj}) '
@@ -1255,9 +1240,8 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         # A Python class deriving from this one is instantiated as the
         # trampoline, and nanobind needs an `__init__` to reach it. A
         # bare MockStore() builds a trampoline whose get_uri calls a
-        # Python method that does not exist, which is what the Cython
-        # binding did too; `_abstract` is what tells the layers above
-        # not to offer it.
+        # Python method that does not exist; `_abstract` is what tells
+        # the layers above not to offer it.
         body = ([f"{INDENT * 2}.def(nb::init<>())"]
                 if _overridable(cls) else [])
     elif decl.built_by:
@@ -1354,7 +1338,7 @@ def free_functions(fns: tuple[Method, ...],
 # hands Python a list, because these answers are sorted and a Python
 # set would throw that away. Both directions are one line of C++, and
 # neither copies a string or parses a name - which is the whole
-# difference from what a pxd forced.
+# difference from a set flattened into a vector of strings.
 CONTAINERS = """
 /** A libstore set as the list a caller reads. Sorted, because the set is. */
 template <typename T>
@@ -1403,7 +1387,7 @@ def bindable(mod: Module) -> tuple[Class, ...]:
     A vocabulary has no C++ object, so there is nothing to bind: it
     crosses as the string its member already is. A produced value has
     no C++ type either - `@cxx_parts` flattens a libstore object into
-    slots, which is the shape a pxd forced - so it has no
+    slots - so it has no
     `nb::class_` to be until the declaration names the type it came
     from.
 
@@ -1509,10 +1493,10 @@ def extension(mod: Module, dotted: str,
 def translator(fn: Method) -> str:
     """The module's exception translator, registered once.
 
-    Cython wrote `except +translate_nix_error` on every method in the
-    pxd, so the hook ran per call. nanobind registers a translator
-    ONCE for the module and it runs for any binding in it. Same fact,
-    two spellings, and the C++ is shared rather than emitted twice:
+    ONCE for the module, and it runs for any binding in it. The
+    Cython route named `except +translate_nix_error` on every method
+    in the pxd, so the hook ran per call; this registers it in one
+    place. The C++ is shared rather than emitted:
     `errors.hpp` maps nix::BadStorePath onto
     cythonix_bindings.errors.BadStorePath and strips libstore's
     terminal escapes.
@@ -1528,8 +1512,8 @@ static void register_{fn.name.lstrip("_")}() {{
             try {{
                 std::rethrow_exception(p);
             }} catch (...) {{
-                // Sets the Python error from inside catch(...), which
-                // is the same position Cython called it from.
+                // Sets the Python error from inside catch(...),
+                // which is where the exception is still live.
                 {fn.binds}();
             }}
         }});
@@ -1541,8 +1525,8 @@ def census(cls: Class) -> dict[str, int]:
     """How much of this class the declaration derived, and how much a
     person wrote.
 
-    Printed on every run, like `emit.py`'s custom-hatch count. The
-    ratio is the honest measure of a binding: StorePath derives whole
+    Printed on every run, because a hatch nobody measures becomes the
+    place the real code lives. The ratio is the honest measure of a binding: StorePath derives whole
     and hatches nothing; ValidPathInfo joins a store directory to a
     path, which is a decision rather than a binding, and it says so
     with seven bodies."""

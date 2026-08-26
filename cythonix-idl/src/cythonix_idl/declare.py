@@ -336,12 +336,15 @@ def wire_value(fields: tuple[Field, ...] = (), compare: str = "parts",
 
 
 def custom(name: str, source: str) -> Callable[[type], type]:
-    """Cython this emitter cannot derive, carried verbatim.
+    """Whole-class C++ this emitter cannot derive, carried verbatim.
 
     The escape hatch, and it is counted. `_cpp/README` makes the same
-    bargain for C++: a hatch nobody measures becomes the place the
-    real code lives. The emitter reports how many lines went through
-    here, so growth is visible rather than gradual."""
+    bargain: a hatch nobody measures becomes the place the real code
+    lives. The emitter reports how many lines went through here, so
+    growth is visible rather than gradual.
+
+    `@cxx_body` is the per-METHOD hatch, and it is the one to reach
+    for first. This carries lines a class needs and no method owns."""
     def apply(cls: type) -> type:
         _decl(cls).custom[name] = source
         return cls
@@ -374,8 +377,9 @@ def reads[F: Callable[..., Any]](member: str) -> Callable[[F], F]:
     method pointer. `@cxx_name` says what C++ calls a FUNCTION, this
     says which FIELD is behind a name.
 
-    On the Cython side the same fact reaches the pxd as a field
-    declaration rather than a method, so one word serves both."""
+    One word, because which of the two it is is a fact about C++
+    rather than about the surface: a caller writes `info.name()`
+    either way."""
     def apply(fn: F) -> F:
         fn._reads = member  # type: ignore[attr-defined]
         return fn
@@ -385,10 +389,9 @@ def reads[F: Callable[..., Any]](member: str) -> Callable[[F], F]:
 def cxx_body[F: Callable[..., Any]](source: str) -> Callable[[F], F]:
     """The C++ this accessor cannot be derived into, carried verbatim.
 
-    Per-method, and per-BACKEND: the body is C++, so it means nothing
-    to the Cython emitter, which has `@custom` for the same job in its
-    own language. A hatch that pretended to be portable would be
-    lying about the one thing it exists to carry.
+    Per-method, and the body is C++. That is the one thing in a
+    declaration which is not portable, and it says so: a hatch that
+    pretended otherwise would be lying about what it exists to carry.
 
     Counted and printed, like `@custom`. `nix::ValidPathInfo` renders
     a store path against its own store directory, and that rendering
@@ -405,18 +408,17 @@ def cxx_parts[F: Callable[..., Any]](
     """Where C++ finds each part of the value this call returns.
 
     The shape a produced value crosses in is a POD struct, and none of
-    that shape is a decision: the struct, its members, the pxd that
-    declares it and the Cython that unpacks it all follow from the
-    fields the value declares. So the emitter writes them, and this
-    carries the ONE thing it cannot know - which C++ expression yields
-    each part.
+    that shape is a decision: the struct, its members and the binding
+    that unpacks it all follow from the fields the value declares. So
+    the emitter writes them, and this carries the ONE thing it cannot
+    know - which C++ expression yields each part.
 
     `prelude` is the call itself, as one or more statements. Each
     keyword names a declared field and gives C++ that evaluates to the
     wire type of that field: a `std::string` for a store path or a
     string, the width itself for an integer, a `std::vector` for a
     list. An optional field says the empty string when it is absent,
-    which is the sentinel the emitter's Cython reads back.
+    which is the sentinel the emitter reads back.
 
     Every field must be named. A missing one is a struct member with
     nothing in it, which C++ would zero-initialise and Python would

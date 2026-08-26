@@ -1,21 +1,22 @@
 """
 Declaration -> manifest entry.
 
-This is the half of the spike that is not about Cython at all, and it
-is the half that decides whether the idea is worth adopting.
+This is the half of the idea that is not about a binding language at
+all, and it is the half that decided whether the idea was worth
+adopting.
 
-## The ordering the manifest lives under today
+## The ordering the manifest used to live under
 
-`model.py` builds the manifest by IMPORTING `cythonix_bindings` and
-reflecting on the classes it finds: `getattr(cls, "_threading")`,
+`model.py` built the manifest by IMPORTING `cythonix_bindings` and
+reflecting on the classes it found: `getattr(cls, "_threading")`,
 `cls.__dict__["_binds"]`, `getattr(cls, d) is not getattr(object, d)`
 for the dunders. Every one of those reads a COMPILED extension type.
 
-So the build has one possible order. C++ compiles, Cython compiles,
-the manifest is learnt, and only then can the async wrappers, the
-protocols, the RPC stubs and the type stubs be written. Four surfaces
-wait behind a C++ compiler for facts that were decided by hand in a
-.pyx before any of it started.
+So the build had one possible order. C++ compiled, the binding
+compiled, the manifest was learnt, and only then could the async
+wrappers, the protocols, the RPC stubs and the type stubs be written.
+Four surfaces waited behind a C++ compiler for facts a person had
+decided in a declaration before any of it started.
 
 ## What this module does instead
 
@@ -29,13 +30,14 @@ Every one of those is knowable before a compiler runs, because the
 declaration is where the decision was made. Reflection was reading
 back a fact that had been written down two files earlier.
 
-## The check that makes this a claim rather than a hope
+## What made this a claim rather than a hope
 
-`check.py` diffs what this emits against the entry the real build
-produced by reflection. Equal means the declaration carries the whole
-manifest and reflection is redundant. Anything else names the field
-this route cannot reach, which is the honest measure of how far the
-idea goes.
+A gate diffed what this emits against the entry the real build
+produced by reflection. Equal meant the declaration carries the whole
+manifest and reflection is redundant; anything else named the field
+this route could not reach. The gate is gone because its other side
+is: reflection has nothing to read in a nanobind class, and the
+generator asks this module instead.
 """
 
 import ast
@@ -56,12 +58,9 @@ PROTOCOL = "Like"
 ASYNC = "Async"
 RPC = "RPC"
 
-# C++ spelling -> the Python type the manifest names. A second table
-# from `emit._py_type`, and deliberately: that one spells a pyx
-# ANNOTATION, where Cython's own `bint` reads better than `bool`.
-# This one spells the manifest, which every layer above reads as
-# Python. Same fact, two vocabularies, so one table would have to
-# lie to one of them.
+# C++ spelling -> the Python type the manifest names. The manifest is
+# read as Python by every layer above, so `bint` and `string_view`
+# have no place in it: what a caller sees is `bool` and `str`.
 PYTHON = {
     "string": "str",
     # A view is a str by the time it reaches Python: the binding
@@ -338,9 +337,9 @@ def entry(cls: Class, package: str, module: str,
             "message": f"{cls.name}Msg" if final else None,
         }),
         # The round-trip helpers a wire value carries. Derived, not
-        # reflected: `emit.produced_pyx` writes both for every produced
-        # value and `emit._round_trip` writes both for a constructed
-        # one, so a declared value HAS them by construction.
+        # reflected: the emitter writes both for a produced value and
+        # both for a constructed one, so a declared value HAS them by
+        # construction.
         **({} if final else {
             "_helpers": sorted(("_from_parts", "_parts"))
             if decl.wire == "value" else [],

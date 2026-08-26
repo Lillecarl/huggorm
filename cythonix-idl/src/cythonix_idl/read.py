@@ -8,15 +8,15 @@ parse.
 
 ## Why this matters more than it looks
 
-The current generator builds its manifest by IMPORTING the compiled
+The generator used to build its manifest by IMPORTING the compiled
 bindings and reflecting on them. That works, and it puts the whole
 build in one order: compile the C++ first, learn what it says second.
-Every surface above - async, protocols, RPC, stubs - waits on a C++
+Every surface above - async, protocols, RPC, stubs - waited on a C++
 compiler.
 
-Reading the declaration instead inverts that. The manifest is known
-BEFORE anything compiles, because the declaration already said
-everything the manifest holds. Then the .pyx and the manifest are two
+Reading the declaration inverts that. The manifest is known BEFORE
+anything compiles, because the declaration already said everything
+the manifest holds. Then the binding and the manifest are two
 readings of one document rather than two stages of a pipeline.
 
 ## What still executes
