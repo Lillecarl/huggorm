@@ -269,8 +269,25 @@ def main(argv: list[str] | None = None) -> None:
           + ", ".join(sorted(declared)))
 
     def _proto(kls: type, **kw: Any) -> Proto:
+        want = declared.get(kls.__name__)
+        # No pxd behind it, so there is nothing to reflect. `_binds`
+        # names the pxd declaration a Cython class binds, so a class
+        # without one was written by the OTHER backend - nanobind, from
+        # the same declaration this entry came from. Reflection cannot
+        # read it either: a nanobind method is a builtin with no
+        # signature, so `inspect.signature` raises rather than
+        # answering.
+        #
+        # This is the seam closing. It stayed open while both backends
+        # existed, because measuring the declaration against a compiled
+        # class is the only honest way to claim the declaration carries
+        # everything. Store reached 21 of 21 fields that way before the
+        # class it was measured against stopped existing.
+        if want is not None and not kls.__dict__.get("_binds"):
+            print(f"  {want['name']}: from the declaration, not reflected"
+                  f" (no pxd - this class is nanobind)")
+            return want
         reflected = extract_wrapper(kls, api=api, mapping=mapping, **kw)
-        want = declared.get(reflected["name"])
         if want is None:
             return reflected
         differ = [k for k in sorted(set(want) | set(reflected))

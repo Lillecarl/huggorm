@@ -23,26 +23,36 @@ import argparse
 import ast
 import pathlib
 
-from cythonix_idl import manifest, pyenum
+from cythonix_idl import generate_nb, manifest, pyenum
 from cythonix_idl.emit import emit, produced_pxi
 from cythonix_idl.read import read
 
 HERE = pathlib.Path(__file__).resolve().parent
 
-# Declarations that own a WHOLE module. Each emits three files and
-# there is no hand-written source for it at all.
-MODULES = (
+# Declarations that own a WHOLE module, through nanobind. Each emits
+# one C++ translation unit and there is no hand-written source for it
+# at all - no pyx, no pxd, no shim header.
+#
+# The `.pyx` route these two took is gone. Every workaround it needed
+# went with it: a store path crossed as its base name and was parsed
+# back, absence was the empty string, a set became a vector of
+# strings, and a bound object came back as an owning raw pointer.
+# nanobind casts all four, so the declaration stopped carrying them.
+NANOBIND = (
     "decl/path.py",
+    "decl/store.py",
 )
 
+# Declarations that own a whole module through CYTHON. Empty, and
+# that is the state this spike was arguing for rather than an
+# oversight: `emit.py` still works and nothing is left for it to do.
+MODULES: tuple[str, ...] = ()
+
 # Declarations the emitter has taken over only PART of, as
-# (declaration, include file). Each emits one `.pxi` holding its
-# produced values, and a hand-written `.pyx` splices it with
-# `include`. See emit.produced_pxi for why an include and not a
-# splice.
-INCLUDES = (
-    ("decl/store.py", "store_produced.pxi"),
-)
+# (declaration, include file). Also empty now - `store.pyx` was the
+# one hand-written module with declared values spliced into it, and
+# there is no store.pyx.
+INCLUDES: tuple[tuple[str, str], ...] = ()
 
 # Vocabularies. A StrEnum whose members ARE the strings a Nix parser
 # takes, so there is no C++ and nothing to compile - the emitted
@@ -57,6 +67,15 @@ VOCABULARIES = (
 # declaration does not carry: where a binding is installed is the
 # build's decision.
 PACKAGE = "cythonix_bindings"
+
+
+def nanobind_modules() -> tuple[str, ...]:
+    """The module name of each declaration compiled through nanobind.
+
+    The build loops over these to know what to emit and what to
+    compile, and `setup.py` reads the same list. One place names
+    them, which is the same rule the Cython route followed."""
+    return tuple(pathlib.Path(name).stem for name in NANOBIND)
 
 
 def declared_entries() -> dict[str, dict]:
@@ -86,7 +105,7 @@ def declared_entries() -> dict[str, dict]:
     construction, and an INCLUDES declaration is complete for the
     values it emits, which is what `is_value` already says."""
     out = {}
-    for name in MODULES:
+    for name in MODULES + NANOBIND:
         mod = read(str(HERE / name))
         for cls in mod.classes:
             out[cls.name] = manifest.entry(cls, PACKAGE, mod.name,
@@ -102,6 +121,10 @@ def declared_entries() -> dict[str, dict]:
 
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
+    for name in NANOBIND:
+        mod = read(str(HERE / name))
+        target = out / f"{mod.name}.cpp"
+        generate_nb.main(name, f"{PACKAGE}.{mod.name}", str(target))
     for name in MODULES:
         print(f"{name} -> {out}")
         emit(str(HERE / name), str(out))

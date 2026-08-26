@@ -23,78 +23,6 @@ rec {
   };
   # The interpreter the emitters run under, with them on its path.
   idlPython = pkgs.python3.withPackages (_: [ cythonix-idl ]);
-  # The SAME declarations, through the other backend.
-  #
-  # `emit.py` writes Cython from the declarations; `nbemit.py` writes
-  # C++ from the same files. Until this existed the second one had
-  # only ever been checked as TEXT, which proves it could have written
-  # a binding and not that the binding works. This compiles it against
-  # real Nix, and `parity.py` then asks both backends the same
-  # questions.
-  #
-  # A PACKAGE, not one module. Two things follow from that, and both
-  # are the point. A declaration file owns a module, so `decl/path.py`
-  # and `decl/store.py` compile to `path` and `store` the way they do
-  # under Cython. And `store` returns a `nix::StorePath`, which is a
-  # class `path` registered - nanobind keeps one type registry per
-  # process, so the two modules share it as long as `store` imports
-  # `path` first. `nbemit.imports` derives that import from the
-  # declaration's own `from ... import StorePath`.
-  #
-  # The name is `cythonix_nb` rather than `cythonix_bindings` only
-  # because `parity.py` imports BOTH backends into one interpreter.
-  # They swap names when Cython goes.
-  #
-  # nanobind ships its runtime as source rather than a library, so
-  # each extension compiles `nb_combined.cpp` beside its own
-  # translation unit. `ext/robin_map` is nanobind's vendored hash map,
-  # which its own headers include and its wheel does not put on the
-  # include path.
-  nb-bindings = pkgs.stdenv.mkDerivation {
-    name = "cythonix-nb";
-    # No sources of its own: the declarations and the emitter both
-    # come from the cythonix-idl package on the interpreter's path,
-    # and the files this compiles are written in the build phase.
-    dontUnpack = true;
-    nativeBuildInputs = [ pkgs.pkg-config idlPython ];
-    buildInputs = [ idlPython pkgs.python3.pkgs.nanobind ] ++ (with pkgs.nix.libs; [
-      nix-util
-      nix-store
-    ]);
-    # One entry per declaration that owns a module. The same list
-    # `generate.py` keeps for Cython, and for the same reason: which
-    # declarations the build compiles is the build's decision.
-    modules = [ "path" "store" ];
-    buildPhase = ''
-      inc=$(python3 -c 'import nanobind; print(nanobind.include_dir())')
-      src=$(python3 -c 'import nanobind; print(nanobind.source_dir())')
-      pyinc=$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
-      ext=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
-      mkdir -p cythonix_nb
-      touch cythonix_nb/__init__.py
-      for mod in $modules; do
-        python3 -m cythonix_idl.generate_nb "decl/$mod.py" \
-          "cythonix_nb.$mod" "$mod.cpp"
-        # -I on the bindings directory for _cpp/errors.hpp, which is
-        # C++ that neither backend owns: it maps a nix exception onto
-        # the right class in cythonix_bindings.errors. Cython reaches
-        # it through `except +translate_nix_error`; nanobind through
-        # one registered translator.
-        $CXX -std=c++23 -O1 -fPIC -shared -fvisibility=hidden \
-          -I"$inc" -I"$pyinc" -I"$inc/../ext/robin_map/include" \
-          -I"${./cythonix-bindings}" \
-          $(pkg-config --cflags nix-store) \
-          "$mod.cpp" "$src/nb_combined.cpp" \
-          $(pkg-config --libs nix-store) \
-          -o "cythonix_nb/$mod$ext"
-      done
-    '';
-    installPhase = ''
-      mkdir -p $out
-      cp -r cythonix_nb $out/
-      cp ./*.cpp $out/
-    '';
-  };
   # The binding source that actually gets compiled.
   #
   # This is the step that makes the declaration load-bearing. Before
@@ -110,7 +38,7 @@ rec {
   '';
   # this is Cython bindings into fake-library, should contain pxd and pyx (I believe)
   cythonix-bindings = pkgs.callPackage ./cythonix-bindings {
-    inherit fake-library;
+    inherit fake-library cythonix-idl;
     src = bindings-src;
   };
   # this is a Python library that uses cythonix-bindings
@@ -187,25 +115,29 @@ rec {
 
   # nix run --file . spike
   #
-  # The declarations' own gates: emit from a declaration and diff
-  # against something built the other way.
+  # The declaration's one remaining text gate.
   #
-  # Two references, and only one of them is in this repo. The Cython
-  # half compares against cythonix-bindings and the manifest a real
-  # build produced, so it is hermetic and always runs. The nanobind
-  # half compares against ~/Code/nanopynix, which is hand-written,
-  # tested and NOT here - so it is skipped with a reason rather than
-  # failing on a machine that does not have it.
+  # There were three. Two compared an emitted file against something
+  # built the other way: emitted Cython against the repo's Cython,
+  # and a nanobind StorePath against a Cython one. Both are gone,
+  # because what they compared against is gone - `cythonix_bindings`
+  # IS the emitted nanobind now, and a diff of a file against itself
+  # proves nothing.
+  #
+  # What replaced them is stronger than a text diff and it is already
+  # in this file: the modules COMPILE from the declarations, they
+  # import, and 158 tests drive them.
+  #
+  # This one is left because its reference is not in this repo.
+  # ~/Code/nanopynix is hand-written, tested nanobind over the same
+  # library, so emitting against it says something the build cannot -
+  # and it is skipped with a reason on a machine that does not have
+  # it.
   spike = pkgs.writeShellApplication {
     name = "spike";
     runtimeInputs = [ ourPython ];
     text = ''
       cd "''${1:-.}/cythonix-idl/gates"
-      manifest="${cythonix-generated}/lib/python3.14/site-packages/cythonix_generated/manifest.json"
-      echo "--- declaration -> Cython, and -> manifest ---"
-      python3 check.py --manifest "$manifest"
-      echo "--- one declaration, two compiled backends ---"
-      python3 parity.py "${nb-bindings}"
       if [ -d "$HOME/Code/nanopynix" ]; then
         echo "--- declaration -> nanobind ---"
         python3 nbcheck.py

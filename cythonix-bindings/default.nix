@@ -2,6 +2,7 @@
   lib,
   python3Packages,
   fake-library,
+  cythonix-idl,
   boehmgc,
   nix,
   pkg-config,
@@ -34,7 +35,12 @@ python3Packages.buildPythonPackage {
 
   build-system = with python3Packages; [
     setuptools
+    # Cython, for what is left of it: the mock modules. The real Nix
+    # bindings are nanobind now, and setup.py reads the module list
+    # out of cythonix-idl rather than naming them again.
     cython
+    nanobind
+    cythonix-idl
   ];
 
   # pkg-config finds real Nix. It is how nix ships its build interface:

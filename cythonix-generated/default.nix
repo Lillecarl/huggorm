@@ -78,7 +78,10 @@ python3Packages.buildPythonPackage {
     python3Packages.anyio
   ];
 
-  env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_mock_store.pxd ${cythonix-bindings.src}/cythonix_bindings/c_eval.pxd ${cythonix-bindings.src}/cythonix_bindings/c_path.pxd ${cythonix-bindings.src}/cythonix_bindings/c_store.pxd";
+  # Only the MOCK modules are Cython now. path and store are nanobind
+  # extensions written from their declarations, so they have no pxd -
+  # and `declared_entries` is where the generator learns about them.
+  env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_mock_store.pxd ${cythonix-bindings.src}/cythonix_bindings/c_eval.pxd";
 
   # anyio because a generated wrapper hands back the async spelling of
   # a type when the bindings declare one: Store.real_path returns a

@@ -1,8 +1,14 @@
 import os
 import shlex
+import shutil
 import subprocess
 
+import nanobind
 from setuptools import Extension, setup
+
+from cythonix_idl.generate import nanobind_modules
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def pkg_config(*packages: str) -> dict[str, list[str]]:
@@ -70,22 +76,60 @@ _nix = pkg_config("nix-store")
 # ...plus this directory, for nix_error.hpp. It sits beside the
 # sources rather than in the extension because it is C++ that Cython
 # calls, not Cython: `except +translate_nix_error` names a function.
-_nix["include_dirs"] = [os.path.dirname(os.path.abspath(__file__))] + _nix["include_dirs"]
+_nix["include_dirs"] = [HERE] + _nix["include_dirs"]
 
-ext_path = Extension(
-    "cythonix_bindings.path",
-    sources=["cythonix_bindings/path.pyx"],
-    language="c++",
-    **_nix,
-)
+# The REAL Nix bindings, through nanobind rather than Cython.
+#
+# Their C++ is written before this runs, by
+# `cythonix_idl.generate.main`, straight from the declarations - so
+# there is no .pyx, no .pxd and no shim header for either of them,
+# and the list of modules comes from the same place the emitter reads.
+#
+# nanobind ships its runtime as SOURCE rather than as a library, so
+# each extension compiles `nb_combined.cpp` beside its own
+# translation unit. `ext/robin_map` is nanobind's vendored hash map,
+# which its own headers include and its wheel does not put on the
+# include path.
+def nb_runtime() -> str:
+    """nanobind's own runtime, beside our sources.
 
-ext_store = Extension(
-    "cythonix_bindings.store",
-    sources=["cythonix_bindings/store.pyx"],
-    language="c++",
-    **_nix,
-)
+    Copied rather than named where it lives: setuptools refuses an
+    absolute path in `sources`, and nanobind's is in its wheel. One
+    file, and it compiles into each extension."""
+    name = "_nb_combined.cpp"
+    target = os.path.join(HERE, "cythonix_bindings", name)
+    shutil.copyfile(os.path.join(nanobind.source_dir(), "nb_combined.cpp"),
+                    target)
+    return f"cythonix_bindings/{name}"
+
+
+def nanobind_extension(module: str) -> Extension:
+    inc = nanobind.include_dir()
+    flags = dict(_nix)
+    flags["include_dirs"] = [
+        inc,
+        os.path.join(inc, "..", "ext", "robin_map", "include"),
+        # ...and nanobind's own src, because nb_combined.cpp includes
+        # its siblings by bare name and the copy above leaves them
+        # behind in the wheel.
+        nanobind.source_dir(),
+        *flags["include_dirs"],
+    ]
+    return Extension(
+        f"cythonix_bindings.{module}",
+        sources=[f"cythonix_bindings/{module}.cpp", nb_runtime()],
+        language="c++",
+        # Hidden by default, which is what nanobind's own build does:
+        # two extensions in one process must not export each other's
+        # symbols, and its internals are shared through a capsule
+        # rather than through the dynamic linker.
+        extra_compile_args=[*flags.pop("extra_compile_args", []),
+                            "-fvisibility=hidden"],
+        **flags,
+    )
+
 
 setup(
-    ext_modules=[ext, ext_eval, ext_path, ext_store],
+    ext_modules=[ext, ext_eval,
+                 *[nanobind_extension(m) for m in nanobind_modules()]],
 )
