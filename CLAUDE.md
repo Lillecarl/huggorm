@@ -11,5 +11,6 @@ nix build --no-link --print-out-paths  --file . pkgs.$package.src # this can be 
 ```
 
 # Codegen
-A goal of this repo is to derive code as possible from the Cython bindings automatically through codegen. This reduces maintenance burden and ensures correctness.
-Avoid hand-typing things that can be derived from the bindings, if it can't be derived from the bindings: Investigate if we can extract more data from the bindings to facilitate codegen
+A goal of this repo is to derive as much code as possible from the declarations automatically through codegen. This reduces maintenance burden and ensures correctness.
+Avoid hand-typing things that can be derived from a declaration, if it can't be derived from a declaration: Investigate if we can carry more in the declaration to facilitate codegen.
+The declarations are in `cythonix-idl/src/cythonix_idl/decl/`. They are never executed: `read.py` parses them with `ast.parse`, and the emitters write the nanobind C++, the manifest entry, the type stub and the enum module from what they say.
