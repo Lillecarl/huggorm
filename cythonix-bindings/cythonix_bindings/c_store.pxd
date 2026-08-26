@@ -36,10 +36,13 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     vector[CStorePath *] query_all_valid_paths(CStore & store) except +translate_nix_error
     # The enums arrive as the strings Nix parses, so the vocabulary -
     # and the error for a wrong one - stays Nix's.
-    CStorePath * add_to_store(CStore & store, string name, string data, string method, string hash_algo) except +translate_nix_error
+    # `references` is what this path points AT. Nix is told them; it
+    # does not scan for them. A vector of base names, because a pxd
+    # cannot declare the std::set libstore takes.
+    CStorePath * add_to_store(CStore & store, string name, string data, string method, string hash_algo, vector[string] references) except +translate_nix_error
     # The other overload: a path on the filesystem the store reads,
     # through a nix::SourcePath the shim builds.
-    CStorePath * add_path_to_store(CStore & store, string name, string path, string method, string hash_algo) except +translate_nix_error
+    CStorePath * add_path_to_store(CStore & store, string name, string path, string method, string hash_algo, vector[string] references) except +translate_nix_error
     # Where the files really are. Only a LocalFSStore has an answer,
     # so the shim asks and refuses like libstore itself.
     string real_path(CStore & store, const CStorePath & path) except +translate_nix_error

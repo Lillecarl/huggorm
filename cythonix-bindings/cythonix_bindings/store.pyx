@@ -44,6 +44,25 @@ from cythonix_bindings.content_address import (
 init_libstore()
 
 
+cdef vector[string] _base_names(object paths) except *:
+    """A list of StorePath as the vector the shims take.
+
+    None and an empty list are the same answer. That is not a
+    convenience: a repeated protobuf field has no presence, so absence
+    cannot travel as anything else - which is why a container is the
+    one parameter type whose default may be None.
+
+    Base names, not printed paths. A StorePath is a name and the store
+    supplies the directory, so sending a printed one would pick a
+    store directory that the caller has no business choosing."""
+    cdef vector[string] out
+    if paths is None:
+        return out
+    for path in paths:
+        out.push_back((<StorePath?>path).to_string().encode('utf-8'))
+    return out
+
+
 cdef class PathInfo:
     """What a store knows about one path it holds.
 
@@ -228,7 +247,8 @@ cdef class Store:
 
     def add_to_store(self, name: str, data: bytes,
                      method: ContentAddressMethod = ContentAddressMethod.NAR,
-                     hash_algo: HashAlgorithm = HashAlgorithm.SHA256
+                     hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
+                     references: list[StorePath] = None
                      ) -> StorePath:
         """Add one file's contents to the store, and name the result.
 
@@ -260,22 +280,33 @@ cdef class Store:
         Annotated Python-style, not Cython-style: this is backed by a
         shim rather than by a method on nix::Store, so there is no pxd
         declaration to backfill the types from and a `str name` would
-        reach the codegen as Any."""
+        reach the codegen as Any.
+
+        `references` is what the added path POINTS AT. Nix is told
+        them; it does not scan an added path for them, so a path that
+        mentions another and does not declare it is a broken closure
+        the store will happily hold. None and an empty list mean the
+        same thing, which is what lets the wire carry absence as a
+        repeated field with nothing in it.
+        """
         cdef string c_name = name.encode('utf-8')
         cdef string c_data = data
         cdef string c_method = method.encode('utf-8')
         cdef string c_algo = hash_algo.encode('utf-8')
+        cdef vector[string] c_refs = _base_names(references)
         cdef CStore* store = self._get()
         cdef CStorePath* out
         with nogil:
-            out = add_to_store(deref(store), c_name, c_data, c_method, c_algo)
+            out = add_to_store(
+                deref(store), c_name, c_data, c_method, c_algo, c_refs)
         cdef StorePath sp = StorePath.__new__(StorePath)
         sp._ptr = out
         return sp
 
     def add_path_to_store(self, name: str, path: str,
                           method: ContentAddressMethod = ContentAddressMethod.NAR,
-                          hash_algo: HashAlgorithm = HashAlgorithm.SHA256
+                          hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
+                          references: list[StorePath] = None
                           ) -> StorePath:
         """Add a file or a directory from the filesystem to the store.
 
@@ -299,16 +330,25 @@ cdef class Store:
         A missing path fails with libstore's message. The shim
         canonicalises weakly, which upstream asks for and which does
         not require the path to exist - so the error comes from the
-        layer that knows what it was for."""
+        layer that knows what it was for.
+
+        `references` is what the added path POINTS AT. Nix is told
+        them; it does not scan an added path for them, so a path that
+        mentions another and does not declare it is a broken closure
+        the store will happily hold. None and an empty list mean the
+        same thing, which is what lets the wire carry absence as a
+        repeated field with nothing in it.
+        """
         cdef string c_name = name.encode('utf-8')
         cdef string c_path = path.encode('utf-8')
         cdef string c_method = method.encode('utf-8')
         cdef string c_algo = hash_algo.encode('utf-8')
+        cdef vector[string] c_refs = _base_names(references)
         cdef CStore* store = self._get()
         cdef CStorePath* out
         with nogil:
             out = add_path_to_store(
-                deref(store), c_name, c_path, c_method, c_algo)
+                deref(store), c_name, c_path, c_method, c_algo, c_refs)
         cdef StorePath sp = StorePath.__new__(StorePath)
         sp._ptr = out
         return sp

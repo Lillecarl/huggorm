@@ -431,6 +431,32 @@ async def test_a_path_info_crosses_as_a_value(
     await store.aclose()
 
 
+async def test_a_reference_list_crosses_both_ways(
+        client: Any, tmp_path: Any) -> None:
+    """A container of wire values, in a parameter and in a return.
+
+    This is the round trip an empty list cannot prove. Going out, a
+    list of StorePath fills a repeated field of messages; coming back,
+    the same field rebuilds real StorePath objects rather than the
+    protobuf container they arrived in.
+
+    The default proves the other half: `references` may be omitted,
+    and absence crosses as a repeated field with nothing in it because
+    that is the only thing it can be."""
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    target = await store.add_to_store("target", b"pointed at\n")
+    holder = await store.add_to_store(
+        "holder", b"points at a target\n", references=[target])
+
+    info = await store.query_path_info(holder)
+    references = info.references()
+    assert [r.to_string() for r in references] == [target.to_string()]
+    assert all(isinstance(r, cythonix_bindings.StorePath) for r in references)
+
+    assert (await store.query_path_info(target)).references() == []
+    await store.aclose()
+
+
 async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
     with pytest.raises(TypeError, match="threading policy"):
         await client.call_function("gc_release_thread")

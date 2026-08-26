@@ -258,6 +258,42 @@ def test_a_store_answers_for_a_path_it_holds(
     assert info.sigs() == []
 
 
+def test_a_store_records_the_references_it_is_told(
+        chroot: Store, source: pathlib.Path) -> None:
+    """The other direction of the same field.
+
+    Nix does not scan an added path for references - it is told them -
+    so this is the only way a store ever learns one for a path that
+    was added rather than built. Reading it back through
+    query_path_info is what proves the two halves name the same
+    thing."""
+    target = chroot.add_path_to_store("tree", str(source))
+    holder = chroot.add_to_store("holder", b"points at a tree\n",
+                                 references=[target])
+
+    info = chroot.query_path_info(holder)
+    assert [r.to_string() for r in info.references()] == [target.to_string()]
+
+    # None and [] are the same answer, and both are the default. A
+    # repeated field has no presence, so there is nothing else absence
+    # could mean.
+    nothing: list[list[StorePath] | None] = [None, []]
+    for empty in nothing:
+        alone = chroot.add_to_store("alone", b"points at nothing\n",
+                                    references=empty)
+        assert chroot.query_path_info(alone).references() == []
+
+
+def test_a_reference_must_be_a_store_path(chroot: Store) -> None:
+    """The list is typed, so a string is refused before libstore sees
+    it. A base name is not a StorePath even when it reads like one:
+    only the class has parsed it."""
+    with pytest.raises(TypeError):
+        chroot.add_to_store(
+            "holder", b"x",
+            references=[HELLO])  # type: ignore[list-item]
+
+
 def test_a_path_info_is_produced_not_constructed(chroot: Store) -> None:
     """Every field comes from the store's database, so there is
     nothing a caller could correctly build one from.

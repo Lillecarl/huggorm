@@ -106,12 +106,31 @@ inline nix::StorePath * parse_store_path(const nix::Store & store, const std::st
  * enforces the rest - a hash method whose ingestion is not flat is
  * refused, by libstore, with libstore's own message.
  */
+
+/**
+ * Base names to the set libstore takes.
+ *
+ * A pxd can declare a vector and cannot declare a std::set, so the
+ * crossing point is a vector - the same flattening path_info does in
+ * the other direction. nix::StorePath's own constructor parses each
+ * name, so a malformed one raises here rather than reaching the
+ * store.
+ */
+inline nix::StorePathSet store_path_set(const std::vector<std::string> & names)
+{
+    nix::StorePathSet out;
+    for (auto & name : names)
+        out.insert(nix::StorePath(name));
+    return out;
+}
+
 inline nix::StorePath * add_to_store(
     nix::Store & store,
     const std::string & name,
     const std::string & data,
     const std::string & method,
-    const std::string & hash_algo)
+    const std::string & hash_algo,
+    const std::vector<std::string> & references)
 {
     // An lvalue, so the string_view inside cannot dangle - which is
     // the case StringSource deletes its rvalue constructor to stop.
@@ -121,7 +140,8 @@ inline nix::StorePath * add_to_store(
         name,
         nix::FileSerialisationMethod::Flat,
         nix::ContentAddressMethod::parse(method),
-        nix::parseHashAlgo(hash_algo)));
+        nix::parseHashAlgo(hash_algo),
+        store_path_set(references)));
 }
 
 /**
@@ -146,7 +166,8 @@ inline nix::StorePath * add_path_to_store(
     const std::string & name,
     const std::string & path,
     const std::string & method,
-    const std::string & hash_algo)
+    const std::string & hash_algo,
+    const std::vector<std::string> & references)
 {
     auto source = nix::PosixSourceAccessor::createAtRoot(
         std::filesystem::weakly_canonical(std::filesystem::path{path}));
@@ -154,7 +175,8 @@ inline nix::StorePath * add_path_to_store(
         name,
         source,
         nix::ContentAddressMethod::parse(method),
-        nix::parseHashAlgo(hash_algo)));
+        nix::parseHashAlgo(hash_algo),
+        store_path_set(references)));
 }
 
 /**
