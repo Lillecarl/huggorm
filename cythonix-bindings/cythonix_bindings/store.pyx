@@ -21,6 +21,7 @@ from cythonix_bindings.c_store cimport (
     CStoreLocation,
     add_path_to_store,
     add_to_store,
+    follow_links_to_store_path,
     init_libstore,
     open_store,
     parse_store_path,
@@ -550,6 +551,41 @@ cdef class Store:
         return StoreLocation._from_parts(
             StorePath(out.path.decode('utf-8')),
             out.sub_path.decode('utf-8'))
+
+    def follow_links_to_store_path(self, path: str) -> StorePath:
+        """The same question as `to_store_path`, asked of a symlink.
+
+        `to_store_path` is string work and never reads the filesystem,
+        so it cannot answer for `/run/current-system` or for a
+        `result` symlink: neither is in the store, and both point at
+        something that is. This one follows links until it lands in
+        the store, then splits.
+
+        Only the store path comes back. Upstream drops the sub-path
+        here and this does too - the file the caller named is not
+        where the link pointed, so a sub-path taken from the RESOLVED
+        path would name something the caller never asked about.
+
+        A relative path is resolved against the working directory, by
+        libstore rather than here. Over RPC that is the SERVER's
+        working directory, which is another reason to pass an absolute
+        one.
+
+        A path that is already in the store is answered without
+        touching the filesystem at all: the loop tests that first. So
+        this is a superset of `to_store_path`, minus the sub-path.
+
+        Raises BadStorePath when the links run out somewhere else -
+        the narrow type, unlike `to_store_path`, and that asymmetry is
+        upstream's."""
+        cdef string c_path = path.encode('utf-8')
+        cdef CStore* store = self._get()
+        cdef CStorePath* out
+        with nogil:
+            out = follow_links_to_store_path(deref(store), c_path)
+        cdef StorePath sp = StorePath.__new__(StorePath)
+        sp._ptr = out
+        return sp
 
     def print_store_path(self, StorePath path) -> str:
         """The path as an absolute filesystem path in this store."""

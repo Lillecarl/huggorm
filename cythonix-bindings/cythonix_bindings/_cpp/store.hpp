@@ -108,6 +108,23 @@ inline StoreLocationParts to_store_path(const nix::Store & store, const std::str
     };
 }
 
+/**
+ * The same question as to_store_path, asked of a symlink.
+ *
+ * `to_store_path` is string work and never reads the filesystem, so it
+ * cannot answer for `/run/current-system` or for a `result` symlink -
+ * neither is in the store, and both point at something that is. This
+ * one follows links until it lands in the store, then splits.
+ *
+ * Upstream keeps only the store path and drops the sub-path, so this
+ * does too. A pointer for the usual reason: nix::StorePath is not
+ * default-constructible.
+ */
+inline nix::StorePath * follow_links_to_store_path(const nix::Store & store, const std::string & path)
+{
+    return new nix::StorePath(store.followLinksToStorePath(path));
+}
+
 inline nix::StorePath * parse_store_path(const nix::Store & store, const std::string & path)
 {
     return new nix::StorePath(store.parseStorePath(path));

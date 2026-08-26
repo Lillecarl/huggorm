@@ -357,6 +357,49 @@ def test_a_file_outside_the_store_has_no_holder(chroot: Store) -> None:
         chroot.to_store_path("/nix/store")
 
 
+def test_a_store_follows_a_link_into_itself(
+        chroot: Store, source: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """What to_store_path cannot do, and why the second call exists.
+
+    A `result` symlink is not in the store; it POINTS at something
+    that is. to_store_path splits a string and never reads the
+    filesystem, so it can only refuse. This one follows the link
+    first.
+
+    Hermetic because followLinksToStore reads the LINK, not its
+    target: readlink answers for a symlink whose target does not exist
+    on this machine, which is exactly a chroot store's situation."""
+    path = chroot.add_path_to_store("tree", str(source))
+    printed = chroot.print_store_path(path)
+
+    link = tmp_path / "result"
+    link.symlink_to(printed)
+    assert chroot.follow_links_to_store_path(str(link)).to_string() == (
+        path.to_string())
+
+    # The string-only call refuses the same input. That IS the
+    # difference between the two, spelled out.
+    with pytest.raises(NixError, match="is not in the Nix store"):
+        chroot.to_store_path(str(link))
+
+    # A path already in the store is answered without following
+    # anything, so this is a superset of the other call - minus the
+    # sub-path, which upstream drops here.
+    assert chroot.follow_links_to_store_path(
+        f"{printed}/sub/b.txt").to_string() == path.to_string()
+
+
+def test_a_link_that_leads_nowhere_near_the_store_is_refused(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    """BadStorePath, the narrow type - unlike to_store_path, which
+    answers the wide one for the same fact. The asymmetry is
+    upstream's and this asserts both halves of it."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text("not in any store\n")
+    with pytest.raises(BadStorePath, match="is not in the Nix store"):
+        chroot.follow_links_to_store_path(str(elsewhere))
+
+
 def test_a_store_location_is_produced_not_constructed() -> None:
     """Only a store can perform the split, because only a store knows
     its own directory."""
