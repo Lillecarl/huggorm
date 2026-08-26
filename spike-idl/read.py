@@ -49,7 +49,8 @@ from declare import Cxx, Decl
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
-BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod"})
+BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
+                                "overload"})
 
 
 class DeclarationError(Exception):
@@ -140,6 +141,12 @@ class Method:
     # values. So the declaration says it, in the word Python already
     # has for it.
     prop: bool = False
+    # The C++ function a FREE function binds, from @binds.
+    binds: str = ""
+    # One of several registrations under one Python name, from
+    # typing.@overload. nanobind resolves them by argument type at
+    # call time, so the declaration lists each arity it accepts.
+    overload: bool = False
     # The C++ data member behind this name, from @reads. Empty when
     # the accessor is a call rather than a field.
     reads: str = ""
@@ -165,6 +172,7 @@ class Module:
     name: str
     doc: str
     classes: tuple[Class, ...] = ()
+    functions: tuple[Method, ...] = ()
     # Local name -> name in declare. `from declare import Str as S`
     # is legal Python, so the reader follows the import rather than
     # matching the spelling it expects.
@@ -309,7 +317,14 @@ def _apply(decorators: list[ast.expr], vocab: dict[str, str],
 
 # -- methods --------------------------------------------------------------
 
-def _method(node: ast.FunctionDef, vocab: dict[str, str]) -> Method:
+def _method(node: ast.FunctionDef, vocab: dict[str, str],
+            bound: bool = True) -> Method:
+    """One declared function.
+
+    `bound=False` for a module-level one, which has no `self` to skip.
+    Reading a free function as a method silently drops its first
+    parameter, which is how `open_store(uri)` first emitted without
+    the `"uri"_a` that makes the parameter usable by keyword."""
     args = node.args
     if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         raise DeclarationError(
@@ -317,7 +332,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str]) -> Method:
                   f"parameters. C++ has no *args.")
     # Defaults bind to the LAST parameters, so line them up from the
     # right - `f(a, b=1)` has one default and it belongs to b.
-    positional = args.args[1:]
+    positional = args.args[1:] if bound else args.args
     pad = len(positional) - len(args.defaults)
     params = []
     for i, arg in enumerate(positional):
@@ -349,6 +364,9 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str]) -> Method:
         instant=bool(getattr(marked, "_instant", False)),
         prop=any(isinstance(d, ast.Name) and d.id == "property"
                  for d in node.decorator_list),
+        binds=getattr(marked, "_binds", ""),
+        overload=any(isinstance(d, ast.Name) and d.id == "overload"
+                     for d in node.decorator_list),
         reads=getattr(marked, "_reads", ""),
         cxx_body=getattr(marked, "_cxx_body", ""),
     )
@@ -390,9 +408,16 @@ def read(path: str) -> Module:
     vocab = _vocabulary(tree)
     classes = tuple(_class(n, vocab) for n in tree.body
                     if isinstance(n, ast.ClassDef) and n.decorator_list)
+    # Module-level functions are FREE bindings - nanopynix has 72 of
+    # them, `m.def("open_store", &open_store_uri, "uri"_a)` and its
+    # kind. Only decorated ones: an undecorated def at module level is
+    # a helper the declaration wrote for itself.
+    functions = tuple(_method(n, vocab, bound=False) for n in tree.body
+                      if isinstance(n, ast.FunctionDef) and n.decorator_list)
     return Module(
         name=pathlib.Path(path).stem,
         doc=ast.get_docstring(tree, clean=False) or "",
         classes=classes,
+        functions=functions,
         vocabulary=vocab,
     )

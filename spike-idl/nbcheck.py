@@ -83,6 +83,14 @@ BETTER = {
 
 # The two projects disagree, and only a person can settle it.
 DIVERGENT = {
+    ("open_store", "call_guard"):
+        "the declaration says @blocks and nanopynix binds no call_guard. "
+        "Opening a LocalStore takes a waiting flock on the temp-roots file, "
+        "and nanopynix's own comment says `lockFile` calls checkInterrupt "
+        "only AFTER flock returns - so a wait holding the GIL would freeze "
+        "every Python thread uninterruptibly. That is an argument, not a "
+        "measurement: a dummy:// open is 20us and too short to test with, "
+        "and the flock case was not reproduced. Carl decides.",
     ("StorePath", "__init__"):
         "nanopynix names the constructor parameter `path`, cythonix names it "
         "`base_name`, and the docstrings differ. Same C++ constructor, two "
@@ -127,6 +135,62 @@ def hand_written(cls_name: str) -> dict[str, str]:
         end = text.index("});", m.end()) + 3
         return accessors(text[m.start():end])
     return {}
+
+
+def free_defs() -> dict[str, list[str]]:
+    """Every module-level `m.def` in nanopynix, by Python name.
+
+    A list per name, because these overload: `open_store` is
+    registered twice, once with a uri and once without, and nanobind
+    picks by argument type at call time."""
+    out: dict[str, list[str]] = {}
+    for src in sorted(NANOPYNIX.glob("*.cpp")):
+        for m in re.finditer(r'\bm\.def\("([^"]+)",(.*?)\);',
+                             strip_comments(src.read_text()), re.S):
+            out.setdefault(m.group(1), []).append(
+                " ".join(f'm.def("{m.group(1)}",{m.group(2)});'.split()))
+    return out
+
+
+def check_functions(decl_path: str) -> list[str]:
+    """Free bindings, against nanopynix's module-level m.def calls."""
+    mod = read(decl_path)
+    if not mod.functions:
+        return []
+    want = free_defs()
+    problems = []
+    for fn in mod.functions:
+        theirs = want.get(fn.name)
+        if not theirs:
+            print(f"  {fn.name}: SKIPPED - not in nanopynix")
+            continue
+        ours = " ".join(nanobind.free_function(fn)).strip()
+        # Overloads share a name, so a match against ANY registration
+        # is the honest test - the declaration lists each arity and
+        # nanobind resolves them by type at call time.
+        # The guard sits mid-list when arguments follow it and last
+        # when none do, so drop it by pattern rather than by literal -
+        # the literal-with-trailing-comma version silently failed to
+        # strip the no-argument overload and reported a false diff.
+        def nogil(t: str) -> str:
+            return re.sub(r",?\s*nb::call_guard<nb::gil_scoped_release>\(\)",
+                          "", t)
+
+        stripped = [nogil(t) for t in theirs]
+        bare = nogil(ours)
+        if bare in stripped:
+            note = ""
+            if bare != ours and (fn.name, "call_guard") in DIVERGENT:
+                note = " (+ call_guard, see below)"
+            print(f"  {fn.name}: matches a nanopynix registration{note}")
+            if note:
+                print(f"    call_guard: THE TWO PROJECTS DISAGREE. "
+                      f"{DIVERGENT[(fn.name, 'call_guard')]}")
+            continue
+        problems.append(f"  {fn.name}:")
+        problems.append(f"    nanopynix: {theirs[0][:150]}")
+        problems.append(f"    emitted:   {ours[:150]}")
+    return problems
 
 
 def check(decl_path: str) -> list[str]:
@@ -184,11 +248,12 @@ def check(decl_path: str) -> list[str]:
 
 
 def main() -> int:
-    names = sys.argv[1:] or ["path.py", "pathinfo.py"]
+    names = sys.argv[1:] or ["decl/path.py", "decl/pathinfo.py", "decl/storefns.py"]
     print(f"emitted nanobind vs {NANOPYNIX}")
     problems = []
     for n in names:
         problems += check(n)
+        problems += check_functions(n)
     if problems:
         print("\n".join(["", "FAILED:", *problems]))
         return 1

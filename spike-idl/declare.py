@@ -230,3 +230,22 @@ def instant[F: Callable[..., Any]](fn: F) -> F:
     transitions to save nothing."""
     fn._instant = True  # type: ignore[attr-defined]
     return fn
+
+
+def binds[F: Callable[..., Any]](name: str) -> Callable[[F], F]:
+    """The C++ function this free function binds.
+
+    A class says `@binding(cxx=...)` because it maps onto a type. A
+    free function maps onto a function, and usually one written by
+    hand: nanopynix's `open_store` names `open_store_uri`, a helper
+    that keeps a per-state-directory cache because two LocalStores in
+    one process deadlock on a temp-roots flock.
+
+    That helper is real logic and stays hand-written C++. What the
+    declaration owns is the BINDING - the Python name, the parameter
+    names, whether the call can wait - and naming the helper is how it
+    reaches one without pretending to have written it."""
+    def apply(fn: F) -> F:
+        fn._binds = name  # type: ignore[attr-defined]
+        return fn
+    return apply

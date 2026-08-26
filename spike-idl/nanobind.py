@@ -404,6 +404,48 @@ def bind_function(cls: Class, known: dict[str, str] | None = None) -> str:
     return "\n".join([*lines, *body, "}"]) + "\n"
 
 
+def free_function(fn: Method, known: dict[str, str] | None = None) -> list[str]:
+    """One `m.def`, for a function that belongs to no class.
+
+    nanopynix has 72 of these and they are one shape:
+    `m.def("open_store", &open_store_uri, "uri"_a)`. The C++ helper is
+    hand-written - `open_store_uri` keeps a per-state-directory cache,
+    because two LocalStores in one process deadlock on a temp-roots
+    flock - and the declaration names it rather than pretending to
+    have written it.
+
+    `blocking` has no class to come from here, so a free function says
+    `@blocks` for itself."""
+    if not fn.binds:
+        raise TypeError(
+            f"{fn.name}: a free function names the C++ it binds. "
+            f'Use @binds("cxx_name").')
+    extras = []
+    if fn.blocks and not fn.instant:
+        extras.append("nb::call_guard<nb::gil_scoped_release>()")
+    for pr in fn.params:
+        arg = f'"{pr.name}"_a'
+        if pr.default is not None:
+            arg += f" = {CXX_DEFAULT.get(pr.default, pr.default)}"
+        extras.append(arg)
+    tail = "".join(f", {x}" for x in extras)
+    return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
+
+
+def free_functions(fns: tuple[Method, ...],
+                   known: dict[str, str] | None = None) -> str:
+    """Every free binding, in one function the module can call.
+
+    The same seam a class gets. nanopynix's NB_MODULE already calls
+    `nanopynix_bind_store(store)` and friends, so generated free
+    functions arrive the same way hand-written ones do."""
+    body: list[str] = []
+    for fn in fns:
+        body += free_function(fn, known)
+    return "\n".join(["static void bind_functions(nb::module_ &m) {",
+                       *body, "}"]) + "\n"
+
+
 def module(cls: Class) -> str:
     """One translation unit: the includes, then the bind function."""
     head = [*includes(cls), "", "namespace nb = nanobind;",
