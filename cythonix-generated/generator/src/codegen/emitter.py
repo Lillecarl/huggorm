@@ -2,7 +2,7 @@
 Emit ast trees from protocol dicts.
 
 Pure tree building — no I/O, no imports of the spec. Everything the
-emitter needs arrives in the dict produced by model.extract_wrapper.
+emitter needs arrives in the protocol dict a declaration produced.
 """
 
 import ast
@@ -1219,9 +1219,10 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     by_name = {p["name"]: p for p in protos}
 
     def inherited(proto: Proto) -> Proto:
-        """Methods a base already declares identically. extract_wrapper
-        walks the MRO, so a subclass proto restates everything it
-        inherits; Python does not, and neither should the stub."""
+        """Methods a base already declares identically. A subclass
+        entry restates everything it inherits, because the declaration
+        that built it inherits its base's methods; Python does not, and
+        neither should the stub."""
         out: Proto = {}
         for b in proto["bases"]:
             base = by_name.get(b.rsplit(".", 1)[-1])

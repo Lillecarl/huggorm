@@ -36,7 +36,6 @@ from codegen.model import (
     check_wrap_contract,
     extract_enum,
     extract_errors,
-    extract_wrapper,
 )
 from codegen.wiretypes import MANIFEST_SCHEMA, names_in
 from cythonix_idl.generate import (
@@ -227,20 +226,20 @@ def main(argv: list[str] | None = None) -> None:
         print("no constructible wrapper classes found", file=sys.stderr)
         sys.exit(1)
 
-    # The declarations, where there are any.
+    # Where every proto dict comes from.
     #
-    # This is the seam that ends the build's one possible order.
-    # Everything below reads a proto dict, and every proto dict has so
-    # far come from IMPORTING the compiled extension and reflecting on
-    # it - which puts the async wrappers, the protocols, the RPC stubs
-    # and the type stubs behind a C++ compiler for facts a person
-    # wrote in a declaration first. A class named here skips that.
+    # This is the seam that ended the build's one possible order.
+    # Every proto dict used to come from IMPORTING the compiled
+    # extension and reflecting on it - which put the async wrappers,
+    # the protocols, the RPC stubs and the type stubs behind a C++
+    # compiler for facts a person wrote in a declaration first.
     #
-    # Reflection still runs for it, and the two are compared. That is
-    # the point of this stage rather than a hedge: the claim is that
-    # the declaration carries everything reflection found, and the
-    # only honest way to hold it is to keep measuring until the
-    # compiled class stops existing.
+    # Reflection ran beside this for as long as there was something to
+    # measure against, and the claim held: the declaration carries
+    # everything reflection found. Then the compiled class it measured
+    # was a nanobind one, which has no signature to reflect, and the
+    # other route stopped existing.
+    #
     # Imported, not read from a file. The specification is Python and
     # so is this, so a serialisation between them would be one more
     # shape to keep in step.
@@ -248,59 +247,31 @@ def main(argv: list[str] | None = None) -> None:
     print(f"declared entries: {len(declared)} class(es) - "
           + ", ".join(sorted(declared)))
 
-    def _proto(kls: type, **kw: Any) -> Proto:
+    def _proto(kls: type) -> Proto:
+        """One binding class, as the declaration that describes it.
+
+        A COPY. `_proto` is called twice for every class - once for
+        the wrappers and once for the stubs - and the wrapper pass
+        edits `methods` in place, dropping the affine-returning ones
+        from a pool class. Handing back the same dict both times let
+        that edit reach the stubs, which describe the BINDING and have
+        no such rule."""
         want = declared.get(kls.__name__)
-        # No pxd behind it, so there is nothing to reflect. `_binds`
-        # names the pxd declaration a Cython class binds, so a class
-        # without one was written by the OTHER backend - nanobind, from
-        # the same declaration this entry came from. Reflection cannot
-        # read it either: a nanobind method is a builtin with no
-        # signature, so `inspect.signature` raises rather than
-        # answering.
-        #
-        # This is the seam closing. It stayed open while both backends
-        # existed, because measuring the declaration against a compiled
-        # class is the only honest way to claim the declaration carries
-        # everything. Store reached 21 of 21 fields that way before the
-        # class it was measured against stopped existing.
-        if want is not None and not kls.__dict__.get("_binds"):
-            print(f"  {want['name']}: from the declaration, not reflected"
-                  f" (no pxd - this class is nanobind)")
-            # A COPY. `_proto` is called twice for every class - once
-            # for the wrappers and once for the stubs - and the
-            # wrapper pass edits `methods` in place, dropping the
-            # affine-returning ones from a pool class. Handing back
-            # the same dict both times let that edit reach the stubs,
-            # which describe the BINDING and have no such rule.
-            return copy.deepcopy(want)
-        reflected = extract_wrapper(kls, **kw)
         if want is None:
-            return reflected
-        differ = [k for k in sorted(set(want) | set(reflected))
-                  if want.get(k) != reflected.get(k)]
-        # The declaration WINS, and every field it changes is printed.
-        #
-        # Not a hedge and not a merge. Where the two disagree it is
-        # reflection that is wrong, because reflection measures what
-        # the COMPILER emitted rather than what the source said - a
-        # cdef class defining any rich comparison gets all six slots,
-        # so `PathInfo.__lt__ is not object.__lt__` answers True for a
-        # comparison that does not exist and raises (tasks/052).
-        #
-        # Printing each change is what keeps this honest. A field that
-        # moves for a reason nobody can name is a declaration to fix,
-        # and it shows up in the build log the moment it moves.
-        print(f"  {reflected['name']}: from the declaration"
-              + (f", changing {', '.join(differ)}" if differ else ""))
-        for key in differ:
-            print(f"    {key}:")
-            print(f"      reflected:   {json.dumps(reflected.get(key))}")
-            print(f"      declaration: {json.dumps(want.get(key))}")
-        return want
+            # Not a fallback. A binding module holds nothing but what
+            # a declaration emitted, so a class here that no
+            # declaration names means the two lists disagree - and
+            # guessing its surface is how a wrong answer reaches four
+            # generated files at once.
+            raise SystemExit(
+                f"{kls.__module__}.{kls.__qualname__} is in the bindings "
+                f"but no declaration names it")
+        print(f"  {want['name']}: from the declaration")
+        return copy.deepcopy(want)
 
     returned_protos = [_proto(kls) for kls in returned_classes]
     protos = [
-        _proto(svc, constructible=not svc.__dict__.get("_produced", False))
+        _proto(svc)
         for svc in wrapper_classes
     ]
 
@@ -564,15 +535,14 @@ def main(argv: list[str] | None = None) -> None:
     # affine-return drop and 018's hierarchy split, which are rules
     # about the async wrappers. The bindings themselves have neither.
     #
-    # Through `_proto`, so a declared class is declared here too. It
-    # was `extract_wrapper` directly, and that quietly undid the fix
-    # this seam exists for: `manifest.json` stopped claiming PathInfo
-    # has an ordering, and `store.pyi` went on claiming it, because
-    # the stubs never saw the declaration. A second route to the same
-    # fact is a second answer to it.
+    # Through `_proto`, so the stubs read the same declaration the
+    # rest does. A second route to the same fact was a second answer
+    # to it: reflecting here directly made `manifest.json` stop
+    # claiming PathInfo has an ordering while `store.pyi` went on
+    # claiming it, because the stubs never saw the declaration.
     all_protos = (
         [_proto(k) for k in returned_classes]
-        + [_proto(k, constructible=True) for k in wrapper_classes])
+        + [_proto(k) for k in wrapper_classes])
     # Bases before subclasses: a stub may forward-reference, but there
     # is no reason to make a reader do it.
     order_of = {p["name"]: i for i, p in enumerate(all_protos)}

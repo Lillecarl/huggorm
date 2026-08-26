@@ -1,9 +1,17 @@
 """
-Introspect binding classes into plain protocol dicts.
+The protocol dict, and the rules it has to obey.
 
-No I/O, no ast — pure reflection plus the parsed pxd surface handed in
-by the caller. The dict shape is the contract between the sources
-(the bindings pxd + the installed bindings) and the emitter (emitter.py).
+The dict shape is the contract between the declarations (which build
+it, in `cythonix_idl.manifest`) and the emitter (emitter.py). This
+file holds what neither of them owns: how one annotation is spelled,
+how one default is written back as source, and the `check_*` functions
+the build refuses to pass.
+
+Nothing here reflects a binding class any more. `extract_wrapper` did,
+and it went when the last class it could measure stopped existing -
+a nanobind method is a builtin with no signature, so reflection has
+nothing to read. `extract_errors` still imports a module, because an
+exception hierarchy is plain Python and is not declared.
 """
 
 import ast
@@ -12,7 +20,7 @@ import importlib
 import inspect
 from enum import Enum
 from types import ModuleType
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import Any, get_args, get_origin
 
 from codegen.wiretypes import (
     CONTAINERS,
@@ -70,17 +78,6 @@ _PRIMITIVES = {
     "bint": "bool",
     "void": "None",
 }
-
-# Live Cython annotations can carry C-only type names verbatim (Cython
-# stores the written annotation string). Normalize them here, once, so
-# everything downstream - emitter imports, gRPC schema, remote codec -
-# sees plain Python scalars.
-_C_ALIASES = {"bint": "bool"}
-
-
-def _normalize(t: str) -> str:
-    return _C_ALIASES.get(t, t)
-
 
 def _qualified(cls: Any) -> str:
     """One resolved class, as the annotation that would name it.
@@ -209,138 +206,6 @@ def default_source(value: Any, type_str: str, where: str) -> str | None:
             f"{where}: default {value!r} is not a literal the generated "
             f"surfaces can write ({exc})") from None
     return src
-
-
-def _param(p: inspect.Parameter, type_str: str, where: str) -> Proto:
-    """One parameter, as every layer above reads it."""
-    return {
-        "name": p.name,
-        "type": type_str,
-        "default": default_source(p.default, type_str, f"{where}:{p.name}"),
-    }
-
-
-def extract_method(func: Any) -> Proto:
-    sig = inspect.signature(func)
-    params = list(sig.parameters.values())[1:]  # drop self
-    try:
-        hints = get_type_hints(func)
-    except Exception:
-        hints = getattr(func, "__annotations__", {})
-    return {
-        "name": func.__name__,
-        "params": [
-            _param(p,
-                   _normalize(_annotation_name(hints.get(p.name, p.annotation))),
-                   func.__name__)
-            for p in params
-        ],
-        "return_type": _normalize(_annotation_name(hints.get("return", sig.return_annotation))),
-        "doc": inspect.getdoc(func) or "",
-    }
-
-
-def extract_wrapper(cls: type, constructible: bool = False) -> Proto:
-    """
-    Reflect the live Python surface across the cythonix_bindings MRO
-    chain: every public method and property the bindings actually
-    expose, with leaf definitions winning over inherited ones.
-
-    Nothing reaches this any more. Every binding class is declared, and
-    a declared class skips reflection entirely - see `generate._proto`.
-    It is kept because reflection is still the route for a class that
-    is NOT declared, and because it is what the declaration was
-    measured against for as long as there was something to measure.
-    """
-    entries: dict[str, object] = {}
-    for klass in reversed(cls.__mro__):
-        mod = getattr(klass, "__module__", "")
-        if mod.split(".")[0] != "cythonix_bindings":
-            continue
-        for name, val in klass.__dict__.items():
-            if name.startswith("_"):
-                continue
-            entries[name] = val
-
-    methods = []
-    for name, val in entries.items():
-        if callable(val):
-            methods.append(extract_method(val))
-        elif hasattr(val, "__get__"):
-            # Readable attribute: a Python property, or a Cython getset
-            # descriptor (how cdef classes compile @property). Both
-            # resolve to a plain value on access.
-            methods.append(_reader_method(name, val))
-        # anything else (plain class attrs) is not part of the surface
-
-    ctor: list[Proto] = []
-    _ = constructible
-    return {
-        "name": cls.__qualname__,
-        "module": cls.__module__,
-        # Read from __dict__, not inspect.getdoc: a class with no
-        # docstring of its own would otherwise inherit its base's and
-        # the stub would document LocalStore with Store's text.
-        "doc": cls.__dict__.get("__doc__") or "",
-        "binds": cls.__dict__.get("_binds", ""),
-        "bases": [f"{b.__module__}.{b.__qualname__}" for b in cls.__bases__ if b is not object],
-        "threading": getattr(cls, "_threading", "affine"),
-        # Generated as a base class: carries the surface its subclasses
-        # share, and is never constructed.
-        "abstract": bool(cls.__dict__.get("_abstract", False)),
-        # Produced by something else, never constructed: __init__
-        # raises, so no surface may offer a constructor. Declared,
-        # because it is a fact only the binding knows - a class the
-        # pxd names as a method return type is produced today, which
-        # is a proxy for this and true of the others by coincidence
-        # (CMockStorePath declares constructors in the pxd and its
-        # Python __init__ still raises).
-        "produced": bool(cls.__dict__.get("_produced", False)),
-        # Wire policy for the future RPC layer: "proxy" objects keep
-        # identity and travel as handles; "value" objects are immutable
-        # and travel serialized (locally emulated as copies). Default is
-        # the safe one: stateful until proven immutable.
-        "wire": getattr(cls, "_wire", "proxy"),
-        # Serialization contract for wire-values: [[field, type], ...].
-        # The proto message shape and both codecs derive from this, so
-        # adding a wire-value type means editing the pyx and nothing
-        # else. Empty for proxies, which travel as handles.
-        "wire_fields": [list(f) for f in getattr(cls, "_wire_fields", ())],
-        # How to walk this type as a TREE, when it is one. A value that
-        # holds values cannot be described by _wire_fields: the shape is
-        # recursive and its arms are the wire kinds themselves. The RPC
-        # layer reads this instead of naming the class or its accessors
-        # (tasks/030). Absent for everything that is not a tree.
-        **({"tree": dict(cls.__dict__["_tree"])} if "_tree" in cls.__dict__ else {}),
-        # Does this class need an async wrapper at all? Only two things
-        # a wrapper buys: a hop onto a home thread, and releasing the
-        # GIL around a call that waits. A pool class whose methods
-        # cannot block gets neither, so it crosses every layer as
-        # itself - no Async form, no RPC form, no await (tasks/025).
-        # Inheritable on purpose, unlike _binds: a subclass of a
-        # non-blocking class is non-blocking until it says otherwise.
-        "blocking": bool(getattr(cls, "_blocking", True)),
-        "wrapped": getattr(cls, "_threading", "affine") == "affine"
-                   or bool(getattr(cls, "_blocking", True)),
-        # Private round-trip helpers present on the class. Not part of
-        # the surface; the contract check reads them.
-        "_helpers": sorted(h for h in ("_parts", "_from_parts") if hasattr(cls, h)),
-        # The value dunders this class actually defines. `is not
-        # object.<name>` rather than hasattr, because every class
-        # inherits all of them from object and would pass a presence
-        # test while comparing by identity (tasks/046).
-        #
-        # In the manifest rather than popped after the check, because
-        # the STUBS need it: the emitter skips every `_`-prefixed name,
-        # so without this a typechecker sees object's __eq__ and calls
-        # `a < b` an error on a class that supports it.
-        "dunders": sorted(d for d in VALUE_DUNDERS
-                          if getattr(cls, d, None) is not getattr(object, d)),
-        # Empty. A constructor's signature came from the pxd, which
-        # is gone; a declared class carries its own.
-        "ctor": ctor,
-        "methods": methods,
-    }
 
 
 def check_wire_contract(protos: list[Proto],
@@ -623,20 +488,3 @@ def check_collection_contract(protos: list[Proto]) -> list[str]:
                     f"and let the caller walk it, or realize it as a value "
                     f"tree (tasks/030).")
     return bad
-
-
-def _reader_method(name: str, val: Any) -> Proto:
-    """Protocol dict for a readable attribute: a zero-arg read. Setters
-    are not surfaced yet."""
-    ret = "Any"
-    doc = ""
-    fget = getattr(val, "fget", None)
-    if fget is not None:
-        # An unreadable signature just means the type stays Any.
-        with contextlib.suppress(TypeError, ValueError):
-            ret = _normalize(
-                _annotation_name(inspect.signature(fget).return_annotation))
-        doc = inspect.getdoc(fget) or inspect.getdoc(val) or ""
-    return {"name": name, "params": [], "return_type": ret, "doc": doc}
-
-
