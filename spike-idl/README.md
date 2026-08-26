@@ -36,14 +36,51 @@ compiler for facts a human decided in a `.pyx` before any of it began.
 
 `manifest.py` derives that same entry from the declaration.
 
-    StorePath: 17 fields, identical to the reflected entry
+    StorePath:     17 of 17 fields agree
+    PathInfo:      15 of 17
+    StoreLocation: 16 of 17
 
-All seventeen. `_binds` is "C" plus the class name. `_threading` is
+For StorePath, all seventeen. `_binds` is "C" plus the class name. `_threading` is
 what `@binding` said. The nine dunders are what `@wire_value`
 implies: a value compares, hashes and prints; `order=True` adds the
 four `functools.total_ordering` fills in; `text=` adds `__str__`.
 
 Reflection was reading back a fact written down two files earlier.
+
+### 3. Where they disagree, the declaration is right
+
+The four disagreements are all bugs in the reflected manifest, and
+one of them ships.
+
+**The stubs promise an order that raises** (tasks/052). `PathInfo`
+and `StoreLocation` are stubbed with `__lt__`, `__le__`, `__gt__`
+and `__ge__`. Neither supports any of them:
+
+    >>> a < b
+    TypeError: '<' not supported between instances of
+    'cythonix_bindings.store.PathInfo' and ...
+
+`model.py` asks `getattr(cls, "__lt__") is not object.__lt__`, and a
+cdef class defining ANY rich comparison gets all six slots filled by
+CPython. So the test answers True for a comparison that does not
+exist. StorePath passes only by luck: it really is ordered, so the
+right answer and the wrong measurement agree.
+
+Reflection measures what the COMPILER emitted. The declaration says
+what the author meant, and `order=True` is the whole of it.
+
+**`deriver` contradicts its own entry.** The reflected return type is
+`StorePath`, while the same entry's `wire_fields` say `StorePath?`
+and the docstring documents returning None. The hand-written pyx
+annotates it wrong; the declaration says `StorePath | None` and the
+wire spelling follows from it.
+
+**`ca` reflects as `typing.Union[str, None]`** where the source said
+`str | None` - harmless, and a second spelling of one type is still
+a second spelling.
+
+Each is pinned in `check.py` on BOTH values, so a reflected entry
+that changes stops being excused and fails.
 
 ## The declaration never executes
 
@@ -229,9 +266,12 @@ build changes - `manifest.py` emits an entry and diffs it, it does not
 feed the real generator. No migration of store.pyx: one module proves
 or kills the idea, and this one proves it.
 
-The manifest half covers ONE class, which bounds what its agreement
-proves. `wrapped` is `threading == "affine" or blocking`, and for
-StorePath both halves are false - so deleting either one still
-passes. Perturbing the DECLARATION catches it: `blocking=True` moves
-both `blocking` and `wrapped`. But a second class of a different
-shape is what would make that field load-bearing.
+`emit.py` writes no PRODUCED value yet. `PathInfo` and
+`StoreLocation` hold no C++ at all - object slots something else
+fills, `_from_parts` through `__new__`, an `__init__` that refuses -
+and `_round_trip` says so rather than emitting the constructible
+form. The manifest half covers them; the Cython half does not.
+
+That is why store.py's Cython check prints SKIPPED rather than
+passing: both classes live inside the repo's `store.pyx` beside
+`Store`, which the emitter also cannot write.
