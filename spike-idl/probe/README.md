@@ -39,4 +39,4 @@ and a generator could write the first from the second.
    slots something else fills, `_from_parts` through `__new__`, and an
    `__init__` that refuses. What `StoreLocation` and `PathInfo` need.
 
-`../check_shims.py` asserts what all of this assumes about Cython.
+`check_shims.py` asserts what all of this assumes about Cython.
