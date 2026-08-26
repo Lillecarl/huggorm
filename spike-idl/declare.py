@@ -1,0 +1,153 @@
+"""
+The vocabulary a binding declaration is written in.
+
+A declaration file is plain Python: a class with typed methods, `...`
+bodies and docstrings. Everything C++ needs that Python cannot say
+arrives one of two ways, and the split is the point.
+
+**Annotated type aliases** carry facts about a TYPE. `StrView` is
+`std::string_view` wherever it appears, so the fact is written once
+and read by name. A per-method `Annotated[str, Cxx("string_view")]`
+would say the same thing and drown the signature it describes.
+
+**Decorators** carry facts about a METHOD or a CLASS: which header it
+comes from, what C++ calls it, whether it can block. A plain `def`
+takes a decorator, which is exactly what a cdef method cannot - and
+the reason the current bindings put class markers in the class body
+and free-function markers in decorators.
+
+What is NOT here is any statement about how to WRITE the binding. The
+declaration says `to_string` returns a `string_view`; that a view must
+be copied before it reaches Python is the emitter's rule, because it
+is a fact about the boundary rather than about nix::StorePath.
+"""
+
+from dataclasses import dataclass, field
+from typing import Annotated, Any, Callable, TypeVar
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+@dataclass(frozen=True)
+class Cxx:
+    """How a Python type is spelled in C++.
+
+    `copy` says what the boundary owes it. "view" means the value
+    points into storage this binding does not own, so it is copied
+    before it reaches Python - a view outliving its owner is a
+    dangling pointer, not an exception."""
+
+    spelling: str
+    copy: str = "value"
+
+
+# The types a Nix binding actually names. Written once, read by name.
+Str = Annotated[str, Cxx("string")]
+StrView = Annotated[str, Cxx("string_view", copy="view")]
+Bint = Annotated[bool, Cxx("bint")]
+
+
+@dataclass(frozen=True)
+class Field:
+    """One declared part of a wire value.
+
+    `read` names the accessor that produces it, because the field name
+    and the accessor need not agree: a StorePath's part is called
+    `base_name` and is read by `to_string`."""
+
+    name: str
+    type: str
+    read: str
+
+
+@dataclass
+class Decl:
+    """Everything the emitter knows about one bound class."""
+
+    header: str = ""
+    cxx: str = ""
+    threading: str = "pool"
+    blocking: bool = True
+    wire: str = ""
+    fields: tuple[Field, ...] = ()
+    compare: str = ""
+    text: str = ""
+    order: bool = False
+    custom: dict[str, str] = field(default_factory=dict)
+
+
+def _decl(cls: type) -> Decl:
+    if "_decl" not in cls.__dict__:
+        cls._decl = Decl()  # type: ignore[attr-defined]
+    d: Decl = cls.__dict__["_decl"]
+    return d
+
+
+def header(path: str) -> Callable[[type], type]:
+    """The C++ header this class is declared in."""
+    def apply(cls: type) -> type:
+        _decl(cls).header = path
+        return cls
+    return apply
+
+
+def binding(cxx: str, threading: str = "pool",
+            blocking: bool = True) -> Callable[[type], type]:
+    """The C++ class this binds, and how it may be called.
+
+    `blocking=False` means no method here can wait: every one is a
+    read of memory the object already owns. It decides whether the
+    emitter writes `with nogil:` and whether anything above needs a
+    thread to hop to."""
+    def apply(cls: type) -> type:
+        d = _decl(cls)
+        d.cxx, d.threading, d.blocking = cxx, threading, blocking
+        return cls
+    return apply
+
+
+def wire_value(fields: tuple[Field, ...], compare: str = "parts",
+               text: str = "", order: bool = False) -> Callable[[type], type]:
+    """This class serializes, and here is what it is made of.
+
+    `compare="cxx"` says the C++ class carries its own equality, so
+    the binding declares the operator instead of comparing the parts
+    in Python. `text` names the accessor `str()` answers with, when
+    one reads better than the repr. `order` asks for the comparison
+    operators, which only a type with a natural order should want."""
+    def apply(cls: type) -> type:
+        d = _decl(cls)
+        d.wire, d.fields, d.compare = "value", fields, compare
+        d.text, d.order = text, order
+        return cls
+    return apply
+
+
+def custom(name: str, source: str) -> Callable[[type], type]:
+    """Cython this emitter cannot derive, carried verbatim.
+
+    The escape hatch, and it is counted. `_cpp/README` makes the same
+    bargain for C++: a hatch nobody measures becomes the place the
+    real code lives. The emitter reports how many lines went through
+    here, so growth is visible rather than gradual."""
+    def apply(cls: type) -> type:
+        _decl(cls).custom[name] = source
+        return cls
+    return apply
+
+
+def cxx_name(name: str) -> Callable[[F], F]:
+    """What C++ calls this method, when it is not what Python does."""
+    def apply(fn: F) -> F:
+        fn._cxx_name = name  # type: ignore[attr-defined]
+        return fn
+    return apply
+
+
+def blocks(fn: F) -> F:
+    """This method can wait, so the emitter releases the GIL around it.
+
+    Per-method rather than per-class, because a class whose calls
+    mostly block still has accessors that cannot."""
+    fn._blocks = True  # type: ignore[attr-defined]
+    return fn
