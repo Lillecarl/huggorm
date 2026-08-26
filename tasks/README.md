@@ -60,6 +60,12 @@ which was superseded rather than fixed.
   surface by kind, the demos moved to examples/, the server reports
   through a logger, and the pool takes a size. A test derives the
   export list from the two packages rather than keeping a second copy.
+- The source-format question has a spike, in `spike-idl/`, and no
+  decision yet. A Python IDL regenerates the binding layer diff-clean;
+  Cython's pure mode, extended, does better by making the
+  implementation file its own declaration. 050 records what was
+  learned, PURE-MODE.md records the costs. Nothing in the three
+  packages has moved.
 - 050 (shim methods hand-type their signatures) is PARKED, not fixed.
   Its steps 1-2 are scaffolding for a hand-written pyx, which a
   generated one obsoletes. Its "end state" section survives and is

@@ -91,3 +91,36 @@ exist. Nothing here is started, and nothing should be.
 
 The "end state" section above survives, and is the reason: it is what
 the IDL idea arrives at, faster.
+
+## What the spike found, 2026-08-26
+
+`spike-idl/` holds the investigation. Two things came out of it, and
+the second replaced the first.
+
+**A Python IDL works.** `path.pyx`, `path.pxd` and `c_path.pxd` were
+regenerated from a plain `.py` declaration read by import, compiled in
+place of the hand-written ones, and passed the whole gate. Ignoring
+comments and docstring wording the diff was empty. `spike-idl/README.md`
+has it, including four bugs that emitting found and a template would
+have shipped - three of which compiled fine.
+
+**Cython's pure mode is the better target.** Carl asked whether it
+could be extended rather than worked around. It can, in about ninety
+lines using Cython's own idiom, and then the implementation file IS the
+declaration: the same file compiles as a C++ extension type and imports
+as ordinary Python. `spike-idl/PURE-MODE.md` has the evidence and the
+costs; `spike-idl/probe/` rebuilds it in one command.
+
+Under that shape a module is two hand-written `.py` files and two
+GENERATED `.pxd` files - so the duplication this task exists to
+complain about is gone, because both pxds are derived. Steps 1-2 above
+stay superseded either way.
+
+Three costs are on the record and one is sharper than it looks:
+`new` is a SyntaxError to Python, so allocation goes through a smart
+pointer AND through a factory declared in the pxd, because
+`make_shared` carries libcpp's own `except +` and would swallow a
+custom exception translator. Typed libstore errors are the whole
+reason this repo binds C++, so that shim is not optional.
+
+**The decision is open.** Nothing in the three packages has moved.
