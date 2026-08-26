@@ -82,6 +82,15 @@ def code_only(text: str) -> list[str]:
 
 def check_cython(decl_path: pathlib.Path) -> list[str]:
     mod = read(str(decl_path))
+    if len(mod.classes) != 1:
+        # store.py declares PathInfo and StoreLocation, and both live
+        # inside the repo's store.pyx beside Store - which the emitter
+        # cannot write, because nix::Store is abstract and opened by a
+        # URI. A per-file diff has nothing to compare against, so it
+        # says so rather than passing quietly.
+        print(f"  {decl_path.name}: SKIPPED - {len(mod.classes)} classes "
+              f"share one emitted module")
+        return []
     cls = mod.classes[0]
     files = emit.cython_files(cls, mod.name, mod.doc)
     problems = []
@@ -107,47 +116,120 @@ def check_cython(decl_path: pathlib.Path) -> list[str]:
     return problems
 
 
+# Where the two routes disagree and the DECLARATION is right. Each
+# one is a bug in the reflected manifest, with the evidence that says
+# so - not a gap in this route, and not something to normalise away.
+#
+# A disagreement not listed here is a real failure.
+KNOWN_WRONG = {
+    ("PathInfo", "dunders"):
+        "reflection cannot tell a Cython richcompare slot from an "
+        "implemented comparison. PathInfo defines only __eq__, so Cython "
+        "fills all six slots and `getattr(cls, '__lt__') is not "
+        "object.__lt__` answers True. The shipped stub declares __lt__, "
+        "so sorted(infos) typechecks - and raises TypeError at runtime.",
+    ("StoreLocation", "dunders"):
+        "the same cause as PathInfo's, found independently. Both refuse "
+        "`a < b` at runtime with TypeError, and both are stubbed as "
+        "ordering - so the bug is systemic to every value type that "
+        "defines __eq__ without ordering, not a quirk of one class.",
+}
+
+# The same, one return type at a time. `methods` is not in KNOWN_WRONG
+# above, because excusing the whole key would excuse every future
+# change to any of nine methods. Each entry pins BOTH values, so a
+# reflected entry that changes stops being excused and fails.
+KNOWN_WRONG_RETURNS = {
+    ("PathInfo", "ca"): (
+        "typing.Union[str, None]", "str | None",
+        "one type, two spellings. model.py reads a typing object and "
+        "renders it; the declaration says what the source said."),
+    ("PathInfo", "deriver"): (
+        "StorePath", "StorePath | None",
+        "the reflected entry contradicts ITSELF: its own wire_fields "
+        "say StorePath?. The hand-written pyx annotates deriver without "
+        "the None its docstring documents returning."),
+}
+
+
+def _methods_differ(name: str, want: list, got: list) -> list[str]:
+    """Method lists compared one method at a time.
+
+    Only a return type this file pins on BOTH sides is excused.
+    Anything else - a renamed method, a changed parameter, a return
+    type that moved - is a failure."""
+    problems = []
+    if [m["name"] for m in want] != [m["name"] for m in got]:
+        return [f"  {name}.methods: the method NAMES differ",
+                f"    reflected:   {[m['name'] for m in want]}",
+                f"    declaration: {[m['name'] for m in got]}"]
+    for a, b in zip(want, got, strict=True):
+        if a == b:
+            continue
+        pinned = KNOWN_WRONG_RETURNS.get((name, a["name"]))
+        if (pinned and a["return_type"] == pinned[0]
+                and b["return_type"] == pinned[1]
+                and a["params"] == b["params"]
+                and a["doc"] == b["doc"]):
+            print(f"    {a['name']}: the reflected return type is WRONG. "
+                  f"{pinned[2]}")
+            continue
+        problems.append(f"  {name}.methods[{a['name']}]:")
+        problems.append(f"    reflected:   {json.dumps(a)}")
+        problems.append(f"    declaration: {json.dumps(b)}")
+    return problems
+
+
 def check_manifest(decl_path: pathlib.Path,
                    manifest_path: pathlib.Path) -> list[str]:
     mod = read(str(decl_path))
-    cls = mod.classes[0]
-    got = manifest.entry(cls, "cythonix_bindings", mod.name)
     built = json.loads(manifest_path.read_text())
-    want = built["wrappers"].get(cls.name)
-    if want is None:
-        return [f"{cls.name} is not in {manifest_path}"]
-
     problems = []
-    for key in sorted(set(want) | set(got)):
-        if want.get(key) == got.get(key):
+    for cls in mod.classes:
+        got = manifest.entry(cls, "cythonix_bindings", mod.name)
+        want = built["wrappers"].get(cls.name)
+        if want is None:
+            problems.append(f"{cls.name} is not in {manifest_path.name}")
             continue
-        problems.append(f"  {key}:")
-        problems.append(f"    reflected:   {json.dumps(want.get(key))}")
-        problems.append(f"    declaration: {json.dumps(got.get(key))}")
-    if not problems:
-        print(f"  {cls.name}: {len(want)} fields, identical to the "
-              f"reflected entry")
+        differ = [k for k in sorted(set(want) | set(got))
+                  if want.get(k) != got.get(k)]
+        known = [k for k in differ if (cls.name, k) in KNOWN_WRONG]
+        real = [k for k in differ if (cls.name, k) not in KNOWN_WRONG]
+        agreed = len(set(want) | set(got)) - len(differ)
+        print(f"  {cls.name}: {agreed} of {len(set(want) | set(got))} "
+              f"fields agree")
+        for key in known:
+            print(f"    {key}: the reflected entry is WRONG. "
+                  f"{KNOWN_WRONG[(cls.name, key)]}")
+        if "methods" in real:
+            real.remove("methods")
+            problems += _methods_differ(cls.name, want["methods"],
+                                        got["methods"])
+        for key in real:
+            problems.append(f"  {cls.name}.{key}:")
+            problems.append(f"    reflected:   {json.dumps(want.get(key))}")
+            problems.append(f"    declaration: {json.dumps(got.get(key))}")
     return problems
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("declaration", nargs="?", default="path.py")
+    ap.add_argument("declaration", nargs="*", default=["path.py", "store.py"])
     ap.add_argument("--manifest", default="")
     args = ap.parse_args()
     here = pathlib.Path(__file__).resolve().parent
-    decl = here / args.declaration
-
-    print(f"reading {decl.name} (parse only - it never runs)")
+    names = args.declaration or ["path.py", "store.py"]
     problems = []
-    print("emitted Cython vs the repo's:")
-    problems += check_cython(decl)
-
-    if args.manifest:
-        print("declared manifest entry vs the reflected one:")
-        problems += check_manifest(decl, pathlib.Path(args.manifest))
-    else:
-        print("manifest: SKIPPED - pass --manifest <manifest.json>")
+    for name in names:
+        decl = here / name
+        print(f"{decl.name} (parse only - it never runs)")
+        print("  emitted Cython vs the repo's:")
+        problems += check_cython(decl)
+        if args.manifest:
+            print("  declared manifest entry vs the reflected one:")
+            problems += check_manifest(decl, pathlib.Path(args.manifest))
+        else:
+            print("  manifest: SKIPPED - pass --manifest <manifest.json>")
 
     if problems:
         print("\n".join(["", "FAILED:", *problems]))
