@@ -87,39 +87,98 @@ complained about - a signature stated twice with nothing comparing
 them - is stated in the two pxd files, and those are exactly the two
 pure mode cannot touch.
 
-## The hybrid worth deciding on
+## Extending it: all but one blocker comes off
 
-Emit a pure-mode `.py` as the implementation file instead of a
-`.pyx`, keeping the generator for all three.
+Carl asked whether pure mode can be EXTENDED to cover this. It can,
+and the extension is about ninety lines using Cython's own idiom.
 
-This buys back the guarantee the spike README records as lost. A
-`.pyx` has no Python ast, so `emitter.py`'s "impossible to emit code
-that does not parse" does not apply and the spike builds lines
-instead - which cost four bugs, three of which compiled fine. A
-pure-mode `.py` is valid Python: `make_shared[CThing](c_name)` is a
-Subscript plus a Call, `with cython.nogil:` is a With, `c_name:
-string = ...` is an AnnAssign. All of it is representable in Python's
-ast, so `ast.unparse` becomes available again for the largest and
-most error-prone of the three emitted files.
+`Cython/Shadow.py` already publishes ONE cimport twin so that a pure
+file stays importable: `sys.modules['cython.cimports.libc.math']` is
+the stdlib `math`. Nothing stops the same move being made wider. What
+stops it working out of the box is that `CythonCImports.__getattr__`
+refuses every dunder BEFORE its `import_module` fallback, so Python's
+import machinery cannot even ask for `__spec__`.
 
-The cost is ownership style: smart pointers rather than
-`new`/`del`, because `new` cannot appear in a file Python must parse.
+`cyshims.py` replaces that mock with a real `ModuleType` whose
+`__path__` IS `sys.path`. A submodule search walks `__path__` as
+directories, so `cython.cimports.c_store` finds the ordinary
+`c_store.py` sitting beside the binding. Two smaller pieces go with
+it: stand-ins for the `libcpp` declarations a C++ binding names, and
+`cython.operator`, which Shadow also leaves out.
 
-The two pxd files stay text-emitted either way. They are also the
-small, regular ones - the current spike emits both diff-clean.
+The stand-ins keep their template parameters, so
+`shared_ptr[CStorePath]` reads back as `shared_ptr[CStorePath]` rather
+than as `shared_ptr` - which is the difference between "it imports"
+and "a generator can write the declaration back out".
 
-## Recommendation
+Proved on one file. The SAME `ann.py`:
 
-Keep emitting, and put the pure-mode `.py` question to Carl as a
-choice about the IMPLEMENTATION file only:
+- cythonized with `language="c++"`, produced a working extension type;
+- imported as ordinary Python, and answered
+  `Thing.__annotations__['_ptr'].spelling()` with `shared_ptr[CThing]`.
 
-- **`.pyx` output** - full C++ vocabulary, raw pointers, matches what
-  is there today; emitted as text, gated by compiling plus a golden
-  diff.
-- **pure `.py` output** - `ast.unparse` back, at the price of
-  smart-pointer ownership everywhere and a file that parses as Python
-  but does not import as it.
+That is the property the IDL spike was built to get, obtained without
+an IDL: the implementation file IS the declaration, readable by
+import, and it compiles.
 
-What pure mode is NOT is a way to stop generating. Both pxd files
-remain, they remain duplicated, and they remain the reason this whole
-direction started.
+## What the design becomes
+
+Per module, two files written by hand and two generated:
+
+| file | who writes it |
+| --- | --- |
+| `c_store.py` | hand - the C++ surface as plain Python classes |
+| `store.py` | hand - the implementation, Cython pure mode |
+| `c_store.pxd` | GENERATED from `c_store.py` |
+| `store.pxd` | GENERATED from `store.py`, by reflection |
+
+Three hand-written files become two, the duplication tasks/050
+complained about is gone because both pxd files are derived, and there
+is no emitted `.pyx` at all - so the `ast.unparse` question disappears
+rather than being answered.
+
+## What it still costs
+
+**Smart pointers, not raw ones.** `new` is a SyntaxError to Python, so
+allocation goes through `make_shared`/`make_unique`. An ownership
+decision made by syntax. `shared_ptr` is arguably the better choice
+anyway, but it is not being chosen on its merits.
+
+**`@cython.cfunc` is erased at import.** `Shadow.py:103` sets
+`cclass = ccall = cfunc = _EmptyDecoratorAndManager()`, which returns
+the function unchanged - so a reading generator cannot tell which
+methods are cdef, and `store.pxd` must declare every one of them.
+Either the bindings avoid cfuncs (with `shared_ptr` the `_get()` NULL
+guard is the only one, and it is avoidable), or `declare.py` supplies
+a marker of its own that also satisfies the compiler.
+
+**The shim patches a module Cython owns.** It depends on
+`CythonCImports` existing, on Shadow publishing its mock at import
+time, and on being imported AFTER `cython` so it lands second. A
+Cython release could break it silently. That is a real maintenance
+cost and it should be a loud test, not a comment.
+
+**`cython.cimports` cannot be a genuine package.** Pointing `__path__`
+at `sys.path` means any top-level module is reachable as a cimport
+twin. Harmless here, and sloppy: a narrower finder would be better if
+this ever leaves a spike.
+
+## Recommendation, revised
+
+Pure mode is the better target, and the earlier conclusion in this
+file was wrong in its emphasis: the blockers are real but only one of
+them is structural.
+
+The one that stays is that `cdef extern from` has no pure spelling. It
+stops being a problem the moment the extern pxd is GENERATED from a
+plain-Python twin - and that twin is the same file that makes the
+binding importable. One artifact, two jobs.
+
+So the direction to take is not "IDL emits three Cython files". It is
+"two plain Python files per module, two pxd files derived from them,
+and the implementation compiled in place". Smaller, and the file a
+person edits is the file that runs.
+
+The spike so far is not wasted: `emit.py` already writes both pxd
+shapes diff-clean, and those are exactly the two files this design
+still needs.
