@@ -64,8 +64,10 @@ class Field:
 class Decl:
     """Everything the emitter knows about one bound class."""
 
+    name: str = ""
     header: str = ""
     cxx: str = ""
+    built_by: str = ""
     threading: str = "pool"
     blocking: bool = True
     wire: str = ""
@@ -91,7 +93,26 @@ def header(path: str) -> Callable[[type], type]:
     return apply
 
 
-def binding(cxx: str, threading: str = "pool",
+def produced(by: str) -> Callable[[type], type]:
+    """This class is built by something else, never constructed.
+
+    A produced value holds no C++ object at all: the object that made
+    it flattened one, and what is left is Python slots. So the shape
+    is different from a bound class rather than a variation on it -
+    no header, no pointer, an __init__ that raises, and a _from_parts
+    that fills a __new__ instance because there is no constructor to
+    call.
+
+    `by` names what makes one, and it is not decoration: it is the
+    sentence the refusing __init__ raises with, so a caller who
+    guesses wrong is told where to look."""
+    def apply(cls: type) -> type:
+        _decl(cls).built_by = by
+        return cls
+    return apply
+
+
+def binding(cxx: str = "", threading: str = "pool",
             blocking: bool = True) -> Callable[[type], type]:
     """The C++ class this binds, and how it may be called.
 
@@ -106,7 +127,7 @@ def binding(cxx: str, threading: str = "pool",
     return apply
 
 
-def wire_value(fields: tuple[Field, ...], compare: str = "parts",
+def wire_value(fields: tuple[Field, ...] = (), compare: str = "parts",
                text: str = "", order: bool = False) -> Callable[[type], type]:
     """This class serializes, and here is what it is made of.
 
