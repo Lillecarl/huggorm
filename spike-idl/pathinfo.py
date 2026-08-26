@@ -29,7 +29,7 @@ from declare import binding, cxx_body, header, produced, reads, wire_value
     threading="pool",
     blocking=False,
 )
-@wire_value(text="")
+@wire_value(shown="store_path")
 class ValidPathInfo:
     """What a store knows about one path it holds.
 
@@ -112,9 +112,9 @@ return nix::renderContentAddress(*vpi.ca);""")
         named after the derivation that made it, not after its own
         bytes, so there is nothing to address by."""
 
-    @cxx_body("""nb::list out;
+    @cxx_body("""nb::list sigs;
 for (auto &sig : nix::Signature::toStrings(vpi.sigs))
-    out.append(sig);
-return out;""")
+    sigs.append(sig);
+return sigs;""")
     def sigs(self) -> "list[str]":
         """Who vouched for this path, as `<key-name>:<base64>`."""

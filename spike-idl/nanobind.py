@@ -180,6 +180,33 @@ def _ctor(cls: Class) -> list[str]:
     return [line + ",", f'{INDENT * 3}     "{doc}")']
 
 
+def _render(cls: Class, accessor: str) -> str:
+    """The C++ that renders one of this value's accessors as text.
+
+    The accessor names one of the class's OWN, and the emitter
+    resolves it rather than the declaration spelling C++. Two steps,
+    both derived:
+
+    An accessor that `@reads` a member addresses the member, because
+    there is no method to call - `vpi.path`, not `vpi.store_path()`.
+
+    An accessor returning something other than `str` cannot render
+    itself, so its own type must. `to_string` is what a declared value
+    type names for that, which is how `vpi.path` becomes
+    `vpi.path.to_string()` without this file knowing what a StorePath
+    is."""
+    obj = _self(cls)
+    for m in cls.methods:
+        if m.name != accessor:
+            continue
+        expr = f"{obj}.{m.reads}" if m.reads else f"{obj}.{m.cxx_name or m.name}()"
+        if m.ret is not None and m.ret.python != "str":
+            expr += ".to_string()"
+        return f"std::string({expr})"
+    raise TypeError(
+        f"{cls.name}: \"{accessor}\" names no accessor on this class.")
+
+
 def _value_semantics(cls: Class) -> list[str]:
     """What a wire value owes Python, in nanobind's spelling.
 
@@ -196,11 +223,14 @@ def _value_semantics(cls: Class) -> list[str]:
     out: list[str] = []
 
     if decl.text:
-        render = f"std::string({obj}.{decl.text}())"
+        # A CONVERSION, and only for a value that IS a string.
         out.append(f'{INDENT * 2}.def("__str__", []({ref}) '
-                   f"{{ return {render}; }})")
+                   f"{{ return {_render(cls, decl.text)}; }})")
+    if decl.shown:
+        # An IDENTIFICATION, which every value owes a reader.
+        shown = _render(cls, decl.shown)
         out += [f'{INDENT * 2}.def("__repr__", []({ref}) {{',
-                f'{INDENT * 3}return "{cls.name}(\'" + {render} + "\')";',
+                f'{INDENT * 3}return "{cls.name}(\'" + {shown} + "\')";',
                 f"{INDENT * 2}}})"]
 
     facts = {"value": decl.compare == "cxx",
@@ -215,9 +245,10 @@ def _value_semantics(cls: Class) -> list[str]:
                 f"const {decl.cxx} &b)",
                 f"{INDENT * 3} {{ return a {op} b; }}, nb::is_operator())"]
 
-    if decl.wire == "value" and decl.text:
-        # Consistent with __eq__ by construction: both read the
-        # accessor the declaration named.
+    if decl.compare == "cxx" and decl.text:
+        # Only where __eq__ exists. A hash must agree with equality,
+        # and a class with no declared comparison has none to agree
+        # with - Python's identity hash is then the honest answer.
         out += [f'{INDENT * 2}.def("__hash__", []({ref}) {{',
                 f"{INDENT * 3}return std::hash<std::string_view>{{}}"
                 f"({obj}.{decl.text}());",

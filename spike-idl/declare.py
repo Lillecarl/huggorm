@@ -74,6 +74,7 @@ class Decl:
     fields: tuple[Field, ...] = ()
     compare: str = ""
     text: str = ""
+    shown: str = ""
     order: bool = False
     custom: dict[str, str] = field(default_factory=dict)
 
@@ -128,18 +129,27 @@ def binding(cxx: str = "", threading: str = "pool",
 
 
 def wire_value(fields: tuple[Field, ...] = (), compare: str = "parts",
-               text: str = "", order: bool = False) -> Callable[[type], type]:
+               text: str = "", order: bool = False,
+               shown: str = "") -> Callable[[type], type]:
     """This class serializes, and here is what it is made of.
 
     `compare="cxx"` says the C++ class carries its own equality, so
     the binding declares the operator instead of comparing the parts
-    in Python. `text` names the accessor `str()` answers with, when
-    one reads better than the repr. `order` asks for the comparison
-    operators, which only a type with a natural order should want."""
+    in Python. `order` asks for the comparison operators, which only a
+    type with a natural order should want.
+
+    `text` and `shown` are different questions, and conflating them
+    was a bug. `text` names the accessor `str()` answers with, and it
+    is a CONVERSION: only a value that IS a string should have one, so
+    a StorePath does and a nine-field record does not. `shown` names
+    the accessor a repr identifies the value by, which every value
+    has. A value with a `text` is shown by it unless it says
+    otherwise."""
     def apply(cls: type) -> type:
         d = _decl(cls)
         d.wire, d.fields, d.compare = "value", fields, compare
         d.text, d.order = text, order
+        d.shown = shown or text
         return cls
     return apply
 
