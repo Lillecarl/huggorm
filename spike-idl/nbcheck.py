@@ -72,6 +72,19 @@ BETTER = {
     ("StorePath", "__le__"): ("nb::is_operator()", "ordering, as __lt__."),
     ("StorePath", "__gt__"): ("nb::is_operator()", "ordering, as __lt__."),
     ("StorePath", "__ge__"): ("nb::is_operator()", "ordering, as __lt__."),
+    # Settled 2026-08-26. A remote store is opened over the network,
+    # so the call is potentially slow and the GIL must not be held
+    # across it. The flock argument pointed the same way - opening a
+    # LocalStore waits on the temp-roots lock, and nanopynix's own
+    # comment says `lockFile` calls checkInterrupt only AFTER flock
+    # returns, so a wait holding the GIL would be uninterruptible -
+    # but the network case is the one that decides it and needs no
+    # reproduction to believe.
+    ("open_store", "*"): (
+        "nb::call_guard<nb::gil_scoped_release>()",
+        "opening a remote store goes over the network, so holding the GIL "
+        "across it stalls every other Python thread. nanopynix binds no "
+        "guard here yet."),
     ("StorePath", "to_string"): (
         "&nix::StorePath::to_string",
         "bound by method pointer. <nanobind/stl/string_view.h> copies into a "
@@ -83,18 +96,21 @@ BETTER = {
 
 # The two projects disagree, and only a person can settle it.
 DIVERGENT = {
-    ("open_store", "call_guard"):
-        "the declaration says @blocks and nanopynix binds no call_guard. "
-        "Opening a LocalStore takes a waiting flock on the temp-roots file, "
-        "and nanopynix's own comment says `lockFile` calls checkInterrupt "
-        "only AFTER flock returns - so a wait holding the GIL would freeze "
-        "every Python thread uninterruptibly. That is an argument, not a "
-        "measurement: a dummy:// open is 20us and too short to test with, "
-        "and the flock case was not reproduced. Carl decides.",
+    # Settled 2026-08-26: follow Nix unless there is a reason not to.
+    # nix/store/path.hh:45 declares `StorePath(std::string_view
+    # baseName)`, so `base_name` is the name upstream gave it and the
+    # declaration keeps it. `path` also reads badly beside the class's
+    # own `name()` accessor, which returns the part after the hash.
+    #
+    # This stays DIVERGENT rather than becoming a BETTER claim because
+    # nothing here can fix it: nanopynix's public API says `path`
+    # today, and changing it is a breaking change in another repo.
     ("StorePath", "__init__"):
-        "nanopynix names the constructor parameter `path`, cythonix names it "
-        "`base_name`, and the docstrings differ. Same C++ constructor, two "
-        "public APIs. The declaration has to pick one.",
+        "nanopynix names the constructor parameter `path`; upstream Nix "
+        "calls it `baseName` (nix/store/path.hh:45), so the declaration "
+        "says `base_name`. Renaming nanopynix's would break its callers, "
+        "so this is a note rather than a diff to close. The docstrings "
+        "differ too, and the declaration's is the one that will survive.",
 }
 
 
@@ -179,13 +195,16 @@ def check_functions(decl_path: str) -> list[str]:
         stripped = [nogil(t) for t in theirs]
         bare = nogil(ours)
         if bare in stripped:
-            note = ""
-            if bare != ours and (fn.name, "call_guard") in DIVERGENT:
-                note = " (+ call_guard, see below)"
-            print(f"  {fn.name}: matches a nanopynix registration{note}")
-            if note:
-                print(f"    call_guard: THE TWO PROJECTS DISAGREE. "
-                      f"{DIVERGENT[(fn.name, 'call_guard')]}")
+            print(f"  {fn.name}: matches a nanopynix registration")
+            pinned = BETTER.get((fn.name, "*"))
+            if pinned:
+                pin, why = pinned
+                if pin not in ours:
+                    problems.append(
+                        f"  {fn.name}: claimed better, but the emitted line "
+                        f"no longer contains {pin!r}.")
+                else:
+                    print(f"    EMITTER IS RIGHT ({pin}). {why}")
             continue
         problems.append(f"  {fn.name}:")
         problems.append(f"    nanopynix: {theirs[0][:150]}")

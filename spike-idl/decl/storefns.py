@@ -14,8 +14,14 @@ from a template would be guessing.
 
 What the declaration owns is the BINDING: the Python name, the
 parameter name a caller passes by keyword, and whether the call can
-wait. Opening a store touches the filesystem and may talk to a
-daemon, so it can.
+wait.
+
+Opening a store CAN wait, and `@blocks` says so. A remote store is
+opened over the network, so holding the GIL across the call would
+stall every other Python thread for as long as that takes. A local
+one waits on the temp-roots flock, and `lockFile` calls
+checkInterrupt only after flock returns - so that wait, holding the
+GIL, would be uninterruptible. Either alone would settle it.
 """
 
 from typing import overload

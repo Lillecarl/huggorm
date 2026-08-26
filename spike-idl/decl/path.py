@@ -48,6 +48,12 @@ class StorePath:
     That is the honest surface: `StorePath("<hash>-<name>")` either
     gives a store path or raises."""
 
+    # `base_name`, because nix/store/path.hh:45 declares
+    # `StorePath(std::string_view baseName)` and the rule is to follow
+    # Nix unless there is a reason not to. nanopynix calls this
+    # parameter `path`, which also reads badly beside the class's own
+    # `name()` accessor - `name` is the part after the hash, and a
+    # base name is the whole of it.
     def __init__(self, base_name: Str) -> None:
         """Raises when the name is not a store path. The message comes
         from libstore, which is the whole point of binding it."""
