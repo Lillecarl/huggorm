@@ -109,6 +109,24 @@ inline StoreLocationParts to_store_path(const nix::Store & store, const std::str
 }
 
 /**
+ * Which store path has this hash part, if the store holds one.
+ *
+ * A store path's name begins with a 32-character base-32 hash, and
+ * that hash alone identifies the object: it is what a substituter is
+ * asked for, and what a `.narinfo` is named after.
+ *
+ * Upstream answers with std::optional, so absence is a normal answer
+ * rather than a failure - the store simply does not have it. A null
+ * pointer carries that across, because Cython cannot hold an optional
+ * of a type with no default constructor.
+ */
+inline nix::StorePath * query_path_from_hash_part(nix::Store & store, const std::string & hash_part)
+{
+    auto found = store.queryPathFromHashPart(hash_part);
+    return found ? new nix::StorePath(*found) : nullptr;
+}
+
+/**
  * Follow symlinks until the path lands in the store, and stop there.
  *
  * The first half of follow_links_to_store_path, and the half that

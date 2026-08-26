@@ -463,6 +463,36 @@ async def test_a_store_location_crosses_as_a_value(
     await store.aclose()
 
 
+async def test_absence_crosses_as_absence(
+        client: Any, tmp_path: Any) -> None:
+    """A `T | None` return, both arms, over the wire.
+
+    Absence needs no new machinery and no new field: a protobuf
+    message field HAS presence, so an unset one IS the None. That is
+    the same bit `_wire_fields` reads with a trailing "?" one level
+    down, said in the annotation instead - where a typechecker reads
+    it too.
+
+    Both arms are asserted here because only one of them is
+    interesting: a missing None looks exactly like a default-built
+    object, which for a StorePath means an empty base name that
+    raises."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello\n")
+
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    path = await store.add_path_to_store("tree", str(src))
+    hash_part = path.to_string().split("-", 1)[0]
+
+    found = await store.query_path_from_hash_part(hash_part)
+    assert found is not None
+    assert found.to_string() == path.to_string()
+
+    assert await store.query_path_from_hash_part("0" * 32) is None
+    await store.aclose()
+
+
 async def test_a_link_is_followed_on_the_store_side(
         client: Any, tmp_path: Any) -> None:
     """The symlinks are read where the STORE is, not where the caller

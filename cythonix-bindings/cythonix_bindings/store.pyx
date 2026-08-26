@@ -28,6 +28,7 @@ from cythonix_bindings.c_store cimport (
     parse_store_path,
     path_info,
     query_all_valid_paths,
+    query_path_from_hash_part,
     real_path,
     store_uri,
     to_store_path,
@@ -552,6 +553,31 @@ cdef class Store:
         return StoreLocation._from_parts(
             StorePath(out.path.decode('utf-8')),
             out.sub_path.decode('utf-8'))
+
+    def query_path_from_hash_part(self, hash_part: str) -> StorePath | None:
+        """Which store path has this hash part, or None.
+
+        A store path's name begins with a 32-character base-32 hash,
+        and that hash alone identifies the object: it is what a
+        substituter is asked for, and what a `.narinfo` is named
+        after. So this is the lookup that turns a bare hash back into
+        a name.
+
+        None is a normal answer, not a failure - the store does not
+        have it. That is upstream's std::optional, and it is a
+        different answer from `query_path_info`, which raises
+        InvalidPath: there the caller named a path and was wrong,
+        here the caller asked whether one exists."""
+        cdef string c_hash = hash_part.encode('utf-8')
+        cdef CStore* store = self._get()
+        cdef CStorePath* out
+        with nogil:
+            out = query_path_from_hash_part(deref(store), c_hash)
+        if out is NULL:
+            return None
+        cdef StorePath sp = StorePath.__new__(StorePath)
+        sp._ptr = out
+        return sp
 
     def follow_links_to_store(self, path: str) -> str:
         """Follow symlinks until the path lands in the store, and stop

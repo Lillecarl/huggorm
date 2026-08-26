@@ -389,6 +389,31 @@ def test_a_store_follows_a_link_into_itself(
         f"{printed}/sub/b.txt").to_string() == path.to_string()
 
 
+def test_a_store_finds_a_path_by_its_hash_part(
+        chroot: Store, source: pathlib.Path) -> None:
+    """The lookup a substituter makes: a bare hash back to a name.
+
+    A store path's name begins with a 32-character base-32 hash, and
+    that hash alone identifies the object - it is what a `.narinfo` is
+    named after."""
+    path = chroot.add_path_to_store("tree", str(source))
+    hash_part = path.to_string().split("-", 1)[0]
+    assert len(hash_part) == 32
+
+    found = chroot.query_path_from_hash_part(hash_part)
+    assert found is not None
+    assert found.to_string() == path.to_string()
+
+
+def test_an_unknown_hash_part_is_none_not_an_error(chroot: Store) -> None:
+    """None is a normal answer, and that is upstream's std::optional.
+
+    It is a different answer from query_path_info, which raises
+    InvalidPath: there the caller named a path and was wrong, here the
+    caller asked whether one exists and the honest reply is no."""
+    assert chroot.query_path_from_hash_part("0" * 32) is None
+
+
 def test_following_a_link_keeps_the_sub_path(
         chroot: Store, source: pathlib.Path, tmp_path: pathlib.Path) -> None:
     """The half follow_links_to_store_path drops.
