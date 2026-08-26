@@ -2,3 +2,6 @@
 # tree so a stale copy cannot be mistaken for the declaration.
 out/
 __pycache__/
+build/
+*.so
+*.cpp

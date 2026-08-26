@@ -77,22 +77,18 @@ def _install_cimports_package() -> None:
     lets the machinery work, and PEP 562's module `__getattr__` does
     the fallback the mock intended. Every `c_<name>.py` becomes its
     own cimport twin with no line of its own."""
-    from importlib import import_module
-
     pkg = types.ModuleType("cython.cimports")
-    # sys.path itself, live. A submodule search walks __path__ as
-    # directories, so this makes `cython.cimports.c_store` find the
-    # ordinary `c_store.py` sitting beside the binding - which is the
-    # whole trick: one declaration file, cimported when compiled and
-    # imported when read.
-    pkg.__path__ = sys.path  # type: ignore[attr-defined]
+    # EMPTY, and widened by declarations() below. A submodule search
+    # walks __path__ as directories, so this is what makes
+    # `cython.cimports.c_store` find the ordinary `c_store.py` beside
+    # the binding - the whole trick: one declaration file, cimported
+    # when compiled and imported when read.
+    #
+    # sys.path would work and is too wide: it would make any top-level
+    # module reachable as a cimport twin, so a typo would resolve to
+    # something unrelated instead of failing.
+    pkg.__path__ = []  # type: ignore[attr-defined]
 
-    def __getattr__(name: str) -> object:
-        mod = import_module(name)
-        sys.modules[f"cython.cimports.{name}"] = mod
-        return mod
-
-    pkg.__getattr__ = __getattr__  # type: ignore[attr-defined]
     # Keep what Shadow already published: libc.math is a real twin.
     for key, mod in list(sys.modules.items()):
         if key.startswith("cython.cimports.") and key.count(".") == 2:
@@ -101,6 +97,20 @@ def _install_cimports_package() -> None:
 
 
 _install_cimports_package()
+
+
+def declarations(*directories: object) -> None:
+    """Where the `c_<name>.py` twins live.
+
+    Called by whatever is READING a pure-mode binding - a generator, a
+    typechecker, a person at a prompt. Nothing calls it when the file
+    is compiled: Cython resolves the cimport against the pxd and never
+    runs a line of this."""
+    pkg = sys.modules["cython.cimports"]
+    for directory in directories:
+        path = str(directory)
+        if path not in pkg.__path__:  # type: ignore[attr-defined]
+            pkg.__path__.append(path)  # type: ignore[attr-defined]
 
 
 def register(package: str, **names: object) -> None:

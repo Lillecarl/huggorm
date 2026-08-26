@@ -139,10 +139,22 @@ rather than being answered.
 
 ## What it still costs
 
-**Smart pointers, not raw ones.** `new` is a SyntaxError to Python, so
-allocation goes through `make_shared`/`make_unique`. An ownership
-decision made by syntax. `shared_ptr` is arguably the better choice
-anyway, but it is not being chosen on its merits.
+**Smart pointers, and a factory per constructible type.** `new` is a
+SyntaxError to Python, so allocation goes through a smart pointer -
+an ownership decision made by syntax rather than on merit.
+
+That has a second cost, found by probing rather than by reasoning:
+`make_shared` carries libcpp's own plain `except +`
+(`Cython/Includes/libcpp/memory.pxd:107`), so a CUSTOM exception
+translator declared on the constructor never runs. The call Cython
+emits is `std::make_shared`, not the constructor.
+
+The fix is a factory declared in the pxd with the right
+specification - `shared_ptr[CStorePath] make_store_path(string) except
++translate_nix_error` - which is exactly what `_cpp/store.hpp` already
+exists to hold. So it is not new machinery, but it IS one more shim
+per constructible type, and libstore's typed errors are the whole
+reason this repo binds C++ rather than reimplementing it.
 
 **`@cython.cfunc` is erased at import.** `Shadow.py:103` sets
 `cclass = ccall = cfunc = _EmptyDecoratorAndManager()`, which returns

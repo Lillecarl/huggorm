@@ -15,3 +15,14 @@ private:
     std::string name_;
 };
 }
+
+namespace probe {
+// A factory the pxd can give the RIGHT exception specification.
+// make_shared carries libcpp's own `except +`, so a custom translator
+// declared on the constructor never runs - the call Cython emits is
+// std::make_shared, not the constructor.
+inline std::shared_ptr<Thing> make_thing(std::string n)
+{
+    return std::make_shared<Thing>(std::move(n));
+}
+}

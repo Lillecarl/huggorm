@@ -49,13 +49,29 @@ def test_cimports_resolves_to_a_plain_module() -> None:
     `cython.cimports.X` must find the ordinary `X.py`, because that
     file is both the C++ declaration a generator reads and the thing
     that makes a pure-mode binding importable."""
-    import cyshims  # noqa: F401
-    from cython.cimports import inspect as twin
+    import pathlib
 
-    assert twin is inspect, (
-        "cython.cimports.<name> did not resolve to the plain module. The "
-        "__path__ = sys.path install is what makes a submodule search "
-        "reach an ordinary file.")
+    import cyshims
+
+    cyshims.declarations(pathlib.Path(__file__).parent / "probe")
+    from cython.cimports.c_thing import CThing  # noqa: PLC0415
+
+    assert inspect.isclass(CThing) and CThing.__doc__, (
+        "cython.cimports.<name> did not resolve to the plain twin. The "
+        "__path__ install is what makes a submodule search reach an "
+        "ordinary file.")
+
+    # ...and a name with no twin fails, rather than resolving to some
+    # unrelated top-level module. That is what scoping __path__ to the
+    # declaration directories buys over pointing it at sys.path.
+    try:
+        from cython.cimports.inspect import isclass  # noqa: F401, PLC0415
+    except ImportError:
+        pass
+    else:
+        raise AssertionError(
+            "cython.cimports reached a module that is not a declaration "
+            "twin; __path__ is too wide")
 
 
 def test_a_template_keeps_its_parameter() -> None:
