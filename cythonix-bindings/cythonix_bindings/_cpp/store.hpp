@@ -23,6 +23,10 @@
 #include "nix/store/store-api.hh"
 #include "nix/store/path-info.hh"
 #include "nix/store/store-open.hh"
+
+// init_libstore and open_store: C++ that BOTH backends call, so it
+// sits beside errors.hpp rather than in this file.
+#include "cythonix_bindings/_cpp/libstore.hpp"
 #include "nix/util/file-content-address.hh"
 #include "nix/util/hash.hh"
 #include "nix/util/posix-source-accessor.hh"
@@ -93,40 +97,6 @@ inline std::vector<std::string> to_strings(const T & items)
     return out;
 }
 
-
-/**
- * libstore has to be initialised before anything else in it is
- * called, and it does not raise when it has not been: it ABORTS the
- * process, with "The program must call nix::initNix() before calling
- * any libstore library functions". A binding cannot let a caller
- * discover that.
- *
- * initLibStore, not initNix: initNix lives in libnixmain and does the
- * things a COMMAND needs - argv0, signal handlers, a logger writing to
- * stderr. A library embedded in someone else's process should not take
- * those over. initLibStore also calls initLibUtil for us.
- *
- * Idempotent, and called from the module's own initialisation, so
- * every path into libstore is behind it.
- */
-inline void init_libstore()
-{
-    static bool done = [] {
-        nix::initLibStore();
-        return true;
-    }();
-    (void) done;
-}
-
-/**
- * nix::openStore returns a ref<Store>, a shared_ptr that cannot be
- * null. Cython has no declaration for it; the implicit conversion to
- * shared_ptr does the work and keeps the store alive.
- */
-inline std::shared_ptr<nix::Store> open_store(const std::string & uri)
-{
-    return nix::openStore(uri);
-}
 
 /**
  * There is no getUri() any more: 2.34 moved it onto the config as
