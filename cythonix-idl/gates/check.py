@@ -90,6 +90,16 @@ ACCEPTED: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+def _joined(head: str, tail: str) -> str:
+    """Two lines of one bracketed statement, as the statement.
+
+    The space either side of a bracket goes with the line break that
+    put it there. A human closing a long signature on its own line
+    writes `False\n)`, and the emitter writes `False)`; that is
+    typesetting, not code."""
+    return re.sub(r"\s+\)", ")", re.sub(r"\(\s+", "(", f"{head} {tail}"))
+
+
 def code_only(text: str) -> list[str]:
     """A file reduced to the STATEMENTS that instruct a compiler.
 
@@ -125,7 +135,7 @@ def code_only(text: str) -> list[str]:
         # one declaration written two ways.
         line = re.sub(r" +\(", "(", re.sub(r"\s+", " ", line))
         if depth > 0 and out:
-            out[-1] = re.sub(r"\(\s+", "(", f"{out[-1]} {line}")
+            out[-1] = _joined(out[-1], line)
         else:
             out.append(line)
         depth += sum(line.count(c) for c in "([")
@@ -367,6 +377,7 @@ def cxx_only(text: str) -> list[str]:
     "the same shim" means."""
     out: list[str] = []
     in_doc = False
+    depth = 0
     for raw in text.splitlines():
         line = raw.strip()
         if in_doc:
@@ -379,7 +390,17 @@ def cxx_only(text: str) -> list[str]:
             continue
         if not line or line.startswith("//"):
             continue
-        out.append(re.sub(r"\s+", " ", line))
+        line = re.sub(r"\s+", " ", line)
+        # A signature a human broke across five lines is one
+        # declaration, the same bargain `code_only` makes: a line
+        # opened inside a bracket joins the line that opened it.
+        if depth > 0 and out:
+            out[-1] = _joined(out[-1], line)
+        else:
+            out.append(line)
+        depth += sum(line.count(c) for c in "([")
+        depth -= sum(line.count(c) for c in ")]")
+        depth = max(depth, 0)
     return out
 
 
