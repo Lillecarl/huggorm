@@ -29,9 +29,9 @@ from cythonix_bindings.c_store cimport (
     init_libstore,
     open_store,
     parse_store_path,
-    path_info,
     query_all_valid_paths,
     query_path_from_hash_part,
+    query_path_info,
     query_referrers,
     query_valid_derivers,
     query_valid_paths,
@@ -66,6 +66,19 @@ cdef list _store_paths(const vector[string] & names):
     cdef size_t i
     for i in range(names.size()):
         out.append(StorePath(names[i].decode('utf-8')))
+    return out
+
+
+cdef list _strings(const vector[string] & items):
+    """A vector of C++ strings as a list of str.
+
+    The sibling of `_store_paths`, and there for the same reason: a
+    set of anything crosses as a vector of strings, so the loop that
+    reads one back belongs in one place rather than in each call."""
+    cdef list out = []
+    cdef size_t i
+    for i in range(items.size()):
+        out.append(items[i].decode('utf-8'))
     return out
 
 
@@ -419,16 +432,13 @@ cdef class Store:
         cdef CStorePath* p = sp._get()
         cdef CPathInfo out
         with nogil:
-            out = path_info(deref(store), deref(p))
+            out = query_path_info(deref(store), deref(p))
         cdef object deriver = None
         if not out.deriver.empty():
             deriver = StorePath(out.deriver.decode('utf-8'))
         cdef object ca = None
         if not out.ca.empty():
             ca = out.ca.decode('utf-8')
-        cdef list sigs = []
-        for sig in out.sigs:
-            sigs.append(sig.decode('utf-8'))
         return PathInfo._from_parts(
             StorePath(out.path.decode('utf-8')),
             out.nar_hash.decode('utf-8'),
@@ -438,7 +448,7 @@ cdef class Store:
             out.ultimate,
             ca,
             _store_paths(out.references),
-            sigs)
+            _strings(out.sigs))
 
     def to_store_path(self, path: str) -> StoreLocation:
         """Which store path CONTAINS this file, and where inside it.

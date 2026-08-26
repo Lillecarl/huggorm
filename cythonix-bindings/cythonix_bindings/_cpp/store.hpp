@@ -32,6 +32,69 @@
 namespace cythonix {
 
 /**
+ * Base names to the set libstore takes.
+ *
+ * A pxd can declare a vector and cannot declare a std::set, so the
+ * crossing point is a vector - the same flattening path_info does in
+ * the other direction. nix::StorePath's own constructor parses each
+ * name, so a malformed one raises here rather than reaching the
+ * store.
+ */
+inline nix::StorePathSet store_path_set(const std::vector<std::string> & names)
+{
+    nix::StorePathSet out;
+    for (auto & name : names)
+        out.insert(nix::StorePath(name));
+    return out;
+}
+
+/**
+ * A StorePathSet as the base names it holds.
+ *
+ * The mirror of store_path_set, and a vector of STRINGS for the same
+ * reason that one takes strings: a pxd can declare a vector and cannot
+ * declare a std::set, and a base name is what a StorePath is.
+ *
+ * It used to be a vector of owned StorePath pointers, which spared the
+ * binding a re-parse and cost it twenty lines of Cython that blanked
+ * each slot as it handed ownership over and freed whatever was left.
+ * One such loop per set-returning call, and there are now several. The
+ * re-parse is a 32-character check on a name the store itself just
+ * gave, so this trades work nobody measures for a leak nobody can
+ * write.
+ *
+ * The order is the set's, which is sorted. Nothing here sorts.
+ */
+inline std::vector<std::string> base_names(const nix::StorePathSet & paths)
+{
+    std::vector<std::string> out;
+    out.reserve(paths.size());
+    for (auto & path : paths)
+        out.push_back(std::string(path.to_string()));
+    return out;
+}
+
+/**
+ * The same, for any set of Nix values that print as one string.
+ *
+ * A template because the sets are unrelated types with one thing in
+ * common: `to_string`. nix::Signature spells itself
+ * `<key-name>:<base64>` there, which is what every Nix tool prints
+ * and parses, so a binding that rendered its own would disagree with
+ * the store it read from.
+ */
+template <typename T>
+inline std::vector<std::string> to_strings(const T & items)
+{
+    std::vector<std::string> out;
+    out.reserve(items.size());
+    for (auto & item : items)
+        out.push_back(std::string(item.to_string()));
+    return out;
+}
+
+
+/**
  * libstore has to be initialised before anything else in it is
  * called, and it does not raise when it has not been: it ABORTS the
  * process, with "The program must call nix::initNix() before calling
@@ -194,22 +257,6 @@ inline nix::StorePath * parse_store_path(const nix::Store & store, const std::st
  * refused, by libstore, with libstore's own message.
  */
 
-/**
- * Base names to the set libstore takes.
- *
- * A pxd can declare a vector and cannot declare a std::set, so the
- * crossing point is a vector - the same flattening path_info does in
- * the other direction. nix::StorePath's own constructor parses each
- * name, so a malformed one raises here rather than reaching the
- * store.
- */
-inline nix::StorePathSet store_path_set(const std::vector<std::string> & names)
-{
-    nix::StorePathSet out;
-    for (auto & name : names)
-        out.insert(nix::StorePath(name));
-    return out;
-}
 
 inline nix::StorePath * add_to_store(
     nix::Store & store,
@@ -324,10 +371,10 @@ struct PathInfoParts
     std::vector<std::string> sigs;
 };
 
-inline PathInfoParts path_info(nix::Store & store, const nix::StorePath & path)
+inline PathInfoParts query_path_info(nix::Store & store, const nix::StorePath & path)
 {
     auto info = store.queryPathInfo(path);
-    PathInfoParts out{
+    return PathInfoParts{
         std::string(info->path.to_string()),
         info->narHash.to_string(nix::HashFormat::Nix32, /*includeAlgo=*/true),
         info->narSize,
@@ -335,20 +382,15 @@ inline PathInfoParts path_info(nix::Store & store, const nix::StorePath & path)
         static_cast<int64_t>(info->registrationTime),
         info->ultimate,
         info->ca ? info->ca->render() : std::string(),
-        {},
-        {},
+        // Base names, the same spelling the `path` field uses. A store
+        // path is a name and not a location, so printing one here
+        // would pick a store directory this shim cannot choose.
+        base_names(info->references),
+        // nix::Signature is a key name and raw bytes, not a string.
+        // Its own to_string is the `<key-name>:<base64>` spelling
+        // every Nix tool prints and parses.
+        to_strings(info->sigs),
     };
-    // Base names, the same spelling the `path` field uses. A store
-    // path is a name and not a location, so printing one here would
-    // pick a store directory that this shim has no business choosing.
-    for (auto & ref : info->references)
-        out.references.push_back(std::string(ref.to_string()));
-    // nix::Signature is a key name and raw bytes, not a string. Its
-    // own to_string is the `<key-name>:<base64>` spelling every Nix
-    // tool prints and parses, so the binding does not invent one.
-    for (auto & sig : info->sigs)
-        out.sigs.push_back(sig.to_string());
-    return out;
 }
 
 inline std::string real_path(nix::Store & store, const nix::StorePath & path)
@@ -361,31 +403,6 @@ inline std::string real_path(nix::Store & store, const nix::StorePath & path)
     return fs->toRealPath(path).string();
 }
 
-/**
- * A StorePathSet as the base names it holds.
- *
- * The mirror of store_path_set, and a vector of STRINGS for the same
- * reason that one takes strings: a pxd can declare a vector and cannot
- * declare a std::set, and a base name is what a StorePath is.
- *
- * It used to be a vector of owned StorePath pointers, which spared the
- * binding a re-parse and cost it twenty lines of Cython that blanked
- * each slot as it handed ownership over and freed whatever was left.
- * One such loop per set-returning call, and there are now several. The
- * re-parse is a 32-character check on a name the store itself just
- * gave, so this trades work nobody measures for a leak nobody can
- * write.
- *
- * The order is the set's, which is sorted. Nothing here sorts.
- */
-inline std::vector<std::string> base_names(const nix::StorePathSet & paths)
-{
-    std::vector<std::string> out;
-    out.reserve(paths.size());
-    for (auto & path : paths)
-        out.push_back(std::string(path.to_string()));
-    return out;
-}
 
 inline std::vector<std::string> query_all_valid_paths(nix::Store & store)
 {
