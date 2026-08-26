@@ -202,19 +202,37 @@ struct PathInfoParts
     std::string deriver;
     int64_t registration_time;
     bool ultimate;
+    // Nix keeps both as SETS. A vector because that is what a pxd can
+    // declare and what a repeated protobuf field is; the order is the
+    // set's own, which is sorted, so it is stable between calls.
+    std::vector<std::string> references;
+    std::vector<std::string> sigs;
 };
 
 inline PathInfoParts path_info(nix::Store & store, const nix::StorePath & path)
 {
     auto info = store.queryPathInfo(path);
-    return PathInfoParts{
+    PathInfoParts out{
         std::string(info->path.to_string()),
         info->narHash.to_string(nix::HashFormat::Nix32, /*includeAlgo=*/true),
         info->narSize,
         info->deriver ? std::string(info->deriver->to_string()) : std::string(),
         static_cast<int64_t>(info->registrationTime),
         info->ultimate,
+        {},
+        {},
     };
+    // Base names, the same spelling the `path` field uses. A store
+    // path is a name and not a location, so printing one here would
+    // pick a store directory that this shim has no business choosing.
+    for (auto & ref : info->references)
+        out.references.push_back(std::string(ref.to_string()));
+    // nix::Signature is a key name and raw bytes, not a string. Its
+    // own to_string is the `<key-name>:<base64>` spelling every Nix
+    // tool prints and parses, so the binding does not invent one.
+    for (auto & sig : info->sigs)
+        out.sigs.push_back(sig.to_string());
+    return out;
 }
 
 inline std::string real_path(nix::Store & store, const nix::StorePath & path)

@@ -414,6 +414,15 @@ async def test_a_path_info_crosses_as_a_value(
     assert info.path().to_string() == path.to_string()
     assert info.deriver() is None
 
+    # A container field comes back as a LIST, not as the protobuf
+    # container it travelled in. A repeated field cannot be assigned
+    # either, so both directions go through the list helpers the rpc
+    # layer already had - and an empty one proves the encoding half on
+    # its own, because assigning even [] to a repeated field raises.
+    assert info.references() == []
+    assert isinstance(info.references(), list)
+    assert isinstance(info.sigs(), list)
+
     local = cythonix_bindings.Store(str(tmp_path / "store"))
     same = local.query_path_info(local.parse_store_path(
         local.print_store_path(path)))

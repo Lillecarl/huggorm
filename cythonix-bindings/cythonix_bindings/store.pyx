@@ -57,8 +57,8 @@ cdef class PathInfo:
     an inference elsewhere."""
 
     _threading = "pool"
-    # Six reads of memory this object already owns. Nothing blocks, so
-    # there is no thread to hop to and the codegen emits no async
+    # Eight reads of memory this object already owns. Nothing blocks,
+    # so there is no thread to hop to and the codegen emits no async
     # wrapper: a PathInfo is handed back as itself on both sides.
     _blocking = False
     _wire = "value"
@@ -73,6 +73,11 @@ cdef class PathInfo:
     #
     # `deriver` is optional and says so with `?`: most paths have one
     # and a path added straight to the store has none.
+    #
+    # `references` and `sigs` carry no `?` and cannot: a repeated
+    # protobuf field has no presence, so an absent one IS an empty one
+    # - which is also the right answer here, because a path with
+    # nothing to point at has no references rather than unknown ones.
     _wire_fields = (
         ("path", "StorePath"),
         ("nar_hash", "str"),
@@ -80,6 +85,8 @@ cdef class PathInfo:
         ("deriver", "StorePath?"),
         ("registration_time", "int"),
         ("ultimate", "bool"),
+        ("references", "list[StorePath]"),
+        ("sigs", "list[str]"),
     )
 
     cdef object _path
@@ -88,6 +95,8 @@ cdef class PathInfo:
     cdef object _deriver
     cdef object _registration_time
     cdef object _ultimate
+    cdef object _references
+    cdef object _sigs
 
     def __init__(self):
         raise TypeError(
@@ -123,9 +132,30 @@ cdef class PathInfo:
         it from a substituter or an import."""
         return self._ultimate
 
+    def references(self) -> list[StorePath]:
+        """The store paths this one points at, its own included when
+        it does.
+
+        This is what makes a store path a graph rather than a name: a
+        closure is the transitive reading of this field. Nix scans the
+        bytes for them at add time, so a path added from a directory
+        of plain text has none.
+
+        Sorted, because Nix keeps them in a set and the order is that
+        set's."""
+        return self._references
+
+    def sigs(self) -> list[str]:
+        """Who vouched for this path, as `<key-name>:<base64>`.
+
+        Empty for a path this store added itself: a signature says a
+        path came from somewhere and arrived intact, and a local add
+        travelled nowhere."""
+        return self._sigs
+
     @classmethod
     def _from_parts(cls, path, nar_hash, nar_size, deriver,
-                    registration_time, ultimate):
+                    registration_time, ultimate, references, sigs):
         """Wire-deserialization helper (private, never surfaced)."""
         cdef PathInfo info = PathInfo.__new__(PathInfo)
         info._path = path
@@ -134,13 +164,16 @@ cdef class PathInfo:
         info._deriver = deriver
         info._registration_time = registration_time
         info._ultimate = ultimate
+        info._references = references
+        info._sigs = sigs
         return info
 
     def _parts(self):
         """Wire-serialization helper (private): one value per
         _wire_fields entry, in order."""
         return (self._path, self._nar_hash, self._nar_size, self._deriver,
-                self._registration_time, self._ultimate)
+                self._registration_time, self._ultimate, self._references,
+                self._sigs)
 
 
 cdef class Store:
@@ -365,13 +398,21 @@ cdef class Store:
         cdef object deriver = None
         if not out.deriver.empty():
             deriver = StorePath(out.deriver.decode('utf-8'))
+        cdef list references = []
+        cdef list sigs = []
+        for ref in out.references:
+            references.append(StorePath(ref.decode('utf-8')))
+        for sig in out.sigs:
+            sigs.append(sig.decode('utf-8'))
         return PathInfo._from_parts(
             StorePath(out.path.decode('utf-8')),
             out.nar_hash.decode('utf-8'),
             out.nar_size,
             deriver,
             out.registration_time,
-            out.ultimate)
+            out.ultimate,
+            references,
+            sigs)
 
     def print_store_path(self, StorePath path) -> str:
         """The path as an absolute filesystem path in this store."""

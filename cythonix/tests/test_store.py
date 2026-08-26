@@ -250,6 +250,13 @@ def test_a_store_answers_for_a_path_it_holds(
     # test below is where a real one shows up.
     assert info.registration_time() == 0
 
+    # Both empty, and both for a reason rather than by omission. This
+    # add pins references to empty - Nix does not scan an added path
+    # for them, it is told - and nothing signs a path a store added
+    # itself.
+    assert info.references() == []
+    assert info.sigs() == []
+
 
 def test_a_path_info_is_produced_not_constructed(chroot: Store) -> None:
     """Every field comes from the store's database, so there is
@@ -446,6 +453,16 @@ def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
     deriver = info.deriver()
     assert deriver is not None, "the interpreter was built, not added"
     assert deriver.is_derivation(), deriver.to_string()
+
+    # The field that makes a store path a graph. A Python installation
+    # points at libc at the very least, so this is never empty - and
+    # every element is a StorePath rather than a name, which is what
+    # lets a caller walk from here without parsing anything.
+    references = info.references()
+    assert references, "an interpreter references what it links against"
+    assert all(isinstance(r, StorePath) for r in references)
+    assert sorted(r.to_string() for r in references) == [
+        r.to_string() for r in references], "a set's order is sorted"
 
 
 def test_the_binding_initialises_libstore() -> None:
