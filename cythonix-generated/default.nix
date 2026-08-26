@@ -27,15 +27,14 @@ let
     # the last place a silent Any should survive. Checked against its
     # own source rather than the installed copy: this package IS the
     # generator.
-    # The generator only IMPORTS these - it parses pxd files with
-    # Cython's own parser, builds descriptors with protobuf and
-    # reflects the installed bindings - so they are check inputs, not
-    # runtime ones. Without them the checker cannot see what any of
-    # those calls return.
+    # The generator only IMPORTS these - it builds descriptors with
+    # protobuf, reads the declarations through cythonix-idl and
+    # enumerates the installed bindings - so they are check inputs,
+    # not runtime ones. Without them the checker cannot see what any
+    # of those calls return.
     nativeCheckInputs = [
       ruff
       zuban
-      python3Packages.cython
       python3Packages.protobuf
       cythonix-bindings
       cythonix-idl
@@ -66,7 +65,7 @@ python3Packages.buildPythonPackage {
   # setup.py's build_py hook imports codegen to run it, and the generated
   # package imports cythonix_bindings - both are standard build
   # requirements. cythonix-idl is the third: the manifest comes from
-  # the declarations now, not from parsing a pxd and reflecting on a
+  # the declarations, not from parsing a pxd and reflecting on a
   # compiled class.
   build-system = [
     python3Packages.setuptools
