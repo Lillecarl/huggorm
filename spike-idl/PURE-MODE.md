@@ -99,7 +99,7 @@ stops it working out of the box is that `CythonCImports.__getattr__`
 refuses every dunder BEFORE its `import_module` fallback, so Python's
 import machinery cannot even ask for `__spec__`.
 
-`cyshims.py` replaces that mock with a real `ModuleType` whose
+`probe/cyshims.py` replaces that mock with a real `ModuleType` whose
 `__path__` IS `sys.path`. A submodule search walks `__path__` as
 directories, so `cython.cimports.c_store` finds the ordinary
 `c_store.py` sitting beside the binding. Two smaller pieces go with
@@ -194,3 +194,36 @@ person edits is the file that runs.
 The spike so far is not wasted: `emit.py` already writes both pxd
 shapes diff-clean, and those are exactly the two files this design
 still needs.
+
+## Recommendation, revised again
+
+The section above prefers pure mode because the file a person edits
+is then the file that runs. Building the parse route showed that
+"the file that runs" was never the goal - it was a proxy for "one
+source of truth", and it is the more expensive way to get it.
+
+Three things changed the answer:
+
+**A declaration that does not run has no shim to maintain.** Every
+blocker listed above - the patched `CythonCImports`, the erased
+`cclass`/`cfunc` markers, `cython.cimports` not being a real package
+- exists only to make a source file IMPORTABLE. `ast.parse` reads the
+same file and needs none of them. `cyshims.py` and its canary moved
+to `probe/` and stopped being build dependencies.
+
+**Running the source buys nothing the parse does not.** Verified: the
+same `ann.py` read both ways yields the same fields, the same
+methods, the same annotations. Import costs a shim layer for
+identical information.
+
+**And running it costs the ordering.** A pure-mode implementation
+must COMPILE before anything reflects on it, which is the constraint
+the manifest already lives under. A parsed declaration hands over the
+whole manifest entry before a compiler runs - 17 of 17 fields for
+StorePath, identical to the reflected one. That is not a smaller
+version of the same design. It is a different dependency graph.
+
+So: emit, do not execute. Pure mode stays useful for what the emitter
+WRITES - a generated pure-mode `.py` would restore `ast.unparse`, and
+with it the guarantee that emitted code parses - but it is an output
+format, not the source of truth.

@@ -1,21 +1,87 @@
 # Spike: a Python declaration as the source of the binding layer
 
-Proves that `path.pyx`, `path.pxd` and `c_path.pxd` can be GENERATED
-from a plain `.py` declaration, by regenerating files that already
-exist and swapping them in.
+One `.py` file that is never RUN. Everything below it is generated
+from what it says.
 
-    nix run --file .. ourPython -- emit.py path out
-    diff -u ../cythonix-bindings/cythonix_bindings/path.pyx out/path.pyx
+    nix run --file .. ourPython -- check.py --manifest <built manifest.json>
 
-## Result
+`check.py` emits from `path.py` and diffs the result against what the
+repo already has - two artefacts, produced two different ways.
 
-The generated files compiled in place of the hand-written ones.
-`nix build --file . cythonix` passed, 159 tests, `nix run --file .
-check` clean. Then swapped back - nothing in the three packages
-changed.
+## The two claims
 
-Ignoring comments and docstring WORDING, the diff is empty. Every
-declaration, every marshalling step, every dunder matches.
+### 1. The Cython comes from the declaration
+
+`path.pyx`, `path.pxd` and `c_path.pxd`, generated and swapped in
+place of the hand-written ones. `nix build --file . cythonix` passed,
+159 tests passed, `nix run --file . check` clean. Swapped back;
+nothing in the three packages changed.
+
+Ignoring comments and docstring WORDING, the emitted code is
+identical but for one local variable name: the human wrote `c_name`
+where the emitter derives `c_base_name` from the parameter. That is
+the whole diff, and it compiles.
+
+### 2. The MANIFEST comes from the same declaration
+
+This is the one that decides whether the idea is worth adopting.
+
+`model.py` builds the manifest by IMPORTING `cythonix_bindings` and
+reflecting on compiled extension types: `getattr(cls, "_threading")`,
+`cls.__dict__["_binds"]`, `getattr(cls, d) is not getattr(object, d)`
+for each of the nine value dunders. So the build has one possible
+order - C++ compiles, Cython compiles, the manifest is learnt - and
+four surfaces (async, protocols, RPC, stubs) wait behind a C++
+compiler for facts a human decided in a `.pyx` before any of it began.
+
+`manifest.py` derives that same entry from the declaration.
+
+    StorePath: 17 fields, identical to the reflected entry
+
+All seventeen. `_binds` is "C" plus the class name. `_threading` is
+what `@binding` said. The nine dunders are what `@wire_value`
+implies: a value compares, hashes and prints; `order=True` adds the
+four `functools.total_ordering` fills in; `text=` adds `__str__`.
+
+Reflection was reading back a fact written down two files earlier.
+
+## The declaration never executes
+
+`read.py` uses `ast.parse`. No import, no decorator call, no class
+body runs. That is not a purity preference, it buys three things:
+
+- **A declaration can name a C++ type this machine cannot compile.**
+  Reading costs a parse, so the manifest is knowable before a
+  compiler exists, which is what breaks the ordering above.
+- **The shim layer disappears.** Making a declaration IMPORTABLE
+  needed `cyshims.py` to stand in for `cython.cimports`, plus a
+  canary asserting Cython had not moved underneath it. Both now live
+  in `probe/`, as evidence about pure mode rather than as build
+  dependencies.
+- **A typo is a line number.** `read.py` refuses a name it cannot
+  resolve and points at the line:
+
+      read.DeclarationError: line 64: 'str' is not from declare.
+      A declaration may only use the vocabulary it imported.
+
+`declare.py` still executes, and earns it. A decorator's job is to
+write a field on a `Decl`, so rather than restate that mapping,
+`read.py` APPLIES the real decorator to a throwaway object and reads
+what was written. `header` sets `.header` in exactly one place, and a
+decorator that gains an argument needs no edit in the reader.
+
+## The shape this suggests
+
+    path.py            a document, never executed
+      |
+      +-- read.py      ast.parse -> names, docs, resolved C++ facts
+            |
+            +-- emit.py       -> c_path.pxd, path.pxd, path.pyx
+            +-- manifest.py   -> the wrapper entry the surfaces read
+
+Two readings of one document, rather than two stages of a pipeline.
+The `.pyx` and the manifest cannot disagree, because neither is the
+other's input.
 
 ## Emitting found four bugs a template would have shipped
 
@@ -149,9 +215,8 @@ only real gate.
 
 A shape it cannot emit stops with a reason rather than guessing:
 
-    >>> cxx_of(StorePath)
-    TypeError: <class 'StorePath'> carries no C++ spelling. Declare it
-    through an Annotated alias in declare.py rather than as a bare type.
+    read.DeclarationError: line 64: 'str' is not from declare. A
+    declaration may only use the vocabulary it imported.
 
 A parameter of a BOUND type is the first real gap - `Store.is_valid_path`
 genuinely takes a `StorePath` - and it needs the emitter to know how to
@@ -159,6 +224,14 @@ unwrap one, which is the same knowledge `_get()` already encodes.
 
 ## Not done
 
-No `_cpp` shim generation; path.pyx needs none. No manifest, codec,
-surface or build changes. No migration of store.pyx - one module
-proves or kills the idea, and this one proves it.
+No `_cpp` shim generation; path.pyx needs none. No codec, surface or
+build changes - `manifest.py` emits an entry and diffs it, it does not
+feed the real generator. No migration of store.pyx: one module proves
+or kills the idea, and this one proves it.
+
+The manifest half covers ONE class, which bounds what its agreement
+proves. `wrapped` is `threading == "affine" or blocking`, and for
+StorePath both halves are false - so deleting either one still
+passes. Perturbing the DECLARATION catches it: `blocking=True` moves
+both `blocking` and `wrapped`. But a second class of a different
+shape is what would make that field load-bearing.
