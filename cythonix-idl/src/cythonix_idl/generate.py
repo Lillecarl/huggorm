@@ -20,9 +20,10 @@ binding. Running it here proves it DID.
 """
 
 import argparse
+import ast
 import pathlib
 
-from cythonix_idl import manifest
+from cythonix_idl import manifest, pyenum
 from cythonix_idl.emit import emit, produced_pxi
 from cythonix_idl.read import read
 
@@ -41,6 +42,14 @@ MODULES = (
 # splice.
 INCLUDES = (
     ("decl/store.py", "store_produced.pxi"),
+)
+
+# Vocabularies. A StrEnum whose members ARE the strings a Nix parser
+# takes, so there is no C++ and nothing to compile - the emitted
+# module is plain Python and the build writes it whole, the way it
+# writes a MODULES entry.
+VOCABULARIES = (
+    "decl/content_address.py",
 )
 
 
@@ -101,6 +110,14 @@ def main(out_dir: str) -> int:
         produced = [c.name for c in mod.classes if c.is_value]
         (out / fname).write_text(produced_pxi(mod, name))
         print(f"{name} -> {out / fname}: {', '.join(produced)}")
+    for name in VOCABULARIES:
+        source = HERE / name
+        mod = read(str(source))
+        target = out / f"{mod.name}.py"
+        tree = ast.parse(source.read_text())
+        target.write_text(pyenum.module(mod, tree, mod.doc) + "\n")
+        words = [c.name for c in mod.classes if c.is_words]
+        print(f"{name} -> {target}: {', '.join(words)}")
     return 0
 
 

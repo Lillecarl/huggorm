@@ -169,6 +169,19 @@ class Method:
 
 
 @dataclass(frozen=True)
+class Member:
+    """One word of a vocabulary: the name, the string, and why.
+
+    `doc` is the docstring written UNDER the assignment, which is
+    where Python puts an attribute's own documentation. Empty for a
+    member whose name says the whole of it."""
+
+    name: str
+    value: str
+    doc: str = ""
+
+
+@dataclass(frozen=True)
 class Class:
     """One declared class: what it says, and what its decorators said."""
 
@@ -177,6 +190,16 @@ class Class:
     decl: Decl
     ctor: Method | None
     methods: tuple[Method, ...] = ()
+    # The words, for a vocabulary. Empty for every other kind.
+    members: tuple[Member, ...] = ()
+
+    @property
+    def is_words(self) -> bool:
+        """Whether this is a vocabulary rather than a binding.
+
+        A StrEnum with no C++ object behind it. It crosses as the
+        string a member already IS, so nothing about it compiles."""
+        return self.decl.kind == "words"
 
     @property
     def is_value(self) -> bool:
@@ -408,6 +431,39 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
     )
 
 
+def _members(node: ast.ClassDef) -> tuple[Member, ...]:
+    """The words of a vocabulary, in the order it lists them.
+
+    `NAME = "value"`, and the docstring that may follow it. Python
+    puts an attribute's documentation under the assignment rather
+    than inside it, so the two are read as one pair here."""
+    out: list[Member] = []
+    for i, item in enumerate(node.body):
+        if not isinstance(item, ast.Assign):
+            continue
+        if len(item.targets) != 1 or not isinstance(item.targets[0], ast.Name):
+            raise DeclarationError(item, "a word is one plain assignment")
+        if not (isinstance(item.value, ast.Constant)
+                and isinstance(item.value.value, str)):
+            raise DeclarationError(
+                item, "a word IS a string. Nothing else crosses as one.")
+        doc = ""
+        nxt = node.body[i + 1] if i + 1 < len(node.body) else None
+        if (isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant)
+                and isinstance(nxt.value.value, str)):
+            doc = nxt.value.value
+        out.append(Member(targets_name(item), item.value.value, doc))
+    if not out:
+        raise DeclarationError(node, f"{node.name}: a vocabulary with no words")
+    return tuple(out)
+
+
+def targets_name(item: ast.Assign) -> str:
+    target = item.targets[0]
+    assert isinstance(target, ast.Name)
+    return target.id
+
+
 def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
     if node.bases:
         raise DeclarationError(
@@ -415,6 +471,15 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}))
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
+
+    if decl.kind == "words":
+        return Class(
+            name=node.name,
+            doc=ast.get_docstring(node, clean=False) or "",
+            decl=decl,
+            ctor=None,
+            members=_members(node),
+        )
 
     ctor: Method | None = None
     methods: list[Method] = []

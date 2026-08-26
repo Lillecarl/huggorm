@@ -1,28 +1,24 @@
 """
 How a store object is content-addressed: `nix/store/content-address.hh`.
 
-Plain Python, like `errors.py`, because there is nothing to compile. A
-StrEnum works perfectly well inside a .pyx - Cython runs the metaclass
-and the members come out real - but compiling a vocabulary into a
-shared object buys nothing, and a .py module needs no generated stub
-for a typechecker to read it (the stubs are `partial` exactly so a
-hand-written module stays visible).
-
-The values are Nix's words, not ours. `Store.add_to_store` hands the
-string straight to `ContentAddressMethod::parse`, so this class does
-not translate anything - it names what libstore already accepts, so an
-editor can offer the four and a typo fails before the call.
+A vocabulary, not a binding. There is nothing to compile: the values
+are Nix's words, and `Store.add_to_store` hands one straight to
+`ContentAddressMethod::parse`, so this translates nothing. It names
+what libstore already accepts, so an editor can offer the words and a
+typo fails before the call.
 """
 
-from enum import StrEnum
+from cythonix_idl.declare import header, words
 
 
-class ContentAddressMethod(StrEnum):
+@header("nix/store/content-address.hh")
+@words(parsed_by="nix::ContentAddressMethod::parse")
+class ContentAddressMethod:
     """How the hash that names a store path is computed.
 
     A StrEnum, so a member IS the string libstore parses. Passing
-    `ContentAddressMethod.FLAT` and passing `"flat"` are the same call,
-    which is what keeps this a convenience rather than a layer.
+    `ContentAddressMethod.FLAT` and passing `"flat"` are the same
+    call, which is what keeps this a convenience rather than a layer.
     """
 
     FLAT = "flat"
@@ -43,7 +39,9 @@ class ContentAddressMethod(StrEnum):
     produces."""
 
 
-class HashAlgorithm(StrEnum):
+@header("nix/util/hash.hh")
+@words(parsed_by="nix::parseHashAlgo")
+class HashAlgorithm:
     """The digest used to content-address a store object.
 
     Lives beside ContentAddressMethod rather than in a module of its

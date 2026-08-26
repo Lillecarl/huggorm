@@ -93,6 +93,14 @@ class Decl:
     shown: str = ""
     order: bool = False
     custom: dict[str, str] = field(default_factory=dict)
+    # What KIND of declaration this is. "class" binds a C++ type or
+    # holds a produced value's slots; "words" is a vocabulary - a
+    # StrEnum whose members ARE the strings a Nix parser takes, with
+    # no C++ object behind it at all.
+    kind: str = "class"
+    # Where the words come from, for a vocabulary. Prose only: the
+    # emitted module names it so a reader can check the list.
+    parsed_by: str = ""
 
 
 def _decl(cls: type) -> Decl:
@@ -125,6 +133,31 @@ def produced(by: str) -> Callable[[type], type]:
     guesses wrong is told where to look."""
     def apply(cls: type) -> type:
         _decl(cls).built_by = by
+        return cls
+    return apply
+
+
+def words(parsed_by: str = "") -> Callable[[type], type]:
+    """This class is a VOCABULARY: the words a Nix parser takes.
+
+    A StrEnum, so a member IS the string libstore parses. Passing
+    `ContentAddressMethod.FLAT` and passing `"flat"` are the same
+    call, which is what keeps such a class a convenience rather than
+    a layer - it names what libstore already accepts, so an editor
+    can offer the words and a typo fails before the call.
+
+    There is nothing to compile. The values are Nix's words, and the
+    binding hands one straight to a parser rather than translating
+    it, so the emitted module is plain Python: no pointer, no header,
+    no shim.
+
+    `parsed_by` names the C++ that takes them. Prose only - the
+    emitted module says it so a reader can check the list against
+    upstream - but it is the one fact that says where the words came
+    from, which is not derivable from the members."""
+    def apply(cls: type) -> type:
+        d = _decl(cls)
+        d.kind, d.parsed_by = "words", parsed_by
         return cls
     return apply
 
