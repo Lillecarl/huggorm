@@ -42,14 +42,14 @@ class _Cpp:
         self.name = name
         self.args = args
 
-    def __getitem__(self, item: object) -> "_Cpp":
+    def __getitem__(self, item: object) -> _Cpp:
         # A NEW one, carrying the parameter. Returning self would make
         # `shared_ptr[CStorePath]` indistinguishable from `shared_ptr`,
         # and the parameter is exactly what a generator needs to write
         # the declaration back out.
         return _Cpp(self.name, item if isinstance(item, tuple) else (item,))
 
-    def __call__(self, *args: object, **kwargs: object) -> "_Cpp":
+    def __call__(self, *args: object, **kwargs: object) -> _Cpp:
         return self
 
     def spelling(self) -> str:

@@ -2,8 +2,8 @@
 
     nix run --file ../.. ourPython -- setup.py build_ext --inplace
 """
-from setuptools import setup, Extension
 from Cython.Build import cythonize
+from setuptools import Extension, setup
 
 setup(ext_modules=cythonize(
     [Extension(name, [f"{name}.py"], language="c++",

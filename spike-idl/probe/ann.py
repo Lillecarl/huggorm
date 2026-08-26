@@ -1,7 +1,7 @@
 import cython
+from cython.cimports.c_thing import CThing
 from cython.cimports.libcpp.memory import make_shared, shared_ptr
 from cython.cimports.libcpp.string import string
-from cython.cimports.c_thing import CThing
 
 
 @cython.cclass

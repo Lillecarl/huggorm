@@ -54,7 +54,7 @@ def test_cimports_resolves_to_a_plain_module() -> None:
     import cyshims
 
     cyshims.declarations(pathlib.Path(__file__).parent)
-    from cython.cimports.c_thing import CThing  # noqa: PLC0415
+    from cython.cimports.c_thing import CThing
 
     assert inspect.isclass(CThing) and CThing.__doc__, (
         "cython.cimports.<name> did not resolve to the plain twin. The "
@@ -65,7 +65,7 @@ def test_cimports_resolves_to_a_plain_module() -> None:
     # unrelated top-level module. That is what scoping __path__ to the
     # declaration directories buys over pointing it at sys.path.
     try:
-        from cython.cimports.inspect import isclass  # noqa: F401, PLC0415
+        from cython.cimports.inspect import isclass  # noqa: F401
     except ImportError:
         pass
     else:
