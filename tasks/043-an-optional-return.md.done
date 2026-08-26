@@ -1,0 +1,81 @@
+# A return type may be optional
+
+Found binding `queryPathFromHashPart`. It answers with
+`std::optional<StorePath>`, and libstore does that all over: "the
+store does not have it" is a normal answer, not a failure.
+
+The surface could not say it. A method returning `StorePath | None`
+got no rpc, and the manifest blamed the wrong thing:
+
+    StorePath | None is not in the manifest, so it has no wire policy
+    (an excluded base class, most likely - see tasks/018)
+
+The type was fine. Only optionality was missing.
+
+## It needs no new wire machinery
+
+A protobuf message field HAS presence. An unset one IS the None.
+
+That is the same bit `_wire_fields` already reads with a trailing `?`,
+and the same bit `PathInfo.deriver` rides on. What is new is only
+where it is SAID: in the annotation, where a typechecker reads it too,
+rather than in a tuple of strings the binding writes by hand.
+
+Two spellings for one idea, then, and deliberately. `StorePath?` is
+not an annotation, and a return type has to be one.
+
+So the schema builds the field for `T` and stops; the codec splits the
+annotation at both ends. `decode` ORs the declared optionality with
+the flag a caller may already pass, so a caller who knows need not
+read the type and a type that says so need not be told twice.
+
+## Three things it may not be, for three reasons
+
+**A scalar or an enum.** proto3 gives them no presence, so an absent
+one and a default one are the same bytes. This is the same wall the
+`?` marker hits on a scalar FIELD, and it is still there.
+
+**A container.** A repeated field has no presence and needs none: an
+absent one IS an empty one. Declaring `list[T] | None` promises a
+distinction that cannot exist, and the right answer is to return the
+container empty. 041 settled the parameter half of this the same way.
+
+**A union of two real types.** Presence is one bit. It separates one
+type from nothing, and it has no way to say which of two arms a field
+holds.
+
+## The fourth refusal is not about the wire
+
+A WRAPPED `T` - a proxy - is refused for every surface at once, in
+`check_optional_contract` rather than in `wire_blocker`.
+
+The wire could almost carry it: a Handle is a message and has
+presence. What has no answer is the layer above. Every layer adopts a
+returned proxy into a runner - the async wrapper writes `AsyncX(result,
+self._runner)`, the server puts a handle, the client builds a proxy -
+and none of them adopts nothing.
+
+Refusing it only on the wire would have left the in-process wrapper
+handing back a bare sync object with no runner attached: accepted,
+built, and wrong at the first await. That is the same
+accepted-then-explodes shape a proxy in `_wire_fields` had, and it is
+refused in the same place, for the same reason.
+
+## Done
+
+`Store.query_path_from_hash_part(hash_part) -> StorePath | None`. The
+shim carries the optional across as a null pointer, because Cython
+cannot hold a `std::optional` of a type with no default constructor -
+the same reason `parse_store_path` returns one.
+
+Both arms are asserted over the wire, and only one of them is
+interesting: a missing None looks exactly like a default-built object,
+which for a StorePath is an empty base name that raises.
+
+## Still open
+
+The optional SCALAR. A `str | None` return and a `("x", "str?")` field
+hit the same wall from two directions, and both are refused rather
+than wrong. Closing it means synthesising `proto3_optional` fields and
+teaching the codec `HasField` for scalars - which changes the wire,
+and which nothing yet needs.

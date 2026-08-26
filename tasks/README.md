@@ -52,6 +52,13 @@ Findings reference two architectural reviews, 2026-08-23 and
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
+- 043 (an optional return) is done. `T | None` is a return type the
+  surface can spell, and it needs no new wire machinery: a protobuf
+  message field has presence, so an unset one IS the None. A scalar,
+  an enum, a container and a two-armed union are each refused with
+  their own reason - and a WRAPPED T is refused for every surface at
+  once, because every layer adopts a returned proxy into a runner and
+  none of them adopts nothing.
 - 042 (which store path holds this file) is done. to_store_path
   answers the question parse_store_path cannot: an interpreter lives
   at `<store path>/bin/python3`, which is a file in a store object and
