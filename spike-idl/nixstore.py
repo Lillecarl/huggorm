@@ -23,8 +23,7 @@ there is nothing for `nb::init` to bind. `@produced(by=...)` says so,
 and says where to look instead.
 """
 
-from declare import (Bint, Str, binding, blocks, cxx_body, cxx_name,
-                     header, instant, produced)
+from declare import Bint, Str, binding, blocks, cxx_body, cxx_name, header, instant, produced
 
 
 @produced(by="open_store")

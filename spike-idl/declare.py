@@ -22,10 +22,9 @@ be copied before it reaches Python is the emitter's rule, because it
 is a fact about the boundary rather than about nix::StorePath.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Callable, TypeVar
-
-F = TypeVar("F", bound=Callable[..., Any])
+from typing import Annotated, Any
 
 
 @dataclass(frozen=True)
@@ -167,7 +166,7 @@ def custom(name: str, source: str) -> Callable[[type], type]:
     return apply
 
 
-def cxx_name(name: str) -> Callable[[F], F]:
+def cxx_name[F: Callable[..., Any]](name: str) -> Callable[[F], F]:
     """What C++ calls this method, when it is not what Python does."""
     def apply(fn: F) -> F:
         fn._cxx_name = name  # type: ignore[attr-defined]
@@ -175,7 +174,7 @@ def cxx_name(name: str) -> Callable[[F], F]:
     return apply
 
 
-def blocks(fn: F) -> F:
+def blocks[F: Callable[..., Any]](fn: F) -> F:
     """This method can wait, so the emitter releases the GIL around it.
 
     Per-method rather than per-class, because a class whose calls
@@ -184,7 +183,7 @@ def blocks(fn: F) -> F:
     return fn
 
 
-def reads(member: str) -> Callable[[F], F]:
+def reads[F: Callable[..., Any]](member: str) -> Callable[[F], F]:
     """This accessor reads a C++ DATA MEMBER, not a method.
 
     The distinction is not pedantry, it decides what gets emitted. A
@@ -201,7 +200,7 @@ def reads(member: str) -> Callable[[F], F]:
     return apply
 
 
-def cxx_body(source: str) -> Callable[[F], F]:
+def cxx_body[F: Callable[..., Any]](source: str) -> Callable[[F], F]:
     """The C++ this accessor cannot be derived into, carried verbatim.
 
     Per-method, and per-BACKEND: the body is C++, so it means nothing
@@ -219,7 +218,7 @@ def cxx_body(source: str) -> Callable[[F], F]:
     return apply
 
 
-def instant(fn: F) -> F:
+def instant[F: Callable[..., Any]](fn: F) -> F:
     """This method cannot wait, on a class whose calls generally can.
 
     The inverse of `@blocks`, and both are needed for the same reason:

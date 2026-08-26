@@ -45,6 +45,27 @@ select = [
 "**/*_demo.py" = ["E402"]
 "**/run_remote.py" = ["E402"]
 
+# A DECLARATION is not a program, and a linter that assumes it is
+# reports the two things that make it a declaration.
+#
+# F821: it names C++ types - `StorePath`, `list[StorePath]` - that do
+# not exist as Python and never will. That is the point: the emitter
+# resolves them through the other declaration.
+#
+# UP037: the quotes are what let it name one at all. Removing them
+# would make the file unparseable to the very tools this rule serves.
+#
+# PIE790: a `...` body after a docstring is the declaration idiom
+# itself - it says there is no implementation here and never will be.
+#
+# The spike's MACHINERY is not listed - read.py, emit.py,
+# nanobind.py, manifest.py and the two gates are ordinary Python and
+# are held to every rule.
+"spike-idl/path.py" = ["F821", "UP037", "PIE790"]
+"spike-idl/store.py" = ["F821", "UP037", "PIE790"]
+"spike-idl/pathinfo.py" = ["F821", "UP037", "PIE790"]
+"spike-idl/nixstore.py" = ["F821", "UP037", "PIE790"]
+
 [lint.isort]
 # test_remote holds the shared harness the other suites import. Left
 # undeclared it is third-party at the repo root and first-party in the
