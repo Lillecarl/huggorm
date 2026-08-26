@@ -12,7 +12,7 @@ So this one imports two COMPILED modules - one built by Cython from
 them the same questions. A difference here is a difference a caller
 would see.
 
-    python3 parity.py <directory holding the nanobind module>
+    python3 parity.py <directory holding the nanobind package>
 
 It is not symmetric. Where the two disagree, one of them is right,
 and the table below says which and why. A disagreement not in that
@@ -93,10 +93,13 @@ NOT_YET: dict[str, str] = {}
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("nanobind_dir",
-                    help="directory holding the nanobind-built module")
+                    help="directory holding the nanobind-built package")
     args = ap.parse_args()
     sys.path.insert(0, str(pathlib.Path(args.nanobind_dir).resolve()))
-    import path as nb_path
+    # A package, so the two backends can be imported side by side:
+    # both spell the module `path`, and only one of them can be
+    # `cythonix_bindings.path` while Cython is still here.
+    from cythonix_nb import path as nb_path
 
     from cythonix_bindings.path import StorePath as CyPath
 
