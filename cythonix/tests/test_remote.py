@@ -431,6 +431,37 @@ async def test_a_path_info_crosses_as_a_value(
     await store.aclose()
 
 
+async def test_a_store_location_crosses_as_a_value(
+        client: Any, tmp_path: Any) -> None:
+    """to_store_path answers in the SERVER's terms, and the answer is
+    a copy.
+
+    The question is which store object holds a file, and only the
+    store knows its own directory - so the split has to happen there.
+    What comes back is a pair with no handle and no lease: a
+    StorePath the caller can pass straight back, and the sub-path as
+    the string it is."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello\n")
+
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    path = await store.add_path_to_store("tree", str(src))
+    printed = await store.print_store_path(path)
+
+    where = await store.to_store_path(f"{printed}/a.txt")
+    assert isinstance(where, cythonix_bindings.StoreLocation)
+    assert isinstance(where.path(), cythonix_bindings.StorePath)
+    assert where.path().to_string() == path.to_string()
+    assert where.sub_path() == "/a.txt"
+
+    # Empty is a real answer and proto3 cannot tell it from absent.
+    # The field carries no "?", so it reads back as "" rather than as
+    # None.
+    assert (await store.to_store_path(printed)).sub_path() == ""
+    await store.aclose()
+
+
 async def test_a_reference_list_crosses_both_ways(
         client: Any, tmp_path: Any) -> None:
     """A container of wire values, in a parameter and in a return.

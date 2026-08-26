@@ -16,17 +16,19 @@ from libcpp.vector cimport vector
 
 from cythonix_bindings.c_path cimport CStorePath
 from cythonix_bindings.c_store cimport (
+    CPathInfo,
     CStore,
+    CStoreLocation,
     add_path_to_store,
     add_to_store,
     init_libstore,
     open_store,
-    CPathInfo,
     parse_store_path,
     path_info,
     query_all_valid_paths,
     real_path,
     store_uri,
+    to_store_path,
 )
 from cythonix_bindings.path cimport StorePath
 
@@ -42,6 +44,65 @@ from cythonix_bindings.content_address import (
 # moment that can happen, and libstore aborts rather than raises if it
 # has not - so there is no later point that would still be safe.
 init_libstore()
+
+
+cdef class StoreLocation:
+    """Where one file sits: which store path holds it, and where
+    inside.
+
+    What `Store.to_store_path` answers. A store path names an OBJECT,
+    and a file inside that object is not one - so the answer is a pair
+    and both halves are needed to reach the file again.
+
+    A VALUE, like PathInfo, and produced rather than constructed: it
+    is the result of a split that only a store can perform, because
+    only a store knows its own directory."""
+
+    _threading = "pool"
+    # Two reads of memory this object already owns.
+    _blocking = False
+    _wire = "value"
+    _produced = True
+    # `sub_path` is empty when the path IS the store path. Empty, not
+    # absent: there is a real answer and it is "nothing below it", so
+    # the field carries no "?".
+    _wire_fields = (
+        ("path", "StorePath"),
+        ("sub_path", "str"),
+    )
+
+    cdef object _path
+    cdef object _sub_path
+
+    def __init__(self):
+        raise TypeError(
+            "StoreLocation objects come from Store.to_store_path, not from a "
+            "constructor")
+
+    def path(self) -> StorePath:
+        """The store path that holds the file."""
+        return self._path
+
+    def sub_path(self) -> str:
+        """Where the file sits inside it, leading slash included:
+        `/bin/python3`.
+
+        Empty when the path given WAS the store path. That is a real
+        answer rather than a gap - there is nothing below it."""
+        return self._sub_path
+
+    @classmethod
+    def _from_parts(cls, path, sub_path):
+        """Wire-deserialization helper (private, never surfaced)."""
+        cdef StoreLocation loc = StoreLocation.__new__(StoreLocation)
+        loc._path = path
+        loc._sub_path = sub_path
+        return loc
+
+    def _parts(self):
+        """Wire-serialization helper (private): one value per
+        _wire_fields entry, in order."""
+        return (self._path, self._sub_path)
 
 
 cdef vector[string] _base_names(object paths) except *:
@@ -453,6 +514,42 @@ cdef class Store:
             out.ultimate,
             references,
             sigs)
+
+    def to_store_path(self, path: str) -> StoreLocation:
+        """Which store path CONTAINS this file, and where inside it.
+
+        A different question from `parse_store_path`, which takes the
+        store path itself and refuses anything below it. An
+        interpreter lives at `<store path>/bin/python3`, which is a
+        file in a store object and is not a store object - so asking
+        which one holds it needs this call.
+
+        String work only: it splits on the store DIRECTORY and never
+        touches the filesystem. So it answers for a path that does not
+        exist, and it answers in the store's own terms rather than in
+        this machine's - which is why a chroot store answers about
+        `/nix/store/...` and not about `<root>/nix/store/...`.
+        `real_path` is the call that goes the other way.
+
+        Symlinks are not followed. nix::Store has
+        followLinksToStorePath for that, and it is a different call
+        with a different failure mode: it reads the filesystem.
+
+        A path outside the store raises NixError, not BadStorePath.
+        That is upstream's answer: StoreDirConfig::toStorePath throws
+        a bare Error where parseStorePath throws BadStorePath, for the
+        same fact. The binding does not correct it - it would then
+        disagree with `nix` for the same input - so a caller catching
+        the narrow type around both calls must catch the wide one
+        here."""
+        cdef string c_path = path.encode('utf-8')
+        cdef CStore* store = self._get()
+        cdef CStoreLocation out
+        with nogil:
+            out = to_store_path(deref(store), c_path)
+        return StoreLocation._from_parts(
+            StorePath(out.path.decode('utf-8')),
+            out.sub_path.decode('utf-8'))
 
     def print_store_path(self, StorePath path) -> str:
         """The path as an absolute filesystem path in this store."""

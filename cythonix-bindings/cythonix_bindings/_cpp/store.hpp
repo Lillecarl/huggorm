@@ -74,6 +74,40 @@ inline std::string store_uri(const nix::Store & store)
     return store.config.getHumanReadableURI();
 }
 
+/**
+ * Which store path CONTAINS this file, and where inside it.
+ *
+ * A different question from parse_store_path, which takes the store
+ * path itself and nothing below it. `/nix/store/<hash>-python/bin/
+ * python3` is not a store path; it is a file in one, and this is the
+ * call that says which.
+ *
+ * String work only. It splits on the store DIRECTORY and never touches
+ * the filesystem, so it answers for a path that does not exist and for
+ * a store whose files are somewhere else - which is every chroot
+ * store. Symlinks are not followed either; nix::Store has
+ * followLinksToStorePath for that and it is a different binding.
+ *
+ * A pair, because that is what upstream returns and both halves are
+ * the answer: the store path locates the object, the sub-path locates
+ * the file within it. The sub-path is empty when the path IS the store
+ * path, which is absOrEmpty's own meaning.
+ */
+struct StoreLocationParts
+{
+    std::string path;
+    std::string sub_path;
+};
+
+inline StoreLocationParts to_store_path(const nix::Store & store, const std::string & path)
+{
+    auto [store_path, sub] = store.config.toStorePath(path);
+    return StoreLocationParts{
+        std::string(store_path.to_string()),
+        sub.absOrEmpty(),
+    };
+}
+
 inline nix::StorePath * parse_store_path(const nix::Store & store, const std::string & path)
 {
     return new nix::StorePath(store.parseStorePath(path));

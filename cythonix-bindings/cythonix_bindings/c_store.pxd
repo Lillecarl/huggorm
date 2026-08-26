@@ -31,6 +31,12 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # Returns a pointer because nix::StorePath is not
     # default-constructible; see _cpp/store.hpp.
     CStorePath * parse_store_path(const CStore & store, string path) except +translate_nix_error
+    # Which store path CONTAINS a file, which is a different question.
+    # A POD for the same reason CPathInfo is one.
+    cdef struct CStoreLocation "cythonix::StoreLocationParts":
+        string path
+        string sub_path
+    CStoreLocation to_store_path(const CStore & store, string path) except +translate_nix_error
     # A vector of POINTERS for the same reason, one level down: the
     # binding owns every element it takes out.
     vector[CStorePath *] query_all_valid_paths(CStore & store) except +translate_nix_error

@@ -13,7 +13,13 @@ import sys
 import pytest
 
 from cythonix_bindings import ContentAddressMethod as CA
-from cythonix_bindings import HashAlgorithm, PathInfo, Store, StorePath
+from cythonix_bindings import (
+    HashAlgorithm,
+    PathInfo,
+    Store,
+    StoreLocation,
+    StorePath,
+)
 from cythonix_bindings.errors import (
     BadStorePath,
     InvalidPath,
@@ -294,6 +300,70 @@ def test_a_reference_must_be_a_store_path(chroot: Store) -> None:
             references=[HELLO])  # type: ignore[list-item]
 
 
+def test_a_store_says_which_path_holds_a_file(
+        chroot: Store, source: pathlib.Path) -> None:
+    """to_store_path, which is not parse_store_path.
+
+    `parse_store_path` takes a store path and refuses anything below
+    one. A file lives below one - that is what a store object IS - so
+    asking which object holds it is a second question, and this is the
+    call that answers it."""
+    path = chroot.add_path_to_store("tree", str(source))
+    printed = chroot.print_store_path(path)
+
+    where = chroot.to_store_path(f"{printed}/sub/b.txt")
+    assert where.path().to_string() == path.to_string()
+    assert where.sub_path() == "/sub/b.txt"
+
+    # The store path itself. Empty is a real answer - nothing below it
+    # - rather than a gap, which is why the field carries no "?".
+    assert chroot.to_store_path(printed).sub_path() == ""
+
+    # String work only: it splits on the store DIRECTORY and never
+    # touches the filesystem, so it answers for a file that is not
+    # there. The store directory is the store's, not this machine's -
+    # a chroot store's real files are under <root>/nix/store and this
+    # still answers about /nix/store.
+    assert chroot.to_store_path(f"{printed}/nope").sub_path() == "/nope"
+    assert printed.startswith("/nix/store/")
+
+    # The contrast, spelled out: the same string the other call
+    # refuses.
+    with pytest.raises(BadStorePath):
+        chroot.parse_store_path(f"{printed}/sub/b.txt")
+
+
+def test_a_file_outside_the_store_has_no_holder(chroot: Store) -> None:
+    """NixError, and NOT BadStorePath, for the same fact the other
+    call reports as BadStorePath.
+
+    That is upstream's, not this binding's. StoreDirConfig::toStorePath
+    throws a bare `Error` while parseStorePath throws BadStorePath, so
+    a caller catching the narrow one around both calls would miss this
+    one. The binding does not correct it: it would then disagree with
+    `nix` for the same input, and an upstream fix would become a
+    silent change here.
+
+    Asserted rather than described, so an upstream fix reaches this
+    build rather than a caller."""
+    with pytest.raises(NixError, match="is not in the Nix store") as caught:
+        chroot.to_store_path("/somewhere/else/x")
+    assert not isinstance(caught.value, BadStorePath), (
+        "upstream narrowed the type; the binding can stop warning about it")
+
+    # The store directory itself is not IN the store either: isInStore
+    # is strictly inside.
+    with pytest.raises(NixError, match="is not in the Nix store"):
+        chroot.to_store_path("/nix/store")
+
+
+def test_a_store_location_is_produced_not_constructed() -> None:
+    """Only a store can perform the split, because only a store knows
+    its own directory."""
+    with pytest.raises(TypeError, match="not from a constructor"):
+        StoreLocation()  # type: ignore[call-arg]
+
+
 def test_a_path_info_is_produced_not_constructed(chroot: Store) -> None:
     """Every field comes from the store's database, so there is
     nothing a caller could correctly build one from.
@@ -476,9 +546,8 @@ def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
     The environment running this is such a path, which is what makes
     the test need no fixture and no name written down. sys.prefix
     rather than sys.executable: the executable lives INSIDE a store
-    path and parse_store_path takes the path itself. Asking which
-    store path CONTAINS a file is a different call - nix::Store has
-    toStorePath - and this binding does not offer it yet."""
+    path and parse_store_path takes the path itself. to_store_path is
+    the call for the other question, and the test below asks it."""
     path = ambient_store.parse_store_path(sys.prefix)
     info = ambient_store.query_path_info(path)
 
@@ -499,6 +568,28 @@ def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
     assert all(isinstance(r, StorePath) for r in references)
     assert sorted(r.to_string() for r in references) == [
         r.to_string() for r in references], "a set's order is sorted"
+
+
+@pytest.mark.live
+def test_a_real_file_names_the_path_that_holds_it(
+        ambient_store: Store) -> None:
+    """The question sys.executable asks and parse_store_path cannot
+    answer.
+
+    The interpreter running this lives at `<store path>/bin/python3.x`
+    - a file in a store object, not a store object. The ambient store
+    is what makes this real: its store directory is the machine's, so
+    the split lands on a path that exists."""
+    where = ambient_store.to_store_path(sys.executable)
+
+    assert where.sub_path().startswith("/bin/")
+    assert where.path().to_string().endswith(
+        pathlib.Path(sys.prefix).name), where.path().to_string()
+
+    # And it round-trips against the other direction: the store path
+    # plus the sub-path is where the file really is.
+    assert (ambient_store.real_path(where.path())
+            / where.sub_path().lstrip("/")) == pathlib.Path(sys.executable)
 
 
 def test_the_binding_initialises_libstore() -> None:
