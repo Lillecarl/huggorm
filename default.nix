@@ -18,6 +18,7 @@ rec {
       ./spike-idl/generate_nb.py
       ./spike-idl/emit.py
       ./spike-idl/nbemit.py
+      ./spike-idl/manifest.py
       ./spike-idl/read.py
       ./spike-idl/declare.py
       ./spike-idl/decl
@@ -94,10 +95,22 @@ rec {
     inherit cythonix-bindings;
     inherit cythonix-generated;
   };
+  # Every declared class, as the manifest entry it implies.
+  #
+  # The seam between the declarations and the generator, and it is
+  # DATA. `codegen` builds its manifest by parsing the pxd files and
+  # reflecting on the compiled extension, which is what puts every
+  # surface above it behind a C++ compiler. A class in here is taken
+  # from the declaration instead.
+  declared = pkgs.runCommand "declared-entries.json" { } ''
+    ${lib.getExe python} ${idl}/generate.py "$TMPDIR/unused" \
+      --manifest-out $out
+  '';
   # AST codegen layer between bindings and python: pxd + live bindings -> generated stubs
   cythonix-generated = pkgs.callPackage ./cythonix-generated {
     inherit fake-library;
     inherit cythonix-bindings;
+    inherit declared;
   };
   # nix run --file . python -- $args
   # to be able to run Python commands

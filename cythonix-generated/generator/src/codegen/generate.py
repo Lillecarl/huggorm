@@ -208,6 +208,13 @@ def main(argv: list[str] | None = None) -> None:
         nargs="+",
         help="paths to the bindings .pxd declaration files (the C++ mapping)",
     )
+    parser.add_argument(
+        "--declared",
+        default="",
+        help="JSON of manifest entries derived from the DECLARATIONS. A "
+             "class named here is taken from the declaration instead of "
+             "being reflected out of the compiled extension.",
+    )
     args = parser.parse_args(argv)
 
     bindings = _load_bindings_module()
@@ -246,12 +253,56 @@ def main(argv: list[str] | None = None) -> None:
         print("no constructible wrapper classes found", file=sys.stderr)
         sys.exit(1)
 
-    returned_protos = [
-        extract_wrapper(kls, api=api, mapping=mapping) for kls in returned_classes
-    ]
+    # The declarations, where there are any.
+    #
+    # This is the seam that ends the build's one possible order.
+    # Everything below reads a proto dict, and every proto dict has so
+    # far come from IMPORTING the compiled extension and reflecting on
+    # it - which puts the async wrappers, the protocols, the RPC stubs
+    # and the type stubs behind a C++ compiler for facts a person
+    # wrote in a declaration first. A class named here skips that.
+    #
+    # Reflection still runs for it, and the two are compared. That is
+    # the point of this stage rather than a hedge: the claim is that
+    # the declaration carries everything reflection found, and the
+    # only honest way to hold it is to keep measuring until the
+    # compiled class stops existing.
+    declared: dict[str, Proto] = {}
+    if args.declared:
+        declared = json.loads(pathlib.Path(args.declared).read_text())
+        print(f"declared entries: {len(declared)} class(es) - "
+              + ", ".join(sorted(declared)))
+
+    def _proto(kls: type, **kw: Any) -> Proto:
+        reflected = extract_wrapper(kls, api=api, mapping=mapping, **kw)
+        want = declared.get(reflected["name"])
+        if want is None:
+            return reflected
+        differ = [k for k in sorted(set(want) | set(reflected))
+                  if want.get(k) != reflected.get(k)]
+        # The declaration WINS, and every field it changes is printed.
+        #
+        # Not a hedge and not a merge. Where the two disagree it is
+        # reflection that is wrong, because reflection measures what
+        # the COMPILER emitted rather than what the source said - a
+        # cdef class defining any rich comparison gets all six slots,
+        # so `PathInfo.__lt__ is not object.__lt__` answers True for a
+        # comparison that does not exist and raises (tasks/052).
+        #
+        # Printing each change is what keeps this honest. A field that
+        # moves for a reason nobody can name is a declaration to fix,
+        # and it shows up in the build log the moment it moves.
+        print(f"  {reflected['name']}: from the declaration"
+              + (f", changing {', '.join(differ)}" if differ else ""))
+        for key in differ:
+            print(f"    {key}:")
+            print(f"      reflected:   {json.dumps(reflected.get(key))}")
+            print(f"      declaration: {json.dumps(want.get(key))}")
+        return want
+
+    returned_protos = [_proto(kls) for kls in returned_classes]
     protos = [
-        extract_wrapper(svc, api=api, mapping=mapping,
-                        constructible=not svc.__dict__.get("_produced", False))
+        _proto(svc, constructible=not svc.__dict__.get("_produced", False))
         for svc in wrapper_classes
     ]
 

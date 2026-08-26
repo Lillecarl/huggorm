@@ -19,9 +19,11 @@ gate diffed them, which proves the emitter COULD have written the
 binding. Running it here proves it DID.
 """
 
+import argparse
+import json
 import pathlib
-import sys
 
+import manifest
 from emit import emit, produced_pxi
 from read import read
 
@@ -43,7 +45,50 @@ INCLUDES = (
 )
 
 
-def main(out_dir: str) -> int:
+# Which package the emitted bindings land in. The one fact a
+# declaration does not carry: where a binding is installed is the
+# build's decision.
+PACKAGE = "cythonix_bindings"
+
+
+def declared_entries() -> dict[str, dict]:
+    """Every declared class, as the manifest entry it implies.
+
+    The seam between this directory and the generator next door, and
+    it is DATA rather than an import. `codegen` builds its manifest by
+    parsing the pxd files and reflecting on the compiled extension,
+    which is what puts every surface above it behind a C++ compiler.
+    Handing it these entries lets it stop, one class at a time,
+    without either side importing the other's modules.
+
+    Only classes are here. Enums, errors and free functions still
+    come from reflection, so this is a seam that widens rather than a
+    switch that flips.
+
+    And only classes the emitter has FINISHED. A declaration under way
+    describes a class it does not yet cover - `decl/store.py` carries
+    four of nix::Store's eighteen methods today - and an entry built
+    from half a declaration is not a smaller answer, it is a wrong
+    one. The test is structural rather than a list to keep in step: a
+    MODULES declaration owns a whole module and is complete by
+    construction, and an INCLUDES declaration is complete for the
+    values it emits, which is what `is_value` already says."""
+    out = {}
+    for name in MODULES:
+        mod = read(str(HERE / name))
+        for cls in mod.classes:
+            out[cls.name] = manifest.entry(cls, PACKAGE, mod.name,
+                                           final=False)
+    for name, _ in INCLUDES:
+        mod = read(str(HERE / name))
+        for cls in mod.classes:
+            if cls.is_value:
+                out[cls.name] = manifest.entry(cls, PACKAGE, mod.name,
+                                               final=False)
+    return out
+
+
+def main(out_dir: str, manifest_out: str = "") -> int:
     out = pathlib.Path(out_dir).resolve()
     for name in MODULES:
         print(f"{name} -> {out}")
@@ -53,11 +98,19 @@ def main(out_dir: str) -> int:
         produced = [c.name for c in mod.classes if c.is_value]
         (out / fname).write_text(produced_pxi(mod, name))
         print(f"{name} -> {out / fname}: {', '.join(produced)}")
+    if manifest_out:
+        entries = declared_entries()
+        pathlib.Path(manifest_out).write_text(
+            json.dumps(entries, indent=2, sort_keys=True) + "\n")
+        print(f"declared entries -> {manifest_out}: "
+              f"{', '.join(sorted(entries))}")
     return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("usage: generate.py <out-dir>", file=sys.stderr)
-        raise SystemExit(2)
-    raise SystemExit(main(sys.argv[1]))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("out_dir")
+    ap.add_argument("--manifest-out", default="",
+                    help="also write the declared manifest entries here")
+    a = ap.parse_args()
+    raise SystemExit(main(a.out_dir, a.manifest_out))

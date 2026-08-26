@@ -4,6 +4,10 @@
   cythonix-bindings,
   ruff,
   zuban,
+  # The manifest entries the declarations imply. Data, not an import:
+  # the generator reads a JSON file rather than the declaration
+  # reader, so neither side depends on the other's modules.
+  declared,
   ...
 }:
 let
@@ -71,6 +75,8 @@ python3Packages.buildPythonPackage {
     cythonix-bindings
     python3Packages.anyio
   ];
+
+  env.DECLARED_FILE = "${declared}";
 
   env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_mock_store.pxd ${cythonix-bindings.src}/cythonix_bindings/c_eval.pxd ${cythonix-bindings.src}/cythonix_bindings/c_path.pxd ${cythonix-bindings.src}/cythonix_bindings/c_store.pxd";
 

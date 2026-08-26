@@ -162,11 +162,26 @@ def _wire_fields(cls: Class) -> list[list[str]]:
     return [[m.name, m.ret.wire] for m in cls.methods if m.ret is not None]
 
 
-def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
+def entry(cls: Class, package: str, module: str,
+          final: bool = True) -> dict[str, Any]:
     """One wrapper entry, in the manifest's own key order.
 
     Key order matters only for reading a diff, and a diff of this
-    against the real manifest is the whole point of the exercise."""
+    against the real manifest is the whole point of the exercise.
+
+    `final` picks WHICH manifest. There are two, a stage apart. The
+    one in `manifest.json` is finished: `message` names the proto
+    message and `async_base` names the async twin's base, both filled
+    in by a later pass. The one the generator's own extraction hands
+    back has neither yet, and `_helpers` beside them - the round-trip
+    methods a wire value carries.
+
+    `final=True` is the finished shape, which is what `check.py`
+    diffs. `final=False` is the shape the generator consumes, so an
+    entry can be handed to it in place of one it reflected. Emitting
+    the finished shape into that seam was the first thing tried, and
+    it disagreed with the compiled class about two fields nothing had
+    filled in yet."""
     decl = cls.decl
     threading = decl.threading
     return {
@@ -210,5 +225,13 @@ def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
         # async twin's base and the proto message name. The message
         # name is derivable here; async_base is a package-level fact.
         "async_base": None,
-        "message": f"{cls.name}Msg",
+        "message": f"{cls.name}Msg" if final else None,
+        # The round-trip helpers a wire value carries. Derived, not
+        # reflected: `emit.produced_pyx` writes both for every produced
+        # value and `emit._round_trip` writes both for a constructed
+        # one, so a declared value HAS them by construction.
+        **({} if final else {
+            "_helpers": sorted(("_from_parts", "_parts"))
+            if decl.wire == "value" else [],
+        }),
     }
