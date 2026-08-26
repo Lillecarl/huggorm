@@ -12,6 +12,7 @@ each test asserts against what survived. Doing it per test would be a
 minute of sleeping.
 """
 
+import asyncio
 import gc
 from dataclasses import dataclass
 from typing import Any
@@ -165,6 +166,7 @@ class Swept:
     bag_id: str
     lazy_id: str
     doomed_id: str
+    doomed_client: Any
     alive: Any
 
 
@@ -215,12 +217,62 @@ async def swept(ttl_server: Server) -> Any:
 
     await anyio.sleep(SHORT_TTL * 1.5 + 1.0)
     yield Swept(ttl_server.port, a.token, thunk_id, maker.token,
-                state_id, bag_id, lazy_id, doomed_id, alive)
+                state_id, bag_id, lazy_id, doomed_id, d, alive)
     live.stop_pinging()
 
 
 async def test_pinging_client_survives_the_sweeper(swept: Swept) -> None:
     assert await swept.alive.get_uri() == "local"
+
+
+async def test_ping_reports_a_swept_connection(swept: Swept) -> None:
+    """`ok` finally means something.
+
+    Ping used to resolve the token through a lookup that CREATES on a
+    miss, so a client the sweeper had already reaped got an empty
+    connection back under its old token and a cheerful ok=True. It
+    kept pinging happily and discovered its death later, as "unknown
+    handle" on some unrelated call - the one moment nobody is looking
+    for a lifecycle bug (tasks/049).
+
+    A fresh connection still works, which is what says the server
+    refused this token rather than the service."""
+    from cythonix.grpc_pb import PKG
+
+    c = swept.doomed_client
+    ack = await c._rpc(f"/{PKG}.Session/Ping", c.msg("PingReq")(), "AckResp")
+    assert ack.ok is False
+
+    fresh = await remote.connect(HOST, swept.port)
+    ok = await fresh._rpc(
+        f"/{PKG}.Session/Ping", fresh.msg("PingReq")(), "AckResp")
+    assert ok.ok is True
+    fresh.stop_pinging()
+
+
+async def test_a_swept_client_stops_rather_than_rebinding(
+        swept: Swept) -> None:
+    """What the client DOES about it, which is the decision this task
+    actually carried.
+
+    Not an automatic re-bind. The leases went with the sweep, so every
+    handle the client holds is dead; a fresh bind would hand back a
+    live-looking client whose every call fails, which is the same late
+    confusing failure moved one step. So it stops, says so once, and
+    the next call raises.
+
+    Recovery is bind() plus re-acquiring, and that is the caller's
+    decision because only the caller knows what it was holding."""
+    c = swept.doomed_client
+    assert c._expired is False, "nothing has told it yet"
+
+    # One iteration of the real loop, which returns as soon as it
+    # learns the answer.
+    await asyncio.wait_for(c._ping_loop(0.01), 5)
+    assert c._expired is True
+
+    with pytest.raises(remote.ConnectionExpired, match="swept"):
+        await c.acquire("MockLocalStore")
 
 
 async def test_abandoned_handles_are_reaped(swept: Swept) -> None:

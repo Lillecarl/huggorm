@@ -416,10 +416,21 @@ class Dispatcher:
             await stream.send_message(resp)
 
         async def ping(stream: Any) -> None:
-            req = await stream.recv_message()
-            self.table._conn_for(req.token)
+            await stream.recv_message()
             ack = self.msg("AckResp")()
-            ack.ok = True
+            # `ok` finally means something. It was always True, which
+            # is why nobody noticed that the lookup behind it CREATED
+            # the connection it was meant to be checking.
+            #
+            # False rather than an error: being swept is a fact about
+            # the connection, not a failure of this call, and a
+            # liveness probe answering a boolean is the honest shape.
+            #
+            # The token comes from the metadata, like every other rpc.
+            # It used to ride in the request body, which was a second
+            # channel for the one thing lifecycle documents a
+            # convention for.
+            ack.ok = self.table.alive(_tok(stream))
             await stream.send_message(ack)
 
         async def share(stream: Any) -> None:

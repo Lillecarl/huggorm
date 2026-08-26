@@ -22,6 +22,7 @@ location.
 """
 
 import asyncio
+import logging
 import threading
 import weakref
 from collections.abc import Callable
@@ -38,6 +39,22 @@ from .faults import FaultCodec, SchemaStatusDetails
 from .lifecycle import TOKEN_HEADER
 from .wire import WireCodec
 
+logger = logging.getLogger(__name__)
+
+
+class ConnectionExpired(RuntimeError):
+    """The server no longer knows this connection.
+
+    Raised once the ping loop learns the connection was swept. Every
+    handle the client held is gone with it - the leases were released
+    when the sweeper ran - so the client stops rather than re-binding:
+    a fresh bind would hand back a live-looking client whose every
+    handle fails, which is the late, confusing failure this replaces
+    (tasks/049).
+
+    Recovery is `bind()` plus re-acquiring, and that is the caller's
+    decision because only the caller knows what it was holding."""
+
 
 class NixClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 50051) -> None:
@@ -52,6 +69,7 @@ class NixClient:
             host, port, status_details_codec=SchemaStatusDetails(self.pool))
         self.token: str | None = None
         self._pinger: asyncio.Task[None] | None = None
+        self._expired = False
         # How many live client objects point at each handle, and which
         # handles have lost their last one. A finalizer runs on
         # whichever thread dropped the reference - possibly during
@@ -144,6 +162,10 @@ class NixClient:
         return int(resp.released)
 
     async def _rpc(self, path: str, req: Any, reply_name: str) -> Any:
+        if self._expired:
+            raise ConnectionExpired(
+                f"connection {self.token!r} was swept by the server; its "
+                f"handles are gone. Call bind() and re-acquire.")
         Reply = self.msg(reply_name)
         metadata = {TOKEN_HEADER: self.token} if self.token else None
         stream = self.channel.request(
@@ -192,15 +214,30 @@ class NixClient:
         while True:
             await asyncio.sleep(interval)
             try:
-                req = self.msg("PingReq")(token=self.token)
-                await asyncio.wait_for(
+                req = self.msg("PingReq")()
+                ack = await asyncio.wait_for(
                     self._rpc(f"/{schema.PKG}.Session/Ping", req, "AckResp"), 5)
+                if not ack.ok:
+                    # Swept. Say so once, loudly, and stop - the next
+                    # call raises ConnectionExpired rather than
+                    # failing later as "unknown handle" on something
+                    # unrelated (tasks/049).
+                    self._expired = True
+                    logger.warning(
+                        "connection %r was swept by the server; its handles "
+                        "are gone. Call bind() and re-acquire.", self.token)
+                    return
                 # The ping loop is the flush's home: it already runs on
                 # the event loop on a timer, which is exactly what a
                 # finalizer cannot do.
                 await asyncio.wait_for(self.flush_dropped(), 5)
             except Exception:
-                pass  # keep trying; the server sweeps us if we stay silent
+                # A blip is not a death: the server sweeps a client
+                # that stays silent, and this loop is what keeps it
+                # from doing so. Logged rather than swallowed, because
+                # a library that goes quiet in someone else's process
+                # is indistinguishable from one that is working.
+                logger.warning("ping failed; retrying", exc_info=True)
 
     def stop_pinging(self) -> None:
         if self._pinger is not None:

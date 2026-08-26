@@ -118,6 +118,24 @@ class HandleTable:
         conn.last_seen = time.monotonic()
         return conn
 
+    def alive(self, token: str) -> bool:
+        """Is this connection still bound? Refreshes it if so.
+
+        The liveness question, asked and answered without creating
+        anything. Ping used to go through _conn_for, which CREATES on
+        a miss - so a client the sweeper had already reaped got an
+        empty connection back under its old token and a cheerful
+        ok=True, then discovered its death later as "unknown handle"
+        on some unrelated call (tasks/049).
+
+        Public, because Ping is not lifecycle's own code and had no
+        business reaching an underscore."""
+        conn = self.connections.get(token or ANON)
+        if conn is None:
+            return False
+        conn.last_seen = time.monotonic()
+        return True
+
     def _require_conn(self, token: str) -> Connection:
         conn = self.connections.get(token or ANON)
         if conn is None:

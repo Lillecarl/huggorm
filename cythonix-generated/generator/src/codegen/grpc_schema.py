@@ -492,9 +492,12 @@ def _add_session(f: Any) -> None:
     bnd.input_type = f".{PKG}.BindReq"
     bnd.output_type = f".{PKG}.ConnResp"
 
+    # No token field: it rides in the x-cythonix-conn metadata like
+    # every other rpc's does. An empty request message is the right
+    # shape for a probe whose only question is "am I still bound"
+    # (tasks/049).
     ping_req = f.message_type.add()
     ping_req.name = "PingReq"
-    _field(ping_req, "token", 1, proto_type=_scalar_const("string"))
     png = sess.method.add()
     png.name = "Ping"
     png.input_type = f".{PKG}.PingReq"

@@ -43,3 +43,41 @@ Two smaller inconsistencies sit beside it:
   touching an underscore.
 - Test: bind, let the TTL pass, sweep, ping - assert the error,
   and assert a fresh bind still works.
+
+## Done
+
+Ping asks `HandleTable.alive`, which looks up and does NOT create.
+Public, because Ping is not lifecycle's own code and had no business
+reaching an underscore.
+
+The answer is `ok=False`, not an error. `ok` had always been True,
+which is why nobody noticed that the lookup behind it created the
+connection it was meant to be checking - and being swept is a fact
+about the connection rather than a failure of this call, so a
+liveness probe answering a boolean is the honest shape.
+
+The token moved to the `x-cythonix-conn` metadata, like every other
+rpc's. `PingReq` now carries no fields at all, which is the right
+shape for a probe whose only question is "am I still bound".
+
+## The decision this task actually carried
+
+Not an automatic re-bind. The leases went with the sweep, so every
+handle the client holds is dead; a fresh bind would hand back a
+live-looking client whose every call fails - the same late, confusing
+failure moved one step.
+
+So the ping loop stops, logs a warning once, and sets a flag. The next
+rpc raises `ConnectionExpired` naming what happened and what to do.
+Recovery is `bind()` plus re-acquiring, and that is the caller's
+decision because only the caller knows what it was holding.
+
+The loop no longer swallows other failures either. A blip is not a
+death - the loop is what keeps the sweeper away - so it logs and
+retries, through a module logger rather than `pass`. A library that
+goes quiet in someone else's process is indistinguishable from one
+that is working.
+
+Perturbed: Ping put back on `_conn_for` and both new tests fail - the
+first on `assert True is False`, the second by hanging until its
+timeout, because the loop never learns.
