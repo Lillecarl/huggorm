@@ -1,23 +1,28 @@
 # C++ this repo writes
 
-Everything here exists because a pxd cannot say something, not because
-Nix is missing it. One header per binding module, named for it, plus
-`errors.hpp`, which every binding shares.
+Everything here exists because a DECLARATION cannot say it, not
+because Nix is missing it. One header per binding module, named for
+it, plus `errors.hpp`, which every binding shares.
 
-A helper belongs here when Cython cannot express the call:
+A helper belongs here when the call is not a binding:
 
-- **a by-value return of a type with no default constructor.** Cython
-  declares a temporary to hold one before assigning, so `nix::StorePath
-  parseStorePath(...)` cannot be called directly. The helper returns a
-  pointer and the binding owns it.
-- **a member reached through a reference member.** `Store::config` is a
-  `const StoreConfig &`, and describing it in a pxd means declaring the
-  whole config type for the sake of one string.
-- **a template Cython has no declaration for.** `ref<T>` is Nix's
-  non-null shared_ptr; the helper returns the `std::shared_ptr<T>` it
-  converts to.
+- **a decision.** `nix::ValidPathInfo` holds a store directory and a
+  store path; what Python wants is the two joined. Which separator,
+  which fields get rendered, what an unset registration time means -
+  each is a choice, and a choice is not a binding.
+- **lifetime the binding cannot own.** `open_store_uri` keeps one
+  LocalStore per state directory, because `nix::openStore` caches
+  nothing and two LocalStores in one process deadlock.
+- **an initialisation order.** libstore ABORTS rather than raising
+  when `initNix` has not run, so `init_libstore` runs at import.
 
-A helper does NOT belong here when it is doing work. If it computes
-something, decides something, or holds state, it is a binding written
-in the wrong language: put it in the pyx, where the whole toolchain -
-lint, typecheck, the generated surfaces - can see it.
+A declaration reaches one of these with `@binds` (a free function) or
+`@cxx_body` (one method), and both are COUNTED - the build prints how
+many lines came through the hatch, per class. That is the bargain: a
+hatch nobody measures becomes the place the real code lives.
+
+A helper does NOT belong here when the emitter can derive it. A method
+pointer, a lambda over a parameter, a container conversion, a value's
+comparisons - nanobind casts or the emitter writes all of them, and a
+hand-written version is a second answer to a question already
+answered.

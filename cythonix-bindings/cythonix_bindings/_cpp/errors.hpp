@@ -1,11 +1,11 @@
 #pragma once
 // Turn a C++ nix exception into the right Python one.
 //
-// Cython's bare `except +` maps anything it does not recognise onto
-// RuntimeError, so nix::BadStorePathName arrived as a RuntimeError -
-// the type gone, and the message still carrying the terminal escape
-// codes libstore writes into it. `except +translate_nix_error` is the
-// documented hook for doing better: Cython calls this from inside
+// nanobind's own translator maps anything it does not recognise onto
+// RuntimeError, so nix::BadStorePathName would arrive as one - the
+// type gone, and the message still carrying the terminal escape codes
+// libstore writes into it. `nb::register_exception_translator` is the
+// documented hook for doing better: nanobind calls this from inside
 // catch(...), and whatever Python error it sets is what the caller
 // sees.
 //
@@ -110,9 +110,9 @@ inline void translate_nix_error()
     // tries the next one, and the last is its own, which maps
     // invalid_argument to ValueError and bad_alloc to MemoryError.
     //
-    // Swallowing them here made every one of those a RuntimeError,
-    // which is what Cython's per-method hook did and what nanobind's
-    // process-wide one must not.
+    // Swallowing them here made every one of those a RuntimeError.
+    // A per-method hook could get away with that; a process-wide one
+    // cannot, because it sees every module's exceptions.
     //
     // An unmatched exception propagates out of `try { throw; }` on
     // its own, so there is no `throw;` to write - and writing one

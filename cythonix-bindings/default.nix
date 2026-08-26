@@ -6,8 +6,8 @@
   boehmgc,
   nix,
   pkg-config,
-  # The source tree to compile. NOT ./. any more: some of these
-  # modules have no hand-written source, and their .pyx is emitted
+  # The source tree to compile. NOT ./. any more: no module in here
+  # has hand-written source, and every one of them is C++ emitted
   # from a declaration before the build starts. The root default.nix
   # builds that tree and passes it in.
   src,
@@ -69,8 +69,6 @@ python3Packages.buildPythonPackage {
 
   # Also ensure the compiler can find it via CFLAGS/LDFLAGS if setup.py didn't
   # (but we already handle it in setup.py)
-  # We also need to make the .pxd files available for downstream Cython cimport
-  # buildPythonPackage handles that automatically.
 
   # Don't run `pip check` that might fail
   pythonImportsCheck = [ "cythonix_bindings" ];

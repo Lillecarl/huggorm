@@ -51,9 +51,10 @@ if not fake_lib:
 # The first REAL Nix type, beside the mock rather than replacing it
 # (tasks/015). Nothing about it goes through FAKE_LIBRARY.
 _nix = pkg_config("nix-store")
-# ...plus this directory, for nix_error.hpp. It sits beside the
-# sources rather than in the extension because it is C++ that Cython
-# calls, not Cython: `except +translate_nix_error` names a function.
+# ...plus this directory, for the headers in `_cpp/`. They sit beside
+# the sources rather than in the extension because they are C++ a
+# DECLARATION names: `@binds("cythonix::translate_nix_error")` points
+# at one.
 _nix["include_dirs"] = [HERE] + _nix["include_dirs"]
 
 # The mock, found through one prefix rather than through pkg-config.
@@ -69,12 +70,12 @@ _mock = {
     "extra_link_args": [f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
 }
 
-# The REAL Nix bindings, through nanobind rather than Cython.
+# Every module in the package, through nanobind.
 #
 # Their C++ is written before this runs, by
 # `cythonix_idl.generate.main`, straight from the declarations - so
-# there is no .pyx, no .pxd and no shim header for either of them,
-# and the list of modules comes from the same place the emitter reads.
+# there is no hand-written source for any of them, and the list of
+# modules comes from the same place the emitter reads.
 #
 # nanobind ships its runtime as SOURCE rather than as a library, so
 # each extension compiles `nb_combined.cpp` beside its own

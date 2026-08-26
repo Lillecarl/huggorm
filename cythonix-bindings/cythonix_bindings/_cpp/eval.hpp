@@ -18,11 +18,11 @@
  * while its EvalState lives on, which is the lifetime libexpr
  * documents.
  *
- * Neither backend owns this. Cython held the same cell in a
- * `cdef Value** _cell` and freed it in `__dealloc__`; here the
- * constructor and the destructor say it, which is the same sentence
- * with the lifetime attached to the object rather than to two methods
- * that have to agree.
+ * The cell belongs to the Bridge, not to the binding. Its
+ * constructor takes it and its destructor frees it, so the lifetime
+ * is attached to one object rather than to two methods that have to
+ * agree - and a declaration says `cxx="cythonix::Bridge"` and needs
+ * to know none of it.
  */
 
 #include <cstddef>

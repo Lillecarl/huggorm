@@ -1,12 +1,12 @@
 #pragma once
 
 /**
- * The two calls every libstore binding needs, in either backend.
+ * The two calls every libstore binding needs.
  *
  * `errors.hpp` is the other file in this directory, and it is here
- * for the same reason: it is C++ that neither backend owns. Cython
- * reaches these through a `cdef extern` block and nanobind through a
- * `m.def`, and what they do is the same either way.
+ * for the same reason: it is C++ a DECLARATION names rather than C++
+ * a binding derives. `decl/path.py` points `@binds` at
+ * `cythonix::init_libstore`, and the emitter writes the `m.def`.
  */
 
 #include <memory>
