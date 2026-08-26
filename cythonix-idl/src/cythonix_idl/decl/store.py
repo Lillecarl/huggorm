@@ -11,6 +11,7 @@ from cythonix_idl.declare import (
     I64,
     U64,
     Bint,
+    Path,
     Str,
     binding,
     cxx_body,
@@ -419,3 +420,29 @@ class Store:
         Sorted, because libstore answers with a set - so the order is
         NOT topological. A caller who needs build order has to ask for
         it another way."""
+
+    # A pathlib.Path, not a str, and the alias says so. The boundary
+    # still carries a std::string; what changes above it is that this
+    # answer names a file on THIS machine, so it is a path a caller
+    # can open.
+    @cxx_body("""auto * fs = dynamic_cast<nix::LocalFSStore *>(&s);
+        if (fs == nullptr)
+            throw nix::Unsupported(
+                "operation 'real_path' is not supported by store '%s'",
+                s.config.getHumanReadableURI());
+        return fs->toRealPath(path).string();""")
+    def real_path(self, path: "StorePath") -> Path:
+        """Where this store object's files really are.
+
+        A different question from `print_store_path`, which joins the
+        store DIRECTORY onto the path. A chroot store keeps
+        /nix/store as its store directory and puts the files under
+        <root>/nix/store, so its printed path does not exist and this
+        one does.
+
+        Only a store with a filesystem can answer. A remote or a
+        binary-cache store raises "not supported by store", which is
+        libstore's own refusal rather than one invented here.
+
+        The answer is for the machine the store runs on. In process
+        that is here; over RPC it is the server's (tasks/040)."""
