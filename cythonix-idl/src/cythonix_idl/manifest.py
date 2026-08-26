@@ -38,6 +38,7 @@ this route cannot reach, which is the honest measure of how far the
 idea goes.
 """
 
+import inspect
 from typing import Any
 
 from cythonix_idl.declare import Decl
@@ -165,6 +166,25 @@ def _wire_fields(cls: Class) -> list[list[str]]:
     if not cls.is_value:
         return []
     return [[m.name, m.ret.wire] for m in cls.methods if m.ret is not None]
+
+
+def words_entry(cls: Class, package: str, module: str) -> dict[str, Any]:
+    """One vocabulary entry, in the manifest's own key order.
+
+    Four fields, and each is a member of the declaration read a
+    different way: the class name, where the build puts it, the words
+    in order, and the class docstring.
+
+    CLEANED, unlike a wrapper's. `model.py` reads a wrapper's
+    `__doc__` straight out of `__dict__` and reads an enum's through
+    `inspect.getdoc`, which cleans it - so the two routes differ, and
+    this follows the route it is being diffed against."""
+    return {
+        "name": cls.name,
+        "module": f"{package}.{module}",
+        "values": [m.value for m in cls.members],
+        "doc": inspect.cleandoc(cls.doc),
+    }
 
 
 def entry(cls: Class, package: str, module: str,

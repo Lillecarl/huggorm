@@ -41,7 +41,7 @@ import sys
 import cythonix_idl
 from cythonix_idl import emit, manifest, pyi
 from cythonix_idl.generate import MODULES
-from cythonix_idl.read import read
+from cythonix_idl.read import Module, read
 
 # The repo root: this file sits in cythonix-idl/gates/.
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -581,6 +581,15 @@ def pxd_struct(text: str, name: str) -> str:
 
 def check_cython(decl_path: pathlib.Path) -> list[str]:
     mod = read(str(decl_path))
+    if all(c.is_words for c in mod.classes):
+        # A vocabulary. There is no Cython at all: the members ARE the
+        # strings a Nix parser takes, so the emitted module is plain
+        # Python and the build writes it whole. The same story as
+        # path's - nothing to diff, and what proves it is downstream.
+        words = ", ".join(c.name for c in mod.classes)
+        print(f"  {mod.name}: BUILT FROM THE DECLARATION - {words}, and no "
+              f"{mod.name}.py in the repo.")
+        return []
     if len(mod.classes) != 1:
         # store.py's classes live inside the repo's store.pyx beside
         # Store, which the emitter cannot write - nix::Store is
@@ -689,11 +698,40 @@ def _methods_differ(name: str, want: list, got: list) -> list[str]:
     return problems
 
 
+def _words_manifest(mod: Module, built: dict,
+                    where: str) -> list[str]:
+    """Each declared vocabulary, against the manifest's enum entry.
+
+    The same claim the wrapper half makes, in the one place it is
+    hardest to argue with: the module the manifest describes was
+    WRITTEN from this declaration, so agreeing here says the round
+    trip closed - declaration to source, source to compiled package,
+    package to reflection, reflection back to the same four fields."""
+    problems = []
+    for cls in mod.classes:
+        got = manifest.words_entry(cls, "cythonix_bindings", mod.name)
+        want = built["enums"].get(cls.name)
+        if want is None:
+            problems.append(f"{cls.name} is not in {where}")
+            continue
+        differ = [k for k in sorted(set(want) | set(got))
+                  if want.get(k) != got.get(k)]
+        print(f"  {cls.name}: {len(set(want) | set(got)) - len(differ)} of "
+              f"{len(set(want) | set(got))} fields agree")
+        for key in differ:
+            problems.append(f"  {cls.name}.{key}:")
+            problems.append(f"    reflected:   {json.dumps(want.get(key))}")
+            problems.append(f"    declaration: {json.dumps(got.get(key))}")
+    return problems
+
+
 def check_manifest(decl_path: pathlib.Path,
                    manifest_path: pathlib.Path) -> list[str]:
     mod = read(str(decl_path))
     built = json.loads(manifest_path.read_text())
     problems = []
+    if all(c.is_words for c in mod.classes):
+        return _words_manifest(mod, built, manifest_path.name)
     for cls in mod.classes:
         got = manifest.entry(cls, "cythonix_bindings", mod.name)
         want = built["wrappers"].get(cls.name)
@@ -786,7 +824,8 @@ def check_stub(decl_path: pathlib.Path, stub_path: pathlib.Path) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("declaration", nargs="*", default=["path", "store"])
+    ap.add_argument("declaration", nargs="*",
+                    default=["path", "store", "content_address"])
     ap.add_argument("--manifest", default="")
     args = ap.parse_args()
     problems = []
