@@ -318,6 +318,66 @@ def test_a_store_reads_the_reference_graph_backwards(
     assert chroot.query_referrers(holder) == []
 
 
+def _chain(store: Store) -> tuple[StorePath, StorePath, StorePath]:
+    """Three paths in a line: c -> b -> a.
+
+    Built by hand because Nix does not scan for references, it is
+    told them - so a chain is exactly as long as the caller says."""
+    a = store.add_to_store("a", b"the end of the line\n")
+    b = store.add_to_store("b", b"points at a\n", references=[a])
+    c = store.add_to_store("c", b"points at b\n", references=[b])
+    return a, b, c
+
+
+def test_a_closure_is_the_whole_chain(chroot: Store) -> None:
+    """compute_fs_closure, which is what makes one edge worth having.
+
+    An edge is a fact; the closure is what a caller can copy, sign or
+    delete as a unit. It includes the path it starts from, and it is
+    TRANSITIVE - c reaches a through b, which is the whole difference
+    from reading references once."""
+    a, b, c = _chain(chroot)
+
+    assert {p.to_string() for p in chroot.compute_fs_closure([c])} == {
+        a.to_string(), b.to_string(), c.to_string()}
+    assert {p.to_string() for p in chroot.compute_fs_closure([b])} == {
+        a.to_string(), b.to_string()}
+    assert [p.to_string() for p in chroot.compute_fs_closure([a])] == [
+        a.to_string()]
+
+    # Flipped, the same chain read the other way: what would BREAK if
+    # `a` went away. That is the question a garbage collector asks.
+    assert {p.to_string()
+            for p in chroot.compute_fs_closure([a], flip_direction=True)} == {
+        a.to_string(), b.to_string(), c.to_string()}
+    assert [p.to_string()
+            for p in chroot.compute_fs_closure([c], flip_direction=True)] == [
+        c.to_string()]
+
+    # Several starting points merge into one set rather than
+    # concatenating - it IS a set, so `a` appears once.
+    assert {p.to_string() for p in chroot.compute_fs_closure([b, c])} == {
+        a.to_string(), b.to_string(), c.to_string()}
+    assert chroot.compute_fs_closure([]) == []
+
+
+def test_a_store_filters_the_paths_it_holds(chroot: Store) -> None:
+    """query_valid_paths, the set form of is_valid_path.
+
+    Not merely a loop over it: a store that talks to a daemon answers
+    the whole set in one round trip. What comes back is shorter than
+    what went in when the store is missing something, and it says
+    which ones rather than how many."""
+    a, b, _c = _chain(chroot)
+    missing = StorePath(HELLO)
+
+    assert {p.to_string() for p in chroot.query_valid_paths([a, b, missing])} == {
+        a.to_string(), b.to_string()}
+    assert chroot.query_valid_paths([missing]) == []
+    assert chroot.query_valid_paths([]) == []
+    assert chroot.is_valid_path(missing) is False
+
+
 def test_a_store_without_a_database_cannot_read_backwards(
         store: Store) -> None:
     """The dummy store, which is what nix::Store's own implementation

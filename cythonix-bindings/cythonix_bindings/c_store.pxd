@@ -56,6 +56,9 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # the paths that point at it, which is the inverse of references.
     vector[string] query_valid_derivers(CStore & store, const CStorePath & path) except +translate_nix_error
     vector[string] query_referrers(CStore & store, const CStorePath & path) except +translate_nix_error
+    # A set in AND a set out, both as base names.
+    vector[string] query_valid_paths(CStore & store, const vector[string] & paths) except +translate_nix_error
+    vector[string] compute_fs_closure(CStore & store, const vector[string] & paths, bint flip_direction, bint include_outputs, bint include_derivers) except +translate_nix_error
     # The enums arrive as the strings Nix parses, so the vocabulary -
     # and the error for a wrong one - stays Nix's.
     # `references` is what this path points AT. Nix is told them; it

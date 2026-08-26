@@ -21,6 +21,7 @@ from cythonix_bindings.c_store cimport (
     CStoreLocation,
     add_path_to_store,
     add_to_store,
+    compute_fs_closure,
     follow_links_to_store,
     follow_links_to_store_path,
     init_libstore,
@@ -31,6 +32,7 @@ from cythonix_bindings.c_store cimport (
     query_path_from_hash_part,
     query_referrers,
     query_valid_derivers,
+    query_valid_paths,
     real_path,
     store_uri,
     to_store_path,
@@ -466,6 +468,62 @@ cdef class Store:
         cdef vector[string] found
         with nogil:
             found = query_valid_derivers(deref(store), deref(p))
+        return _store_paths(found)
+
+    def query_valid_paths(self, paths: list[StorePath]) -> list[StorePath]:
+        """Which of these paths this store actually holds.
+
+        The set form of `is_valid_path`, and not merely a loop over
+        it: a store that talks to a daemon answers the whole set in
+        one round trip.
+
+        Nothing is substituted. libstore's overload takes a flag that
+        would go and FETCH what is missing, which is a different
+        operation with a different cost - it belongs in its own
+        binding rather than in a boolean here.
+
+        Sorted, and shorter than what went in when the store is
+        missing something."""
+        cdef vector[string] c_paths = _base_names(paths)
+        cdef CStore* store = self._get()
+        cdef vector[string] found
+        with nogil:
+            found = query_valid_paths(deref(store), c_paths)
+        return _store_paths(found)
+
+    def compute_fs_closure(self, paths: list[StorePath],
+                           flip_direction: bool = False,
+                           include_outputs: bool = False,
+                           include_derivers: bool = False
+                           ) -> list[StorePath]:
+        """Every path reachable from these, transitively.
+
+        What `nix-store --query --requisites` answers, and the reason
+        `references` is worth having: one edge is a fact, the closure
+        is what a caller can copy, sign or delete as a unit. The
+        starting paths are included.
+
+        `flip_direction` walks referrers instead, so the answer is
+        what would BREAK if these paths went away - the question a
+        garbage collector asks.
+
+        `include_outputs` and `include_derivers` widen the walk at a
+        .drv: the first follows a derivation to what it builds, the
+        second follows a path back to what could build it. Both are
+        off, which is what `nix-store -qR` does.
+
+        Sorted, because libstore answers with a set - so the order is
+        NOT topological. A caller who needs build order has to ask for
+        it another way."""
+        cdef vector[string] c_paths = _base_names(paths)
+        cdef bint c_flip = flip_direction
+        cdef bint c_outputs = include_outputs
+        cdef bint c_derivers = include_derivers
+        cdef CStore* store = self._get()
+        cdef vector[string] found
+        with nogil:
+            found = compute_fs_closure(
+                deref(store), c_paths, c_flip, c_outputs, c_derivers)
         return _store_paths(found)
 
     def query_referrers(self, path: StorePath) -> list[StorePath]:

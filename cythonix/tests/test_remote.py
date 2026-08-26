@@ -488,6 +488,40 @@ async def test_the_reference_graph_crosses_both_ways(
     await store.aclose()
 
 
+async def test_a_closure_crosses_as_a_set(
+        client: Any, tmp_path: Any) -> None:
+    """A list of wire values in BOTH directions of one call.
+
+    Every other list so far crossed one way: `references` goes out as
+    a parameter, `query_referrers` comes back as a return. This sends
+    a repeated field of messages and reads one back, which is the
+    shape a closure has and the last combination untested.
+
+    The bool defaults ride along: `flip_direction` is written by every
+    surface, so the short call and the spelled-out one have to mean
+    the same thing here as they do in process."""
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    a = await store.add_to_store("a", b"the end of the line\n")
+    b = await store.add_to_store("b", b"points at a\n", references=[a])
+
+    closure = await store.compute_fs_closure([b])
+    assert {p.to_string() for p in closure} == {a.to_string(), b.to_string()}
+    assert all(isinstance(p, cythonix_bindings.StorePath) for p in closure)
+
+    # The short call and the spelled-out one, on the arm where the
+    # default matters.
+    assert {p.to_string() for p in
+            await store.compute_fs_closure([b], False, False, False)} == {
+        a.to_string(), b.to_string()}
+    assert {p.to_string() for p in
+            await store.compute_fs_closure([a], flip_direction=True)} == {
+        a.to_string(), b.to_string()}
+
+    assert {p.to_string() for p in await store.query_valid_paths([a, b])} == {
+        a.to_string(), b.to_string()}
+    await store.aclose()
+
+
 async def test_absence_crosses_as_absence(
         client: Any, tmp_path: Any) -> None:
     """A `T | None` return, both arms, over the wire.

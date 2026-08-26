@@ -398,6 +398,49 @@ inline std::vector<std::string> query_valid_derivers(nix::Store & store, const n
 }
 
 /**
+ * Which of these paths the store actually holds.
+ *
+ * The set form of is_valid_path, and it is not merely a loop: a store
+ * that talks to a daemon answers the whole set in one round trip.
+ *
+ * No substitution. The overload takes a SubstituteFlag that would go
+ * and fetch what is missing, which is a different operation with a
+ * different cost, and it deserves its own binding rather than a
+ * boolean hidden in this one.
+ */
+inline std::vector<std::string> query_valid_paths(nix::Store & store, const std::vector<std::string> & paths)
+{
+    return base_names(store.queryValidPaths(store_path_set(paths)));
+}
+
+/**
+ * Every path reachable from these, transitively.
+ *
+ * What `nix-store --query --requisites` answers, and the reason
+ * references is worth having: one edge is a fact, the closure is what
+ * a caller can copy, sign or delete as a unit.
+ *
+ * `flip_direction` walks referrers instead, so the closure is what
+ * would BREAK if these paths went away.
+ *
+ * An out-parameter upstream, and not cleared, because a caller may
+ * accumulate across calls. This binding asks one question, so it owns
+ * the set.
+ */
+inline std::vector<std::string> compute_fs_closure(
+    nix::Store & store,
+    const std::vector<std::string> & paths,
+    bool flip_direction,
+    bool include_outputs,
+    bool include_derivers)
+{
+    nix::StorePathSet out;
+    store.computeFSClosure(
+        store_path_set(paths), out, flip_direction, include_outputs, include_derivers);
+    return base_names(out);
+}
+
+/**
  * Which store paths point AT this one - the inverse of references.
  *
  * An out-parameter upstream, because the caller may accumulate into
