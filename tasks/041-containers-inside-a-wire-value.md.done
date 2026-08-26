@@ -1,0 +1,91 @@
+# A wire value cannot hold a list
+
+Found binding `query_path_info`. `PathInfo` carries what a store knows
+about a path, and two of the fields Nix gives are sets:
+
+    StorePathSet references;   // what this path points at
+    std::set<Signature> sigs;  // who vouched for it
+
+Neither was in the binding, and this is why.
+
+## Where it stopped
+
+`_wire_fields` names a field's type, and the codec read it in
+`wire.value_to_msg` / `value_from_msg`. Both handled exactly two
+kinds: a scalar, which is assigned, and another wire value, which is
+filled in place. A `list[T]` field fell through to `setattr(msg,
+fname, val)`, and a repeated protobuf field cannot be assigned - not
+even an empty one.
+
+The RPC layer already knew how to do this. `encode` and `decode` carry
+every arm - scalar, map, list, value, proxy - and `list_to_msg` and
+`list_from_msg` already carried `query_all_valid_paths`. The two
+dispatches had simply drifted.
+
+## What it became
+
+A wire value's field is put the way an rpc field is put. Not a third
+arm added to a second copy: the second copy is gone, and
+`value_to_msg` calls `encode` while `value_from_msg` calls `decode`.
+
+One arm a wire value may never take is the proxy. It is refused at
+build time - a wire value is rebuilt from its parts on the far side,
+and a proxy is exactly the thing with no object there - so the codec
+passes a callable that says so rather than a handle resolver.
+
+`check_wire_contract` reads a container field's ELEMENT type, through
+the same `list_value` and `map_value` the schema builder uses. It also
+refuses `?` on one: a repeated field has no presence, so an absent one
+IS an empty one and the marker would promise a distinction that cannot
+exist.
+
+Nothing in `grpc_schema` changed. `_add_field` already built a list as
+`LABEL_REPEATED`, for method parameters, and the value message was
+already built through it.
+
+## The other half: a parameter
+
+`add_to_store` and `add_path_to_store` both take `references` in C++
+and both pinned it to empty. That is the same type in the other
+direction, and it had an extra question the return did not: what does
+it DEFAULT to?
+
+Answered. `None`, and a container is the one type whose default may be
+None. A repeated field has no presence PROBLEM - an absent one and an
+empty one mean the same thing - so None crosses as nothing and the far
+side reads back the empty container it means. `default_source` takes
+the parameter's type and answers by it.
+
+`[]` is what a reader expects instead, and it is now refused with its
+own message. It reads back as itself, so the literal check would have
+let it through; it is a mutable default, and every generated surface
+would carry its own copy of one the binding has once.
+
+The two halves need each other. An empty list proves the ENCODING on
+its own, because assigning even `[]` to a repeated field raises - but
+only a non-empty one proves the decoding, and only the parameter could
+produce one hermetically. Nix does not scan an added path for
+references; it is told them.
+
+## Done
+
+`PathInfo.references()` and `PathInfo.sigs()`. `references` is the
+field that makes a store path a graph rather than a name: a closure is
+the transitive reading of it. Both are sets in Nix and vectors in the
+shim, because that is what a pxd can declare, and a set is sorted, so
+the order a caller sees is the store's own.
+
+`nix::Signature` is a key name and raw bytes rather than a string. Its
+own `to_string` writes the `<key-name>:<base64>` spelling every Nix
+tool prints, so the binding does not invent one.
+
+Both add methods take `references: list[StorePath] | None = None`. It
+is typed, so a base name that only reads like a store path is refused
+before libstore sees it.
+
+## Also missing, noticed here
+
+`nix::Store::toStorePath(path)` answers "which store path contains
+this file", which is a different question from `parse_store_path`.
+`sys.executable` is inside a store path and is not one, and the live
+test had to use `sys.prefix` to avoid the gap.

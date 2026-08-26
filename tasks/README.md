@@ -52,12 +52,14 @@ Findings reference two architectural reviews, 2026-08-23 and
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
-- 041 (containers inside a wire value) is open, and it is what
-  PathInfo's `references` waits on. The list helpers already exist for
-  rpc fields; a wire value's own fields just never route through them.
-  The parameter direction has one extra question - what a container
-  parameter defaults to, where None IS representable because a
-  repeated field has no presence problem.
+- 041 (containers inside a wire value) is done, both directions. A
+  wire value's field now goes through the same encode and decode an
+  rpc field goes through, rather than through a second dispatch that
+  had drifted - which is what let PathInfo carry `references` and
+  `sigs`. A container parameter may default to None, because a
+  repeated field has no presence PROBLEM: absent and empty are the
+  same field. `[]` is refused, as a mutable default the four surfaces
+  would each carry.
 - 040 (store paths as filesystem paths) is half done. Store.real_path
   answers with the REAL directory and raises Unsupported for a store
   with no filesystem. It is a local method and not a remote call, and
@@ -70,7 +72,8 @@ Findings reference two architectural reviews, 2026-08-23 and
   never has to say "absent" and needs no field presence. What may be
   written is checked - an enum member, or a literal that reads back as
   itself - and everything else stops the build. Constructor defaults
-  still go the other way, through the overload-derived `optional`.
+  still go the other way, through the overload-derived `optional`. The
+  blanket refusal of a None default lifted for containers in 041.
 - 037 (tests outside the sandbox) has its mechanism: a `live` marker
   naming what a test needs, hermetic by default so a forgotten mark
   fails loudly in the build, and `nix run --file . test` for the whole

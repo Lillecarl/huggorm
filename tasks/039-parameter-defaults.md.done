@@ -90,3 +90,8 @@ The refusal of a None default is the honest limit, not a design
 choice. When the surface learns an optional type - a `dict[str, V]`
 value already round-trips absence through `HasField` - a None default
 becomes writable and this refusal should go.
+
+It went, for CONTAINERS, in 041. A repeated field has no presence
+problem: an absent one and an empty one are the same field, so None
+crosses as nothing and reads back as empty. The refusal stands for
+every other type, and for the same reason as before.
