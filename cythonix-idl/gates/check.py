@@ -172,6 +172,26 @@ def _edged(text: str) -> str:
     return left + re.escape(text) + right
 
 
+def _outside_strings(pattern: str, repl: str, line: str) -> str:
+    """A substitution that leaves quoted text alone.
+
+    An allowance renames an identifier. A string literal is not one,
+    and rewriting a word inside it changes a MESSAGE - which is the
+    same class of mistake `allow` already guards against on the other
+    side: an allowance editing code it was never meant to touch.
+
+    libstore's own refusal reads "not supported by store". Renaming
+    the shim's receiver to `s` rewrote it to "not supported by s"."""
+    out, quoted = [], False
+    for piece in re.split(r'("(?:[^"\\]|\\.)*")', line):
+        if quoted or piece.startswith('"'):
+            out.append(piece)
+        else:
+            out.append(re.sub(pattern, repl, piece))
+        quoted = False
+    return "".join(out)
+
+
 def _apply(want: list[str], target: str, whole: bool) -> list[str]:
     for name, theirs, ours, why in ACCEPTED:
         if name != target:
@@ -185,7 +205,8 @@ def _apply(want: list[str], target: str, whole: bool) -> list[str]:
         if whole and not theirs.isidentifier() and " " not in theirs:
             want = [ours if line == theirs else line for line in want]
         else:
-            want = [re.sub(_edged(theirs), ours, line) for line in want]
+            want = [_outside_strings(_edged(theirs), ours, line)
+                    for line in want]
     return want
 
 
