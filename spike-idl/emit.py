@@ -1,10 +1,9 @@
 """
-Declaration -> Cython. The spike (tasks/050's end state).
+Declaration -> Cython.
 
-Reads a declaration module by IMPORT and inspect - never by parsing -
-so the source of truth is a real Python object with real annotations,
-and a typo in it is an ImportError rather than a silently unmatched
-regex.
+Reads through `read.py`, which PARSES rather than imports, so nothing
+in a declaration ever runs. What arrives here is a `read.Class`: names,
+docstrings, and C++ facts already resolved.
 
 Emits three files, because Cython needs three: the C++ declarations
 (`c_<name>.pxd`), our own cdef class's fields (`<name>.pxd`, so a
@@ -12,8 +11,8 @@ sibling module can reach them), and the binding (`<name>.pyx`).
 
 ## Text, not ast.unparse
 
-emitter.py builds Python with `ast` and renders it with
-`ast.unparse`, which is what makes it impossible to emit code that
+emitter.py in the real generator builds Python with `ast` and renders
+it with `ast.unparse`, which makes it impossible to emit code that
 does not parse. That is not available here: a .pyx is not Python.
 `cdef class`, `cdef string c_name`, `except NULL` and `with nogil:`
 have no ast node, and Cython ships a parser but no unparser.
@@ -29,48 +28,32 @@ does not emit something close - a binding that is subtly wrong costs
 more than one that does not exist.
 """
 
-import importlib
 import inspect
+import pathlib
 import sys
-from typing import Any, get_args, get_origin
 
 from declare import Cxx, Decl
+from read import Class, Method, read
 
 INDENT = "    "
 
 
-def _doc(obj: object, level: int) -> list[str]:
+def _doc(text: str, level: int) -> list[str]:
     """One docstring, re-indented to where it is being written.
 
-    inspect.getdoc dedents, which is right for reading and wrong for
-    emitting: the continuation lines would land flush against the
-    left margin of a file whose body is indented."""
-    text = inspect.getdoc(obj)
+    read.py keeps docstrings RAW, at whatever indent the declaration
+    wrote them. Emitting them straight would carry that indent into a
+    file whose body sits somewhere else, so this normalises with
+    cleandoc and re-indents to where it is being written."""
     if not text:
         return []
     pad = INDENT * level
-    lines = text.splitlines()
+    lines = inspect.cleandoc(text).splitlines()
     out = [f'{pad}"""{lines[0]}']
     for line in lines[1:]:
         out.append(f"{pad}{line}".rstrip())
     out[-1] += '"""'
     return out
-
-
-def cxx_of(annotation: Any) -> Cxx:
-    """The C++ fact attached to a declared type, or a refusal.
-
-    Every type a binding names has one. A bare `str` would leave the
-    emitter guessing between std::string and string_view, and those
-    differ by whether the boundary owes it a copy."""
-    if get_origin(annotation) is None:
-        raise TypeError(
-            f"{annotation!r} carries no C++ spelling. Declare it through an "
-            f"Annotated alias in declare.py rather than as a bare type.")
-    for meta in get_args(annotation)[1:]:
-        if isinstance(meta, Cxx):
-            return meta
-    raise TypeError(f"{annotation!r} is Annotated but not with Cxx")
 
 
 def _py_type(c: Cxx) -> str:
@@ -82,27 +65,10 @@ def _py_type(c: Cxx) -> str:
     return "bint" if c.spelling == "bint" else "str"
 
 
-def methods(cls: type) -> list[tuple[str, Any]]:
-    """The declared methods, in DEFINITION order.
-
-    `cls.__dict__` keeps it and `inspect.getmembers` sorts it away.
-    Order is not cosmetic here: it is the order a reader of the
-    declaration sees, and the emitted file should read the same way."""
-    return [(n, v) for n, v in cls.__dict__.items()
-            if inspect.isfunction(v) and not n.startswith("_")]
-
-
-def _sig(fn: Any) -> tuple[list[tuple[str, Cxx]], Cxx | None]:
-    hints = inspect.get_annotations(fn, eval_str=False)
-    params = [(n, cxx_of(hints[n]))
-              for n in list(inspect.signature(fn).parameters)[1:]]
-    ret = hints.get("return")
-    return params, None if ret in (None, type(None)) else cxx_of(ret)
-
-
 # -- c_<name>.pxd ---------------------------------------------------------
 
-def c_pxd(cls: type, decl: Decl, cname: str) -> str:
+def c_pxd(cls: Class, cname: str) -> str:
+    decl = cls.decl
     out = [
         "# cython: language_level=3",
         f"# Declaration of {decl.cxx}, from {decl.header}.",
@@ -122,20 +88,17 @@ def c_pxd(cls: type, decl: Decl, cname: str) -> str:
         f'{INDENT}cdef cppclass {cname} "{decl.cxx}":',
     ]
     body = [f"{cname}(const {cname} & other)"]
-    ctor = cls.__dict__.get("__init__")
-    if ctor is not None:
-        params, _ = _sig(ctor)
-        args = ", ".join(f"{c.spelling} {n}" for n, c in params)
+    if cls.ctor is not None:
+        args = ", ".join(f"{c.spelling} {n}" for n, c in cls.ctor.params)
         body.append(f"{cname}({args}) except +translate_nix_error")
-    for name, fn in methods(cls):
-        params, ret = _sig(fn)
-        if ret is None:
-            raise TypeError(f"{name}: a declared method must state a return type")
-        spelled = getattr(fn, "_cxx_name", None)
-        alias = f' "{spelled}"' if spelled else ""
-        args = ", ".join(f"{c.spelling} {n}" for n, c in params)
+    for m in cls.methods:
+        if m.ret is None:
+            raise TypeError(f"{m.name}: a declared method must state a "
+                            f"return type")
+        alias = f' "{m.cxx_name}"' if m.cxx_name else ""
+        args = ", ".join(f"{c.spelling} {n}" for n, c in m.params)
         body.append(
-            f"{ret.spelling} {name}{alias}({args}) "
+            f"{m.ret.spelling} {m.name}{alias}({args}) "
             f"except +translate_nix_error")
     if decl.compare == "cxx":
         body.append(f"bint operator==(const {cname} & other)")
@@ -147,17 +110,17 @@ def c_pxd(cls: type, decl: Decl, cname: str) -> str:
 
 # -- <name>.pxd -----------------------------------------------------------
 
-def our_pxd(cls: type, cname: str, module: str) -> str:
+def our_pxd(cls: Class, cname: str, module: str) -> str:
     return "\n".join([
         "# cython: language_level=3",
-        f"# So another module can reach a {cls.__name__}'s pointer.",
+        f"# So another module can reach a {cls.name}'s pointer.",
         "#",
         "# GENERATED from the declaration module - do not edit.",
         "",
         f"from cythonix_bindings.c_{module} cimport {cname}",
         "",
         "",
-        f"cdef class {cls.__name__}:",
+        f"cdef class {cls.name}:",
         f"{INDENT}cdef {cname}* _ptr",
         "",
         f"{INDENT}cdef inline {cname}* _get(self) except NULL",
@@ -171,8 +134,7 @@ def _wire_fields(decl: Decl) -> str:
     return f"({inner},)" if len(decl.fields) == 1 else f"({inner})"
 
 
-def _accessor(name: str, fn: Any, ret: Cxx, params: list[tuple[str, Cxx]],
-              cname: str, blocking: bool) -> list[str]:
+def _accessor(m: Method, blocking: bool) -> list[str]:
     """One bound method: marshal in, call, marshal out.
 
     The copy rule lives HERE rather than in the declaration. The
@@ -180,41 +142,40 @@ def _accessor(name: str, fn: Any, ret: Cxx, params: list[tuple[str, Cxx]],
     that a view must not outlive its owner is a fact about this
     boundary, so the emitter owns it and every view leaves as a copy
     without any declaration having to remember."""
-    # `name`, not the C++ spelling. The pxd alias IS the mapping -
+    # `m.name`, not the C++ spelling. The pxd alias IS the mapping -
     # `hash_part "hashPart"` means Cython code says hash_part - so
     # calling the C++ name here would not compile.
-    args = ", ".join(n for n, _ in params)
-    py_ret = _py_type(ret)
-    typed = "".join(f", {_py_type(c)} {n}" for n, c in params)
-    lines = [f"{INDENT}def {name}(self{typed}) -> {py_ret}:"]
-    lines += _doc(fn, 2)
-    call = f"self._get().{name}({args})"
-    if blocking or getattr(fn, "_blocks", False):
+    assert m.ret is not None
+    args = ", ".join(n for n, _ in m.params)
+    typed = "".join(f", {_py_type(c)} {n}" for n, c in m.params)
+    lines = [f"{INDENT}def {m.name}(self{typed}) -> {_py_type(m.ret)}:"]
+    lines += _doc(m.doc, 2)
+    call = f"self._get().{m.name}({args})"
+    if blocking or m.blocks:
         # A call that can wait releases the GIL around itself, so the
         # rest of the process keeps running while it does.
-        lines += [f"{INDENT * 2}cdef {ret.spelling} out",
+        lines += [f"{INDENT * 2}cdef {m.ret.spelling} out",
                   f"{INDENT * 2}with nogil:",
                   f"{INDENT * 3}out = {call}"]
         result = "out"
     else:
         result = call
-    if ret.copy == "view":
+    if m.ret.copy == "view":
         lines.append(f"{INDENT * 2}return _view({result})")
-    elif ret.spelling == "string":
+    elif m.ret.spelling == "string":
         lines.append(f"{INDENT * 2}return {result}.decode('utf-8')")
     else:
         lines.append(f"{INDENT * 2}return {result}")
     return lines
 
 
-def pyx(cls: type, decl: Decl, cname: str, module: str, doc: str) -> str:
-    name = cls.__name__
-    all_sigs = [_sig(fn) for _, fn in methods(cls)]
-    ctor = cls.__dict__.get("__init__")
-    ctor_params, _ = _sig(ctor) if ctor is not None else ([], None)
-    needs_view = any(r and r.copy == "view" for _, r in all_sigs)
+def pyx(cls: Class, cname: str, module: str, doc: str) -> str:
+    name, decl = cls.name, cls.decl
+    ctor_params = cls.ctor.params if cls.ctor is not None else ()
+    needs_view = any(m.ret is not None and m.ret.copy == "view"
+                     for m in cls.methods)
     needs_string = bool(ctor_params) or any(
-        c.spelling == "string" for ps, _ in all_sigs for _, c in ps)
+        c.spelling == "string" for m in cls.methods for _, c in m.params)
 
     head = ["# cython: language_level=3", "# cython: annotation_typing=False"]
     head += [f"# {line}".rstrip() for line in doc.strip().splitlines()]
@@ -245,8 +206,8 @@ def pyx(cls: type, decl: Decl, cname: str, module: str, doc: str) -> str:
     body = []
     if decl.order:
         body.append("@functools.total_ordering")
-    body.append(f"cdef class {cls.__name__}:")
-    body += _doc(cls, 1)
+    body.append(f"cdef class {name}:")
+    body += _doc(cls.doc, 1)
     body.append("")
     for marker, value in (("_threading", f'"{decl.threading}"'),
                           ("_binds", f'"{cname}"'),
@@ -259,18 +220,19 @@ def pyx(cls: type, decl: Decl, cname: str, module: str, doc: str) -> str:
         body.append(f"{INDENT}_wire_fields = {_wire_fields(decl)}")
     body.append("")
 
-    if ctor is not None:
+    if cls.ctor is not None:
         # `str base_name`, not `string base_name`: a pyx signature is
         # the Python surface, and the C++ spelling belongs in the pxd.
         args = ", ".join(f"{_py_type(c)} {n}" for n, c in ctor_params)
         body.append(f"{INDENT}def __init__(self, {args}):")
-        body += _doc(ctor, 2)
+        body += _doc(cls.ctor.doc, 2)
         # __init__ and not __cinit__: __cinit__ runs on every __new__,
         # the argument-less one a copy needs included, so it cannot
         # also be where construction happens.
         for n, c in ctor_params:
             if c.spelling == "string":
-                body.append(f"{INDENT * 2}cdef string c_{n} = {n}.encode('utf-8')")
+                body.append(
+                    f"{INDENT * 2}cdef string c_{n} = {n}.encode('utf-8')")
         built = ", ".join(f"c_{n}" if c.spelling == "string" else n
                           for n, c in ctor_params)
         body += [f"{INDENT * 2}self._ptr = new {cname}({built})", ""]
@@ -301,22 +263,21 @@ def pyx(cls: type, decl: Decl, cname: str, module: str, doc: str) -> str:
     ]
 
     if decl.wire == "value":
-        body += _value_semantics(name, cname, decl)
+        body += _value_semantics(name, decl)
 
-    for mname, fn in methods(cls):
-        params, ret = _sig(fn)
-        body += _accessor(mname, fn, ret, params, cname, decl.blocking)
+    for m in cls.methods:
+        body += _accessor(m, decl.blocking)
         body.append("")
 
     if decl.fields:
-        body += _round_trip(name, decl, ctor_params)
+        body += _round_trip(cls)
     for source in decl.custom.values():
         body += [f"{INDENT}{line}".rstrip() for line in source.splitlines()]
         body.append("")
     return "\n".join(head + body).rstrip() + "\n"
 
 
-def _value_semantics(name: str, cname: str, decl: Decl) -> list[str]:
+def _value_semantics(name: str, decl: Decl) -> list[str]:
     """What every wire value owes a caller.
 
     The emitter owns the SHAPE and the declaration owns the two
@@ -360,31 +321,33 @@ def _value_semantics(name: str, cname: str, decl: Decl) -> list[str]:
     return out
 
 
-def _round_trip(name: str, decl: Decl,
-                ctor_params: list[tuple[str, Cxx]]) -> list[str]:
+def _round_trip(cls: Class) -> list[str]:
     """_from_parts and _parts, derived from the field declarations.
 
     Derivable only when the parts map onto the constructor. A value
     that is PRODUCED - built by another object, with an __init__ that
     raises - needs the __new__-and-assign form instead, and this
     refuses rather than emitting the wrong one."""
+    decl = cls.decl
+    ctor_params = cls.ctor.params if cls.ctor is not None else ()
     if len(ctor_params) != len(decl.fields):
         raise TypeError(
-            f"{name}: {len(decl.fields)} declared field(s) and "
+            f"{cls.name}: {len(decl.fields)} declared field(s) and "
             f"{len(ctor_params)} constructor parameter(s). A produced value "
             f"needs the __new__-and-assign form, which this emitter does not "
             f"write yet.")
     # Typed, like the constructor's: _from_parts takes exactly what
     # the constructor takes, so it states the same types.
     args = ", ".join(f"{_py_type(c)} {f.name}"
-                     for f, (_, c) in zip(decl.fields, ctor_params, strict=True))
+                     for f, (_, c) in zip(decl.fields, ctor_params,
+                                          strict=True))
     reads = ", ".join(f"self.{f.read}()" for f in decl.fields)
     return [
         f"{INDENT}@classmethod",
         f"{INDENT}def _from_parts(cls, {args}):",
         f'{INDENT * 2}"""Wire-deserialization helper (private). The',
         f'{INDENT * 2}constructor already validates, so this is it."""',
-        f"{INDENT * 2}return {name}("
+        f"{INDENT * 2}return {cls.name}("
         + ", ".join(f.name for f in decl.fields) + ")",
         "",
         f"{INDENT}def _parts(self):",
@@ -395,29 +358,30 @@ def _round_trip(name: str, decl: Decl,
     ]
 
 
-def emit(module: str, out_dir: str) -> dict[str, str]:
-    mod = importlib.import_module(module)
-    classes = [v for v in vars(mod).values()
-               if isinstance(v, type) and "_decl" in v.__dict__]
-    if len(classes) != 1:
-        raise TypeError(
-            f"{module}: this spike emits exactly one class per module, got "
-            f"{len(classes)}")
-    cls = classes[0]
-    decl: Decl = cls.__dict__["_decl"]
-    cname = "C" + cls.__name__
-    files = {
-        f"c_{module}.pxd": c_pxd(cls, decl, cname),
+def cython_files(cls: Class, module: str, doc: str) -> dict[str, str]:
+    """The three files one declared class needs."""
+    cname = "C" + cls.name
+    return {
+        f"c_{module}.pxd": c_pxd(cls, cname),
         f"{module}.pxd": our_pxd(cls, cname, module),
-        f"{module}.pyx": pyx(cls, decl, cname, module, mod.__doc__ or ""),
+        f"{module}.pyx": pyx(cls, cname, module, doc),
     }
-    import pathlib
+
+
+def emit(path: str, out_dir: str) -> dict[str, str]:
+    mod = read(path)
+    if len(mod.classes) != 1:
+        raise TypeError(
+            f"{path}: this spike emits exactly one class per module, got "
+            f"{len(mod.classes)}")
+    cls = mod.classes[0]
+    files = cython_files(cls, mod.name, mod.doc)
     target = pathlib.Path(out_dir)
     target.mkdir(parents=True, exist_ok=True)
     for fname, text in files.items():
         (target / fname).write_text(text)
-    custom_lines = sum(len(s.splitlines()) for s in decl.custom.values())
-    print(f"emitted {len(files)} file(s) for {cls.__name__}; "
+    custom_lines = sum(len(s.splitlines()) for s in cls.decl.custom.values())
+    print(f"emitted {len(files)} file(s) for {cls.name}; "
           f"{custom_lines} line(s) came through the custom hatch")
     return files
 
