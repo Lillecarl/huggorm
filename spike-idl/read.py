@@ -60,6 +60,30 @@ class DeclarationError(Exception):
 
 
 @dataclass(frozen=True)
+class Type:
+    """A declared type, from both sides of the boundary.
+
+    `python` is what the annotation said, verbatim. `cxx` is the C++
+    fact behind it, and it is None for a PRODUCED value - such a class
+    holds no C++ object at all, so its fields are already Python and
+    there is nothing for a C++ spelling to describe."""
+
+    python: str
+    cxx: Cxx | None = None
+
+    @property
+    def wire(self) -> str:
+        """The `_wire_fields` spelling of this type.
+
+        Derived, not declared. `T | None` is `T?`, because that is how
+        the wire says presence; everything else crosses as itself."""
+        inner, optional = self.python, False
+        if inner.endswith("| None"):
+            inner, optional = inner[:-len("| None")].strip(), True
+        return f"{inner}?" if optional else inner
+
+
+@dataclass(frozen=True)
 class Method:
     """One declared method, with the C++ facts resolved.
 
@@ -72,8 +96,8 @@ class Method:
     # emitter's problem: the manifest wants the literal text a class
     # carries, and `_doc` re-indents from raw anyway.
     doc: str
-    params: tuple[tuple[str, Cxx], ...]
-    ret: Cxx | None
+    params: tuple[tuple[str, Type], ...]
+    ret: Type | None
     cxx_name: str = ""
     blocks: bool = False
 
@@ -131,22 +155,39 @@ def _from_vocabulary(name: str, vocab: dict[str, str], node: ast.AST) -> Any:
     return obj
 
 
-def cxx_of(node: ast.expr, vocab: dict[str, str]) -> Cxx:
-    """The C++ fact behind an annotation, or a refusal.
+def type_of(node: ast.expr, vocab: dict[str, str], cxx: bool) -> Type:
+    """One annotation, resolved.
 
-    Every type a binding names has one. A bare `str` would leave this
-    guessing between std::string and string_view, and those differ by
-    whether the boundary owes the value a copy - so the guess is
-    between a correct binding and a dangling pointer."""
+    `cxx=True` for a class that binds a C++ object: then every type
+    must carry a C++ spelling, because a bare `str` leaves this
+    guessing between std::string and string_view - and those differ by
+    whether the boundary owes the value a copy, which is the
+    difference between a correct binding and a dangling pointer.
+
+    `cxx=False` for a PRODUCED value. Nothing there crosses from C++:
+    the object that made it flattened one, and what is left is Python
+    slots. So a plain annotation is not a gap in the declaration, it
+    is the whole truth about the field."""
+    # A string annotation is the forward reference a declaration needs
+    # to name a type declared in another file. Unwrapped here so the
+    # rest of the reader sees one spelling.
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        spelled = node.value
+    else:
+        spelled = ast.unparse(node)
+    if not cxx:
+        return Type(python=spelled)
     if not isinstance(node, ast.Name):
         raise DeclarationError(
-            node, f"'{ast.unparse(node)}' is not a declared type name. Give "
-                  f"it an Annotated alias in declare.py.")
+            node, f"'{spelled}' is not a declared type name. Give it an "
+                  f"Annotated alias in declare.py.")
     alias = _from_vocabulary(node.id, vocab, node)
     if get_origin(alias) is not None:
         for meta in get_args(alias)[1:]:
             if isinstance(meta, Cxx):
-                return meta
+                # The PYTHON spelling of an alias is its first arg:
+                # `Annotated[str, Cxx("string_view")]` is a str.
+                return Type(python=get_args(alias)[0].__name__, cxx=meta)
     raise DeclarationError(
         node, f"'{node.id}' carries no C++ spelling. Annotate the alias with "
               f"Cxx(...) in declare.py.")
@@ -211,7 +252,8 @@ def _apply(decorators: list[ast.expr], vocab: dict[str, str],
 
 # -- methods --------------------------------------------------------------
 
-def _method(node: ast.FunctionDef, vocab: dict[str, str]) -> Method:
+def _method(node: ast.FunctionDef, vocab: dict[str, str],
+            cxx: bool = True) -> Method:
     args = node.args
     if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         raise DeclarationError(
@@ -223,13 +265,13 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str]) -> Method:
             raise DeclarationError(
                 arg, f"{node.name}({arg.arg}): every parameter states its "
                      f"type.")
-        params.append((arg.arg, cxx_of(arg.annotation, vocab)))
+        params.append((arg.arg, type_of(arg.annotation, vocab, cxx)))
 
-    ret: Cxx | None = None
+    ret: Type | None = None
     returns = node.returns
     if returns is not None and not (isinstance(returns, ast.Constant)
                                     and returns.value is None):
-        ret = cxx_of(returns, vocab)
+        ret = type_of(returns, vocab, cxx)
 
     # A method decorator writes an attribute on a function, so the
     # same trick works: decorate a stand-in and read what was written.
@@ -252,6 +294,10 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}))
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
+    # A produced value binds nothing, so nothing it names needs a C++
+    # spelling. `built_by` is what @produced writes, and it is the one
+    # fact that decides which vocabulary the annotations are in.
+    cxx = not decl.built_by
 
     ctor: Method | None = None
     methods: list[Method] = []
@@ -259,11 +305,11 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
         if not isinstance(item, ast.FunctionDef):
             continue
         if item.name == "__init__":
-            ctor = _method(item, vocab)
+            ctor = _method(item, vocab, cxx)
         elif not item.name.startswith("_"):
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.
-            methods.append(_method(item, vocab))
+            methods.append(_method(item, vocab, cxx))
     return Class(
         name=node.name,
         doc=ast.get_docstring(node, clean=False) or "",

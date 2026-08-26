@@ -41,7 +41,7 @@ idea goes.
 from typing import Any
 
 from declare import Decl
-from read import Class, Cxx, Method
+from read import Class, Method, Type
 
 # C++ spelling -> the Python type the manifest names. A second table
 # from `emit._py_type`, and deliberately: that one spells a pyx
@@ -83,32 +83,38 @@ DUNDERS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _type(c: Cxx | None) -> str:
+def _type(t: Type | None) -> str:
     """The manifest's spelling of a declared type.
 
-    Refuses rather than defaults. A type this table does not know is
-    a type the surfaces above cannot marshal, and inventing a name
-    for it here would push the failure into an emitted file."""
-    if c is None:
+    A type with no C++ behind it is already Python and needs no
+    table: a produced value's field crosses as itself.
+
+    For one that does, this refuses rather than defaults. A spelling
+    the table does not know is one the surfaces above cannot marshal,
+    and inventing a name here would push the failure into an emitted
+    file."""
+    if t is None:
         return "None"
-    if c.spelling not in PYTHON:
+    if t.cxx is None:
+        return t.python
+    if t.cxx.spelling not in PYTHON:
         raise TypeError(
-            f"'{c.spelling}' has no Python spelling. Add it to manifest.PYTHON "
-            f"once the boundary knows how to marshal it.")
-    return PYTHON[c.spelling]
+            f"'{t.cxx.spelling}' has no Python spelling. Add it to "
+            f"manifest.PYTHON once the boundary knows how to marshal it.")
+    return PYTHON[t.cxx.spelling]
 
 
-def _param(name: str, c: Cxx) -> dict[str, Any]:
+def _param(name: str, t: Type) -> dict[str, Any]:
     # `default: None` always: C++ default arguments are not in the
     # vocabulary yet, and a declaration cannot express one. When it
     # can, this reads it rather than assuming.
-    return {"name": name, "type": _type(c), "default": None}
+    return {"name": name, "type": _type(t), "default": None}
 
 
 def _method(m: Method) -> dict[str, Any]:
     return {
         "name": m.name,
-        "params": [_param(n, c) for n, c in m.params],
+        "params": [_param(n, t) for n, t in m.params],
         "return_type": _type(m.ret),
         # Cleaned, unlike the class docstring below. That asymmetry is
         # the current manifest's, not this module's: model.py reads a
@@ -136,6 +142,26 @@ def dunders(decl: Decl) -> list[str]:
     return sorted(name for name, fact in DUNDERS if facts[fact])
 
 
+def _wire_fields(cls: Class) -> list[list[str]]:
+    """What this value is made of.
+
+    Two sources, and the second is the interesting one. A CONSTRUCTED
+    value declares its fields, because the field name and the
+    accessor need not agree: a StorePath's part is called `base_name`
+    and is read by `to_string`.
+
+    A PRODUCED value declares none, and needs none. Every accessor IS
+    a field - the object that made it flattened one and handed over
+    slots - so the name is the accessor's name and the type is what it
+    returns. Declaring them again would be a second place to be wrong.
+    """
+    if cls.decl.fields:
+        return [[f.name, f.type] for f in cls.decl.fields]
+    if not cls.decl.built_by:
+        return []
+    return [[m.name, m.ret.wire] for m in cls.methods if m.ret is not None]
+
+
 def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
     """One wrapper entry, in the manifest's own key order.
 
@@ -153,7 +179,10 @@ def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
         # which is the literal text, so the stubs carry the same
         # indentation the source had.
         "doc": cls.doc,
-        "binds": "C" + cls.name,
+        # Empty for a produced value. It binds no C++ type: the object
+        # that made it flattened one, so there is no declaration to
+        # link a `_binds` name to.
+        "binds": "" if decl.built_by else "C" + cls.name,
         # Empty until the vocabulary has inheritance. `read.py`
         # refuses a declared base class rather than dropping it, so
         # this cannot silently be wrong.
@@ -167,14 +196,14 @@ def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
         # "proxy" is the safe default on both sides: stateful until a
         # declaration proves otherwise.
         "wire": decl.wire or "proxy",
-        "wire_fields": [[f.name, f.type] for f in decl.fields],
+        "wire_fields": _wire_fields(cls),
         "blocking": decl.blocking,
         # Two things a wrapper buys: a hop onto a home thread, and
         # releasing the GIL around a call that waits. A pool class
         # whose methods cannot block needs neither.
         "wrapped": threading == "affine" or decl.blocking,
         "dunders": dunders(decl),
-        "ctor": [_param(n, c) for n, c in
+        "ctor": [_param(n, t) for n, t in
                  (cls.ctor.params if cls.ctor is not None else ())],
         "methods": [_method(m) for m in cls.methods],
         # Both are written by later stages of the real generator: the

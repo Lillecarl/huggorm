@@ -32,8 +32,8 @@ import inspect
 import pathlib
 import sys
 
-from declare import Cxx, Decl
-from read import Class, Method, read
+from declare import Decl
+from read import Class, Method, Type, read
 
 INDENT = "    "
 
@@ -56,13 +56,16 @@ def _doc(text: str, level: int) -> list[str]:
     return out
 
 
-def _py_type(c: Cxx) -> str:
+def _py_type(t: Type) -> str:
     """How a declared type is spelled in a pyx signature.
 
     Not the C++ spelling: `bint` is Cython's own bool and reads as one
     in an annotation, while std::string and string_view are both `str`
-    by the time a caller sees them."""
-    return "bint" if c.spelling == "bint" else "str"
+    by the time a caller sees them. A type with no C++ behind it - a
+    produced value's field - is already Python and says so itself."""
+    if t.cxx is None:
+        return "bint" if t.python == "bool" else t.python
+    return "bint" if t.cxx.spelling == "bint" else "str"
 
 
 # -- c_<name>.pxd ---------------------------------------------------------
@@ -89,16 +92,16 @@ def c_pxd(cls: Class, cname: str) -> str:
     ]
     body = [f"{cname}(const {cname} & other)"]
     if cls.ctor is not None:
-        args = ", ".join(f"{c.spelling} {n}" for n, c in cls.ctor.params)
+        args = ", ".join(f"{t.cxx.spelling} {n}" for n, t in cls.ctor.params)
         body.append(f"{cname}({args}) except +translate_nix_error")
     for m in cls.methods:
         if m.ret is None:
             raise TypeError(f"{m.name}: a declared method must state a "
                             f"return type")
         alias = f' "{m.cxx_name}"' if m.cxx_name else ""
-        args = ", ".join(f"{c.spelling} {n}" for n, c in m.params)
+        args = ", ".join(f"{t.cxx.spelling} {n}" for n, t in m.params)
         body.append(
-            f"{m.ret.spelling} {m.name}{alias}({args}) "
+            f"{m.ret.cxx.spelling} {m.name}{alias}({args}) "
             f"except +translate_nix_error")
     if decl.compare == "cxx":
         body.append(f"bint operator==(const {cname} & other)")
@@ -147,22 +150,22 @@ def _accessor(m: Method, blocking: bool) -> list[str]:
     # calling the C++ name here would not compile.
     assert m.ret is not None
     args = ", ".join(n for n, _ in m.params)
-    typed = "".join(f", {_py_type(c)} {n}" for n, c in m.params)
+    typed = "".join(f", {_py_type(t)} {n}" for n, t in m.params)
     lines = [f"{INDENT}def {m.name}(self{typed}) -> {_py_type(m.ret)}:"]
     lines += _doc(m.doc, 2)
     call = f"self._get().{m.name}({args})"
     if blocking or m.blocks:
         # A call that can wait releases the GIL around itself, so the
         # rest of the process keeps running while it does.
-        lines += [f"{INDENT * 2}cdef {m.ret.spelling} out",
+        lines += [f"{INDENT * 2}cdef {m.ret.cxx.spelling} out",
                   f"{INDENT * 2}with nogil:",
                   f"{INDENT * 3}out = {call}"]
         result = "out"
     else:
         result = call
-    if m.ret.copy == "view":
+    if m.ret.cxx.copy == "view":
         lines.append(f"{INDENT * 2}return _view({result})")
-    elif m.ret.spelling == "string":
+    elif m.ret.cxx.spelling == "string":
         lines.append(f"{INDENT * 2}return {result}.decode('utf-8')")
     else:
         lines.append(f"{INDENT * 2}return {result}")
@@ -172,10 +175,11 @@ def _accessor(m: Method, blocking: bool) -> list[str]:
 def pyx(cls: Class, cname: str, module: str, doc: str) -> str:
     name, decl = cls.name, cls.decl
     ctor_params = cls.ctor.params if cls.ctor is not None else ()
-    needs_view = any(m.ret is not None and m.ret.copy == "view"
+    needs_view = any(m.ret is not None and m.ret.cxx is not None
+                     and m.ret.cxx.copy == "view"
                      for m in cls.methods)
     needs_string = bool(ctor_params) or any(
-        c.spelling == "string" for m in cls.methods for _, c in m.params)
+        t.cxx.spelling == "string" for m in cls.methods for _, t in m.params)
 
     head = ["# cython: language_level=3", "# cython: annotation_typing=False"]
     head += [f"# {line}".rstrip() for line in doc.strip().splitlines()]
@@ -223,18 +227,18 @@ def pyx(cls: Class, cname: str, module: str, doc: str) -> str:
     if cls.ctor is not None:
         # `str base_name`, not `string base_name`: a pyx signature is
         # the Python surface, and the C++ spelling belongs in the pxd.
-        args = ", ".join(f"{_py_type(c)} {n}" for n, c in ctor_params)
+        args = ", ".join(f"{_py_type(t)} {n}" for n, t in ctor_params)
         body.append(f"{INDENT}def __init__(self, {args}):")
         body += _doc(cls.ctor.doc, 2)
         # __init__ and not __cinit__: __cinit__ runs on every __new__,
         # the argument-less one a copy needs included, so it cannot
         # also be where construction happens.
-        for n, c in ctor_params:
-            if c.spelling == "string":
+        for n, t in ctor_params:
+            if t.cxx.spelling == "string":
                 body.append(
                     f"{INDENT * 2}cdef string c_{n} = {n}.encode('utf-8')")
-        built = ", ".join(f"c_{n}" if c.spelling == "string" else n
-                          for n, c in ctor_params)
+        built = ", ".join(f"c_{n}" if t.cxx.spelling == "string" else n
+                          for n, t in ctor_params)
         body += [f"{INDENT * 2}self._ptr = new {cname}({built})", ""]
 
     body += [
@@ -338,8 +342,8 @@ def _round_trip(cls: Class) -> list[str]:
             f"write yet.")
     # Typed, like the constructor's: _from_parts takes exactly what
     # the constructor takes, so it states the same types.
-    args = ", ".join(f"{_py_type(c)} {f.name}"
-                     for f, (_, c) in zip(decl.fields, ctor_params,
+    args = ", ".join(f"{_py_type(t)} {f.name}"
+                     for f, (_, t) in zip(decl.fields, ctor_params,
                                           strict=True))
     reads = ", ".join(f"self.{f.read}()" for f in decl.fields)
     return [

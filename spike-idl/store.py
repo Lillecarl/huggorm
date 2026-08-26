@@ -55,17 +55,30 @@ class PathInfo:
         is the same spelling `nix path-info --json` prints. None for a
         path that was BUILT: an input-addressed output is named after
         the derivation that made it, not after its own bytes, so
-        there is nothing to address by."""
+        there is nothing to address by.
+
+        None rather than "": the two are different answers, and this
+        is the first optional SCALAR field the wire can carry them
+        both across (tasks/048)."""
 
     def references(self) -> "list[StorePath]":
         """The store paths this one points at, its own included when
         it does.
 
         This is what makes a store path a graph rather than a name: a
-        closure is the transitive reading of this field."""
+        closure is the transitive reading of this field. Nix scans the
+        bytes for them at add time, so a path added from a directory
+        of plain text has none.
+
+        Sorted, because Nix keeps them in a set and the order is that
+        set's."""
 
     def sigs(self) -> "list[str]":
-        """Who vouched for this path, as `<key-name>:<base64>`."""
+        """Who vouched for this path, as `<key-name>:<base64>`.
+
+        Empty for a path this store added itself: a signature says a
+        path came from somewhere and arrived intact, and a local add
+        travelled nowhere."""
 
 
 @produced(by="Store.to_store_path")
