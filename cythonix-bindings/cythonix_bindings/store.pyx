@@ -152,8 +152,14 @@ cdef class Store:
     def get_uri(self) -> str:
         """How this store describes itself.
 
-        For logging only, upstream is explicit about that: it does not
-        round-trip as a store reference and it is not a cache key."""
+        For logging only, upstream is explicit about that: it does
+        not round-trip as a store reference and it is not a cache
+        key.
+
+        There is no getUri() any more. 2.34 moved it onto the config
+        as getHumanReadableURI, and Store reaches its config by
+        reference - which a pxd cannot describe without declaring the
+        whole config type for the sake of one string."""
         return store_uri(deref(self._get())).decode('utf-8')
 
     def is_valid_path(self, StorePath path) -> bint:
@@ -197,28 +203,22 @@ cdef class Store:
         the path is computed, and Nix serialises the file into a NAR to
         compute it.
 
-        Annotated Python-style, not Cython-style: this is backed by a
-        shim rather than by a method on nix::Store, so there is no pxd
-        declaration to backfill the types from and a `str name` would
-        reach the codegen as Any.
-
         `references` is what the added path POINTS AT. Nix is told
         them; it does not scan an added path for them, so a path that
         mentions another and does not declare it is a broken closure
         the store will happily hold. None and an empty list mean the
         same thing, which is what lets the wire carry absence as a
-        repeated field with nothing in it.
-        """
+        repeated field with nothing in it."""
         cdef string c_name = name.encode('utf-8')
         cdef string c_data = data
         cdef string c_method = method.encode('utf-8')
-        cdef string c_algo = hash_algo.encode('utf-8')
-        cdef vector[string] c_refs = _base_names(references)
+        cdef string c_hash_algo = hash_algo.encode('utf-8')
+        cdef vector[string] c_references = _base_names(references)
         cdef CStore* store = self._get()
         cdef CStorePath* out
         with nogil:
             out = add_to_store(
-                deref(store), c_name, c_data, c_method, c_algo, c_refs)
+                deref(store), c_name, c_data, c_method, c_hash_algo, c_references)
         cdef StorePath owned = StorePath.__new__(StorePath)
         owned._ptr = out
         return owned
@@ -257,18 +257,17 @@ cdef class Store:
         mentions another and does not declare it is a broken closure
         the store will happily hold. None and an empty list mean the
         same thing, which is what lets the wire carry absence as a
-        repeated field with nothing in it.
-        """
+        repeated field with nothing in it."""
         cdef string c_name = name.encode('utf-8')
         cdef string c_path = path.encode('utf-8')
         cdef string c_method = method.encode('utf-8')
-        cdef string c_algo = hash_algo.encode('utf-8')
-        cdef vector[string] c_refs = _base_names(references)
+        cdef string c_hash_algo = hash_algo.encode('utf-8')
+        cdef vector[string] c_references = _base_names(references)
         cdef CStore* store = self._get()
         cdef CStorePath* out
         with nogil:
             out = add_path_to_store(
-                deref(store), c_name, c_path, c_method, c_algo, c_refs)
+                deref(store), c_name, c_path, c_method, c_hash_algo, c_references)
         cdef StorePath owned = StorePath.__new__(StorePath)
         owned._ptr = out
         return owned
@@ -387,28 +386,17 @@ cdef class Store:
         """Where this store object's files really are.
 
         A different question from `print_store_path`, which joins the
-        store DIRECTORY onto the path. A chroot store keeps /nix/store
-        as its store directory and puts the files under <root>/nix/store,
-        so its printed path does not exist and this one does.
+        store DIRECTORY onto the path. A chroot store keeps
+        /nix/store as its store directory and puts the files under
+        <root>/nix/store, so its printed path does not exist and this
+        one does.
 
-        Not every store has an answer. libstore puts toRealPath on
-        LocalFSStore rather than on Store, because a binary cache or an
-        ssh-ng store has no directory on this filesystem - so this
-        raises Unsupported for one that does not, the same way
-        query_all_valid_paths does.
+        Only a store with a filesystem can answer. A remote or a
+        binary-cache store raises "not supported by store", which is
+        libstore's own refusal rather than one invented here.
 
-        A pathlib.Path, so the result is a thing to open and walk
-        rather than a string to join by hand. It is a path on the
-        machine the STORE runs on: in process that is this one, and
-        over RPC it is the server's (tasks/040).
-
-        `path` is annotated Python-style, so the codegen can read the
-        type: this method is backed by a shim rather than declared on
-        nix::Store, so there is no pxd method to backfill from. A
-        Cython-style `StorePath path` would type the argument here and
-        say nothing to the generator. The cdef assignment below does
-        the conversion, and its runtime check is the one the signature
-        would have done."""
+        The answer is for the machine the store runs on. In process
+        that is here; over RPC it is the server's (tasks/040)."""
         cdef StorePath sp = path
         cdef CStore* store = self._get()
         cdef CStorePath* p = sp._get()
@@ -512,8 +500,8 @@ cdef class Store:
         return owned
 
     def follow_links_to_store(self, path: str) -> str:
-        """Follow symlinks until the path lands in the store, and stop
-        there.
+        """Follow symlinks until the path lands in the store, and
+        stop there.
 
         The first half of `follow_links_to_store_path`, and the half
         that keeps what the other one drops. A `result` symlink
@@ -542,23 +530,16 @@ cdef class Store:
         return out.decode('utf-8')
 
     def follow_links_to_store_path(self, path: str) -> StorePath:
-        """The same question as `to_store_path`, asked of a symlink.
+        """Follow symlinks until the path lands in the store, and say
+        which store path it landed in.
 
-        `to_store_path` is string work and never reads the filesystem,
-        so it cannot answer for `/run/current-system` or for a
-        `result` symlink: neither is in the store, and both point at
-        something that is. This one follows links until it lands in
-        the store, then splits.
+        The whole of `follow_links_to_store`, minus the part below the
+        store path. A `result` symlink pointing at a package resolves
+        to `<store path>/bin/foo`, and this answers with the store
+        path alone.
 
-        Only the store path comes back. Upstream drops the sub-path
-        here and this does too - the file the caller named is not
-        where the link pointed, so a sub-path taken from the RESOLVED
-        path would name something the caller never asked about.
-
-        A relative path is resolved against the working directory, by
-        libstore rather than here. Over RPC that is the SERVER's
-        working directory, which is another reason to pass an absolute
-        one.
+        The symlinks are read on the machine the store runs on. In
+        process that is here; over RPC it is the server's filesystem.
 
         A path that is already in the store is answered without
         touching the filesystem at all: the loop tests that first. So
@@ -577,7 +558,13 @@ cdef class Store:
         return owned
 
     def print_store_path(self, StorePath path) -> str:
-        """The path as an absolute filesystem path in this store."""
+        """This path as the store spells it: its directory, then the
+        base name.
+
+        The store's directory, not this machine's. A chroot store
+        keeps `/nix/store` in its paths while its files live under a
+        root somewhere else, so this is what the store calls the path
+        and `real_path` is where the bytes are."""
         cdef CStore* store = self._get()
         cdef CStorePath* p = path._get()
         cdef string out
@@ -586,7 +573,13 @@ cdef class Store:
         return out.decode('utf-8')
 
     def parse_store_path(self, path: str) -> StorePath:
-        """An absolute path in this store, as a StorePath.
+        """This string as a store path of THIS store.
+
+        A store path is a base name, and which directory it belongs
+        under is the store's fact rather than the name's. So parsing
+        one is a question for a store: `/nix/store/<hash>-name` is a
+        path of the default store and not of a chroot store rooted
+        somewhere else.
 
         Raises when it is not in this store's directory - which is a
         different question from whether the name is well formed, and
