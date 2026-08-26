@@ -69,7 +69,15 @@ PYX_SPELLING = {
 }
 
 
-def _py_type(t: Type) -> str:
+# The same, in a PYTHON-style signature. `bint` is Cython's own bool
+# and is the type itself where Cython reads the annotation; where
+# Python does - a shim-backed method, whose signature is the Python
+# surface and which the codegen above reads as type names - it is
+# `bool`.
+PY_SPELLING = {**PYX_SPELLING, "bint": "bool"}
+
+
+def _py_type(t: Type, python_style: bool = False) -> str:
     """How a declared type is spelled in a pyx signature.
 
     A type with no C++ behind it - a produced value's field - is
@@ -85,7 +93,8 @@ def _py_type(t: Type) -> str:
         raise TypeError(
             f"'{t.cxx.spelling}' has no pyx spelling. Add it to "
             f"emit.PYX_SPELLING once the boundary knows how to marshal it.")
-    return PYX_SPELLING[t.cxx.spelling]
+    table = PY_SPELLING if python_style else PYX_SPELLING
+    return table[t.cxx.spelling]
 
 
 # -- c_<name>.pxd ---------------------------------------------------------
@@ -233,6 +242,12 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
             decls.append(
                 f"{INDENT * 2}cdef string c_{name} = {name}.encode('utf-8')")
             args.append(f"c_{name}")
+        elif t.cxx is not None and t.cxx.spelling == "bint":
+            # A Python-style annotation leaves this an object, and a
+            # nogil block cannot read one. The conversion is Python
+            # work - `bool.__bool__` may run - so it happens here.
+            decls.append(f"{INDENT * 2}cdef bint c_{name} = {name}")
+            args.append(f"c_{name}")
         else:
             args.append(name)
     return decls, args
@@ -366,10 +381,14 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None,
     # and `path: str` does not. Derived from whether there is a body,
     # like the call shape itself.
     if shimmed(m):
-        typed = "".join(f", {n}: {_py_type(t)}" for n, t in m.params)
+        typed = "".join(
+            f", {p.name}: {_py_type(p.type, python_style=True)}"
+            + (f" = {p.default}" if p.default is not None else "")
+            for p in m.params)
     else:
         typed = "".join(f", {_py_type(t)} {n}" for n, t in m.params)
-    lines = [f"{INDENT}def {m.name}(self{typed}) -> {_py_type(m.ret)}:"]
+    lines = [f"{INDENT}def {m.name}(self{typed}) "
+             f"-> {_py_type(m.ret, python_style=shimmed(m))}:"]
     lines += _doc(m.doc, 2)
     values = values or {}
     hoists, args = _marshal_in(m)
