@@ -50,6 +50,8 @@ A shape it cannot derive stops with a reason. The escape hatch is
 becomes the place the real code lives.
 """
 
+import ast
+import json
 from collections.abc import Sequence
 
 from cythonix_idl.declare import Field
@@ -356,6 +358,12 @@ def _default(pr, known: dict[str, Class] | None = None) -> str:
         # `arg4` and the keyword stops working.
         spelled, _ = _cxx(pr.type, known)
         return f"{spelled}{{}}"
+    if value[:1] in "'\"":
+        # A string literal, RE-SPELLED. Python writes one either way
+        # round and `ast.unparse` normalises to single quotes - which
+        # in C++ is a character literal, so `'auto'` compiles as an
+        # integer rather than failing.
+        return json.dumps(ast.literal_eval(value))
     return CXX_DEFAULT.get(value, value)
 
 
@@ -899,7 +907,7 @@ def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str
     for pr in fn.params:
         arg = f'"{pr.name}"_a'
         if pr.default is not None:
-            arg += f" = {CXX_DEFAULT.get(pr.default, pr.default)}"
+            arg += f" = {_default(pr, known)}"
         extras.append(arg)
     tail = "".join(f", {x}" for x in extras)
     return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
