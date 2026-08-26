@@ -18,6 +18,7 @@ import ast
 import asyncio
 import gc
 import importlib
+import inspect
 import json
 import pathlib
 import sys
@@ -1342,26 +1343,38 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     out = pathlib.Path(args.out).resolve()
 
-    test_parse(out)
-    test_pxd_renders_every_type()
-    test_annotation_rendering()
-    test_declarations_are_found_by_binds()
-    test_a_resolved_class_keeps_its_module()
-    test_a_default_is_written_or_refused()
-
     # Import the generated package from its parent dir, shadowing any
     # installed copy. Bindings (cythonix_bindings) come from PYTHONPATH.
+    # setup.py runs the generator before this, so the package is
+    # already there and the earlier checks lose nothing by the path
+    # being set first.
     sys.path.insert(0, str(out.parent))
     importlib.invalidate_caches()
-    test_runtime_contract(out)
-    test_no_unused_imports(out)
-    test_the_manifest_is_what_got_written(out)
-    test_conformance(out)
-    test_stubs(out)
-    test_docstrings()
-    test_annotations_resolve()
-    asyncio.run(test_behavior())
-    print("smoke test OK")
+
+    # DISCOVERED, not listed. This was a hand-written call list, and a
+    # test added later was simply not in it: two of them existed here,
+    # linted, typechecked, and never ran. A gate nothing calls is
+    # worse than no gate, because the file says it is covered.
+    #
+    # Definition order is the run order - a module's dict keeps it -
+    # and the sync checks go first so the one async check still runs
+    # last, which is the only ordering the old list expressed on
+    # purpose.
+    checks = [fn for name, fn in list(globals().items())
+              if name.startswith("test_") and callable(fn)]
+
+    def call(fn: Any) -> Any:
+        # Every check takes the output directory or nothing, and the
+        # signature says which - so adding one needs no registration.
+        return fn(out) if inspect.signature(fn).parameters else fn()
+
+    for fn in checks:
+        if not inspect.iscoroutinefunction(fn):
+            call(fn)
+    for fn in checks:
+        if inspect.iscoroutinefunction(fn):
+            asyncio.run(call(fn))
+    print(f"smoke test OK ({len(checks)} checks)")
 
 
 if __name__ == "__main__":
