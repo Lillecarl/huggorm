@@ -1,12 +1,17 @@
 # cythonix
 
-Nix, bound to Python through Cython, with everything above the
-bindings GENERATED from the bindings.
+Nix, bound to Python through nanobind, with the bindings THEMSELVES
+generated from a declaration, and everything above them generated from
+the same declaration.
 
-One declaration next to a binding decides four surfaces: the async
-wrapper, the protocol, the RPC client and the gRPC schema. Adding a
-type means editing a `.pyx` and nothing else. That is the whole
-premise, and it is what a reviewer should push on.
+One file decides six surfaces: the C++ binding, the type stub, the
+manifest entry, the async wrapper, the RPC client and the gRPC schema.
+Adding a type means editing one declaration and nothing else. That is
+the whole premise, and it is what a reviewer should push on.
+
+A declaration is never executed. The emitters read it with
+`ast.parse`, so it can name a C++ type this machine has never
+compiled, and no surface above the bindings waits on a compiler.
 
 This file is how to DRIVE the repo. `docs/quickstart.md` is how to USE
 the library. `tasks/README.md` is what the design is and why, and each
@@ -49,47 +54,82 @@ neither exists in the tree.
 FileDescriptorSet that no editor renders, and it is generated - so the
 only honest way to review the wire is to read what actually came out.
 
+The emitted C++ is not in the tree either. It is written into the
+build's copy of `cythonix-bindings`, so to read it:
+
+    nix build --no-link --print-out-paths --file . bindings-src
+
 ### Reading a dependency's source
 
     nix build --no-link --print-out-paths --file . pkgs.nix.src
 
 Nix's own headers are in `pkgs.nix.dev`. The repo's rule is to anchor
-on upstream source rather than guess, and several bindings carry a
+on upstream source rather than guess, and several declarations carry a
 comment about an upstream behaviour that was read rather than assumed.
 
 ## Layout
 
     fake-library/          a C++ stand-in, on its way out (see below)
-    cythonix-bindings/     the Cython bindings - the bottom of the stack
+    cythonix-idl/          the declarations, and the emitters
+    cythonix-bindings/     the nanobind extensions - the bottom of the stack
     cythonix-generated/    the generator, and the package it emits
     cythonix/              the hand-written layer: server, client, codec
     examples/              runnable demos - not shipped in the package
     docs/                  user-facing; quickstart.md is the front door
     tasks/                 one file per decision, NNN-name.md[.done]
 
+### cythonix-idl
+
+    src/cythonix_idl/
+      decl/<name>.py  one declaration per bound area. Never executed.
+      decl/README.md  why they sit in their own directory
+      declare.py      the vocabulary a declaration is written in
+      read.py         ast.parse -> Module, Class, Method
+      nbemit.py       declaration -> nanobind C++
+      manifest.py     declaration -> manifest entry
+      pyi.py          declaration -> type stub, by tree transform
+      pyenum.py       declaration -> a StrEnum module, by tree transform
+      generate.py     the build entry point: which declarations, and where
+    gates/nbcheck.py  emitted C++ against hand-written nanobind
+
+One Nix header, one declaration, named after it:
+`nix/store/store-api.hh` is `decl/store.py`.
+
+`decl/store.py` is the biggest and the most current - read it first.
+Its `PathInfo` and `StoreLocation` show what a declared wire-value
+looks like; `Store` shows a proxy. `decl/path.py` is the smallest
+complete one, and the place to start if `store.py` is too much at
+once.
+
+`generate.py` names the declarations that own a module. A declaration
+not in that list emits nothing: `decl/pathinfo.py`, `decl/nixstore.py`
+and `decl/storefns.py` are read only by `gates/nbcheck.py`, which
+emits them against the hand-written nanobind in `~/Code/nanopynix` and
+is skipped on a machine without it.
+
 ### cythonix-bindings
 
     cythonix_bindings/
-      c_<name>.pxd    what C++ declares. Nothing of ours.
-      <name>.pxd      what our cdef classes declare, for sibling modules
-      <name>.pyx      the binding
-      _cpp/<name>.hpp C++ this repo writes, for what a pxd cannot SAY
+      _cpp/<name>.hpp C++ this repo writes, for what a declaration CALLS
       _cpp/README.md  the rule for what belongs in there
       errors.py       the exception hierarchy, mirroring libnixutil's
-      _declare.py     the decorators a free function carries
+      __init__.py     what the package exports, and in which order
+    setup.py          one nanobind Extension per declared module
 
-One Nix header, one binding module, named after it:
-`nix/store/store-api.hh` is `store.pyx`.
+There is no binding source in here. Every module's C++ is written into
+the build's copy of this directory by `cythonix_idl.generate`, and
+`setup.py` compiles it. `_cpp/` is the exception, and it is C++ the
+declarations NAME rather than C++ a binding needs: `@binds` points at
+a function in there.
 
-`store.pyx` is the biggest and the most current - read it first. Its
-`PathInfo` and `StoreLocation` show what a declared wire-value looks
-like; `Store` shows a proxy.
+`setup.py`'s `LIBRARY` dict is the one place that says which library
+each module links. A declaration names the C++ it binds; which package
+ships that C++ is the build's fact.
 
 ### cythonix-generated
 
     generator/src/codegen/
-      pxd.py          parse the pxd - the C++ surface as data
-      model.py        reflect the live bindings into protocol dicts
+      model.py        declaration entries into protocol dicts
       surface.py      names for the PYTHON surface, and what a protocol
                       may carry
       grpc_schema.py  names for the WIRE, and the FileDescriptorSet
@@ -103,6 +143,11 @@ Read `wiretypes.py` first: it is small and it is where a type's
 spelling is decided. Then `model.py`'s `check_*` functions - each one
 is a rule the build refuses to break, and each names the failure it
 prevents.
+
+Nothing here reflects a compiled class any more. Every shape comes
+from `cythonix_idl.generate`: `declared_entries`, `declared_functions`
+and `declared_returned`. The compiled package is still imported, and
+for one thing only - to enumerate which classes to generate for.
 
 ### cythonix
 
@@ -119,20 +164,23 @@ all. Every type it acts on comes out of the manifest.
 
 ## How a change flows
 
-Adding a store call is the common case, and it touches four files in
-one direction:
+Adding a store call is the common case, and it touches two files:
 
-1. `_cpp/store.hpp` - only if a pxd cannot say it. A type with no
-   default constructor, or a member reached through `Store::config`.
-2. `c_store.pxd` - the C++ declaration.
-3. `store.pyx` - the binding, with a Python-style annotation.
-4. a test in `cythonix/tests/test_store.py`, and one in
+1. `cythonix-idl/src/cythonix_idl/decl/store.py` - the method, with a
+   Python-style annotation and a docstring.
+2. a test in `cythonix/tests/test_store.py`, and one in
    `test_remote.py` if it crosses the wire.
 
-Nothing above that is edited. The generator reads the pxd and the
-compiled module, and the four surfaces follow. If the codegen cannot
-express something, that is the finding - and the fix belongs in the
-generator, not in a hand-written wrapper.
+`_cpp/store.hpp` is the third file, and only when the declaration
+cannot say it: a decision about how to render something, or a member
+reached through `Store::config`. `@cxx_body` marks that hatch, and
+`decl/pathinfo.py` counts its own.
+
+Nothing else is edited. The emitters write the binding, the stub and
+the manifest entry, and the four surfaces follow from the manifest. If
+the codegen cannot express something, that is the finding - and the
+fix belongs in the declaration or the emitter, not in a hand-written
+wrapper.
 
 ## What the build refuses
 
@@ -149,6 +197,10 @@ to make one of these fail early:
 - the three Python surfaces disagreeing on any signature
 
 Each has a `tasks/` file naming the bug it prevents.
+
+The C++ compiler is a gate too, and it is the one the emitter leans
+on. An emitter that spells a type wrong does not write a bad binding
+that imports; it fails to compile.
 
 ## Conventions
 
@@ -182,8 +234,7 @@ For the DESIGN: `tasks/README.md`, then the newest `tasks/` files -
 they are the current thinking, and the older ones record how it got
 there.
 
-For the CODE: `cythonix-bindings/cythonix_bindings/store.pyx`, then
-`cythonix/cythonix/wire.py`, then
-`cythonix-generated/generator/src/codegen/wiretypes.py`.
+For the CODE: `cythonix-idl/src/cythonix_idl/decl/path.py`, then
+`nbemit.py` beside it, then `cythonix/cythonix/wire.py`.
 
 For the OUTPUT: `nix run --file . show -- proto`.
