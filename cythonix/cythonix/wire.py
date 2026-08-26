@@ -356,10 +356,15 @@ class WireCodec:
         called only for proxy types.
 
         `optional` means an absent field reads back as None rather than
-        as its default. proto3 tracks presence for message fields, so
-        those are exact; a scalar cannot tell an unset string from an
-        empty one, which is the same limitation _wire_fields marks with
-        a trailing "?".
+        as its default, and it is EXACT for every kind. A message field
+        has presence in proto3; a scalar one gets it from the synthetic
+        oneof the schema builder emits for a declared optional
+        (tasks/048). So HasField answers both.
+
+        It did not always. A scalar read back as `None if not raw`,
+        which cannot tell an unset string from an empty one someone
+        meant - so an explicitly-passed "" became None. That was the
+        limitation this codec had, not one proto3 has.
 
         A `T | None` type says the same thing in the annotation rather
         than in the call, so the two are OR-ed: a caller that already
@@ -370,12 +375,13 @@ class WireCodec:
         kind = self.kind(type_str)
         if kind == "none":
             return None
-        if optional and kind in ("value", "proxy") and not container.HasField(field):
+        # A container is the one kind with nothing to ask: a repeated
+        # field has no presence and needs none.
+        if (optional and kind not in ("list", "map")
+                and not container.HasField(field)):
             return None
         raw = getattr(container, field)
         if kind == "scalar":
-            if optional and not raw:
-                return None
             return self.scalar(type_str)(raw)
         if kind == "map":
             return self.map_from_msg(type_str, raw)

@@ -158,7 +158,7 @@ cdef class PathInfo:
     an inference elsewhere."""
 
     _threading = "pool"
-    # Eight reads of memory this object already owns. Nothing blocks,
+    # Nine reads of memory this object already owns. Nothing blocks,
     # so there is no thread to hop to and the codegen emits no async
     # wrapper: a PathInfo is handed back as itself on both sides.
     _blocking = False
@@ -186,6 +186,7 @@ cdef class PathInfo:
         ("deriver", "StorePath?"),
         ("registration_time", "int"),
         ("ultimate", "bool"),
+        ("ca", "str?"),
         ("references", "list[StorePath]"),
         ("sigs", "list[str]"),
     )
@@ -196,6 +197,7 @@ cdef class PathInfo:
     cdef object _deriver
     cdef object _registration_time
     cdef object _ultimate
+    cdef object _ca
     cdef object _references
     cdef object _sigs
 
@@ -233,6 +235,20 @@ cdef class PathInfo:
         it from a substituter or an import."""
         return self._ultimate
 
+    def ca(self) -> str | None:
+        """How this path's content addresses itself, or None.
+
+        `fixed:r:sha256:<hash>` for a path added to the store, which
+        is the same spelling `nix path-info --json` prints. None for a
+        path that was BUILT: an input-addressed output is named after
+        the derivation that made it, not after its own bytes, so
+        there is nothing to address by.
+
+        None rather than "": the two are different answers, and this
+        is the first optional SCALAR field the wire can carry them
+        both across (tasks/048)."""
+        return self._ca
+
     def references(self) -> list[StorePath]:
         """The store paths this one points at, its own included when
         it does.
@@ -256,7 +272,7 @@ cdef class PathInfo:
 
     @classmethod
     def _from_parts(cls, path, nar_hash, nar_size, deriver,
-                    registration_time, ultimate, references, sigs):
+                    registration_time, ultimate, ca, references, sigs):
         """Wire-deserialization helper (private, never surfaced)."""
         cdef PathInfo info = PathInfo.__new__(PathInfo)
         info._path = path
@@ -265,6 +281,7 @@ cdef class PathInfo:
         info._deriver = deriver
         info._registration_time = registration_time
         info._ultimate = ultimate
+        info._ca = ca
         info._references = references
         info._sigs = sigs
         return info
@@ -273,8 +290,8 @@ cdef class PathInfo:
         """Wire-serialization helper (private): one value per
         _wire_fields entry, in order."""
         return (self._path, self._nar_hash, self._nar_size, self._deriver,
-                self._registration_time, self._ultimate, self._references,
-                self._sigs)
+                self._registration_time, self._ultimate, self._ca,
+                self._references, self._sigs)
 
 
 cdef class Store:
@@ -598,6 +615,9 @@ cdef class Store:
         cdef object deriver = None
         if not out.deriver.empty():
             deriver = StorePath(out.deriver.decode('utf-8'))
+        cdef object ca = None
+        if not out.ca.empty():
+            ca = out.ca.decode('utf-8')
         cdef list sigs = []
         for sig in out.sigs:
             sigs.append(sig.decode('utf-8'))
@@ -608,6 +628,7 @@ cdef class Store:
             deriver,
             out.registration_time,
             out.ultimate,
+            ca,
             _store_paths(out.references),
             sigs)
 

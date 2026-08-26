@@ -256,6 +256,14 @@ def test_a_store_answers_for_a_path_it_holds(
     # test below is where a real one shows up.
     assert info.registration_time() == 0
 
+    # Added, so content-addressed: the path is named after its own
+    # bytes and says how. The live test below reads the other arm,
+    # where a BUILT path has none - and that arm is why the field is
+    # `str?` rather than a string that is sometimes empty.
+    ca = info.ca()
+    assert ca is not None
+    assert ca.startswith("fixed:"), ca
+
     # Both empty, and both for a reason rather than by omission. This
     # add pins references to empty - Nix does not scan an added path
     # for them, it is told - and nothing signs a path a store added
@@ -772,6 +780,12 @@ def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
     deriver = info.deriver()
     assert deriver is not None, "the interpreter was built, not added"
     assert deriver.is_derivation(), deriver.to_string()
+
+    # Input-addressed: named after the derivation that made it, not
+    # after its own bytes, so there is nothing to address by. None
+    # rather than "", which is the distinction the wire can now carry
+    # (tasks/048).
+    assert info.ca() is None
 
     # The field that makes a store path a graph. A Python installation
     # points at libc at the very least, so this is never empty - and

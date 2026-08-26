@@ -81,6 +81,8 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
         string deriver
         int64_t registration_time
         bint ultimate
+        # Empty when the path has none - see _cpp/store.hpp.
+        string ca
         # Nix keeps both as sets; the shim flattens them to vectors,
         # which is what a pxd can declare. See _cpp/store.hpp.
         vector[string] references

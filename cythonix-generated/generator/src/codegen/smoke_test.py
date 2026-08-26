@@ -253,10 +253,14 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
 def test_an_optional_return_names_a_value_or_nothing() -> None:
     """`T | None` is a real return type, and only for some T.
 
-    Absence rides on a protobuf message field's presence, which is one
-    bit. So it separates ONE type from nothing: a union of two real
-    types has no field to put either arm in, and a scalar has no
-    presence to spend.
+    Absence rides on presence, which is one bit. So it separates ONE
+    type from nothing: a union of two real types has no field to put
+    either arm in.
+
+    A scalar is allowed, and used not to be. proto3 has had explicit
+    `optional` since 3.15 - a synthetic oneof gives a scalar field
+    real presence - so the old refusal described what this schema
+    builder emitted rather than what proto3 can say (tasks/048).
 
     The refusal that matters most is a WRAPPED T. The wire could
     almost carry it - a Handle is a message - but every layer above
@@ -281,10 +285,10 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
             raise AssertionError(f"{bad!r} was accepted as an optional")
 
     kinds = {"StorePath": "value", "Store": "proxy", "Word": "enum"}
-    assert wire_blocker("StorePath | None", kinds) is None
-    for bad, why in (("str | None", "no presence"),
-                     ("Word | None", "no presence"),
-                     ("list[StorePath] | None", "IS an empty one"),
+    for good in ("StorePath | None", "str | None", "int | None",
+                 "Word | None"):
+        assert wire_blocker(good, kinds) is None, good
+    for bad, why in (("list[StorePath] | None", "IS an empty one"),
                      ("Store | None", "adopts nothing")):
         blocker = wire_blocker(bad, kinds)
         assert blocker is not None and why in blocker, (bad, blocker)

@@ -16,7 +16,7 @@ import pytest
 
 from cythonix import grpc_pb
 from cythonix.wire import WireCodec
-from cythonix_bindings import StorePath
+from cythonix_bindings import MockDerivedPath, MockStore, StorePath
 from cythonix_bindings.errors import BadStorePath, NixError
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
@@ -112,6 +112,44 @@ def test_a_real_path_crosses_the_wire() -> None:
     back = codec.value_from_msg("StorePath", msg)
     assert isinstance(back, StorePath)
     assert back.to_string() == HELLO
+
+
+def test_an_empty_optional_field_is_not_an_absent_one() -> None:
+    """"" and None are different answers, and the wire keeps them apart.
+
+    MockDerivedPath declares `("output", "str?")`, and the mock gives
+    the two states different meanings: no output is an OPAQUE path,
+    an empty output is a BUILT one whose output happens to be unnamed.
+    `describe()` prints them differently, so this is not a distinction
+    invented for the test.
+
+    The codec used to read a scalar back as `None if not raw`, so an
+    explicitly-passed "" arrived as None and an opaque path came out
+    the far side. The schema now gives the field real presence - the
+    synthetic oneof proto3 has had since 3.15 - and HasField answers
+    exactly (tasks/048)."""
+    manifest = grpc_pb.load_manifest()
+    codec = WireCodec(manifest)
+    msg_cls = _message(manifest["wrappers"]["MockDerivedPath"]["message"])
+    store = MockStore()
+    path = store.add_text_to_store("x", "y")
+
+    def roundtrip(built: Any) -> Any:
+        msg = msg_cls()
+        codec.value_to_msg("MockDerivedPath", built, msg)
+        return codec.value_from_msg("MockDerivedPath", msg), msg
+
+    empty, empty_msg = roundtrip(MockDerivedPath(path, ""))
+    assert empty_msg.HasField("output"), "an empty string was SET"
+    assert empty._parts()[1] == ""
+    assert empty.describe().endswith("^"), empty.describe()
+
+    absent, absent_msg = roundtrip(MockDerivedPath(path))
+    assert not absent_msg.HasField("output")
+    assert absent._parts()[1] is None
+    assert absent.describe().startswith("opaque"), absent.describe()
+
+    assert empty.describe() != absent.describe()
 
 
 def _message(name: str) -> Any:

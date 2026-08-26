@@ -63,8 +63,34 @@ def _field(msg: Any, name: str, number: int, type_name: str | None = None,
     return f
 
 
+def _with_presence(msg: Any, f: Any) -> Any:
+    """Give a SCALAR field real presence, proto3's own way.
+
+    A synthetic one-field oneof named `_<field>`, plus the
+    proto3_optional flag. That is exactly what `optional string x = 1;`
+    compiles to, and it has been in proto3 since protobuf 3.15.
+
+    This is the thing whose absence several refusals used to cite. The
+    sentence "proto3 gives a scalar field no presence" described what
+    this builder emitted, not what proto3 can express - and the
+    difference is one flag and one oneof entry (tasks/048).
+
+    A message field needs none of it: it has presence already. A
+    repeated field can take none of it, and needs none - an absent
+    repeated field IS an empty one (tasks/041).
+
+    Synthetic oneofs must follow every real one in oneof_decl. Nothing
+    built through here declares a real oneof; the one message that
+    does, NixValue, is hand-built and carries no optional scalar."""
+    oneof = msg.oneof_decl.add()
+    oneof.name = f"_{f.name}"
+    f.oneof_index = len(msg.oneof_decl) - 1
+    f.proto3_optional = True
+    return f
+
+
 def _add_field(msg: Any, name: str, number: int, type_str: str,
-               kinds: dict[str, str]) -> Any:
+               kinds: dict[str, str], optional: bool = False) -> Any:
     """Append one field of the declared surface type.
 
     Three shapes, and only the first is a plain lookup. A list is a
@@ -73,12 +99,13 @@ def _add_field(msg: Any, name: str, number: int, type_str: str,
     message the containing type carries, so this builds that message
     too.
 
-    `T | None` builds the field for T and nothing else. Absence is not
-    a fourth shape: a message field HAS presence, so an unset one is
-    the None, and the codec reads it back with HasField. wire_blocker
-    is what makes sure T is a type that gets a message."""
+    Optionality arrives two ways and means one thing. `T | None` is
+    how a return type says it; `optional=True` is how a caller passes
+    what a `_wire_fields` "?" or an omissible constructor parameter
+    already decided. Either way the field is built for T and then
+    given presence if it needs any."""
     if (inner := optional_value(type_str)) is not None:
-        type_str = inner
+        type_str, optional = inner, True
     if (value_type := map_value(type_str)) is not None:
         return _add_map_field(msg, name, number, value_type, kinds)
     if (item_type := list_value(type_str)) is not None:
@@ -87,7 +114,12 @@ def _add_field(msg: Any, name: str, number: int, type_str: str,
         f.label = f.LABEL_REPEATED
         return f
     pt, message = _msg_arg_type(type_str, kinds)
-    return _field(msg, name, number, proto_type=pt, type_name=message)
+    f = _field(msg, name, number, proto_type=pt, type_name=message)
+    if optional and pt is not None:
+        # pt is None exactly when the field is a message, and a
+        # message field has presence already.
+        _with_presence(msg, f)
+    return f
 
 
 def _add_map_field(msg: Any, name: str, number: int, value_type: str,
@@ -166,10 +198,6 @@ def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
         # is under test - a field the schema cannot build has nothing
         # to be absent FROM.
         if (inner := optional_value(type_str)) is not None:
-            if inner in SCALARS or kinds.get(inner) == ENUM:
-                return (f"{type_str}: proto3 gives a scalar field no "
-                        f"presence, so an absent one and a default one are "
-                        f"the same bytes. Only a message field can be None.")
             if head(inner) in CONTAINERS:
                 return (f"{type_str}: a repeated field has no presence and "
                         f"needs none - an absent container IS an empty one. "
@@ -360,7 +388,8 @@ def _add_faults(file_dp: Any, manifest: Proto) -> None:
         m = file_dp.message_type.add()
         m.name = fault_msg_name(cls_name)
         for n, (fname, ftype) in enumerate(proto["wire_fields"], start=1):
-            _add_field(m, fname, n, ftype.removesuffix("?"), kinds)
+            _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
+                       optional=ftype.endswith("?"))
 
 
 def _add_common(file_dp: Any, manifest: Proto) -> None:
@@ -377,8 +406,11 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
             m = file_dp.message_type.add()
             m.name = value_msg_name(cls_name)
             for n, (fname, ftype) in enumerate(proto["wire_fields"], start=1):
-                # Optionality is a codec concern, not a proto3 one.
-                _add_field(m, fname, n, ftype.removesuffix("?"), kinds)
+                # "?" reaches the schema now. It used to be a codec
+                # concern only, and the codec answered it by reading
+                # an empty string as absent (tasks/048).
+                _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
+                           optional=ftype.endswith("?"))
 
 
 def _add_service(file_dp: Any, cls_name: str, proto: Proto,
@@ -390,7 +422,11 @@ def _add_service(file_dp: Any, cls_name: str, proto: Proto,
         req = file_dp.message_type.add()
         req.name = proto["acquire"]["req"]
         for n, param in enumerate(proto["ctor"], start=1):
-            _add_field(req, param["name"], n, param["type"], kinds)
+            # The client skips a None argument and the server decodes
+            # with optional=True, so the field has to be able to say
+            # "absent" rather than lean on an empty string.
+            _add_field(req, param["name"], n, param["type"], kinds,
+                       optional=param["default"] == "None")
         rpc = svc.method.add()
         rpc.name = ACQUIRE
         rpc.input_type = f".{PKG}.{req.name}"

@@ -311,6 +311,12 @@ struct PathInfoParts
     std::string deriver;
     int64_t registration_time;
     bool ultimate;
+    // Empty when the path has no content address, the way `deriver`
+    // is empty when nothing derived it. Safe as a sentinel for the
+    // same reason: a rendered content address is never the empty
+    // string. renderContentAddress would collapse the two on our
+    // behalf, which is the collapse the binding is trying to avoid.
+    std::string ca;
     // Nix keeps both as SETS. A vector because that is what a pxd can
     // declare and what a repeated protobuf field is; the order is the
     // set's own, which is sorted, so it is stable between calls.
@@ -328,6 +334,7 @@ inline PathInfoParts path_info(nix::Store & store, const nix::StorePath & path)
         info->deriver ? std::string(info->deriver->to_string()) : std::string(),
         static_cast<int64_t>(info->registrationTime),
         info->ultimate,
+        info->ca ? info->ca->render() : std::string(),
         {},
         {},
     };

@@ -420,6 +420,12 @@ async def test_a_path_info_crosses_as_a_value(
     # either, so both directions go through the list helpers the rpc
     # layer already had - and an empty one proves the encoding half on
     # its own, because assigning even [] to a repeated field raises.
+    # An optional SCALAR field, across the wire, on the arm that has
+    # a value. proto3 gives it presence through a synthetic oneof, so
+    # this is exact rather than a guess from truthiness (tasks/048).
+    ca = info.ca()
+    assert ca is not None and ca.startswith("fixed:")
+
     assert info.references() == []
     assert isinstance(info.references(), list)
     assert isinstance(info.sigs(), list)
