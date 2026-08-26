@@ -157,7 +157,7 @@ def _wire_fields(cls: Class) -> list[list[str]]:
     """
     if cls.decl.fields:
         return [[f.name, f.type] for f in cls.decl.fields]
-    if not cls.decl.built_by:
+    if not cls.is_value:
         return []
     return [[m.name, m.ret.wire] for m in cls.methods if m.ret is not None]
 
@@ -182,7 +182,7 @@ def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
         # Empty for a produced value. It binds no C++ type: the object
         # that made it flattened one, so there is no declaration to
         # link a `_binds` name to.
-        "binds": "" if decl.built_by else "C" + cls.name,
+        "binds": "" if cls.is_value else "C" + cls.name,
         # Empty until the vocabulary has inheritance. `read.py`
         # refuses a declared base class rather than dropping it, so
         # this cannot silently be wrong.
@@ -192,7 +192,7 @@ def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
         # generated base class, which this spike does not emit;
         # `produced` is what `@produced(by=...)` says.
         "abstract": False,
-        "produced": bool(decl.built_by),
+        "produced": cls.is_value,
         # "proxy" is the safe default on both sides: stateful until a
         # declaration proves otherwise.
         "wire": decl.wire or "proxy",

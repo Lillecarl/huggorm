@@ -55,7 +55,32 @@ BINDINGS = ROOT / "cythonix-bindings" / "cythonix_bindings"
 #
 # Kept as a mechanism rather than deleted, because the next
 # declaration to arrive will need it before it needs anything else.
-ACCEPTED: tuple[tuple[str, str, str, str], ...] = ()
+ACCEPTED: tuple[tuple[str, str, str, str], ...] = (
+    ("Store", "store", "c_self",
+     "the local holding the store's pointer. The human named it after "
+     "the type; the emitter names every hoisted receiver the same, "
+     "because it writes one for every blocking call and a name per "
+     "type would be a table to keep."),
+    ("Store", "p", "c_path",
+     "the local holding a parameter's pointer, named after the "
+     "parameter it came from rather than abbreviated."),
+    ("store.hpp", "store", "s",
+     "the shim's own parameter. Every emitted shim names its receiver "
+     "the same, because the emitter writes the body's one reference to "
+     "it as well."),
+    ("store.hpp", "const nix::Store &", "nix::Store &",
+     "constness. The declaration does not carry whether a call only "
+     "reads, and a non-const reference binds to the object this "
+     "binding holds in every case - so the emitter writes the one "
+     "spelling that always compiles rather than guessing the one that "
+     "documents better."),
+    ("store.hpp", "store_uri", "get_uri",
+     "the shim's name, as above."),
+    ("Store", "store_uri", "get_uri",
+     "the shim's name. The emitter WRITES the shim now, so it names it "
+     "after the method it backs; a second name for one call was a "
+     "thing to keep in step."),
+)
 
 
 def code_only(text: str) -> list[str]:
@@ -104,6 +129,9 @@ def code_only(text: str) -> list[str]:
     return out
 
 
+_SAID: set[tuple[str, str]] = set()
+
+
 def allow(want: list[str], target: str) -> list[str]:
     """Apply this target's allowances to the repo's side.
 
@@ -112,16 +140,46 @@ def allow(want: list[str], target: str) -> list[str]:
     the first version did, and it rewrote `query_path_info` into
     `query_path_out` - an allowance quietly editing code it was never
     meant to touch is worse than no allowance."""
+    return _apply(want, target, whole=True)
+
+
+def _edged(text: str) -> str:
+    """A pattern that matches `text` and not a longer name around it.
+
+    `\b` only where the edge is a word character. An allowance for
+    `const nix::Store &` ends in `&`, and `\b` after a `&` matches
+    nothing - so a naive word-boundary pattern silently never fires
+    and the allowance reads as applied while doing nothing."""
+    left = r"\b" if text[:1].isalnum() or text[:1] == "_" else ""
+    right = r"\b" if text[-1:].isalnum() or text[-1:] == "_" else ""
+    return left + re.escape(text) + right
+
+
+def _apply(want: list[str], target: str, whole: bool) -> list[str]:
     for name, theirs, ours, why in ACCEPTED:
         if name != target:
             continue
-        print(f"  {target}: allowing '{theirs}' -> '{ours}': {why}")
-        if theirs.isidentifier():
-            want = [re.sub(rf"\b{re.escape(theirs)}\b", ours, line)
-                    for line in want]
-        else:
+        # Once per target, not once per call. check_methods calls this
+        # for every method, and an allowance printed eighteen times
+        # buries the diff it is meant to explain.
+        if (name, theirs) not in _SAID:
+            _SAID.add((name, theirs))
+            print(f"  {target}: allowing '{theirs}' -> '{ours}': {why}")
+        if whole and not theirs.isidentifier() and " " not in theirs:
             want = [ours if line == theirs else line for line in want]
+        else:
+            want = [re.sub(_edged(theirs), ours, line) for line in want]
     return want
+
+
+def allow_text(text: str, target: str) -> str:
+    """The same allowances, over raw source rather than statements.
+
+    The C++ half needs them applied BEFORE it can find anything: the
+    shim this repo wrote by hand is called `store_uri` and the one
+    the emitter writes is called `get_uri`, so a lookup by the
+    declared name finds nothing until the rename has happened."""
+    return "\n".join(_apply(text.splitlines(), target, whole=False))
 
 
 def class_body(text: str, name: str) -> str:
@@ -153,6 +211,14 @@ def check_produced(decl_path: pathlib.Path, pyx_name: str) -> list[str]:
         if not cls.decl.built_by:
             print(f"  {cls.name}: SKIPPED - not a produced value")
             continue
+        if not cls.is_value:
+            # Holds a C++ object, so it is not a produced VALUE - it
+            # is a handle with no constructor. `@produced` says only
+            # "nothing constructs one"; whether there is C++ behind it
+            # is `@binding(cxx=...)`, and the two facts are separate.
+            problems += check_methods(decl_path, pyx_name, cls.name)
+            problems += check_shim(decl_path, f"{mod.name}.hpp", cls.name)
+            continue
         want = code_only(class_body(actual, cls.name))
         if not want:
             # The same story as path's, one class at a time. This
@@ -177,6 +243,170 @@ def check_produced(decl_path: pathlib.Path, pyx_name: str) -> list[str]:
         for line in got:
             if line not in want:
                 problems.append(f"    only emitted:     {line}")
+    return problems
+
+
+def method_body(text: str, cls_name: str, name: str) -> str:
+    """One `def` out of a hand-written class.
+
+    A class the emitter has not taken over yet is not all-or-nothing.
+    Comparing per method is what lets a declaration grow one method at
+    a time and still be checked at every step - and the count it
+    prints is the honest measure of how far the emitter has got."""
+    body = class_body(text, cls_name).splitlines()
+    start = next((i for i, line in enumerate(body)
+                  if line.strip().startswith(f"def {name}(")), None)
+    if start is None:
+        return ""
+    indent = len(body[start]) - len(body[start].lstrip())
+    out = [body[start]]
+    for line in body[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def _settled(lines: list[str]) -> list[str]:
+    """Statements with the opening run of `cdef` locals sorted.
+
+    Order is code, and this comparison keeps it - except across the
+    declarations a method opens with. Those are independent of each
+    other by construction: each one converts one argument, none reads
+    another, and the hand-written file itself writes them in two
+    different orders in two neighbouring methods. Sorting exactly that
+    run says the emitter must produce the same locals, and need not
+    have guessed which of two arbitrary orders a human picked."""
+    # Past the `def` line first: the run this sorts is the one that
+    # opens the BODY.
+    start = 1 if lines and lines[0].startswith("def ") else 0
+    head = start
+    while head < len(lines) and lines[head].startswith("cdef "):
+        head += 1
+    return lines[:start] + sorted(lines[start:head]) + lines[head:]
+
+
+def check_methods(decl_path: pathlib.Path, pyx_name: str,
+                  cls_name: str) -> list[str]:
+    """A class still written by hand, one declared method at a time.
+
+    Reports a score rather than a pass. A method the declaration does
+    not carry yet is not a failure - it is work not done - but a
+    method it DOES carry and gets wrong is."""
+    mod = read(str(decl_path))
+    actual = (BINDINGS / pyx_name).read_text()
+    cls = next(c for c in mod.classes if c.name == cls_name)
+    hand = [line.strip()[4:].split("(")[0]
+            for line in class_body(actual, cls_name).splitlines()
+            if line.strip().startswith("def ")]
+    problems, agree = [], 0
+    for m in cls.methods:
+        want = allow(code_only(method_body(actual, cls_name, m.name)), cls_name)
+        if not want:
+            problems.append(f"{cls_name}.{m.name}: declared, but "
+                            f"{pyx_name} has no such method")
+            continue
+        got = code_only("\n".join(emit._accessor(m, cls.decl.blocking, cls)))
+        want, got = _settled(want), _settled(got)
+        if want == got:
+            agree += 1
+            continue
+        problems.append(f"{cls_name}.{m.name}: emitted code differs")
+        # Reported from the SETTLED lists, and paired by position when
+        # the two are the same length. A report that prints only what
+        # is missing from the other side says nothing at all when the
+        # difference is an order, which is exactly the case this
+        # comparison had to think about.
+        if len(want) == len(got):
+            for a, b in zip(want, got, strict=True):
+                if a != b:
+                    problems.append(f"    the repo: {a}")
+                    problems.append(f"    emitted:  {b}")
+            continue
+        for line in want:
+            if line not in got:
+                problems.append(f"    only in the repo: {line}")
+        for line in got:
+            if line not in want:
+                problems.append(f"    only emitted:     {line}")
+    print(f"  {cls_name}: {agree} of {len(cls.methods)} declared methods "
+          f"identical; {len(hand)} written by hand in {pyx_name}")
+    return problems
+
+
+def cxx_only(text: str) -> list[str]:
+    """C++ reduced to the statements a compiler reads.
+
+    The same bargain `code_only` makes, in the other language. A
+    `/** */` block carries a human's reasons, and the emitter writes
+    its own from the declaration's docstring - so neither is what
+    "the same shim" means."""
+    out: list[str] = []
+    in_doc = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if in_doc:
+            if line.endswith("*/"):
+                in_doc = False
+            continue
+        if line.startswith("/*"):
+            if not line.endswith("*/"):
+                in_doc = True
+            continue
+        if not line or line.startswith("//"):
+            continue
+        out.append(re.sub(r"\s+", " ", line))
+    return out
+
+
+def shim_body(text: str, name: str) -> str:
+    """One `inline` function out of the hand-written header."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines)
+                  if line.startswith("inline ") and f" {name}(" in line), None)
+    if start is None:
+        return ""
+    out, depth, opened = [], 0, False
+    for line in lines[start:]:
+        out.append(line)
+        depth += line.count("{") - line.count("}")
+        opened = opened or "{" in line
+        if opened and depth == 0:
+            break
+    return "\n".join(out)
+
+
+def check_shim(decl_path: pathlib.Path, hpp_name: str,
+               cls_name: str) -> list[str]:
+    """The emitted C++ against the C++ this repo wrote by hand.
+
+    The other half of the same claim. `check_methods` says the
+    emitter writes the Cython; this says it writes the C++ underneath
+    it, which is the half `_cpp/store.hpp` has held by hand since
+    tasks/015."""
+    mod = read(str(decl_path))
+    cls = next(c for c in mod.classes if c.name == cls_name)
+    actual = allow_text((BINDINGS / "_cpp" / hpp_name).read_text(), hpp_name)
+    problems, agree, declared = [], 0, 0
+    for m in cls.methods:
+        if not m.cxx_body:
+            continue
+        declared += 1
+        want = cxx_only(shim_body(actual, m.name))
+        if not want:
+            problems.append(f"{hpp_name}: no shim named {m.name}")
+            continue
+        got = cxx_only(emit._shim_signature(cls, m) + "\n{\n"
+                       + m.cxx_body.strip() + "\n}")
+        if want == got:
+            agree += 1
+            continue
+        problems.append(f"{hpp_name}:{m.name}: emitted C++ differs")
+        for a, b in zip(want, got, strict=False):
+            if a != b:
+                problems.append(f"    the repo: {a}")
+                problems.append(f"    emitted:  {b}")
+    print(f"  {hpp_name}: {agree} of {declared} declared shims identical")
     return problems
 
 
@@ -300,6 +530,19 @@ def check_manifest(decl_path: pathlib.Path,
         want = built["wrappers"].get(cls.name)
         if want is None:
             problems.append(f"{cls.name} is not in {manifest_path.name}")
+            continue
+        declared = {m["name"] for m in got["methods"]}
+        reflected = {m["name"] for m in want["methods"]}
+        if declared < reflected:
+            # Half a declaration cannot produce a whole manifest
+            # entry, and reporting the missing half as a disagreement
+            # would say the emitter is WRONG about methods it has not
+            # been told about yet. The per-method gate above is what
+            # measures a class at this stage; this one waits for the
+            # last method.
+            print(f"  {cls.name}: manifest DEFERRED - "
+                  f"{len(declared)} of {len(reflected)} methods declared. "
+                  f"Missing: {', '.join(sorted(reflected - declared))}")
             continue
         differ = [k for k in sorted(set(want) | set(got))
                   if want.get(k) != got.get(k)]

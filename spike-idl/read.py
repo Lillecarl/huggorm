@@ -164,6 +164,19 @@ class Class:
     ctor: Method | None
     methods: tuple[Method, ...] = ()
 
+    @property
+    def is_value(self) -> bool:
+        """Whether this class holds Python slots and no C++ at all.
+
+        Two facts, not one, and an earlier version read `@produced`
+        as if it were both. `@produced(by=...)` says only that nothing
+        constructs one. `@binding(cxx=...)` says there is a C++ object
+        behind it. PathInfo has the first and not the second, so it is
+        a value; nix::Store has both, so it is a handle a factory
+        opens - and emitting it as a value produced a module with the
+        class in it twice."""
+        return bool(self.decl.built_by) and not self.decl.cxx
+
 
 @dataclass(frozen=True)
 class Module:

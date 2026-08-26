@@ -50,7 +50,7 @@ def main(out_dir: str) -> int:
         emit(str(HERE / name), str(out))
     for name, fname in INCLUDES:
         mod = read(str(HERE / name))
-        produced = [c.name for c in mod.classes if c.decl.built_by]
+        produced = [c.name for c in mod.classes if c.is_value]
         (out / fname).write_text(produced_pxi(mod, name))
         print(f"{name} -> {out / fname}: {', '.join(produced)}")
     return 0

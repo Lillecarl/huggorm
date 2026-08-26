@@ -7,7 +7,17 @@ binding is constructed through openStore rather than a constructor.
 what makes this testable in a build sandbox.
 """
 
-from declare import binding, produced, wire_value
+from declare import (
+    Bint,
+    Str,
+    binding,
+    cxx_body,
+    cxx_name,
+    header,
+    instant,
+    produced,
+    wire_value,
+)
 
 
 @produced(by="Store.query_path_info")
@@ -105,3 +115,75 @@ class StoreLocation:
 
         Empty when the path given WAS the store path. That is a real
         answer rather than a gap - there is nothing below it."""
+
+
+@produced(by="open_store")
+@header("nix/store/store-api.hh")
+@binding(
+    cxx="nix::Store",
+    # A store carries its own locking, so any pool thread will do.
+    threading="pool",
+    # It talks to a daemon or a database. Every call can wait.
+    blocking=True,
+)
+class Store:
+    """A real nix::Store, opened from a URI.
+
+    `Store("dummy://")` is in-memory. `Store("auto")` is whatever the
+    ambient configuration says, which usually means the daemon."""
+
+    @cxx_name("isValidPath")
+    def is_valid_path(self, path: "StorePath") -> Bint:
+        """Whether the store has that path."""
+
+    @cxx_name("printStorePath")
+    def print_store_path(self, path: "StorePath") -> Str:
+        """This path as the store spells it: its directory, then the
+        base name.
+
+        The store's directory, not this machine's. A chroot store
+        keeps `/nix/store` in its paths while its files live under a
+        root somewhere else, so this is what the store calls the path
+        and `real_path` is where the bytes are."""
+
+    # Reads a string the config already holds. Releasing the GIL
+    # around it would cost two thread-state transitions to save
+    # nothing.
+    @instant
+    @cxx_body("return s.config.getHumanReadableURI();")
+    def get_uri(self) -> Str:
+        """How this store describes itself.
+
+        For logging only, upstream is explicit about that: it does
+        not round-trip as a store reference and it is not a cache
+        key.
+
+        There is no getUri() any more. 2.34 moved it onto the config
+        as getHumanReadableURI, and Store reaches its config by
+        reference - which a pxd cannot describe without declaring the
+        whole config type for the sake of one string."""
+
+    @cxx_body("return s.followLinksToStore(path).string();")
+    def follow_links_to_store(self, path: Str) -> Str:
+        """Follow symlinks until the path lands in the store, and
+        stop there.
+
+        The first half of `follow_links_to_store_path`, and the half
+        that keeps what the other one drops. A `result` symlink
+        pointing at a package resolves to `<store path>/bin/foo`; the
+        other call answers with the store path alone.
+
+        A str, not a pathlib.Path, and the difference is real. The
+        answer is in the STORE's terms - the same spelling
+        `print_store_path` gives - so its directory is the store
+        directory, which a chroot store keeps at `/nix/store` while
+        its files live under `<root>/nix/store`. `real_path` is the
+        call that answers where the bytes are on THIS machine, and it
+        returns a path because it can.
+
+        The symlinks are read on the machine the store runs on. In
+        process that is here; over RPC it is the server's filesystem,
+        which is what makes this a remote call worth having - and the
+        same meaning `add_path_to_store` already carries.
+
+        Raises BadStorePath when the links run out somewhere else."""
