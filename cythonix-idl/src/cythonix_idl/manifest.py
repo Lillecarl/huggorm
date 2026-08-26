@@ -38,6 +38,7 @@ this route cannot reach, which is the honest measure of how far the
 idea goes.
 """
 
+import ast
 import inspect
 from typing import Any
 
@@ -186,6 +187,33 @@ def _wire_fields(cls: Class) -> list[list[str]]:
     return [[m.name, m.ret.wire] for m in cls.methods if m.ret is not None]
 
 
+def function_entry(fn: Method, package: str, module: str) -> dict[str, Any]:
+    """One free function, as the manifest carries it.
+
+    The same shape `model.extract_function` reflected off a live
+    Python function, from the declaration instead. A nanobind
+    function cannot be reflected at all - it is a builtin, and
+    `inspect.signature` refuses one - so for a nanobind module this
+    is the only route.
+
+    `threading` is what the function opted INTO, and empty means it
+    opted into nothing: `wrapped` is False, so it gets no async form
+    and no rpc. It is still surface, so the stubs still describe it -
+    leaving it out would hide a real name from a typechecker."""
+    policy = fn.policy or None
+    return {
+        "name": fn.name,
+        "module": f"{package}.{module}",
+        "threading": policy,
+        # No policy means no wrapper: the function is surface, not
+        # something the codegen hops a thread for.
+        "wrapped": policy is not None,
+        "params": [_param(p) for p in fn.params],
+        "return_type": _type(fn.ret),
+        "doc": _clean(fn.doc),
+    }
+
+
 def words_entry(cls: Class, package: str, module: str) -> dict[str, Any]:
     """One vocabulary entry, in the manifest's own key order.
 
@@ -256,6 +284,12 @@ def entry(cls: Class, package: str, module: str,
         # declaration proves otherwise.
         "wire": wire,
         "wire_fields": _wire_fields(cls),
+        # How to walk this type as a TREE, when it is one. A value that
+        # holds values cannot be described by wire_fields: the shape is
+        # recursive and its arms are the wire kinds themselves. The RPC
+        # layer reads this instead of naming the class or its
+        # accessors. Absent for everything that is not a tree.
+        **({"tree": ast.literal_eval(decl.tree)} if decl.tree else {}),
         "blocking": decl.blocking,
         # Two things a wrapper buys: a hop onto a home thread, and
         # releasing the GIL around a call that waits. A pool class
@@ -264,7 +298,14 @@ def entry(cls: Class, package: str, module: str,
         "dunders": dunders(decl),
         "ctor": [_param(p) for p in
                  (cls.ctor.params if cls.ctor is not None else ())],
-        "methods": [_method(m) for m in cls.methods],
+        # SURFACE only. A declaration may declare a private method -
+        # `Value._identity` is what the RPC tree walk reads to visit a
+        # shared value once - and the emitter binds it, because the
+        # walk calls it. Nothing generated describes it: a leading
+        # underscore is Python's own word for "not surface", and the
+        # reflection this replaces dropped one for the same reason.
+        "methods": [_method(m) for m in cls.methods
+                    if not m.name.startswith("_")],
         # Written by a later stage of the real generator, and a
         # package-level fact rather than a class one.
         "async_base": None,

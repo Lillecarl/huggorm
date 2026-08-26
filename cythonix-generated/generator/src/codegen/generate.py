@@ -44,7 +44,11 @@ from codegen.model import (
 )
 from codegen.pxd import extract_api
 from codegen.wiretypes import MANIFEST_SCHEMA, names_in
-from cythonix_idl.generate import declared_entries
+from cythonix_idl.generate import (
+    declared_entries,
+    declared_functions,
+    declared_returned,
+)
 
 # See model.Proto: one class, method or function as a plain dict.
 Proto = dict[str, Any]
@@ -240,7 +244,17 @@ def main(argv: list[str] | None = None) -> None:
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
+    # Two routes to the same question, one per backend. The pxd walk
+    # answers it for a Cython module; for a nanobind one there is no
+    # pxd, and the declaration says which of its classes are handed
+    # back rather than constructed.
     returned_classes = returned_types_from_api(api, bindings, mapping)
+    named = {c.__name__ for c in returned_classes}
+    for name in declared_returned():
+        kls = getattr(bindings, name, None)
+        if isinstance(kls, type) and name not in named:
+            returned_classes.append(kls)
+    returned_classes.sort(key=lambda c: c.__name__)
     returned_set = set(returned_classes)
     wrapper_classes = [c for c in wrapper_classes if c not in returned_set]
     if not wrapper_classes:
@@ -422,8 +436,20 @@ def main(argv: list[str] | None = None) -> None:
         print(f"generated {fname} for {proto['name']} "
               f"({proto['threading']}, {len(proto['methods'])} methods)")
 
-    free_protos = [extract_free_function(fn, api, mapping)
+    # A free function comes from the declaration where there is one,
+    # and from reflection where there is not - the same rule the
+    # classes follow one screen up, and for the same reason. A
+    # nanobind function is a builtin: `inspect.signature` refuses it,
+    # so there is nothing to reflect.
+    declared_fns = declared_functions()
+    free_protos = [declared_fns.get(fn.__name__)
+                   or extract_free_function(fn, api, mapping)
                    for fn in _free_functions(bindings)]
+    from_decl = sorted(set(declared_fns) &
+                       {fn.__name__ for fn in _free_functions(bindings)})
+    if from_decl:
+        print(f"free functions from the declaration: "
+              f"{', '.join(from_decl)}")
     wrapped_free = [p for p in free_protos if p["wrapped"]]
     unwrapped_free = [p["name"] for p in free_protos if not p["wrapped"]]
     if unwrapped_free:

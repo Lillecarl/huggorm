@@ -23,7 +23,7 @@ import argparse
 import ast
 import pathlib
 
-from cythonix_idl import generate_nb, manifest, pyenum
+from cythonix_idl import generate_nb, manifest, nbemit, pyenum
 from cythonix_idl.emit import emit, produced_pxi
 from cythonix_idl.read import read
 
@@ -41,6 +41,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 NANOBIND = (
     "decl/path.py",
     "decl/store.py",
+    "decl/eval.py",
 )
 
 # Declarations that own a whole module through CYTHON. Empty, and
@@ -117,6 +118,69 @@ def declared_entries() -> dict[str, dict]:
                 out[cls.name] = manifest.entry(cls, PACKAGE, mod.name,
                                                final=False)
     return out
+
+
+def declared_functions() -> dict[str, dict]:
+    """Every free function a nanobind module offers, by name.
+
+    The companion to `declared_entries`, and needed for the same
+    reason one step further along: `model.extract_function` reads a
+    live function's `inspect.signature`, and a nanobind function is a
+    builtin with none.
+
+    Only what the module actually offers. A startup hook and an
+    exception translator are declared beside these because that is
+    where a module's C++ facts live, and neither is surface; nor is a
+    factory some class names, which is bound as that class's __new__
+    instead. `nbemit.public` is where that last rule lives, and this
+    reads it rather than repeating it."""
+    out = {}
+    for name in NANOBIND:
+        mod = read(str(HERE / name))
+        for fn in nbemit.public(mod.exported, mod.classes):
+            out[fn.name] = manifest.function_entry(fn, PACKAGE, mod.name)
+    return out
+
+
+def declared_returned() -> list[str]:
+    """Declared classes that are HANDED BACK, by name.
+
+    A class a caller constructs is an entry point; a class that only
+    ever arrives as somebody's return value is a returned type, and
+    the generated layer treats the two differently - a returned type
+    gets an `(obj, runner)` constructor so it can be adopted onto the
+    runner that produced it.
+
+    `returned_types_from_api` answers the same question by walking the
+    pxd. There is no pxd for a nanobind module, and the declaration
+    knows: a class is returned when some declared method returns it.
+
+    Every name in the return type, not the type itself. A method
+    returning `list[StorePath]` hands back StorePaths as surely as one
+    returning a single StorePath does.
+
+    And only a class nothing CONSTRUCTS. `@produced(by=...)` with no
+    `__init__` is the whole test: StorePath is handed back by half of
+    Store's methods and a caller can still build one from a base name,
+    so it is an entry point that happens to be returned. Value cannot
+    be built at all, and neither can PathInfo."""
+    out: set[str] = set()
+    for name in NANOBIND:
+        mod = read(str(HERE / name))
+        known = mod.known
+        for cls in mod.classes:
+            for m in cls.methods:
+                if m.ret is None:
+                    continue
+                spelled = m.ret.python.removesuffix("| None").strip()
+                if spelled.startswith("list["):
+                    spelled = spelled[len("list["):-1]
+                if spelled not in known or known[spelled].is_words:
+                    continue
+                held = known[spelled]
+                if held.decl.built_by and held.ctor is None:
+                    out.add(spelled)
+    return sorted(out)
 
 
 def main(out_dir: str) -> int:
