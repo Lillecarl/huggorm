@@ -48,7 +48,7 @@ select = [
 # A DECLARATION is not a program, and a linter that assumes it is
 # reports the three things that make it one. One glob rather than a
 # line per file: a rule you must remember to extend is a rule that
-# eventually is not extended. See spike-idl/decl/README.md.
+# eventually is not extended. See the decl/ README.
 #
 # F821: a declaration names C++ types - StorePath, list[StorePath] -
 # that do not exist as Python and never will. That is the point; the
@@ -61,7 +61,7 @@ select = [
 # implementation here and never will be.
 #
 # The spike's MACHINERY next door is exempt from nothing.
-"spike-idl/decl/*.py" = ["F821", "UP037", "PIE790"]
+"cythonix-idl/src/cythonix_idl/decl/*.py" = ["F821", "UP037", "PIE790"]
 
 [lint.isort]
 # test_remote holds the shared harness the other suites import. Left
@@ -70,6 +70,7 @@ select = [
 # file and one of them always fails.
 known-first-party = [
   "codegen",
+  "cythonix_idl",
   "cythonix_bindings",
   "cythonix_generated",
   "cythonix",

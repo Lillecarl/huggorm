@@ -6,24 +6,23 @@ rec {
   inherit (pkgs) lib;
   # fake-library should be a C++ project with "complex types", it doesn't have to do anything useful
   fake-library = pkgs.callPackage ./fake-library { };
-  # The declaration emitter, as the build sees it: just the machinery
-  # and the declarations, with none of the gates, the probes or the
-  # notes. Named file by file rather than by directory because the
-  # spike's working dir also holds emitted output and a __pycache__,
-  # and either one would change this derivation's hash on every run.
-  idl = lib.fileset.toSource {
-    root = ./spike-idl;
-    fileset = lib.fileset.unions [
-      ./spike-idl/generate.py
-      ./spike-idl/generate_nb.py
-      ./spike-idl/emit.py
-      ./spike-idl/nbemit.py
-      ./spike-idl/manifest.py
-      ./spike-idl/read.py
-      ./spike-idl/declare.py
-      ./spike-idl/decl
-    ];
+  # The declarations, and the emitters that read them.
+  #
+  # An ordinary Python distribution, and stdlib-only: it parses
+  # declarations with `ast` and writes text. Two builds use it -
+  # cythonix-bindings for its source, cythonix-generated for its
+  # manifest entries - which is why it is a package rather than a
+  # directory each of them reaches into.
+  cythonix-idl = pkgs.python3Packages.buildPythonPackage {
+    pname = "cythonix-idl";
+    version = "0.1.0";
+    pyproject = true;
+    src = ./cythonix-idl;
+    build-system = [ pkgs.python3Packages.setuptools ];
+    pythonImportsCheck = [ "cythonix_idl" ];
   };
+  # The interpreter the emitters run under, with them on its path.
+  idlPython = pkgs.python3.withPackages (_: [ cythonix-idl ]);
   # The SAME declaration, through the other backend.
   #
   # `emit.py` writes Cython from `decl/path.py`; `nanobind.py` writes
@@ -40,14 +39,17 @@ rec {
   # path.
   path-nb = pkgs.stdenv.mkDerivation {
     name = "path-nb";
-    src = idl;
-    nativeBuildInputs = [ pkgs.pkg-config python ];
-    buildInputs = [ python python.pkgs.nanobind ] ++ (with pkgs.nix.libs; [
+    # No sources of its own: the declaration and the emitter both come
+    # from the cythonix-idl package on the interpreter's path, and the
+    # one file this compiles is written in the build phase.
+    dontUnpack = true;
+    nativeBuildInputs = [ pkgs.pkg-config idlPython ];
+    buildInputs = [ idlPython pkgs.python3.pkgs.nanobind ] ++ (with pkgs.nix.libs; [
       nix-util
       nix-store
     ]);
     buildPhase = ''
-      python3 generate_nb.py decl/path.py path path_nb.cpp
+      python3 -m cythonix_idl.generate_nb decl/path.py path path_nb.cpp
       inc=$(python3 -c 'import nanobind; print(nanobind.include_dir())')
       src=$(python3 -c 'import nanobind; print(nanobind.source_dir())')
       pyinc=$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
@@ -78,11 +80,11 @@ rec {
   # gate diffed them - which proves the emitter COULD have written the
   # binding. Here it DOES: `path.pyx`, `path.pxd` and `c_path.pxd` are
   # not in the repo at all, and the only thing standing behind
-  # `cythonix_bindings.path` is `spike-idl/decl/path.py`.
+  # `cythonix_bindings.path` is `cythonix-idl/src/cythonix_idl/decl/path.py`.
   bindings-src = pkgs.runCommand "cythonix-bindings-src" { } ''
     cp -r ${./cythonix-bindings} $out
     chmod -R u+w $out
-    ${lib.getExe python} ${idl}/generate.py $out/cythonix_bindings
+    ${lib.getExe idlPython} -m cythonix_idl.generate $out/cythonix_bindings
   '';
   # this is Cython bindings into fake-library, should contain pxd and pyx (I believe)
   cythonix-bindings = pkgs.callPackage ./cythonix-bindings {
@@ -95,22 +97,11 @@ rec {
     inherit cythonix-bindings;
     inherit cythonix-generated;
   };
-  # Every declared class, as the manifest entry it implies.
-  #
-  # The seam between the declarations and the generator, and it is
-  # DATA. `codegen` builds its manifest by parsing the pxd files and
-  # reflecting on the compiled extension, which is what puts every
-  # surface above it behind a C++ compiler. A class in here is taken
-  # from the declaration instead.
-  declared = pkgs.runCommand "declared-entries.json" { } ''
-    ${lib.getExe python} ${idl}/generate.py "$TMPDIR/unused" \
-      --manifest-out $out
-  '';
   # AST codegen layer between bindings and python: pxd + live bindings -> generated stubs
   cythonix-generated = pkgs.callPackage ./cythonix-generated {
     inherit fake-library;
     inherit cythonix-bindings;
-    inherit declared;
+    inherit cythonix-idl;
   };
   # nix run --file . python -- $args
   # to be able to run Python commands
@@ -123,6 +114,9 @@ rec {
       cythonix-bindings
       cythonix-generated
       cythonix
+      # The generator imports it, so the interpreter every check runs
+      # against has to have it.
+      cythonix-idl
       # The suites run under pytest, in the devshell and in the build
       # alike. pytest-timeout because a hung test is the failure this
       # suite is most exposed to - a server that never came up, or a
@@ -151,7 +145,7 @@ rec {
       cd "''${1:-.}"
       echo "--- lint ---"
       ruff check --no-cache cythonix cythonix-generated cythonix-bindings \
-        spike-idl
+        cythonix-idl
       echo "--- typecheck: the generator ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         --exclude 'smoke_test\.py$' \
@@ -163,7 +157,7 @@ rec {
       echo "--- typecheck: the emitted package ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         "${cythonix-generated}/lib/python3.14/site-packages/cythonix_generated"
-      echo "--- the spike's gates ---"
+      echo "--- the declarations' gates ---"
       spike
       echo "all checks passed"
     '';
@@ -171,7 +165,7 @@ rec {
 
   # nix run --file . spike
   #
-  # The declaration spike's own gates: emit from a declaration and diff
+  # The declarations' own gates: emit from a declaration and diff
   # against something built the other way.
   #
   # Two references, and only one of them is in this repo. The Cython
@@ -184,7 +178,7 @@ rec {
     name = "spike";
     runtimeInputs = [ ourPython ];
     text = ''
-      cd "''${1:-.}/spike-idl"
+      cd "''${1:-.}/cythonix-idl/gates"
       manifest="${cythonix-generated}/lib/python3.14/site-packages/cythonix_generated/manifest.json"
       echo "--- declaration -> Cython, and -> manifest ---"
       python3 check.py --manifest "$manifest"

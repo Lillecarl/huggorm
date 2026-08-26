@@ -4,10 +4,10 @@
   cythonix-bindings,
   ruff,
   zuban,
-  # The manifest entries the declarations imply. Data, not an import:
-  # the generator reads a JSON file rather than the declaration
-  # reader, so neither side depends on the other's modules.
-  declared,
+  # The declarations, and the reader that turns one into a manifest
+  # entry. A build input to the generator: `codegen` imports it and
+  # calls it instead of reflecting on a compiled class.
+  cythonix-idl,
   ...
 }:
 let
@@ -38,6 +38,7 @@ let
       python3Packages.cython
       python3Packages.protobuf
       cythonix-bindings
+      cythonix-idl
     ];
 
     # smoke_test is excluded here and checked in the package below:
@@ -73,10 +74,9 @@ python3Packages.buildPythonPackage {
     python3Packages.protobuf
     codegen
     cythonix-bindings
+    cythonix-idl
     python3Packages.anyio
   ];
-
-  env.DECLARED_FILE = "${declared}";
 
   env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_mock_store.pxd ${cythonix-bindings.src}/cythonix_bindings/c_eval.pxd ${cythonix-bindings.src}/cythonix_bindings/c_path.pxd ${cythonix-bindings.src}/cythonix_bindings/c_store.pxd";
 

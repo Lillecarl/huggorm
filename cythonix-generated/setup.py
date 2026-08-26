@@ -30,13 +30,6 @@ class build_with_codegen(build_py):
         pxds = os.environ.get("PXD_FILE", "").split()
         if pxds:
             argv += ["--pxd", *pxds]
-        # The manifest entries the DECLARATIONS imply, where the build
-        # has them. A class named in here is taken from the
-        # declaration instead of being reflected out of the compiled
-        # extension - see codegen/generate.py.
-        declared = os.environ.get("DECLARED_FILE", "")
-        if declared:
-            argv += ["--declared", declared]
         generate(argv)
         smoke(["--out", pkg_dir])
         super().run()

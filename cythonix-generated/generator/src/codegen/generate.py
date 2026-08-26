@@ -44,6 +44,7 @@ from codegen.model import (
 )
 from codegen.pxd import extract_api
 from codegen.wiretypes import MANIFEST_SCHEMA, names_in
+from cythonix_idl.generate import declared_entries
 
 # See model.Proto: one class, method or function as a plain dict.
 Proto = dict[str, Any]
@@ -208,13 +209,6 @@ def main(argv: list[str] | None = None) -> None:
         nargs="+",
         help="paths to the bindings .pxd declaration files (the C++ mapping)",
     )
-    parser.add_argument(
-        "--declared",
-        default="",
-        help="JSON of manifest entries derived from the DECLARATIONS. A "
-             "class named here is taken from the declaration instead of "
-             "being reflected out of the compiled extension.",
-    )
     args = parser.parse_args(argv)
 
     bindings = _load_bindings_module()
@@ -267,11 +261,12 @@ def main(argv: list[str] | None = None) -> None:
     # the declaration carries everything reflection found, and the
     # only honest way to hold it is to keep measuring until the
     # compiled class stops existing.
-    declared: dict[str, Proto] = {}
-    if args.declared:
-        declared = json.loads(pathlib.Path(args.declared).read_text())
-        print(f"declared entries: {len(declared)} class(es) - "
-              + ", ".join(sorted(declared)))
+    # Imported, not read from a file. The specification is Python and
+    # so is this, so a serialisation between them would be one more
+    # shape to keep in step.
+    declared: dict[str, Proto] = declared_entries()
+    print(f"declared entries: {len(declared)} class(es) - "
+          + ", ".join(sorted(declared)))
 
     def _proto(kls: type, **kw: Any) -> Proto:
         reflected = extract_wrapper(kls, api=api, mapping=mapping, **kw)

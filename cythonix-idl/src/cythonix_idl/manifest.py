@@ -40,8 +40,8 @@ idea goes.
 
 from typing import Any
 
-from declare import Decl
-from read import Class, Method, Type
+from cythonix_idl.declare import Decl
+from cythonix_idl.read import Class, Method, Type
 
 # C++ spelling -> the Python type the manifest names. A second table
 # from `emit._py_type`, and deliberately: that one spells a pyx

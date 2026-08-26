@@ -37,11 +37,12 @@ import pathlib
 import re
 import sys
 
-import emit
-import manifest
-from read import read
+import cythonix_idl
+from cythonix_idl import emit, manifest
+from cythonix_idl.read import read
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+# The repo root: this file sits in cythonix-idl/gates/.
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 BINDINGS = ROOT / "cythonix-bindings" / "cythonix_bindings"
 
 # Differences that are not differences, each with the reason it is
@@ -567,14 +568,12 @@ def check_manifest(decl_path: pathlib.Path,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("declaration", nargs="*", default=["decl/path.py", "decl/store.py"])
+    ap.add_argument("declaration", nargs="*", default=["path", "store"])
     ap.add_argument("--manifest", default="")
     args = ap.parse_args()
-    here = pathlib.Path(__file__).resolve().parent
-    names = args.declaration or ["path.py", "store.py"]
     problems = []
-    for name in names:
-        decl = here / name
+    for name in args.declaration:
+        decl = pathlib.Path(cythonix_idl.declaration(name))
         print(f"{decl.name} (parse only - it never runs)")
         print("  emitted Cython vs the repo's:")
         problems += check_cython(decl)

@@ -17,7 +17,7 @@ real code lives; a hatch that reports seven lines against four
 derived accessors is telling the truth about a hard type.
 """
 
-from declare import binding, cxx_body, header, produced, reads, wire_value
+from cythonix_idl.declare import binding, cxx_body, header, produced, reads, wire_value
 
 
 @produced(by="Store.query_path_info")

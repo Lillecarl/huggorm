@@ -26,7 +26,7 @@ GIL, would be uninterruptible. Either alone would settle it.
 
 from typing import overload
 
-from declare import Str, binds, blocks
+from cythonix_idl.declare import Str, binds, blocks
 
 
 @blocks

@@ -32,8 +32,9 @@ import pathlib
 import re
 import sys
 
-import nbemit
-from read import read
+import cythonix_idl
+from cythonix_idl import nbemit
+from cythonix_idl.read import read
 
 NANOPYNIX = pathlib.Path.home() / "Code/nanopynix/nanopynix-bindings/src"
 
@@ -289,12 +290,13 @@ def check(decl_path: str) -> list[str]:
 
 
 def main() -> int:
-    names = sys.argv[1:] or ["decl/path.py", "decl/pathinfo.py", "decl/storefns.py"]
+    names = sys.argv[1:] or ["path", "pathinfo", "storefns"]
     print(f"emitted nanobind vs {NANOPYNIX}")
     problems = []
     for n in names:
-        problems += check(n)
-        problems += check_functions(n)
+        decl = cythonix_idl.declaration(n)
+        problems += check(decl)
+        problems += check_functions(decl)
     if problems:
         print("\n".join(["", "FAILED:", *problems]))
         return 1

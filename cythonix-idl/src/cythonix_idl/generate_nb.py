@@ -15,8 +15,8 @@ compiling.
 import pathlib
 import sys
 
-from nbemit import extension
-from read import read
+from cythonix_idl.nbemit import extension
+from cythonix_idl.read import read
 
 HERE = pathlib.Path(__file__).resolve().parent
 

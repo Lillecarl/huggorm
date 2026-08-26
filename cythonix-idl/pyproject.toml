@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cythonix-idl"
+version = "0.1.0"
+description = "Binding declarations, and the emitters that read them"
+requires-python = ">=3.14"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The declarations are DATA to this package: they are parsed, never
+# imported, so setuptools would not otherwise ship them.
+[tool.setuptools.package-data]
+# py.typed because the generator imports this package and is
+# checked --strict: without it every call reads as Any and the
+# check passes while proving nothing (tasks/027).
+cythonix_idl = ["decl/*.py", "py.typed"]

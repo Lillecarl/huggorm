@@ -44,13 +44,19 @@ import ast
 from dataclasses import dataclass, field
 from typing import Any, get_args, get_origin
 
-import declare
-from declare import Cxx, Decl
+from cythonix_idl import declare
+from cythonix_idl.declare import Cxx, Decl
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
 BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
                                 "overload"})
+
+
+# Where a declaration takes its vocabulary from. Named once: a
+# declaration is read rather than imported, so this string is the only
+# thing tying the two files together.
+VOCABULARY = "cythonix_idl.declare"
 
 
 class DeclarationError(Exception):
@@ -197,13 +203,13 @@ class Module:
 def _vocabulary(tree: ast.Module) -> dict[str, str]:
     """Every name this file took from declare, as local -> declared.
 
-    Only `from declare import ...` counts. A declaration that imports
+    Only the vocabulary module counts. A declaration that imports
     anything else is not refused here - it may import for a type
     checker's sake - but nothing outside the vocabulary can decorate
     or annotate, and the resolvers below say so."""
     out: dict[str, str] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "declare":
+        if isinstance(node, ast.ImportFrom) and node.module == VOCABULARY:
             for alias in node.names:
                 out[alias.asname or alias.name] = alias.name
     return out

@@ -7,7 +7,7 @@ binding is constructed through openStore rather than a constructor.
 what makes this testable in a build sandbox.
 """
 
-from declare import (
+from cythonix_idl.declare import (
     Bint,
     Str,
     binding,

@@ -32,8 +32,8 @@ import inspect
 import pathlib
 import sys
 
-from declare import Decl
-from read import Class, Method, Module, Type, read
+from cythonix_idl.declare import Decl
+from cythonix_idl.read import Class, Method, Module, Type, read
 
 INDENT = "    "
 

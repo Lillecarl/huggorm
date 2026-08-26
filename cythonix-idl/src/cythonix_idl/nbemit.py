@@ -50,8 +50,8 @@ A shape it cannot derive stops with a reason. The escape hatch is
 becomes the place the real code lives.
 """
 
-from declare import Field
-from read import Class, Method, Type
+from cythonix_idl.declare import Field
+from cythonix_idl.read import Class, Method, Type
 
 INDENT = "    "
 

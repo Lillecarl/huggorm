@@ -11,7 +11,7 @@ mock still backs everything else, and a spike that broke the working
 surface would prove nothing.
 """
 
-from declare import Bint, Field, Str, StrView, binding, cxx_name, header, wire_value
+from cythonix_idl.declare import Bint, Field, Str, StrView, binding, cxx_name, header, wire_value
 
 
 # 100% C++, by decision: the C API is not feature complete, so it is
