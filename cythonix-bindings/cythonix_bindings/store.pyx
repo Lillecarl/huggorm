@@ -219,9 +219,9 @@ cdef class Store:
         with nogil:
             out = add_to_store(
                 deref(store), c_name, c_data, c_method, c_algo, c_refs)
-        cdef StorePath sp = StorePath.__new__(StorePath)
-        sp._ptr = out
-        return sp
+        cdef StorePath owned = StorePath.__new__(StorePath)
+        owned._ptr = out
+        return owned
 
     def add_path_to_store(self, name: str, path: str,
                           method: ContentAddressMethod = ContentAddressMethod.NAR,
@@ -269,9 +269,9 @@ cdef class Store:
         with nogil:
             out = add_path_to_store(
                 deref(store), c_name, c_path, c_method, c_algo, c_refs)
-        cdef StorePath sp = StorePath.__new__(StorePath)
-        sp._ptr = out
-        return sp
+        cdef StorePath owned = StorePath.__new__(StorePath)
+        owned._ptr = out
+        return owned
 
     def query_all_valid_paths(self) -> list[StorePath]:
         """Every path this store holds.
@@ -500,16 +500,16 @@ cdef class Store:
         different answer from `query_path_info`, which raises
         InvalidPath: there the caller named a path and was wrong,
         here the caller asked whether one exists."""
-        cdef string c_hash = hash_part.encode('utf-8')
+        cdef string c_hash_part = hash_part.encode('utf-8')
         cdef CStore* store = self._get()
         cdef CStorePath* out
         with nogil:
-            out = query_path_from_hash_part(deref(store), c_hash)
+            out = query_path_from_hash_part(deref(store), c_hash_part)
         if out is NULL:
             return None
-        cdef StorePath sp = StorePath.__new__(StorePath)
-        sp._ptr = out
-        return sp
+        cdef StorePath owned = StorePath.__new__(StorePath)
+        owned._ptr = out
+        return owned
 
     def follow_links_to_store(self, path: str) -> str:
         """Follow symlinks until the path lands in the store, and stop
@@ -572,9 +572,9 @@ cdef class Store:
         cdef CStorePath* out
         with nogil:
             out = follow_links_to_store_path(deref(store), c_path)
-        cdef StorePath sp = StorePath.__new__(StorePath)
-        sp._ptr = out
-        return sp
+        cdef StorePath owned = StorePath.__new__(StorePath)
+        owned._ptr = out
+        return owned
 
     def print_store_path(self, StorePath path) -> str:
         """The path as an absolute filesystem path in this store."""
@@ -596,6 +596,6 @@ cdef class Store:
         cdef CStorePath* out
         with nogil:
             out = parse_store_path(deref(store), c_path)
-        cdef StorePath sp = StorePath.__new__(StorePath)
-        sp._ptr = out
-        return sp
+        cdef StorePath owned = StorePath.__new__(StorePath)
+        owned._ptr = out
+        return owned
