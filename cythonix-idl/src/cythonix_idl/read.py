@@ -41,6 +41,7 @@ binding that compiles and is wrong.
 """
 
 import ast
+import pathlib
 from dataclasses import dataclass, field
 from typing import Any, get_args, get_origin
 
@@ -57,6 +58,11 @@ BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
 # declaration is read rather than imported, so this string is the only
 # thing tying the two files together.
 VOCABULARY = "cythonix_idl.declare"
+
+# Where the declarations live. A declaration that names a type
+# another declaration owns imports it from here, and the reader
+# follows that import rather than being told the file.
+DECLARATIONS = "cythonix_idl.decl"
 
 
 class DeclarationError(Exception):
@@ -223,6 +229,16 @@ class Module:
     doc: str
     classes: tuple[Class, ...] = ()
     functions: tuple[Method, ...] = ()
+    # Classes this declaration NAMES but does not declare, from
+    # another declaration it imported. A vocabulary lives in its own
+    # file and several bindings take one, so the alternative was
+    # every emitter guessing which other files to read.
+    uses: dict[str, Class] = field(default_factory=dict)
+
+    @property
+    def known(self) -> dict[str, Class]:
+        """Every class this declaration can name, by name."""
+        return {**self.uses, **{c.name: c for c in self.classes}}
     # Local name -> name in declare. `from declare import Str as S`
     # is legal Python, so the reader follows the import rather than
     # matching the spelling it expects.
@@ -503,7 +519,6 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
 
 def read(path: str) -> Module:
     """One declaration file, parsed."""
-    import pathlib
     source = pathlib.Path(path).read_text()
     tree = ast.parse(source, filename=path)
     vocab = _vocabulary(tree)
@@ -521,4 +536,30 @@ def read(path: str) -> Module:
         classes=classes,
         functions=functions,
         vocabulary=vocab,
+        uses=_uses(tree, pathlib.Path(path).parent),
     )
+
+
+def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
+    """Declarations this one imported, read.
+
+    `from cythonix_idl.decl.content_address import ContentAddressMethod`
+    is how a declaration names a type another declaration owns. The
+    import is never executed - nothing here is - but it is the one
+    place that says WHICH other file to read, so following it beats
+    every emitter holding a list of declarations to try."""
+    out: dict[str, Class] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if not (node.module or "").startswith(f"{DECLARATIONS}."):
+            continue
+        stem = (node.module or "").rsplit(".", 1)[-1]
+        source = here / f"{stem}.py"
+        if not source.exists():
+            raise DeclarationError(
+                node, f"no declaration at {source}. A declaration may only "
+                      f"import another declaration beside it.")
+        for cls in read(str(source)).classes:
+            out[cls.name] = cls
+    return out
