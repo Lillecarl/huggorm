@@ -25,6 +25,7 @@ from cythonix_idl.declare import (
     cxx_parts,
     header,
     instant,
+    needs,
     produced,
     wire_value,
 )
@@ -178,16 +179,18 @@ class Store:
     # the string libstore parses, so it crosses as one and nothing
     # here translates - which is why the words are declared rather
     # than bound.
-    @cxx_body("""// An lvalue, so the string_view inside cannot dangle - which is
+    @needs("nix/util/serialise.hh")
+    @cxx_body("""std::string contents(data.c_str(), data.size());
+        // An lvalue, so the string_view inside cannot dangle - which is
         // the case StringSource deletes its rvalue constructor to stop.
-        nix::StringSource dump{data};
-        return new nix::StorePath(s.addToStoreFromDump(
+        nix::StringSource dump{contents};
+        return s.addToStoreFromDump(
             dump,
             name,
             nix::FileSerialisationMethod::Flat,
             nix::ContentAddressMethod::parse(method),
             nix::parseHashAlgo(hash_algo),
-            store_path_set(references)));""")
+            as_set<nix::StorePathSet>(references));""")
     def add_to_store(
         self,
         name: Str,
@@ -234,14 +237,15 @@ class Store:
         the store will happily hold. None and an empty list mean the
         same thing, which is what lets the wire carry absence as a
         repeated field with nothing in it."""
+    @needs("nix/util/posix-source-accessor.hh")
     @cxx_body("""auto source = nix::PosixSourceAccessor::createAtRoot(
             std::filesystem::weakly_canonical(std::filesystem::path{path}));
-        return new nix::StorePath(s.addToStore(
+        return s.addToStore(
             name,
             source,
             nix::ContentAddressMethod::parse(method),
             nix::parseHashAlgo(hash_algo),
-            store_path_set(references)));""")
+            as_set<nix::StorePathSet>(references));""")
     def add_path_to_store(
         self,
         name: Str,
@@ -285,7 +289,7 @@ class Store:
         the store will happily hold. None and an empty list mean the
         same thing, which is what lets the wire carry absence as a
         repeated field with nothing in it."""
-    @cxx_body("""return base_names(s.queryAllValidPaths());""")
+    @cxx_body("""return as_list(s.queryAllValidPaths());""")
     def query_all_valid_paths(self) -> "list[StorePath]":
         """Every path this store holds.
 
@@ -295,7 +299,7 @@ class Store:
         no such list to give.
 
         Sorted, because libstore answers with a set."""
-    @cxx_body("""return base_names(s.queryValidDerivers(path));""")
+    @cxx_body("""return as_list(s.queryValidDerivers(path));""")
     def query_valid_derivers(
         self,
         path: "StorePath",
@@ -311,7 +315,8 @@ class Store:
         Empty is a normal answer. nix::Store's own implementation
         returns an empty set rather than raising, so a store that does
         not track this says nothing rather than failing."""
-    @cxx_body("""return base_names(s.queryValidPaths(store_path_set(paths)));""")
+    @cxx_body("""return as_list(
+            s.queryValidPaths(as_set<nix::StorePathSet>(paths)));""")
     def query_valid_paths(
         self,
         paths: "list[StorePath]",
@@ -334,9 +339,9 @@ class Store:
     # gets what `nix-store -qR` does.
     @cxx_body("""nix::StorePathSet out;
         s.computeFSClosure(
-            store_path_set(paths), out, flip_direction, include_outputs,
-            include_derivers);
-        return base_names(out);""")
+            as_set<nix::StorePathSet>(paths), out, flip_direction,
+            include_outputs, include_derivers);
+        return as_list(out);""")
     def compute_fs_closure(
         self,
         paths: "list[StorePath]",
@@ -365,7 +370,7 @@ class Store:
         it another way."""
     @cxx_body("""nix::StorePathSet referrers;
         s.queryReferrers(path, referrers);
-        return base_names(referrers);""")
+        return as_list(referrers);""")
     def query_referrers(
         self,
         path: "StorePath",
@@ -384,12 +389,13 @@ class Store:
     # still carries a std::string; what changes above it is that this
     # answer names a file on THIS machine, so it is a path a caller
     # can open.
+    @needs("nix/store/local-fs-store.hh")
     @cxx_body("""auto * fs = dynamic_cast<nix::LocalFSStore *>(&s);
         if (fs == nullptr)
             throw nix::Unsupported(
                 "operation 'real_path' is not supported by store '%s'",
                 s.config.getHumanReadableURI());
-        return fs->toRealPath(path).string();""")
+        return fs->toRealPath(path);""")
     def real_path(self, path: "StorePath") -> Path:
         """Where this store object's files really are.
 
@@ -475,8 +481,7 @@ class Store:
         disagree with `nix` for the same input - so a caller catching
         the narrow type around both calls must catch the wide one
         here."""
-    @cxx_body("""auto found = s.queryPathFromHashPart(hash_part);
-        return found ? new nix::StorePath(*found) : nullptr;""")
+    @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
         """Which store path has this hash part, or None.
 
@@ -515,7 +520,7 @@ class Store:
         same meaning `add_path_to_store` already carries.
 
         Raises BadStorePath when the links run out somewhere else."""
-    @cxx_body("return new nix::StorePath(s.followLinksToStorePath(path));")
+    @cxx_body("return s.followLinksToStorePath(path);")
     def follow_links_to_store_path(self, path: Str) -> "StorePath":
         """Follow symlinks until the path lands in the store, and say
         which store path it landed in.
@@ -549,7 +554,7 @@ class Store:
     # the temporary, the NULL guard and the __new__-without-__init__
     # that takes ownership. What the body carries is the call and the
     # one decision C++ has to make about it.
-    @cxx_body("return new nix::StorePath(s.parseStorePath(path));")
+    @cxx_body("return s.parseStorePath(path);")
     def parse_store_path(self, path: Str) -> "StorePath":
         """This string as a store path of THIS store.
 
