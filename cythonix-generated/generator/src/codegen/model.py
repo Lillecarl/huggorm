@@ -14,7 +14,13 @@ from enum import Enum
 from types import ModuleType
 from typing import Any, get_args, get_origin, get_type_hints
 
-from codegen.wiretypes import list_value, map_value, names_in
+from codegen.wiretypes import (
+    CONTAINERS,
+    head,
+    list_value,
+    map_value,
+    names_in,
+)
 
 # One class or function, reflected into the plain dict every layer
 # above reads. Named rather than spelled dict[str, Any] everywhere:
@@ -216,7 +222,7 @@ def _annotation_name(ann: Any) -> str:
     return getattr(ann, "__name__", str(ann))
 
 
-def default_source(value: Any, where: str) -> str | None:
+def default_source(value: Any, type_str: str, where: str) -> str | None:
     """One parameter default, as the source that reproduces it.
 
     A default is a fact about the SIGNATURE, not about the wire. Every
@@ -237,26 +243,42 @@ def default_source(value: Any, where: str) -> str | None:
     check is not ceremony: `repr(float("inf"))` is `inf`, which is a
     NameError in the module it would be written into.
 
-    A default of None is refused. The surface has no optional spelling
-    yet - a proxy has no None to send and a scalar field has no
-    presence - so a None default would typecheck here and fail at the
-    first call that took it.
+    A default of None is refused for anything but a CONTAINER. A proxy
+    has no None to send and a scalar field has no presence, so a None
+    default would typecheck here and fail at the first call that took
+    it. A `list[T]` or a `dict[str, V]` is the case where it works: a
+    repeated protobuf field has no presence problem, because an absent
+    one and an empty one are the same field. So None crosses as
+    nothing and the far side reads back the empty container it means.
 
-    A CONSTRUCTOR parameter may still default to None, and does not
-    come through here: it comes from constructor_signature, where the
-    overload set says a parameter may be omitted and C++ says nothing
-    about what it would have been. That path is carried because the
-    acquire request handles absence - the client skips a None argument
-    and the server decodes with optional=True - which a method request
-    does not."""
+    `[]` is the alternative and it is worse. It is a mutable default,
+    and every generated surface would carry one - four shared lists
+    where the binding has one.
+
+    A CONSTRUCTOR parameter may still default to None whatever its
+    type, and does not come through here: it comes from
+    constructor_signature, where the overload set says a parameter may
+    be omitted and C++ says nothing about what it would have been."""
     if value is inspect.Parameter.empty:
         return None
     if value is None:
+        if head(type_str) in CONTAINERS:
+            return "None"
         raise ValueError(
             f"{where}: a default of None needs an optional type the surface "
-            f"cannot yet spell. Declare the parameter required.")
+            f"cannot yet spell. {type_str} is not a container, so absence "
+            f"has nothing to travel as. Declare the parameter required.")
     if isinstance(value, Enum):
         return f"{type(value).__name__}.{value.name}"
+    if isinstance(value, (list, dict, set, bytearray)):
+        # `repr([])` reads back as itself, so nothing below would stop
+        # this. It is refused because of what it MEANS: one shared
+        # mutable default per generated surface, four of them for a
+        # binding that has one.
+        raise ValueError(
+            f"{where}: {value!r} is a mutable default, and every generated "
+            f"surface would carry its own. Default the parameter to None - a "
+            f"container reads an absent argument back as empty.")
     src = repr(value)
     try:
         if ast.literal_eval(src) != value:
@@ -273,7 +295,7 @@ def _param(p: inspect.Parameter, type_str: str, where: str) -> Proto:
     return {
         "name": p.name,
         "type": type_str,
-        "default": default_source(p.default, f"{where}:{p.name}"),
+        "default": default_source(p.default, type_str, f"{where}:{p.name}"),
     }
 
 

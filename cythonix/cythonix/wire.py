@@ -298,6 +298,13 @@ class WireCodec:
         kind = self.kind(type_str)
         if kind == "none":
             return
+        if value is None and kind in ("map", "list"):
+            # A container parameter defaults to None, and this is where
+            # that absence stops. A repeated protobuf field has no
+            # presence, so writing nothing IS writing an empty one -
+            # which is what None means for a container and why it is
+            # the one type whose default may be None (tasks/041).
+            return
         if kind == "scalar":
             # str() of a StrEnum member is its value, so an enum needs
             # no special case going out.

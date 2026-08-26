@@ -187,21 +187,30 @@ def test_a_default_is_written_or_refused() -> None:
     class Word(enum.StrEnum):
         NAR = "nar"
 
-    def src(value: object) -> str | None:
-        return default_source(value, "probe:p")
+    def src(value: object, type_str: str = "str") -> str | None:
+        return default_source(value, type_str, "probe:p")
 
     assert src(inspect.Parameter.empty) is None
     assert src(Word.NAR) == "Word.NAR"
     assert src("nar") == "'nar'"
     assert src(7) == "7" and src(True) == "True" and src(b"x") == "b'x'"
 
-    # None looks like it should work and does not: the surface has no
-    # optional spelling, so it would typecheck here and fail at the
-    # first call that took it.
-    for bad, why in ((None, "optional type"), (float("inf"), "not a literal"),
-                     (object(), "not a literal")):
+    # None depends on the TYPE. A repeated protobuf field has no
+    # presence problem - an absent one and an empty one are the same
+    # field - so a container may default to None and nothing else may.
+    assert src(None, "list[StorePath]") == "None"
+    assert src(None, "dict[str, int]") == "None"
+
+    # `[]` is what a reader expects instead, and it is worse: a mutable
+    # default, once per generated surface.
+    for bad, type_str, why in (
+            (None, "str", "not a container"),
+            (None, "StorePath", "not a container"),
+            ([], "list[StorePath]", "mutable default"),
+            (float("inf"), "str", "not a literal"),
+            (object(), "str", "not a literal")):
         try:
-            src(bad)
+            src(bad, type_str)
         except ValueError as e:
             assert why in str(e), (bad, str(e))
         else:
