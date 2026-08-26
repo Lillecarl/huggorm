@@ -59,17 +59,6 @@ ext = Extension(
     extra_link_args=[f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
 )
 
-ext_eval = Extension(
-    "cythonix_bindings.eval",
-    sources=["cythonix_bindings/eval.pyx"],
-    language="c++",
-    include_dirs=[os.path.join(fake_lib, "include")],
-    library_dirs=[os.path.join(fake_lib, "lib")],
-    libraries=["fake_library"],
-    extra_compile_args=["-std=c++23", "-DFAKE_LIBRARY_USE_BOEHMGC=1"],
-    extra_link_args=[f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
-)
-
 # The first REAL Nix type, beside the mock rather than replacing it
 # (tasks/015). Nothing about it goes through FAKE_LIBRARY.
 _nix = pkg_config("nix-store")
@@ -77,6 +66,19 @@ _nix = pkg_config("nix-store")
 # sources rather than in the extension because it is C++ that Cython
 # calls, not Cython: `except +translate_nix_error` names a function.
 _nix["include_dirs"] = [HERE] + _nix["include_dirs"]
+
+# The mock, found through one prefix rather than through pkg-config.
+# `-DFAKE_LIBRARY_USE_BOEHMGC=1` must match the library's own build:
+# the gc-enabled library and every consumer TU have to agree on the
+# alias in gc-env.hpp, or implicit destructors get instantiated twice
+# with two different allocators.
+_mock = {
+    "include_dirs": [HERE, os.path.join(fake_lib, "include")],
+    "library_dirs": [os.path.join(fake_lib, "lib")],
+    "libraries": ["fake_library"],
+    "extra_compile_args": ["-std=c++23", "-DFAKE_LIBRARY_USE_BOEHMGC=1"],
+    "extra_link_args": [f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
+}
 
 # The REAL Nix bindings, through nanobind rather than Cython.
 #
@@ -103,9 +105,15 @@ def nb_runtime() -> str:
     return f"cythonix_bindings/{name}"
 
 
+# Which library each nanobind module links. A declaration names the
+# C++ it binds; which package ships that C++ is the build's fact, and
+# this is the one place it is written down.
+LIBRARY = {"path": "nix", "store": "nix", "eval": "mock", "mock_store": "mock"}
+
+
 def nanobind_extension(module: str) -> Extension:
     inc = nanobind.include_dir()
-    flags = dict(_nix)
+    flags = dict(_nix if LIBRARY[module] == "nix" else _mock)
     flags["include_dirs"] = [
         inc,
         os.path.join(inc, "..", "ext", "robin_map", "include"),
@@ -130,6 +138,6 @@ def nanobind_extension(module: str) -> Extension:
 
 
 setup(
-    ext_modules=[ext, ext_eval,
+    ext_modules=[ext,
                  *[nanobind_extension(m) for m in nanobind_modules()]],
 )

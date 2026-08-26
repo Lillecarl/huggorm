@@ -183,6 +183,10 @@ class Method:
     startup: bool = False
     # Register as the module's exception translator, from @translator.
     translator: bool = False
+    # The threading policy a FREE function opts into, from @threading.
+    # Empty means it declared none, which is what keeps a runtime
+    # helper out of every generated form.
+    policy: str = ""
 
 
 @dataclass(frozen=True)
@@ -486,6 +490,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         virtual=bool(getattr(marked, "_virtual", False)),
         startup=bool(getattr(marked, "_startup", False)),
         translator=bool(getattr(marked, "_translator", False)),
+        policy=getattr(marked, "_policy", ""),
     )
 
 

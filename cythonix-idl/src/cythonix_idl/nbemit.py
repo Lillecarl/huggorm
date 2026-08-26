@@ -97,6 +97,10 @@ CXX_PYTHON = {
 CXX_BUILTIN = {
     "str": ("const std::string &", "string"),
     "bool": ("bool", None),
+    # A dict built by a body, handed straight to Python. There is no
+    # C++ type behind it and none is wanted: the body says what goes
+    # in, and nanobind's own dict is already a Python object.
+    "dict[str, int]": ("nb::dict", None),
 }
 
 # Comparison dunders and the C++ operator each one binds. Every entry
@@ -188,11 +192,13 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
                 f"declaration too, so the C++ spelling can be resolved.")
         other = known[inner]
         spelled = _bare(other)
-        if other.decl.cxx and other.decl.built_by:
-            # A HANDLE nothing constructs. libstore hands one back
-            # reference-counted, and Python has to hold a share or
-            # the store closes under the object that names it.
-            return f"std::shared_ptr<{spelled}>", "shared_ptr"
+        if other.decl.holder:
+            # Held through something. `@binding(holder="shared_ptr")`
+            # is the declaration saying the factory hands back a
+            # reference-counted handle, so Python has to keep a share
+            # or the object closes under the name for it.
+            return (f"std::{other.decl.holder}<{spelled}>",
+                    other.decl.holder)
         return spelled, "string" if spelled == "std::string" else None
     # Three tables, in the order the declaration meant them. A Python
     # type nanobind casts natively wins outright - `pathlib.Path`
@@ -427,8 +433,11 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
     copies. `includes()` is what makes that safe, and it derives the
     header from this same declaration rather than trusting a human to
     remember."""
-    assert m.ret is not None
+    # A method may return nothing - `force` and the builders' setters
+    # do - and a lambda with no return statement is void. Only the
+    # branches that SPELL the return type need one.
     if m.parts:
+        assert m.ret is not None
         return _parts_method(cls, m, known or {})
     if m.cxx_body:
         # A method the declaration could not derive, carried verbatim.
@@ -1249,6 +1258,23 @@ def markers(cls: Class) -> list[str]:
         # Which free function makes one. A handle rather than a
         # value: a value is produced and has no factory to name.
         out.append(f'{INDENT}cls.attr("_ctor_from") = "{decl.built_by}";')
+    if decl.tree:
+        # A LITERAL, parsed once at import.
+        #
+        # `_tree` is data: nested dicts, lists and strings that the
+        # RPC layer reads so no layer above the declaration knows what
+        # this type is or which of its methods do what. Building that
+        # structure with nb::dict and nb::list would take a dozen
+        # temporaries and would render as something a reader has to
+        # reassemble in their head.
+        #
+        # The declaration wrote a Python literal. This carries it
+        # across as one and lets Python parse it, which is exact by
+        # construction: `ast.literal_eval` is the inverse of the
+        # `repr` that produced the text, and it evaluates nothing
+        # else.
+        out.append(f'{INDENT}cls.attr("_tree") = nb::module_::import_("ast")')
+        out.append(f'{INDENT * 2}.attr("literal_eval")({json.dumps(decl.tree)});')
     fields = wire_fields(cls)
     if fields:
         pairs = ", ".join(f'nb::make_tuple("{n}", "{t}")'
@@ -1338,10 +1364,10 @@ def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str
 
     `blocking` has no class to come from here, so a free function says
     `@blocks` for itself."""
-    if not fn.binds:
+    if not (fn.binds or fn.cxx_body):
         raise TypeError(
-            f"{fn.name}: a free function names the C++ it binds. "
-            f'Use @binds("cxx_name").')
+            f"{fn.name}: a free function names the C++ it binds, or "
+            f'carries it. Use @binds("cxx_name") or @cxx_body(...).')
     extras = []
     if fn.blocks and not fn.instant:
         extras.append("nb::call_guard<nb::gil_scoped_release>()")
@@ -1351,7 +1377,17 @@ def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str
             arg += f" = {_default(pr, known)}"
         extras.append(arg)
     tail = "".join(f", {x}" for x in extras)
-    return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
+    if not fn.cxx_body:
+        return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
+    # A body, for a function whose C++ is assembled rather than named.
+    # `gc_stats` reads five counters out of gc.h and hands back one
+    # dict; there is no upstream function with that shape to point at.
+    args = ", ".join(f"{_param(pr.type, known)[0]} {pr.name}"
+                     for pr in fn.params)
+    body = [f"{INDENT * 2}{ln}".rstrip()
+            for ln in fn.cxx_body.strip().splitlines()]
+    return [f'{INDENT}m.def("{fn.name}", []({args}) {{', *body,
+            f"{INDENT}}}{tail});"]
 
 
 def public(fns: Sequence[Method],

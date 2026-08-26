@@ -136,6 +136,10 @@ class StoreLocation:
 @header("nix/store/store-api.hh")
 @binding(
     cxx="nix::Store",
+    # openStore hands back a ref<Store>, which is a shared_ptr that
+    # cannot be null. Python keeps a share, so a store stays open for
+    # as long as the object naming it does.
+    holder="shared_ptr",
     # A store carries its own locking, so any pool thread will do.
     threading="pool",
     # It talks to a daemon or a database. Every call can wait.

@@ -25,7 +25,9 @@ is a fact about the boundary rather than about nix::StorePath.
 import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Annotated, Any, TypeVar
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,12 @@ class Decl:
     # by the RPC layer, so no layer above the declaration knows what
     # the type is or which of its methods do what.
     tree: str = ""
+    # What Python holds one of these THROUGH. Empty for the usual
+    # case, where Python owns the object outright. "shared_ptr" for a
+    # class whose factory hands back a reference-counted handle -
+    # nix::openStore does, and a store has to stay open for as long
+    # as the object naming it does.
+    holder: str = ""
 
 
 def derives(base: str) -> Callable[[type], type]:
@@ -264,17 +272,24 @@ def words(parsed_by: str = "") -> Callable[[type], type]:
     return apply
 
 
-def binding(cxx: str = "", threading: str = "pool",
+def binding(cxx: str = "", threading: str = "pool", holder: str = "",
             blocking: bool = True) -> Callable[[type], type]:
     """The C++ class this binds, and how it may be called.
 
     `blocking=False` means no method here can wait: every one is a
     read of memory the object already owns. It decides whether the
     emitter writes `with nogil:` and whether anything above needs a
-    thread to hop to."""
+    thread to hop to.
+
+    `holder` is what Python holds one THROUGH, and it is empty for
+    almost everything. "shared_ptr" is for a class whose factory
+    hands back a reference-counted handle: nix::openStore does, and a
+    store has to stay open for as long as the object naming it
+    does."""
     def apply(cls: type) -> type:
         d = _decl(cls)
         d.cxx, d.threading, d.blocking = cxx, threading, blocking
+        d.holder = holder
         return cls
     return apply
 
@@ -428,6 +443,31 @@ def instant[F: Callable[..., Any]](fn: F) -> F:
     transitions to save nothing."""
     fn._instant = True  # type: ignore[attr-defined]
     return fn
+
+
+def threading(policy: str) -> Callable[[F], F]:
+    """Opt one FREE function into the generated surface, under `policy`.
+
+    The marker is what opts a function in. An undeclared function is
+    still part of the module and still described by the stubs; it just
+    gets no async form and no rpc, which is what declaring nothing
+    means - `gc_release_thread` is runtime plumbing and says so by
+    carrying none.
+
+    "pool" is the only policy that means anything here. A free
+    function has no instance, so there is no thread for it to be
+    affine to. A class says the same thing through `@binding`, where
+    "affine" is a real answer."""
+    if policy != "pool":
+        raise ValueError(
+            f"a free function may only declare 'pool' threading (got "
+            f"{policy!r}). It has no instance, so there is no thread for "
+            f"it to be affine to.")
+
+    def apply(fn: F) -> F:
+        fn._policy = policy  # type: ignore[attr-defined]
+        return fn
+    return apply
 
 
 def binds[F: Callable[..., Any]](name: str) -> Callable[[F], F]:
