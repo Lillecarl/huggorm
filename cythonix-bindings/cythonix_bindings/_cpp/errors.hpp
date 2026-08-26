@@ -15,7 +15,6 @@
 #include <Python.h>
 
 #include <exception>
-#include <new>
 #include <string>
 
 #include "nix/store/store-api.hh"
@@ -99,15 +98,25 @@ inline void translate_nix_error()
         raise_as("Unsupported", e);
     } catch (const nix::Error & e) {
         raise_as("NixError", e);
-    } catch (const std::bad_alloc &) {
-        PyErr_NoMemory();
-    } catch (const std::exception & e) {
-        // Not Nix's. Leave it as the RuntimeError Cython would have
-        // produced, rather than claiming it came from Nix.
-        PyErr_SetString(PyExc_RuntimeError, e.what());
-    } catch (...) {
-        PyErr_SetString(PyExc_RuntimeError, "unknown C++ exception");
     }
+    // Nothing follows, and the silence is the point.
+    //
+    // Anything else is not Nix's, and this must not claim it.
+    //
+    // A nanobind translator is registered ONCE for the whole process,
+    // not per call, so this one is asked about every C++ exception any
+    // module raises - including the mock's std::invalid_argument.
+    // Rethrowing is how a translator says "not mine": nanobind then
+    // tries the next one, and the last is its own, which maps
+    // invalid_argument to ValueError and bad_alloc to MemoryError.
+    //
+    // Swallowing them here made every one of those a RuntimeError,
+    // which is what Cython's per-method hook did and what nanobind's
+    // process-wide one must not.
+    //
+    // An unmatched exception propagates out of `try { throw; }` on
+    // its own, so there is no `throw;` to write - and writing one
+    // after the chain would rethrow the exceptions this DID handle.
 }
 
 }  // namespace cythonix
