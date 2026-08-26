@@ -56,3 +56,24 @@ A method-level declaration, then a cross-check, in steps:
    the pyx are hand knowledge and must stay hand-written, so the
    generated part would have to live under the hand-written one.
    Do not start it before steps 1-2 prove insufficient.
+
+## The end state (from the 2026-08-26 review discussion)
+
+Step 3 is not just an optimization; it is the destination. The
+durable design decision is declaration-primary, not
+implementation-primary: the declaration file (pxd plus markers) is
+the only hand-written artifact per API, and the binding
+implementation is generated from it. The compiler then checks the
+declaration against the real Nix headers on every build, which is
+the property that makes the whole stack trustworthy.
+
+That structure also keeps the binder replaceable. Most of
+`_cpp/store.hpp` exists because a pxd cannot say `std::set`,
+`std::optional` or a non-default-constructible return - things
+nanobind's STL casters handle natively, with first-class
+trampolines for the callback work in 032/033. If Cython's costs
+keep growing (internal-API parser, `__cinit__` opacity, getset
+descriptors), a generated binding layer makes a backend swap a
+contained project: the manifest and everything above it would not
+notice. No migration is proposed now; steps 1-2 are the work, and
+they aim at this shape.
