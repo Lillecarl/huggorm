@@ -907,6 +907,54 @@ def _factory(cls: Class, functions: Sequence[Method],
     return [line + ",", f'{INDENT * 3}     "{doc}")']
 
 
+def wire_fields(cls: Class) -> list[tuple[str, str, str]]:
+    """What this value is made of, as (name, wire type, how to read).
+
+    Two sources, and which one applies is a real difference. A
+    CONSTRUCTED value declares its fields, because the field name and
+    the accessor need not agree: a StorePath's part is called
+    `base_name` and is read by CALLING `to_string()`. A PRODUCED one
+    declares none and needs none - every accessor IS a field, and the
+    record binds each as an attribute, so the name reads it.
+
+    The third element carries that difference: a Python expression on
+    a handle called `h`, either an attribute or a call."""
+    if cls.decl.fields:
+        return [(f.name, f.type, f'h.attr("{f.read}")()')
+                for f in cls.decl.fields]
+    if not cls.is_value:
+        return []
+    return [(m.name, m.ret.wire, f'h.attr("{m.name}")')
+            for m in cls.methods if m.ret is not None]
+
+
+# What `_parts` is for, in the words the Cython emitter already uses.
+# One sentence in two backends, so a caller reading either sees the
+# same thing.
+PARTS_DOC = ("Wire-serialization helper (private): one value per "
+             "_wire_fields entry, in order.")
+
+
+def _round_trip(cls: Class) -> list[str]:
+    """`_parts`, the half of the wire round trip that is a method.
+
+    The other half is `_from_parts`, and it needs no code at all: see
+    `markers`.
+
+    Through the PYTHON object, like the repr and the hash beside it.
+    A part of any bound type comes back as whatever that type's own
+    binding hands over, so this emitter never has to know what a part
+    IS - which is what lets one line cover a str, a StorePath and a
+    list of them."""
+    fields = wire_fields(cls)
+    if not fields:
+        return []
+    reads = ", ".join(read for _, _, read in fields)
+    return [f'{INDENT * 2}.def("_parts", [](nb::handle h) {{',
+            f"{INDENT * 3}return nb::make_tuple({reads});",
+            f'{INDENT * 2}}}, "{PARTS_DOC}")']
+
+
 def markers(cls: Class) -> list[str]:
     """The facts every layer above reads off the compiled class.
 
@@ -940,13 +988,24 @@ def markers(cls: Class) -> list[str]:
         # Which free function makes one. A handle rather than a
         # value: a value is produced and has no factory to name.
         out.append(f'{INDENT}cls.attr("_ctor_from") = "{decl.built_by}";')
-    fields = ([(f.name, f.type) for f in decl.fields] or
-              [(m.name, m.ret.wire) for m in cls.methods
-               if cls.is_value and m.ret is not None])
+    fields = wire_fields(cls)
     if fields:
-        pairs = ", ".join(f'nb::make_tuple("{n}", "{t}")' for n, t in fields)
+        pairs = ", ".join(f'nb::make_tuple("{n}", "{t}")'
+                          for n, t, _ in fields)
         out.append(f'{INDENT}cls.attr("_wire_fields") = '
                    f"nb::make_tuple({pairs});")
+        # The other half of the round trip, and it is the class.
+        #
+        # `_from_parts` takes one value per _wire_fields entry, in
+        # order, and hands back the value they make. That is exactly
+        # what the constructor takes: a record's members ARE its
+        # parts, and a constructed value's parts are its constructor's
+        # arguments - the Cython emitter refuses to derive one unless
+        # those two agree.
+        #
+        # So there is nothing to write. Naming the class is the whole
+        # helper, and it cannot drift from the constructor.
+        out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
     return out
 
 
@@ -973,6 +1032,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         body += [f'{INDENT * 2}.def_ro("{name}", &{held}::{name})'
                  for name, _ in record_fields(cls, known)]
         body += _record_semantics(cls, known)
+        body += _round_trip(cls)
         body += _value_semantics(cls)
         if body:
             body[-1] += ";"
@@ -987,6 +1047,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         if m.name in skipped:
             continue
         body += _accessor(cls, m) if m.prop else _method(cls, m, known)
+    body += _round_trip(cls) if decl.wire == "value" else []
     body += _value_semantics(cls)
     for source in decl.custom.values():
         body += [f"{INDENT * 2}{line}".rstrip()
