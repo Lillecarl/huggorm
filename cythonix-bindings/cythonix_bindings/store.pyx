@@ -354,14 +354,14 @@ cdef class Store:
         NOT topological. A caller who needs build order has to ask for
         it another way."""
         cdef vector[string] c_paths = _base_names(paths)
-        cdef bint c_flip = flip_direction
-        cdef bint c_outputs = include_outputs
-        cdef bint c_derivers = include_derivers
+        cdef bint c_flip_direction = flip_direction
+        cdef bint c_include_outputs = include_outputs
+        cdef bint c_include_derivers = include_derivers
         cdef CStore* store = self._get()
         cdef vector[string] found
         with nogil:
             found = compute_fs_closure(
-                deref(store), c_paths, c_flip, c_outputs, c_derivers)
+                deref(store), c_paths, c_flip_direction, c_include_outputs, c_include_derivers)
         return _store_paths(found)
 
     def query_referrers(self, path: StorePath) -> list[StorePath]:
