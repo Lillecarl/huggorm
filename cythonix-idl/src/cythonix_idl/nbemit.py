@@ -81,10 +81,18 @@ CXX_PARAM = {
 CXX_PYTHON = {
     "bytes": ("nb::bytes", None),
     "pathlib.Path": ("const std::filesystem::path &", "filesystem"),
-    # The plain readings, for a declaration that annotates with the
-    # builtin rather than the alias. A return type usually does: the
-    # aliases carry a C++ WIDTH or a marshalling choice, and `str` and
-    # `bool` have neither to make.
+}
+
+# The plain reading of a builtin, for a declaration that annotates
+# with the builtin and no alias. A LAST resort, unlike CXX_PYTHON
+# above: an alias is the declaration saying which C++ it means, and
+# `str` alone says only that Python sees a str.
+#
+# The difference is what `StrView` and `Path` need. Both are `str`-ish
+# to Python and both carry Cxx("string"), because a pxd can hold
+# nothing else - so a table that let either side win outright would
+# turn one of them into the wrong crossing.
+CXX_BUILTIN = {
     "str": ("const std::string &", "string"),
     "bool": ("bool", None),
 }
@@ -178,15 +186,18 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
                 f"declaration too, so the C++ spelling can be resolved.")
         spelled = _bare(known[inner])
         return spelled, "string" if spelled == "std::string" else None
-    # The ALIAS first, where there is one. `Str` and a bare `str` are
-    # both `str` to Python, and the alias is the declaration saying
-    # which C++ it means - so a `string_view` return stays a view
-    # rather than becoming the usual std::string.
+    # Three tables, in the order the declaration meant them. A Python
+    # type nanobind casts natively wins outright - `pathlib.Path`
+    # carries Cxx("string") for the pxd's sake, and nanobind has a
+    # filesystem caster. Then the alias, which is the declaration
+    # naming a C++ spelling. Then the bare builtin, which names none.
     spelled, caster = "", None
-    if t.cxx is not None and t.cxx.spelling in CXX_PARAM:
-        spelled, caster = CXX_PARAM[t.cxx.spelling]
-    elif inner in CXX_PYTHON:
+    if inner in CXX_PYTHON:
         spelled, caster = CXX_PYTHON[inner]
+    elif t.cxx is not None and t.cxx.spelling in CXX_PARAM:
+        spelled, caster = CXX_PARAM[t.cxx.spelling]
+    elif inner in CXX_BUILTIN:
+        spelled, caster = CXX_BUILTIN[inner]
     else:
         raise TypeError(
             f"'{t.python}' has no C++ spelling. A bound class names types "
