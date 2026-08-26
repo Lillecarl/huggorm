@@ -135,13 +135,12 @@ def class_body(text: str, name: str) -> str:
     is per class - which is the honest unit anyway: what is being
     checked is a binding, not a file layout."""
     lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith(f"cdef class {name}"):
-            break
-    else:
+    start = next((i for i, line in enumerate(lines)
+                  if line.startswith(f"cdef class {name}")), None)
+    if start is None:
         return ""
-    out = [lines[i]]
-    for line in lines[i + 1:]:
+    out = [lines[start]]
+    for line in lines[start + 1:]:
         if line and not line[0].isspace():
             break
         out.append(line)
