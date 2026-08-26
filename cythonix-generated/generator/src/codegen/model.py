@@ -30,6 +30,13 @@ from codegen.wiretypes import (
 Proto = dict[str, Any]
 Api = dict[str, Any]
 
+# The dunders a value type may define, and the three it must. Ordering
+# and __str__ are per-class: a store path has a natural order and a
+# natural string, a PathInfo has neither.
+VALUE_DUNDERS = ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__",
+                 "__hash__", "__repr__", "__str__")
+REQUIRED_DUNDERS = ("__eq__", "__hash__", "__repr__")
+
 _PRIMITIVES = {
     "string": "str",
     # Real Nix returns views into an object's own storage. A binding
@@ -426,6 +433,17 @@ def extract_wrapper(cls: type, api: Api | None = None,
         # Private round-trip helpers present on the class. Not part of
         # the surface; the contract check reads them.
         "_helpers": sorted(h for h in ("_parts", "_from_parts") if hasattr(cls, h)),
+        # The value dunders this class actually defines. `is not
+        # object.<name>` rather than hasattr, because every class
+        # inherits all of them from object and would pass a presence
+        # test while comparing by identity (tasks/046).
+        #
+        # In the manifest rather than popped after the check, because
+        # the STUBS need it: the emitter skips every `_`-prefixed name,
+        # so without this a typechecker sees object's __eq__ and calls
+        # `a < b` an error on a class that supports it.
+        "dunders": sorted(d for d in VALUE_DUNDERS
+                          if getattr(cls, d, None) is not getattr(object, d)),
         # Typed construction, straight from the pxd - the only place a
         # Cython constructor's signature is visible at all.
         "ctor": ctor,
@@ -659,6 +677,18 @@ def check_wire_contract(protos: list[Proto],
         for helper in ("_parts", "_from_parts"):
             if helper not in proto["_helpers"]:
                 bad.append(f"{name}: wire-value needs a {helper} round-trip helper")
+        for dunder in REQUIRED_DUNDERS:
+            if dunder not in proto["dunders"]:
+                # A value that does not compare is a value in name
+                # only: two of them naming the same thing are unequal,
+                # a set of them deduplicates nothing, and repr() shows
+                # an address. All three answers are derivable from the
+                # _wire_fields this class already declares - see
+                # _value.py - so there is nothing to weigh up.
+                bad.append(
+                    f"{name}: wire-value needs {dunder}. A value compares, "
+                    f"hashes and prints as what it is, and _value.py "
+                    f"derives all three from _wire_fields.")
     return bad
 
 

@@ -385,7 +385,7 @@ def main(argv: list[str] | None = None) -> None:
         for c in complaints:
             print(f"wire contract: {c}", file=sys.stderr)
         sys.exit(1)
-    # The helper probe exists for that check only; it is not surface.
+    # These probes exist for that check only; they are not surface.
     for proto in protos + returned_protos:
         proto.pop("_helpers", None)
 

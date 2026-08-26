@@ -114,6 +114,58 @@ def test_a_real_path_crosses_the_wire() -> None:
     assert back.to_string() == HELLO
 
 
+def test_a_value_compares_hashes_and_prints() -> None:
+    """A value type IS its declared parts, in all three senses.
+
+    Without this, two paths naming the same store object were never
+    equal, a set of them deduplicated nothing, and repr() showed an
+    address instead of the one string the object carries - so every
+    caller compared .to_string() by hand (tasks/046).
+
+    The comparison is C++'s. nix::StorePath defaults operator== and
+    operator<=>, so the binding declares them rather than
+    reimplementing the answer in Python."""
+    a, b = StorePath(HELLO), StorePath(HELLO)
+    other = StorePath("1" * 32 + "-other")
+
+    assert a == b
+    assert (a != b) is False, "__ne__ follows __eq__ rather than identity"
+    assert a != other
+    assert a != HELLO, "a path is not its string"
+    assert a != 7 and a.__eq__(7) is NotImplemented
+
+    assert hash(a) == hash(b)
+    assert len({a, b, other}) == 2, "a set of paths deduplicates"
+    assert {a: "yes"}[b] == "yes", "and a dict keyed by one looks up"
+
+    assert repr(a) == f"StorePath(base_name={HELLO!r})"
+    assert str(a) == HELLO
+
+    # Ordering, so sorted() matches the order a store's own set has.
+    assert other < a and a > other and a >= b and a <= b
+    assert sorted([a, other])[0] == other
+
+
+def test_every_value_type_has_value_semantics(manifest: dict[str, Any]) -> None:
+    """The rule, held against the manifest rather than a list.
+
+    A `_wire = "value"` class that did not compare would be a value in
+    name only. The build refuses one now, so this asserts the RESULT
+    on every declared value at once - and it grows on its own when a
+    new one lands."""
+    import cythonix_bindings
+
+    values = [name for group in ("wrappers", "returned_types")
+              for name, proto in manifest[group].items()
+              if proto["wire"] == "value"]
+    assert len(values) >= 4, values
+    for name in values:
+        cls = getattr(cythonix_bindings, name)
+        for dunder in ("__eq__", "__hash__", "__repr__"):
+            assert getattr(cls, dunder) is not getattr(object, dunder), (
+                f"{name}.{dunder}")
+
+
 def test_an_empty_optional_field_is_not_an_absent_one() -> None:
     """"" and None are different answers, and the wire keeps them apart.
 

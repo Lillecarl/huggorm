@@ -1121,6 +1121,49 @@ def _stub_body(doc: str) -> list[ast.stmt]:
     return out
 
 
+# What each value dunder looks like from outside. The comparisons take
+# `object` because Python's do: `a == 7` is a legal question with the
+# answer False, and typing it as the class would make asking it an
+# error.
+_DUNDER_SIGS = {
+    "__eq__": ("object", "bool"), "__ne__": ("object", "bool"),
+    "__lt__": ("object", "bool"), "__le__": ("object", "bool"),
+    "__gt__": ("object", "bool"), "__ge__": ("object", "bool"),
+    "__hash__": (None, "int"), "__repr__": (None, "str"),
+    "__str__": (None, "str"),
+}
+
+
+def _stub_dunders(proto: Proto) -> list[ast.stmt]:
+    """The value dunders a class defines, as stub declarations.
+
+    Everything else in a stub comes from the protocol dicts, and those
+    skip every `_`-prefixed name - which is right for the manifest and
+    wrong here. Without these, a typechecker reads object's __eq__ and
+    calls `a < b` an error on a class that supports it, and
+    `sorted(paths)` an error on a list of them (tasks/046).
+
+    Which ones exist is reflected, not assumed: ordering and __str__
+    are per-class, because a store path has a natural order and a
+    natural string while a PathInfo has neither."""
+    out: list[ast.stmt] = []
+    for dunder in proto.get("dunders", ()):
+        param, ret = _DUNDER_SIGS[dunder]
+        args = [ast.arg(arg="self")]
+        if param is not None:
+            args.append(ast.arg(
+                arg="other",
+                annotation=_ann(param, f"{proto['name']}.{dunder}")))
+        out.append(ast.FunctionDef(
+            name=dunder,
+            args=ast.arguments(posonlyargs=[], args=args, vararg=None,
+                               kwonlyargs=[], kw_defaults=[], kwarg=None,
+                               defaults=[]),
+            body=_stub_body(""), decorator_list=[],
+            returns=_ann(ret, f"{proto['name']}.{dunder}"), type_params=[]))
+    return out
+
+
 def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
                 produced: set[str], foreign: dict[str, str]) -> ast.Module:
     """Emit the .pyi describing ONE binding module.
@@ -1225,6 +1268,7 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
                 name="__init__", args=_ctor_args(proto, set()),
                 body=_stub_body(""), decorator_list=[],
                 returns=_ann("None", f"{name}.__init__"), type_params=[]))
+        cls.body.extend(_stub_dunders(proto))
         for m in proto["methods"]:
             same = from_base.get(m["name"])
             if same is not None and (

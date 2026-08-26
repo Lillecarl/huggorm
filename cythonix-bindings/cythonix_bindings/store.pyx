@@ -9,6 +9,8 @@
 
 import pathlib
 
+from cythonix_bindings import _value
+
 from cython.operator cimport dereference as deref
 from libcpp.memory cimport shared_ptr
 from libcpp.string cimport string
@@ -99,6 +101,18 @@ cdef class StoreLocation:
         raise TypeError(
             "StoreLocation objects come from Store.to_store_path, not from a "
             "constructor")
+
+    # A value compares, hashes and prints as the thing it IS, and all
+    # three answers come from the same _wire_fields and _parts() the
+    # wire uses. See _value.py.
+    def __eq__(self, other):
+        return _value.eq(self, other)
+
+    def __hash__(self):
+        return _value.hash_(self)
+
+    def __repr__(self):
+        return _value.repr_(self)
 
     def path(self) -> StorePath:
         """The store path that holds the file."""
@@ -205,6 +219,18 @@ cdef class PathInfo:
         raise TypeError(
             "PathInfo objects come from Store.query_path_info, not from a "
             "constructor")
+
+    # A value compares, hashes and prints as the thing it IS, and all
+    # three answers come from the same _wire_fields and _parts() the
+    # wire uses. See _value.py.
+    def __eq__(self, other):
+        return _value.eq(self, other)
+
+    def __hash__(self):
+        return _value.hash_(self)
+
+    def __repr__(self):
+        return _value.repr_(self)
 
     def path(self) -> StorePath:
         """The path this describes."""

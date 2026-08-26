@@ -63,3 +63,54 @@ and a zero-arg method are the same protocol dict.
 Decide before the surface grows; eight fields on PathInfo become
 eighty across a real store surface, and renaming call sites later
 costs every consumer.
+
+## Done, the dunder half
+
+`__eq__`, `__hash__` and `__repr__` on every `_wire = "value"` class,
+plus `__lt__` and `__str__` where they mean something - a store path
+has a natural order and a natural string, a PathInfo has neither.
+`functools.total_ordering` fills in the other three comparisons, and
+Cython accepts it on a cdef class, which was worth verifying rather
+than trusting the allowlist.
+
+All three answers come from the SAME two declarations the wire uses:
+`_wire_fields` names the parts and `_parts()` produces them. So the
+implementations live once, in `_value.py`, and a class that gains a
+field gains it in all three places with no edit. Functions rather than
+a shared base class, because a cdef class may only inherit from
+another extension type and a common base would put every value into
+018's generated hierarchy for the sake of three dunders.
+
+StorePath keeps the C++ comparison. `nix::StorePath` defaults both
+`operator==` and `operator<=>`, so the pxd declares them and the
+binding follows upstream rather than reimplementing the answer.
+
+`check_wire_contract` requires the three. Perturbed: dropping
+PathInfo's `__repr__` fails the build naming it.
+
+## The stubs needed it too
+
+Found while writing the test. Everything in a stub comes from the
+protocol dicts, and those skip every `_`-prefixed name - right for the
+manifest, wrong here. So the typechecker read `object.__eq__` and
+called `a < b` an error on a class that supports it.
+
+The manifest now carries a `dunders` list per class, reflected rather
+than assumed, and the stub emitter writes each one. That is why the
+list is in the manifest instead of popped after the check like
+`_helpers` is.
+
+## The property question: deferred, with a reason
+
+Carl is considering a Python-IDL source format, where the generator
+emits the pxd and the pyx from a plain `.py` declaration file. The one
+real cost this task named - a cdef-class `@property` compiles to a
+getset descriptor whose `fget` has no readable signature, so the type
+lands as `Any` and the gate refuses it - disappears there: an IDL
+carries a real annotation, and the generated pyx is not where the type
+comes from.
+
+So the decision belongs to that spike rather than to a change made
+just before it. Nothing here blocks it: `_reader_method` already emits
+`params: []`, so a property and a zero-arg method are the same
+protocol dict, and switching is a change to the bindings alone.

@@ -11,6 +11,11 @@
 # mock still backs everything else, and a spike that broke the working
 # surface would prove nothing.
 
+import functools
+
+from cythonix_bindings import _value
+
+from cython.operator cimport dereference as deref
 from libcpp.string cimport string
 from libcpp.string_view cimport string_view
 
@@ -26,6 +31,7 @@ cdef inline str _view(string_view v):
     return v.data()[:v.size()].decode('utf-8')
 
 
+@functools.total_ordering
 cdef class StorePath:
     """A real nix::StorePath.
 
@@ -75,6 +81,43 @@ cdef class StorePath:
     def __deepcopy__(self, memo):
         # A store path is immutable: deep copy == copy.
         return self.__copy__()
+
+    # A VALUE compares, hashes and prints as the thing it is. Without
+    # these, two paths naming the same store object were never equal,
+    # a set of them deduplicated nothing, and repr() showed an address
+    # instead of the one string the object IS - so every caller
+    # compared .to_string() by hand, this repo's own tests included
+    # (tasks/046).
+    #
+    # The comparison is C++'s, not a Python one on the base name.
+    # Upstream defaults both operators, so today they agree; declaring
+    # the operator means the binding follows if that ever stops being
+    # true.
+    def __eq__(self, other):
+        if not isinstance(other, StorePath):
+            return NotImplemented
+        return deref(self._get()) == deref((<StorePath>other)._get())
+
+    def __lt__(self, other):
+        # Ordering, so sorted() works and total_ordering can fill in
+        # the rest. Nix keeps store paths in sets, which are sorted,
+        # so a caller who sorts is matching the store's own order.
+        if not isinstance(other, StorePath):
+            return NotImplemented
+        return deref(self._get()) < deref((<StorePath>other)._get())
+
+    def __hash__(self):
+        # Defining __eq__ would otherwise make this unhashable, and a
+        # store path is exactly the kind of thing that belongs in a
+        # set. The declared part IS the base name, so this agrees with
+        # __eq__ by construction.
+        return _value.hash_(self)
+
+    def __repr__(self):
+        return _value.repr_(self)
+
+    def __str__(self):
+        return self.to_string()
 
     def to_string(self) -> str:
         """The full base name, '<hash>-<name>'."""

@@ -242,7 +242,7 @@ def test_a_store_answers_for_a_path_it_holds(
     path = chroot.add_path_to_store("tree", str(source))
     info = chroot.query_path_info(path)
 
-    assert info.path().to_string() == path.to_string()
+    assert info.path() == path
     assert info.nar_hash().startswith("sha256:")
     assert info.nar_size() > 0
 
@@ -286,7 +286,7 @@ def test_a_store_records_the_references_it_is_told(
                                  references=[target])
 
     info = chroot.query_path_info(holder)
-    assert [r.to_string() for r in info.references()] == [target.to_string()]
+    assert info.references() == [target]
 
     # None and [] are the same answer, and both are the default. A
     # repeated field has no presence, so there is nothing else absence
@@ -315,12 +315,9 @@ def test_a_store_reads_the_reference_graph_backwards(
     holder = chroot.add_to_store("holder", b"points at a tree\n",
                                  references=[target])
 
-    assert [r.to_string() for r in chroot.query_referrers(target)] == [
-        holder.to_string()]
+    assert chroot.query_referrers(target) == [holder]
     # And the edge the other way round is the one PathInfo carries.
-    assert [r.to_string() for r in
-            chroot.query_path_info(holder).references()] == [
-        target.to_string()]
+    assert chroot.query_path_info(holder).references() == [target]
 
     # The holder points at nothing that points back.
     assert chroot.query_referrers(holder) == []
@@ -346,26 +343,20 @@ def test_a_closure_is_the_whole_chain(chroot: Store) -> None:
     from reading references once."""
     a, b, c = _chain(chroot)
 
-    assert {p.to_string() for p in chroot.compute_fs_closure([c])} == {
-        a.to_string(), b.to_string(), c.to_string()}
-    assert {p.to_string() for p in chroot.compute_fs_closure([b])} == {
-        a.to_string(), b.to_string()}
-    assert [p.to_string() for p in chroot.compute_fs_closure([a])] == [
-        a.to_string()]
+    # A set of paths, compared as a set of paths. That reads the way
+    # it does because a StorePath now hashes and compares (046).
+    assert set(chroot.compute_fs_closure([c])) == {a, b, c}
+    assert set(chroot.compute_fs_closure([b])) == {a, b}
+    assert chroot.compute_fs_closure([a]) == [a]
 
     # Flipped, the same chain read the other way: what would BREAK if
     # `a` went away. That is the question a garbage collector asks.
-    assert {p.to_string()
-            for p in chroot.compute_fs_closure([a], flip_direction=True)} == {
-        a.to_string(), b.to_string(), c.to_string()}
-    assert [p.to_string()
-            for p in chroot.compute_fs_closure([c], flip_direction=True)] == [
-        c.to_string()]
+    assert set(chroot.compute_fs_closure([a], flip_direction=True)) == {a, b, c}
+    assert chroot.compute_fs_closure([c], flip_direction=True) == [c]
 
     # Several starting points merge into one set rather than
     # concatenating - it IS a set, so `a` appears once.
-    assert {p.to_string() for p in chroot.compute_fs_closure([b, c])} == {
-        a.to_string(), b.to_string(), c.to_string()}
+    assert set(chroot.compute_fs_closure([b, c])) == {a, b, c}
     assert chroot.compute_fs_closure([]) == []
 
 
@@ -379,8 +370,7 @@ def test_a_store_filters_the_paths_it_holds(chroot: Store) -> None:
     a, b, _c = _chain(chroot)
     missing = StorePath(HELLO)
 
-    assert {p.to_string() for p in chroot.query_valid_paths([a, b, missing])} == {
-        a.to_string(), b.to_string()}
+    assert set(chroot.query_valid_paths([a, b, missing])) == {a, b}
     assert chroot.query_valid_paths([missing]) == []
     assert chroot.query_valid_paths([]) == []
     assert chroot.is_valid_path(missing) is False
@@ -434,7 +424,7 @@ def test_a_store_says_which_path_holds_a_file(
     printed = chroot.print_store_path(path)
 
     where = chroot.to_store_path(f"{printed}/sub/b.txt")
-    assert where.path().to_string() == path.to_string()
+    assert where.path() == path
     assert where.sub_path() == "/sub/b.txt"
 
     # The store path itself. Empty is a real answer - nothing below it
@@ -496,8 +486,7 @@ def test_a_store_follows_a_link_into_itself(
 
     link = tmp_path / "result"
     link.symlink_to(printed)
-    assert chroot.follow_links_to_store_path(str(link)).to_string() == (
-        path.to_string())
+    assert chroot.follow_links_to_store_path(str(link)) == path
 
     # The string-only call refuses the same input. That IS the
     # difference between the two, spelled out.
@@ -507,8 +496,7 @@ def test_a_store_follows_a_link_into_itself(
     # A path already in the store is answered without following
     # anything, so this is a superset of the other call - minus the
     # sub-path, which upstream drops here.
-    assert chroot.follow_links_to_store_path(
-        f"{printed}/sub/b.txt").to_string() == path.to_string()
+    assert chroot.follow_links_to_store_path(f"{printed}/sub/b.txt") == path
 
 
 def test_a_store_finds_a_path_by_its_hash_part(
@@ -522,9 +510,7 @@ def test_a_store_finds_a_path_by_its_hash_part(
     hash_part = path.to_string().split("-", 1)[0]
     assert len(hash_part) == 32
 
-    found = chroot.query_path_from_hash_part(hash_part)
-    assert found is not None
-    assert found.to_string() == path.to_string()
+    assert chroot.query_path_from_hash_part(hash_part) == path
 
 
 def test_an_unknown_hash_part_is_none_not_an_error(chroot: Store) -> None:
@@ -559,8 +545,7 @@ def test_following_a_link_keeps_the_sub_path(
     assert isinstance(resolved, str)
 
     # The other call answers the other question about the same link.
-    assert chroot.follow_links_to_store_path(str(link)).to_string() == (
-        path.to_string())
+    assert chroot.follow_links_to_store_path(str(link)) == path
 
     # And what comes back is the store's spelling, not a location: it
     # is not on this filesystem, while real_path's answer is.

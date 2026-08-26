@@ -240,7 +240,8 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
     def proto(ftype: str) -> dict[str, object]:
         return {"name": "Probe", "wire": "value", "threading": "pool",
                 "wire_fields": [["kind", ftype]],
-                "_helpers": ["_from_parts", "_parts"]}
+                "_helpers": ["_from_parts", "_parts"],
+                "dunders": ["__eq__", "__hash__", "__repr__"]}
 
     for ftype in ("Word", "list[Word]"):
         assert check_wire_contract([proto(ftype)], {"Word"}) == [], ftype

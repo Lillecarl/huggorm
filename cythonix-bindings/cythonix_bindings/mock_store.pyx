@@ -47,6 +47,7 @@ from cythonix_bindings.c_mock_store cimport (
 # See eval.pyx: a free function declares itself with a decorator,
 # because unlike a cdef class it can take one.
 from cythonix_bindings._declare import binds, threading
+from cythonix_bindings import _value
 
 # --- Trampoline: C++ class that forwards virtuals to Python ---
 cdef extern from *:
@@ -240,6 +241,18 @@ cdef class MockStorePath:
         # Immutable: deep copy == copy.
         return self.__copy__()
 
+    # A value compares, hashes and prints as the thing it IS, and all
+    # three answers come from the same _wire_fields and _parts() the
+    # wire uses. See _value.py.
+    def __eq__(self, other):
+        return _value.eq(self, other)
+
+    def __hash__(self):
+        return _value.hash_(self)
+
+    def __repr__(self):
+        return _value.repr_(self)
+
     def to_string(self) -> str:
         return self._ptr.to_string().decode('utf-8')
 
@@ -338,6 +351,18 @@ cdef class MockDerivedPath:
     def __deepcopy__(self, memo):
         # Immutable: deep copy == copy.
         return self.__copy__()
+
+    # A value compares, hashes and prints as the thing it IS, and all
+    # three answers come from the same _wire_fields and _parts() the
+    # wire uses. See _value.py.
+    def __eq__(self, other):
+        return _value.eq(self, other)
+
+    def __hash__(self):
+        return _value.hash_(self)
+
+    def __repr__(self):
+        return _value.repr_(self)
 
     def describe(self) -> str:
         return self._ptr.describe().decode('utf-8')

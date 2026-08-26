@@ -37,3 +37,12 @@ cdef extern from "nix/store/path.hh" nogil:
         string_view name() except +translate_nix_error
         string_view hash_part "hashPart" () except +translate_nix_error
         bint is_derivation "isDerivation" () except +translate_nix_error
+        # Both are `= default` upstream, so they compare the base name
+        # - which is what a store path IS. Declared rather than
+        # reimplemented in Python: if upstream ever gives a store path
+        # a second field, the binding follows without an edit.
+        #
+        # operator< rather than <=>: Cython has no spaceship, and the
+        # defaulted <=> is what makes `a < b` compile.
+        bint operator==(const CStorePath & other)
+        bint operator<(const CStorePath & other)
