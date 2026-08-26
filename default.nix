@@ -96,6 +96,75 @@ rec {
     '';
   };
 
+  # nix run --file . show -- [files|manifest|proto|surface]
+  #
+  # Read what the build produced, without knowing where the store put
+  # it. Four stages come out of one generator run and only one of them
+  # is a Python module a reader can open: the manifest is the contract
+  # between them, and the schema is a binary FileDescriptorSet that no
+  # editor renders.
+  #
+  # So this exists for a reader rather than for the build. `proto`
+  # especially: the wire is generated from declarations next to the
+  # bindings, and the only honest way to review it is to read what
+  # actually got emitted.
+  show = pkgs.writeShellApplication {
+    name = "show";
+    runtimeInputs = [
+      pkgs.grpcurl
+      pkgs.jq
+      ourPython
+    ];
+    text = ''
+      pkg="${cythonix-generated}/lib/python3.14/site-packages"
+      gen="$pkg/cythonix_generated"
+      case "''${1:-files}" in
+        files)
+          echo "generated package: $gen"
+          ls -1 "$gen"
+          echo
+          echo "binding stubs: $pkg/cythonix_bindings-stubs"
+          ls -1 "$pkg/cythonix_bindings-stubs"
+          ;;
+        manifest)
+          jq . "$gen/manifest.json"
+          ;;
+        proto)
+          # Every service and every message, as .proto text. The names
+          # come from the descriptor set itself, so nothing here has a
+          # list to keep in step.
+          names=$(python3 -c "
+      import sys
+      from google.protobuf import descriptor_pb2
+      fds = descriptor_pb2.FileDescriptorSet()
+      fds.ParseFromString(open(sys.argv[1], 'rb').read())
+      for f in fds.file:
+          for m in f.message_type:
+              print(f'{f.package}.{m.name}')
+          for s in f.service:
+              print(f'{f.package}.{s.name}')
+      " "$gen/grpc_schema.pb")
+          # One symbol per call: grpcurl describes one at a time.
+          for name in $names; do
+            grpcurl -protoset "$gen/grpc_schema.pb" describe "$name"
+            echo
+          done
+          ;;
+        surface)
+          for f in "$gen"/async_*.py "$gen"/protocols.py "$gen"/rpc.py \
+                   "$gen"/free_functions.py; do
+            echo "=== $f ==="
+            cat "$f"
+          done
+          ;;
+        *)
+          echo "usage: show [files|manifest|proto|surface]" >&2
+          exit 2
+          ;;
+      esac
+    '';
+  };
+
   shell = pkgs.mkShell {
     packages = [
       ourPython
