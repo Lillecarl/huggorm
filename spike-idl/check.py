@@ -46,17 +46,36 @@ ACCEPTED = (
     ("path.pyx", "c_name", "c_base_name",
      "a local variable. The human named it after the type, the emitter "
      "derives it from the parameter."),
+    ("PathInfo", "info", "out",
+     "a local variable in _from_parts. The human named it after the "
+     "class, the emitter names it the same in every produced value."),
+    ("StoreLocation", "loc", "out",
+     "the same local, abbreviated differently - which is the argument "
+     "for deriving it."),
+    ("PathInfo", "def deriver(self) -> StorePath:",
+     "def deriver(self) -> StorePath | None:",
+     "the emitted annotation is RIGHT and the repo's is wrong. "
+     "PathInfo.deriver returns None for a path added straight to the "
+     "store, which its own docstring and its own wire_fields "
+     "(StorePath?) both say. See tasks/052."),
 )
 
 
 def code_only(text: str) -> list[str]:
-    """A file reduced to the lines that instruct a compiler.
+    """A file reduced to the STATEMENTS that instruct a compiler.
 
     Comments and docstrings carry a human's reasons, and the emitter
     writes its own. Neither is what "the same binding" means, so
-    neither is compared."""
-    out = []
+    neither is compared.
+
+    Statements, not lines. Where a human breaks a long call across
+    four lines and the emitter writes one, that is a difference in
+    typesetting rather than in code - so a line opened inside a
+    bracket joins the line that opened it, and two adjacent string
+    literals become the one string they already were."""
+    out: list[str] = []
     in_doc = False
+    depth = 0
     for raw in text.splitlines():
         line = raw.strip()
         # A docstring here is always its own statement: this repo's
@@ -74,23 +93,97 @@ def code_only(text: str) -> list[str]:
             continue
         # Whitespace inside a line is not a difference either:
         # `hash_part "hashPart"()` and `hash_part "hashPart" ()` are
-        # one declaration written two ways, so runs collapse and a
-        # space before a paren goes.
-        out.append(re.sub(r" +\(", "(", re.sub(r"\s+", " ", line)))
+        # one declaration written two ways.
+        line = re.sub(r" +\(", "(", re.sub(r"\s+", " ", line))
+        if depth > 0 and out:
+            out[-1] = re.sub(r"\(\s+", "(", f"{out[-1]} {line}")
+        else:
+            out.append(line)
+        depth += sum(line.count(c) for c in "([")
+        depth -= sum(line.count(c) for c in ")]")
+        depth = max(depth, 0)
+        # Two literals a human wrapped across lines are one string.
+        out[-1] = re.sub(r'"\s+"', "", out[-1])
     return out
+
+
+def allow(want: list[str], target: str) -> list[str]:
+    """Apply this target's allowances to the repo's side.
+
+    An identifier is replaced on a word boundary, and anything else
+    must match a whole statement. A plain substring replace is what
+    the first version did, and it rewrote `query_path_info` into
+    `query_path_out` - an allowance quietly editing code it was never
+    meant to touch is worse than no allowance."""
+    for name, theirs, ours, why in ACCEPTED:
+        if name != target:
+            continue
+        print(f"  {target}: allowing '{theirs}' -> '{ours}': {why}")
+        if theirs.isidentifier():
+            want = [re.sub(rf"\b{re.escape(theirs)}\b", ours, line)
+                    for line in want]
+        else:
+            want = [ours if line == theirs else line for line in want]
+    return want
+
+
+def class_body(text: str, name: str) -> str:
+    """One `cdef class` out of a module that holds several.
+
+    The repo packages PathInfo, StoreLocation and Store into one
+    store.pyx. The emitter writes a class at a time, so the comparison
+    is per class - which is the honest unit anyway: what is being
+    checked is a binding, not a file layout."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(f"cdef class {name}"):
+            break
+    else:
+        return ""
+    out = [lines[i]]
+    for line in lines[i + 1:]:
+        if line and not line[0].isspace():
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def check_produced(decl_path: pathlib.Path, pyx_name: str) -> list[str]:
+    """Each produced class, against its class in the repo's module."""
+    mod = read(str(decl_path))
+    actual = (BINDINGS / pyx_name).read_text()
+    problems = []
+    for cls in mod.classes:
+        if not cls.decl.built_by:
+            print(f"  {cls.name}: SKIPPED - not a produced value")
+            continue
+        want = code_only(class_body(actual, cls.name))
+        if not want:
+            problems.append(f"{cls.name}: not found in {pyx_name}")
+            continue
+        got = code_only("\n".join(emit.produced_pyx(cls)))
+        want = allow(want, cls.name)
+        if want == got:
+            print(f"  {cls.name}: {len(got)} statements, identical")
+            continue
+        problems.append(f"{cls.name}: emitted code differs")
+        for line in want:
+            if line not in got:
+                problems.append(f"    only in the repo: {line}")
+        for line in got:
+            if line not in want:
+                problems.append(f"    only emitted:     {line}")
+    return problems
 
 
 def check_cython(decl_path: pathlib.Path) -> list[str]:
     mod = read(str(decl_path))
     if len(mod.classes) != 1:
-        # store.py declares PathInfo and StoreLocation, and both live
-        # inside the repo's store.pyx beside Store - which the emitter
-        # cannot write, because nix::Store is abstract and opened by a
-        # URI. A per-file diff has nothing to compare against, so it
-        # says so rather than passing quietly.
-        print(f"  {decl_path.name}: SKIPPED - {len(mod.classes)} classes "
-              f"share one emitted module")
-        return []
+        # store.py's classes live inside the repo's store.pyx beside
+        # Store, which the emitter cannot write - nix::Store is
+        # abstract and opened by a URI. So they are checked a class at
+        # a time instead, by check_produced.
+        return check_produced(decl_path, "store.pyx")
     cls = mod.classes[0]
     files = emit.cython_files(cls, mod.name, mod.doc)
     problems = []
@@ -100,11 +193,7 @@ def check_cython(decl_path: pathlib.Path) -> list[str]:
             problems.append(f"{fname}: nothing to compare against")
             continue
         want, got = code_only(actual.read_text()), code_only(emitted)
-        for fn, theirs, ours, why in ACCEPTED:
-            if fn != fname:
-                continue
-            print(f"  {fname}: allowing '{theirs}' -> '{ours}': {why}")
-            want = [line.replace(theirs, ours) for line in want]
+        want = allow(want, fname)
         if want == got:
             print(f"  {fname}: {len(got)} lines of code, identical")
             continue

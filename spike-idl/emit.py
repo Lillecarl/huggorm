@@ -132,9 +132,20 @@ def our_pxd(cls: Class, cname: str, module: str) -> str:
 
 # -- <name>.pyx -----------------------------------------------------------
 
-def _wire_fields(decl: Decl) -> str:
-    inner = ", ".join(f'("{f.name}", "{f.type}")' for f in decl.fields)
-    return f"({inner},)" if len(decl.fields) == 1 else f"({inner})"
+def _wire_fields(fields: list[tuple[str, str]], level: int) -> list[str]:
+    """The `_wire_fields` tuple, one field per line past the first.
+
+    A single field reads better inline - path.pyx has one and says so
+    on one line. Nine do not, so PathInfo's go one to a line, which is
+    how the hand-written file already writes them."""
+    pad = INDENT * level
+    if len(fields) == 1:
+        n, t = fields[0]
+        return [f'{pad}_wire_fields = (("{n}", "{t}"),)']
+    out = [f"{pad}_wire_fields = ("]
+    out += [f'{pad}{INDENT}("{n}", "{t}"),' for n, t in fields]
+    out.append(f"{pad})")
+    return out
 
 
 def _accessor(m: Method, blocking: bool) -> list[str]:
@@ -221,7 +232,7 @@ def pyx(cls: Class, cname: str, module: str, doc: str) -> str:
             continue
         body.append(f"{INDENT}{marker} = {value}")
     if decl.fields:
-        body.append(f"{INDENT}_wire_fields = {_wire_fields(decl)}")
+        body += _wire_fields([(f.name, f.type) for f in decl.fields], 1)
     body.append("")
 
     if cls.ctor is not None:
@@ -360,6 +371,90 @@ def _round_trip(cls: Class) -> list[str]:
         f"{INDENT * 2}return ({reads},)" if len(decl.fields) == 1
         else f"{INDENT * 2}return ({reads})",
     ]
+
+
+def produced_pyx(cls: Class) -> list[str]:
+    """A value that holds no C++ at all.
+
+    The shape is different from a bound class rather than a variation
+    on it, and every difference follows from one fact: the object that
+    made this flattened one, so what is left is Python slots.
+
+    No pointer, so no `_get()` NULL guard, no `__dealloc__`, no
+    `__copy__` - a slot is already a Python reference and copying one
+    is what assignment does. No `_binds`, because there is no C++
+    declaration to name. And no constructor: `__init__` raises with
+    the sentence `@produced(by=...)` supplied, so a caller who guesses
+    wrong is told where to look instead of getting a TypeError with no
+    address in it."""
+    decl = cls.decl
+    name = cls.name
+    fields = [(m.name, m.ret) for m in cls.methods if m.ret is not None]
+
+    out = [f"cdef class {name}:"]
+    out += _doc(cls.doc, 1)
+    out.append("")
+    for marker, value in (("_threading", f'"{decl.threading}"'),
+                          ("_blocking", str(decl.blocking)),
+                          ("_wire", f'"{decl.wire}"'),
+                          ("_produced", "True")):
+        out.append(f"{INDENT}{marker} = {value}")
+    # Derived from the accessors, not declared: every accessor IS a
+    # field of a produced value, so the name is the accessor's name
+    # and the wire type is what it returns.
+    out += _wire_fields([(n, t.wire) for n, t in fields], 1)
+    out.append("")
+    for n, _ in fields:
+        # `object`, not a typed slot: these hold whatever the store
+        # handed over, StorePath and list included.
+        out.append(f"{INDENT}cdef object _{n}")
+    out += [
+        "",
+        f"{INDENT}def __init__(self):",
+        f"{INDENT * 2}raise TypeError(",
+        f'{INDENT * 3}"{name} objects come from {decl.built_by}, not from a '
+        f'constructor")',
+        "",
+    ]
+    out += _value_semantics(name, decl)
+    for m in cls.methods:
+        out.append(f"{INDENT}def {m.name}(self) -> {_py_type(m.ret)}:")
+        out += _doc(m.doc, 2)
+        out += [f"{INDENT * 2}return self._{m.name}", ""]
+
+    args = ", ".join(n for n, _ in fields)
+    out += [
+        f"{INDENT}@classmethod",
+        f"{INDENT}def _from_parts(cls, {args}):",
+        f'{INDENT * 2}"""Wire-deserialization helper (private, never '
+        f'surfaced)."""',
+        # __new__ without __init__, because __init__ refuses. This is
+        # the only place that may build one, and it is private.
+        f"{INDENT * 2}cdef {name} out = {name}.__new__({name})",
+    ]
+    out += [f"{INDENT * 2}out._{n} = {n}" for n, _ in fields]
+    out += [
+        f"{INDENT * 2}return out",
+        "",
+        f"{INDENT}def _parts(self):",
+        f'{INDENT * 2}"""Wire-serialization helper (private): one value per',
+        f'{INDENT * 2}_wire_fields entry, in order."""',
+        f"{INDENT * 2}return (" + ", ".join(f"self._{n}" for n, _ in fields)
+        + ("," if len(fields) == 1 else "") + ")",
+    ]
+    return out
+
+
+def produced_pxd(cls: Class) -> list[str]:
+    """The slots, so a sibling module can fill them.
+
+    A bound class's pxd publishes a pointer. This publishes the
+    object slots, because that is all a produced value has - and
+    something else has to assign them."""
+    out = [f"cdef class {cls.name}:"]
+    out += [f"{INDENT}cdef object _{m.name}"
+            for m in cls.methods if m.ret is not None]
+    return out
 
 
 def cython_files(cls: Class, module: str, doc: str) -> dict[str, str]:
