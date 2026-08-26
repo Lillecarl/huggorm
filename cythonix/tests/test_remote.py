@@ -13,6 +13,7 @@ import anyio
 import pytest
 
 import cythonix_bindings
+import cythonix_generated.async_store
 from cythonix_bindings import ContentAddressMethod as CA
 from cythonix_bindings import HashAlgorithm, MockDerivedPath
 from cythonix_bindings.errors import BadStorePath
@@ -459,6 +460,42 @@ async def test_a_store_location_crosses_as_a_value(
     # The field carries no "?", so it reads back as "" rather than as
     # None.
     assert (await store.to_store_path(printed)).sub_path() == ""
+    await store.aclose()
+
+
+async def test_a_link_is_followed_on_the_store_side(
+        client: Any, tmp_path: Any) -> None:
+    """The symlinks are read where the STORE is, not where the caller
+    is.
+
+    That is the same meaning add_path_to_store already carries, and it
+    is what makes this a remote call worth having: a client asking
+    which store object a link points at is asking about the server's
+    filesystem. The answer comes back in the store's terms, as a
+    string, so it crosses as a scalar and needs no handle.
+
+    real_path is the contrast: it names a location on the store's
+    machine, which a client cannot reach, so it has no rpc at all."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello\n")
+
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    path = await store.add_path_to_store("tree", str(src))
+    printed = await store.print_store_path(path)
+
+    link = tmp_path / "result"
+    link.symlink_to(f"{printed}/a.txt")
+
+    assert await store.follow_links_to_store(str(link)) == f"{printed}/a.txt"
+    assert (await store.follow_links_to_store_path(
+        str(link))).to_string() == path.to_string()
+
+    # real_path is not merely refused here - it is ABSENT. A wire
+    # blocker takes a method off the protocol, so the remote class
+    # never grows it, while the in-process wrapper keeps it.
+    assert not hasattr(store, "real_path")
+    assert hasattr(cythonix_generated.async_store.AsyncStore, "real_path")
     await store.aclose()
 
 

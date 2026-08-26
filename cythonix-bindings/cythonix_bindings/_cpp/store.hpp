@@ -109,6 +109,24 @@ inline StoreLocationParts to_store_path(const nix::Store & store, const std::str
 }
 
 /**
+ * Follow symlinks until the path lands in the store, and stop there.
+ *
+ * The first half of follow_links_to_store_path, and the half that
+ * keeps what the other one drops: the sub-path. A `result` symlink
+ * pointing at a package resolves to <store path>/bin/foo, not to the
+ * store path.
+ *
+ * The answer is in the STORE's terms, like print_store_path - its
+ * directory is the store directory, which a chroot store keeps at
+ * /nix/store while its files live somewhere else. So this is a string
+ * and not a location on this machine; real_path is that.
+ */
+inline std::string follow_links_to_store(const nix::Store & store, const std::string & path)
+{
+    return store.followLinksToStore(path).string();
+}
+
+/**
  * The same question as to_store_path, asked of a symlink.
  *
  * `to_store_path` is string work and never reads the filesystem, so it

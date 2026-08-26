@@ -21,6 +21,7 @@ from cythonix_bindings.c_store cimport (
     CStoreLocation,
     add_path_to_store,
     add_to_store,
+    follow_links_to_store,
     follow_links_to_store_path,
     init_libstore,
     open_store,
@@ -551,6 +552,36 @@ cdef class Store:
         return StoreLocation._from_parts(
             StorePath(out.path.decode('utf-8')),
             out.sub_path.decode('utf-8'))
+
+    def follow_links_to_store(self, path: str) -> str:
+        """Follow symlinks until the path lands in the store, and stop
+        there.
+
+        The first half of `follow_links_to_store_path`, and the half
+        that keeps what the other one drops. A `result` symlink
+        pointing at a package resolves to `<store path>/bin/foo`; the
+        other call answers with the store path alone.
+
+        A str, not a pathlib.Path, and the difference is real. The
+        answer is in the STORE's terms - the same spelling
+        `print_store_path` gives - so its directory is the store
+        directory, which a chroot store keeps at `/nix/store` while
+        its files live under `<root>/nix/store`. `real_path` is the
+        call that answers where the bytes are on THIS machine, and it
+        returns a path because it can.
+
+        The symlinks are read on the machine the store runs on. In
+        process that is here; over RPC it is the server's filesystem,
+        which is what makes this a remote call worth having - and the
+        same meaning `add_path_to_store` already carries.
+
+        Raises BadStorePath when the links run out somewhere else."""
+        cdef string c_path = path.encode('utf-8')
+        cdef CStore* store = self._get()
+        cdef string out
+        with nogil:
+            out = follow_links_to_store(deref(store), c_path)
+        return out.decode('utf-8')
 
     def follow_links_to_store_path(self, path: str) -> StorePath:
         """The same question as `to_store_path`, asked of a symlink.

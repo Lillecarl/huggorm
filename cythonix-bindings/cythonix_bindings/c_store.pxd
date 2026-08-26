@@ -40,6 +40,9 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # The same question asked of a symlink. Reads the filesystem, which
     # to_store_path never does.
     CStorePath * follow_links_to_store_path(const CStore & store, string path) except +translate_nix_error
+    # Its first half, which keeps the sub-path. A string because the
+    # answer is in the store's terms, not this machine's.
+    string follow_links_to_store(const CStore & store, string path) except +translate_nix_error
     # A vector of POINTERS for the same reason, one level down: the
     # binding owns every element it takes out.
     vector[CStorePath *] query_all_valid_paths(CStore & store) except +translate_nix_error

@@ -389,6 +389,38 @@ def test_a_store_follows_a_link_into_itself(
         f"{printed}/sub/b.txt").to_string() == path.to_string()
 
 
+def test_following_a_link_keeps_the_sub_path(
+        chroot: Store, source: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """The half follow_links_to_store_path drops.
+
+    A `result` symlink pointing INTO a package resolves to the file,
+    not to the store object holding it. The other call answers with
+    the store path alone, so this is the one that keeps `/sub/b.txt`.
+
+    The answer is in the STORE's terms and it says so by being a str.
+    A chroot store's files live under <root>/nix/store while its store
+    directory stays /nix/store, so what comes back here does not exist
+    on this machine - which is exactly why it is not a pathlib.Path."""
+    path = chroot.add_path_to_store("tree", str(source))
+    printed = chroot.print_store_path(path)
+
+    link = tmp_path / "result"
+    link.symlink_to(f"{printed}/sub/b.txt")
+
+    resolved = chroot.follow_links_to_store(str(link))
+    assert resolved == f"{printed}/sub/b.txt"
+    assert isinstance(resolved, str)
+
+    # The other call answers the other question about the same link.
+    assert chroot.follow_links_to_store_path(str(link)).to_string() == (
+        path.to_string())
+
+    # And what comes back is the store's spelling, not a location: it
+    # is not on this filesystem, while real_path's answer is.
+    assert not pathlib.Path(resolved).exists()
+    assert (chroot.real_path(path) / "sub" / "b.txt").exists()
+
+
 def test_a_link_that_leads_nowhere_near_the_store_is_refused(
         chroot: Store, tmp_path: pathlib.Path) -> None:
     """BadStorePath, the narrow type - unlike to_store_path, which
