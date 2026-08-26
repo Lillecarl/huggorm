@@ -8,7 +8,7 @@ client, reflection bytes later, and protoc input for other languages
 via a print step.
 
 Conventions:
-- package nixmock.v1, single file nixmock/v1/api.proto
+- package cythonix.v1, single file cythonix/v1/api.proto
 - every rpc's request field 1 is `Handle self` - instances live behind
   handles acquired from the Session service
 - wire-value types get a real message built from the _wire_fields the
@@ -39,8 +39,8 @@ from codegen.wiretypes import (
 
 Proto = dict[str, Any]
 
-PKG = "nixmock.v1"
-FILE = "nixmock/v1/api.proto"
+PKG = "cythonix.v1"
+FILE = "cythonix/v1/api.proto"
 
 SCALARS = {"str": "string", "int": "sint64", "bool": "bool",
            "bytes": "bytes"}
@@ -162,14 +162,27 @@ def service_name(cls_name: str) -> str:
     return f"{cls_name}Service"
 
 
+def _camel(method: str) -> str:
+    """`add_to_store` -> `AddToStore`.
+
+    A message name, not a method name. The rpcs keep the binding's own
+    snake_case on purpose - they are the Python surface spelled once
+    - while a message is a TYPE, and protobuf types are PascalCase.
+
+    One helper because the two used to disagree: the request kept the
+    snake_case and the response camel-cased it, so one method had two
+    spellings in one schema."""
+    return method.title().replace("_", "")
+
+
 def req_name(cls_name: str, method: str) -> str:
-    return f"{cls_name}_{method}Req"
+    return f"{cls_name}_{_camel(method)}Req"
 
 
 def resp_name(cls_name: str, method: str) -> str:
     # Class-prefixed: LocalStore and RemoteStore share method names, and
     # top-level message names must be unique across the file.
-    return f"{cls_name}_{method.title().replace('_', '')}Resp"
+    return f"{cls_name}_{_camel(method)}Resp"
 
 
 def method_path(cls_name: str, method: str) -> str:

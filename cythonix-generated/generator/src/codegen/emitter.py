@@ -545,7 +545,8 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
 
     init_kwargs = []
     if proto["threading"] == "affine":
-        init_kwargs.append(ast.keyword(arg="name", value=ast.Constant(value=f"flg-affine-{svc}")))
+        init_kwargs.append(ast.keyword(
+            arg="name", value=ast.Constant(value=f"cythonix-affine-{svc}")))
     if proto["abstract"]:
         # No runner and no target: an abstract base has no implementation
         # to construct. Saying so here beats letting the factory build a

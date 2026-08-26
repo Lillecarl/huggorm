@@ -45,3 +45,26 @@ server whose clients were built last week.
 
 Alternative rejected: leave it until 022 lands. The lock would then
 record the wrong names, and the migration doubles.
+
+## Done
+
+`cythonix.v1`, in `cythonix/v1/api.proto`. `x-cythonix-conn` for the
+connection token. `cythonix-pool` and `cythonix-affine-<class>` for
+the thread prefixes.
+
+`req_name` and `resp_name` share one `_camel` helper, so a method has
+one message spelling: `Store_AddToStoreReq` and
+`Store_AddToStoreResp`. The rpcs keep the binding's snake_case on
+purpose - an rpc name is the Python surface spelled once, while a
+message is a TYPE, and protobuf types are PascalCase.
+
+## Found on the way
+
+`grpc_pb.PKG` was a second hand-written copy of the package string,
+and the rename had to find it. It reads `manifest["package"]` now,
+which `grpc_schema.annotate` stamps - so it is derived like every
+other name and the next rename reaches it for free. The reflection
+test's fixture did the same thing and now asks the same source.
+
+That is the general shape of this task: the rename itself was four
+constants, and what it cost was finding the copies.

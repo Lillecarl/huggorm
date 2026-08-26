@@ -75,7 +75,7 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
     with _POOL_LOCK:
         if _POOL is None:
             _POOL = concurrent.futures.ThreadPoolExecutor(
-                max_workers=4, thread_name_prefix="flg-pool"
+                max_workers=4, thread_name_prefix="cythonix-pool"
             )
         return _POOL
 
@@ -266,7 +266,7 @@ class AffineRunner(BaseRunner):
     dedicated_thread = True
 
     def __init__(self, factory: Callable[[], Any],
-                 name: str = "flg-affine") -> None:
+                 name: str = "cythonix-affine") -> None:
         super().__init__(factory)
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix=name

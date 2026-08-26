@@ -43,7 +43,7 @@ ANON = "\x00anon"
 
 # The metadata key carrying the connection token on every request.
 # Reference convention for all transports (grpclib, SSH, stdio shims).
-TOKEN_HEADER = "x-nixmock-conn"
+TOKEN_HEADER = "x-cythonix-conn"
 
 
 def _new_id() -> str:

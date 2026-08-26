@@ -9,8 +9,6 @@ from google.protobuf import descriptor_pb2, descriptor_pool
 import cythonix_generated
 from cythonix_generated._wiretypes import check_manifest
 
-PKG = "nixmock.v1"
-
 
 def _pkg_dir() -> pathlib.Path:
     return pathlib.Path(cythonix_generated.__file__).parent
@@ -38,3 +36,15 @@ def load_manifest() -> dict[str, Any]:
     # not fail here - it would answer wrong, one lookup at a time.
     check_manifest(manifest)
     return manifest
+
+
+# The protobuf package every message and service sits in. DERIVED, not
+# written here: grpc_schema stamps it into the manifest in annotate(),
+# so a rename reaches this file the way it reaches every other
+# consumer. It used to be a second copy of the string, and a rename
+# had to find it (tasks/045).
+#
+# Read once, at import, because the manifest is read once anyway and
+# because every caller wants a constant rather than a function call
+# per rpc path.
+PKG: str = str(load_manifest()["package"])

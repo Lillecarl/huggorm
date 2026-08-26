@@ -417,7 +417,7 @@ async def test_behavior() -> None:
     except InternalError:
         pass
     assert _runtime.unwrap_arg(lazy_affine) is not None
-    assert lazy_affine._runner.born_thread_name.startswith("flg-affine")
+    assert lazy_affine._runner.born_thread_name.startswith("cythonix-affine")
 
     # Pool runners keep constructing lazily from any thread.
     pool_shell = _shell(_runtime.PoolRunner(lambda: {"ok": True}))
@@ -623,7 +623,7 @@ async def test_behavior() -> None:
     assert untouched_store._runner._obj is None, "expected an unconstructed wrapper"
     assert await flg.describe(untouched_store) == "store(uds://daemon)"
     born = untouched_store._runner.born_thread_name
-    assert born is not None and born.startswith("flg-affine"), (
+    assert born is not None and born.startswith("cythonix-affine"), (
         f"argument construction must stay on its own thread, not {born}")
     # ...and as a method argument too, not only a free-function one.
     untouched = AsyncEvalState("local")

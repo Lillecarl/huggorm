@@ -14,6 +14,7 @@ import pytest
 
 import cythonix_bindings
 import cythonix_generated.async_store
+from cythonix import grpc_pb
 from cythonix_bindings import ContentAddressMethod as CA
 from cythonix_bindings import HashAlgorithm, MockDerivedPath
 from cythonix_bindings.errors import BadStorePath
@@ -200,7 +201,7 @@ async def test_one_service_serves_either_implementation(
     h = await client.acquire(kind)
     assert await h.get_uri() == uri
     path = type(h)._rpc["get_uri"]["rpc"]["path"]
-    assert path == "/nixmock.v1.MockStoreService/get_uri", path
+    assert path == f"/{grpc_pb.PKG}.MockStoreService/get_uri", path
     assert isinstance(h, RPC_CLASSES["MockStore"]), type(h).__name__
     await client.release(h)
 

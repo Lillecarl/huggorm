@@ -539,7 +539,7 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     server = grpclib.server.Server(
         reflected, status_details_codec=SchemaStatusDetails(pool))
     await server.start(host, port)
-    print(f"nixmock gRPC server listening on {host}:{port} "
+    print(f"cythonix gRPC server listening on {host}:{port} "
           f"(lease ttl: {lease_ttl if lease_ttl else 'off'})")
     try:
         await server.wait_closed()

@@ -17,7 +17,10 @@ from conftest import Server, run_tool
 
 @pytest.fixture(scope="session")
 def pkg() -> str:
-    return "nixmock.v1"
+    """The generator's own answer, not a copy of it."""
+    from cythonix.grpc_pb import PKG
+
+    return PKG
 
 
 async def call(grpcurl: str, server: Server, symbol: str,
