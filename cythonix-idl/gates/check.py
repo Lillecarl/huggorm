@@ -32,13 +32,15 @@ manifest half is skipped and says so rather than passing quietly.
 """
 
 import argparse
+import ast
 import json
 import pathlib
 import re
 import sys
 
 import cythonix_idl
-from cythonix_idl import emit, manifest
+from cythonix_idl import emit, manifest, pyi
+from cythonix_idl.generate import MODULES
 from cythonix_idl.read import read
 
 # The repo root: this file sits in cythonix-idl/gates/.
@@ -566,6 +568,56 @@ def check_manifest(decl_path: pathlib.Path,
     return problems
 
 
+# A stub the transform writes and the string emitter does not, with
+# the reason. The transform WINS here: it moves the declaration's own
+# nodes, so a docstring the declaration wrote arrives intact, where a
+# printer has to be told to carry it and was not.
+STUB_BETTER = (
+    ('"""Raises when the name is not a store path. The message comes',
+     "the constructor's docstring. The declaration wrote it and the "
+     "transform moves the node, so it arrives; the string emitter "
+     "builds a signature and drops the body it came from."),
+)
+
+
+def check_stub(decl_path: pathlib.Path, stub_path: pathlib.Path) -> list[str]:
+    """The stub a TRANSFORM produces, against the one a printer did.
+
+    The other emitters build text because they have to - a `.pyx` has
+    no AST and a nanobind module body is one expression. A `.pyi` is
+    Python, and the declaration is already Python, so `pyi.py` edits
+    the declaration's tree and unparses it instead.
+
+    This says the two agree. Where they do not, the difference is
+    listed above with the reason, and every one so far is the
+    transform keeping something the printer dropped."""
+    mod = read(str(decl_path))
+    tree = ast.parse(decl_path.read_text())
+    got = pyi.stub(mod, tree, "x").splitlines()[1:]
+    want = stub_path.read_text().splitlines()
+    # Past the shipped module docstring, which is the generator's own
+    # sentence about itself rather than anything the declaration said.
+    while want and not want[0].startswith("class "):
+        want.pop(0)
+    while got and not got[0].startswith("class "):
+        got.pop(0)
+    extra = [line for line in got if line not in want]
+    missing = [line for line in want if line not in got]
+    problems = []
+    for line in extra:
+        why = next((w for start, w in STUB_BETTER
+                    if line.strip().startswith(start)), "")
+        if why:
+            print(f"    {line.strip()[:40]}...: THE TRANSFORM IS RIGHT. {why}")
+        elif line.strip() and not line.strip().startswith(('"""', "from ")):
+            problems.append(f"    only from the transform: {line}")
+    for line in missing:
+        problems.append(f"    only from the string emitter: {line}")
+    print(f"  {stub_path.name}: {len(want)} lines, "
+          f"{len(want) - len(missing)} of them from the transform too")
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("declaration", nargs="*", default=["path", "store"])
@@ -580,6 +632,17 @@ def main() -> int:
         if args.manifest:
             print("  declared manifest entry vs the reflected one:")
             problems += check_manifest(decl, pathlib.Path(args.manifest))
+            stub = (pathlib.Path(args.manifest).parent.parent
+                    / "cythonix_bindings-stubs" / f"{name}.pyi")
+            # Only where the declaration owns the WHOLE module. A stub
+            # holds every class in a module, so comparing one against
+            # a declaration that covers part of it reports the rest as
+            # missing - which is work not done rather than a
+            # disagreement, and the per-method count above already
+            # measures it.
+            if stub.exists() and f"decl/{name}.py" in MODULES:
+                print("  stub by TRANSFORM vs stub by string emitter:")
+                problems += check_stub(decl, stub)
         else:
             print("  manifest: SKIPPED - pass --manifest <manifest.json>")
 
