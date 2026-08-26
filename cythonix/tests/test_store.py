@@ -611,12 +611,10 @@ def test_a_missing_path_is_libstores_error(
 def test_a_store_hands_back_every_path_it_holds(chroot: Store) -> None:
     """query_all_valid_paths, on a store that HOLDS something.
 
-    Each element arrives as a heap pointer the binding owns, because
-    nix::StorePath has no default constructor and Cython cannot hold
-    one in a loop temporary. The loop gives each pointer to a wrapper
-    and blanks the slot, so the finally clause frees only what never
-    got one. Skip the blanking and reading these names is a
-    use-after-free.
+    Every element crosses as a real `nix::StorePath`. libstore answers
+    with a `std::set`, which nanobind's caster turns into a Python
+    list of bound objects - so nothing here is a base name that was
+    printed and parsed back, and the order is the set's own.
 
     Until a store could be WRITTEN to, this needed the live system
     (tasks/037). It does not any more."""

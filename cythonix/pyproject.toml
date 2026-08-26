@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cythonix"
 version = "0.1.0"
-description = "Python library that subclasses Cython bindings"
+description = "Python library over the generated Nix bindings"
 requires-python = ">=3.10"
 dependencies = ["cythonix-bindings", "cythonix-generated"]
 

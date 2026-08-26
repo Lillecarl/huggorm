@@ -321,7 +321,7 @@ def test_a_declared_order_is_an_order_that_works(
     The stubs are generated from `dunders`, so a type listed there as
     ordering typechecks under `sorted()`. For two of them that was a
     promise nothing kept: `PathInfo` and `StoreLocation` define
-    `__eq__` and no ordering, Cython fills all six comparison slots
+    `__eq__` and no ordering, the class gets all six comparison slots
     anyway, and reflection read the slots back as implemented
     comparisons. `sorted(infos)` passed the typechecker and raised
     TypeError (tasks/052).
@@ -358,10 +358,11 @@ def test_reflection_would_still_get_the_order_wrong(
         manifest: dict[str, Any]) -> None:
     """Why `dunders` cannot be reflected, held as a fact.
 
-    A cdef class defining any rich comparison gets `tp_richcompare`,
+    A bound class defining any rich comparison gets `tp_richcompare`,
     and CPython fills all six comparison slots with wrappers. So for a
     value type with `__eq__` and no ordering, `cls.__lt__` EXISTS and
-    refuses when called.
+    refuses when called. It was a cdef class that made this a bug; a
+    nanobind one behaves the same way, which is why the test stayed.
 
     That is what made the reflected manifest wrong, and it is still
     true - the fix was to stop asking the compiled class. This test

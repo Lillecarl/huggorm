@@ -1,6 +1,6 @@
 """
 Build integration: setuptools runs the codegen as part of the wheel
-build, exactly like Cython's build_ext hook compiles pyx sources.
+build, through the same `build_py` hook a compiler would use.
 
 `codegen` and `cythonix-bindings` arrive via build-system (see
 default.nix), so the imports below are satisfied by the standard PEP

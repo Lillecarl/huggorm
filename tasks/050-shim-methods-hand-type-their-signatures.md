@@ -94,15 +94,15 @@ the IDL idea arrives at, faster.
 
 ## What the spike found, 2026-08-26
 
-`spike-idl/` holds the investigation. Two things came out of it, and
-the second replaced the first.
+`cythonix-idl/` grew out of the investigation. Two things came out of
+it, and the second replaced the first.
 
 **A Python IDL works.** `path.pyx`, `path.pxd` and `c_path.pxd` were
 regenerated from a plain `.py` declaration read by import, compiled in
 place of the hand-written ones, and passed the whole gate. Ignoring
-comments and docstring wording the diff was empty. `spike-idl/README.md`
-has it, including four bugs that emitting found and a template would
-have shipped - three of which compiled fine.
+comments and docstring wording the diff was empty. Task 053 has it,
+including four bugs that emitting found and a template would have
+shipped - three of which compiled fine.
 
 **Cython's pure mode is the better target.** Carl asked whether it
 could be extended rather than worked around. It can, in about ninety

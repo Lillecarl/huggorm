@@ -178,8 +178,8 @@ class Store:
 
         There is no getUri() any more. 2.34 moved it onto the config
         as getHumanReadableURI, and Store reaches its config by
-        reference - which a pxd cannot describe without declaring the
-        whole config type for the sake of one string."""
+        reference - so the binding goes through a helper in `_cpp/`
+        rather than declaring the whole config type for one string."""
     @cxx_name("isValidPath")
     def is_valid_path(self, path: "StorePath") -> Bint:
         """Whether the store has that path."""
@@ -205,11 +205,11 @@ class Store:
         data: Bytes,
         method: ContentAddressMethod = ContentAddressMethod.NAR,
         hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
-        # The implicit Optional is the .pyx surface exactly, and the
+        # The implicit Optional is the SURFACE exactly, and the
         # generated protocol above already spells it
         # `list[StorePath] | None`. Writing the wider type here would
-        # change what reflection reads back and say nothing new to a
-        # caller, so the rule is silenced rather than followed.
+        # say nothing new to a caller, so the rule is silenced rather
+        # than followed.
         references: "list[StorePath]" = None,  # noqa: RUF013
     ) -> "StorePath":
         """Add one file's contents to the store, and name the result.
@@ -260,11 +260,11 @@ class Store:
         path: Str,
         method: ContentAddressMethod = ContentAddressMethod.NAR,
         hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
-        # The implicit Optional is the .pyx surface exactly, and the
+        # The implicit Optional is the SURFACE exactly, and the
         # generated protocol above already spells it
         # `list[StorePath] | None`. Writing the wider type here would
-        # change what reflection reads back and say nothing new to a
-        # caller, so the rule is silenced rather than followed.
+        # say nothing new to a caller, so the rule is silenced rather
+        # than followed.
         references: "list[StorePath]" = None,  # noqa: RUF013
     ) -> "StorePath":
         """Add a file or a directory from the filesystem to the store.

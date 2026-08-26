@@ -3,10 +3,9 @@ nix::Store, the shape that blocks.
 
 StorePath and ValidPathInfo both read memory the object already owns.
 This one talks to a daemon or a database, so every call can wait - and
-that single declared fact, `blocking=True`, is what makes the nanobind
-emitter write `nb::call_guard<nb::gil_scoped_release>()` and the
-Cython emitter write `with nogil:`. One decision, two spellings,
-neither backend named in the declaration.
+that single declared fact, `blocking=True`, is what makes the emitter
+write `nb::call_guard<nb::gil_scoped_release>()`. One decision, and
+the declaration never names the backend that reads it.
 
 Three shapes appear here for the first time:
 

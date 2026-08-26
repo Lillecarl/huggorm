@@ -1,8 +1,9 @@
 """
-CLI: parse the pxd, reflect the installed bindings, emit the package.
+CLI: read the declarations, emit the package.
 
-Glue only — extraction lives in model.py, emission in emitter.py.
-Installed as the `codegen-generate` entry point.
+Glue only — the protocol dict comes from `cythonix_idl`, its rules
+live in model.py, and emission lives in emitter.py. Installed as the
+`codegen-generate` entry point.
 """
 
 import argparse
@@ -211,8 +212,8 @@ def main(argv: list[str] | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     # Which classes are HANDED BACK rather than constructed. The
-    # declaration says, and it is the only thing that could: this used
-    # to be a walk over the pxd's return types.
+    # declaration says, and it is the only thing that could: this was
+    # a walk over the pxd's return types.
     returned_classes: list[type] = []
     named: set[str] = set()
     for name in declared_returned():
@@ -471,7 +472,7 @@ def main(argv: list[str] | None = None) -> None:
                     if p["type"] == "Any":
                         unresolved.append(
                             f"{cls_name}.{m['name']} param {p['name']!r} "
-                        f"(live annotation and pxd both silent)")
+                        f"(the declaration does not spell it)")
                 if m["return_type"] == "Any":
                     unresolved.append(f"{cls_name}.{m['name']} return type")
     if unresolved:
@@ -551,7 +552,7 @@ def main(argv: list[str] | None = None) -> None:
         order_of[p["name"]]))
     # A stub says NoReturn for a constructor that raises. Returned
     # types are produced by definition; a wrapper says so with
-    # _produced, because nothing about it can be inferred from the pxd.
+    # `@produced`, which is the declaration's word for it.
     produced = ({p["name"] for p in returned_protos}
                 | {p["name"] for p in all_protos if p["produced"]})
     home = {p["name"]: p["module"] for p in all_protos}

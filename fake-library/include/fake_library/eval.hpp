@@ -7,7 +7,8 @@
 //   libexpr, a value dies when the collector can no longer see any
 //   reference to it, even while its producing EvalState lives on.
 //   Bindings keep values alive by holding the pointer where the
-//   collector can see it (see eval.pyx anchor blocks).
+//   collector can see it (see cythonix::Bridge in the binding's
+//   `_cpp/eval.hpp`).
 // - Values can be thunks: reading an unforced value throws, forcing it
 //   mutates the value in place (the real forceValue does the same).
 // - A value can be a LIST or an ATTRIBUTE SET holding other values, so
@@ -49,11 +50,11 @@ public:
     // may be an unforced thunk: forcing a list forces the list, not
     // what is in it, exactly as in libexpr.
     //
-    // Index-based, and no container in any signature. That was a
-    // Cython constraint once - a template type in a pxd rendered as
-    // itself and mapped to nothing - and it outlived it: a collection
-    // of PROXIES is the recursive value message, not another loop in
-    // a binding.
+    // Index-based, and no container in any signature. That began as
+    // a Cython constraint - a template type in a pxd rendered as
+    // itself and mapped to nothing - and it outlived the constraint:
+    // a collection of PROXIES is the recursive value message, not
+    // another loop in a binding.
     size_t size() const;                            // list or attrs
     Value * at(size_t index) const;                 // list
     // Attribute sets are kept in NAME ORDER, so walking the index
@@ -124,10 +125,10 @@ public:
     // produce the shapes without a parser for them. All return forced
     // values: a thunk is what parse_expr is for.
     //
-    // Collections are filled one element at a time. A builder taking a
-    // container could not be declared in the pxd, and building in place
-    // is also what keeps every intermediate reachable: the collector
-    // sees the elements through the value they were added to.
+    // Collections are filled one element at a time. Building in place
+    // is what keeps every intermediate reachable: the collector sees
+    // the elements through the value they were added to. A builder
+    // taking a whole container would have to root them itself.
     Value * make_int(long long v);
     Value * make_string(const std::string & v);
     Value * make_bool(bool v);

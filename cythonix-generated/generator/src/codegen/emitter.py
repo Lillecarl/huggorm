@@ -1174,10 +1174,9 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     not exist and NOT catch a str passed where a StorePath is declared
     (tasks/027).
 
-    Everything here already exists in the protocol dicts: method
-    signatures reflected from the live class and backfilled from the
-    pxd, and constructor signatures from the pxd, which is the only
-    place a Cython constructor's signature exists at all (019).
+    Everything here already exists in the protocol dicts: every
+    method signature and every constructor signature, as the
+    declaration wrote them.
 
     `produced` names the classes that are handed back rather than
     constructed. Their __init__ raises unconditionally, so the stub

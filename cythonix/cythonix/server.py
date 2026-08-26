@@ -304,9 +304,9 @@ class Dispatcher:
 
         The old Session/Acquire took a class NAME and nothing else, so
         it could only build things whose constructor needs no arguments
-        - and it decided which those were by inspecting __init__, which
-        reports (self, /, *args, **kwargs) for every Cython class alike.
-        The check was a constant True. Construction now lives on the
+        - and it decided which those were by inspecting __init__,
+        which reports (self, /, *args, **kwargs) for every bound class
+        alike. The check was a constant True. Construction now lives on the
         class's own service with its declared parameters."""
         import cythonix_generated as flg
 

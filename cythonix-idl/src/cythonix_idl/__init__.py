@@ -15,8 +15,9 @@ the others:
 - `pyenum.py` writes a vocabulary as a StrEnum module, the same way.
 
 It was `spike-idl/` while the question was whether this works. The
-build compiles what it emits now, and `cythonix_bindings.path` has no
-hand-written source at all, so it is a package.
+build compiles what it emits now, and no module in
+`cythonix_bindings` has hand-written source at all, so it is a
+package.
 """
 
 import pathlib

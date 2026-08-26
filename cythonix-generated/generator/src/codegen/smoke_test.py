@@ -66,8 +66,8 @@ def test_a_resolved_class_keeps_its_module() -> None:
     """An annotation must not depend on its NEIGHBOURS.
 
     get_type_hints resolves a whole function at once. A method with a
-    `StorePath` parameter fails to resolve - StorePath is a cimport,
-    not a Python global - so its written strings survive; one whose
+    `StorePath` parameter can fail to resolve - the name is not a
+    Python global - so its written strings survive; one whose
     annotations all resolve gets real classes, and `__name__` on a
     class drops the module it lives in. So `-> pathlib.Path` meant
     `pathlib.Path` or `Path` depending on what else the method
@@ -537,9 +537,8 @@ async def test_behavior() -> None:
     assert await v.string_value() == "hello nix"
 
     # Free functions have generated wrappers too: module-level
-    # coroutines on the shared pool, with the pxd filling in the
-    # parameter type Cython dropped (describe's `obj` is untyped in the
-    # pyx and CMockStore& in the pxd).
+    # coroutines on the shared pool, with the declaration supplying
+    # the parameter type - `describe(obj: "MockStore")`.
     import cythonix_generated as flg
 
     assert await flg.describe(local) == "store(local)"

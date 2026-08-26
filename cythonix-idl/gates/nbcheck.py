@@ -1,9 +1,11 @@
 """
 The nanobind gate: emitted bindings against nanopynix's hand-written.
 
-`check.py` does this for the Cython backend, diffing against
-`cythonix-bindings`. This does it for the C++ one, and the reference
-is better: nanopynix's bindings are hand-written, tested, and in use.
+The repo's own bindings are no reference: they ARE what this emitter
+writes, so diffing a file against itself proves nothing. nanopynix is
+the reference instead - hand-written nanobind over the same library,
+tested and in use - and it is not in this repo, which is the whole
+point. It is skipped with a reason on a machine without it.
 
 ## Per accessor, not per line
 
@@ -92,8 +94,8 @@ BETTER = {
     ("StorePath", "__copy__"): (
         "__copy__",
         "a value COPIES. Without it copy.copy falls through to pickle, "
-        "which a bound C++ type cannot do - verified: the built module "
-        "raises TypeError where the Cython one hands back a copy."),
+        "which a bound C++ type cannot do - verified: without these "
+        "two the built module raises TypeError."),
     ("StorePath", "__deepcopy__"): (
         "__deepcopy__",
         "as __copy__. A bound value is immutable, so a deep copy IS a "
@@ -102,8 +104,8 @@ BETTER = {
         "base_name=",
         "a repr names its fields. The declaration says the one field is "
         "called base_name and is read by to_string; a repr built from "
-        "the accessor alone drops the name, and the Cython backend "
-        "prints it - so one declaration was answering twice."),
+        "the accessor alone drops the name that the declaration "
+        "already gave it."),
     ("ValidPathInfo", "__copy__"): ("__copy__", "as StorePath's."),
     ("ValidPathInfo", "__deepcopy__"): ("__deepcopy__", "as StorePath's."),
     ("ValidPathInfo", "__repr__"): (

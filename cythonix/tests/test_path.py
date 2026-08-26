@@ -45,9 +45,9 @@ def test_validation_comes_from_libstore() -> None:
 
 
 def test_a_nix_error_keeps_its_type() -> None:
-    """Cython's bare `except +` maps anything it does not recognise
+    """nanobind's own translator maps anything it does not recognise
     onto RuntimeError, which loses every distinction libstore drew.
-    `except +translate_nix_error` is the hook that keeps them, and the
+    The module registers `translate_nix_error` ahead of it, and the
     hierarchy mirrors nix's own so catching the base still works."""
     with pytest.raises(NixError) as caught:
         StorePath("nope")

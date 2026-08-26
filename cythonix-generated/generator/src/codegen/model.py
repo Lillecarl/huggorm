@@ -61,9 +61,9 @@ _PRIMITIVES = {
     "long long": "int",
     "size_t": "int",
     "ssize_t": "int",
-    # <stdint.h> spellings. c_eval.pxd already declares int64_t; without
-    # these the pxd return type went unmapped and the backfill fell back
-    # to whatever the live annotation happened to say.
+    # <stdint.h> spellings. A declaration says `I64` or `U64`, and
+    # `manifest.PYTHON` maps the C++ onto `int` before the name gets
+    # here - so these are what a field type is checked against.
     "int8_t": "int",
     "int16_t": "int",
     "int32_t": "int",
@@ -89,8 +89,8 @@ def _qualified(cls: Any) -> str:
 
     That went unnoticed because it depends on something unrelated:
     get_type_hints resolves a whole function at once, so a method with
-    a `StorePath` parameter fails to resolve (StorePath is a cimport,
-    not a Python global) and keeps its written strings, while a method
+    a `StorePath` parameter can fail to resolve (the name is not a
+    Python global) and keeps its written strings, while a method
     whose annotations all resolve loses every module. The same
     declaration meant two different things depending on its
     NEIGHBOURS.

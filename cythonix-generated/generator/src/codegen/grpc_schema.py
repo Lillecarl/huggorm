@@ -14,7 +14,7 @@ Conventions:
 - wire-value types get a real message built from the _wire_fields the
   binding declares; proxy types appear as Handle fields; scalars map
   directly. NO type name is hardcoded here: adding a wire-value means
-  editing the pyx and nothing else.
+  editing one declaration and nothing else.
 
 This module also owns naming. annotate() writes every rpc's service,
 method path and message names INTO the manifest, so the server and the

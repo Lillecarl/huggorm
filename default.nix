@@ -28,16 +28,16 @@ rec {
   # This is the step that makes the declaration load-bearing. Before
   # it, the emitter wrote its files beside the hand-written ones and a
   # gate diffed them - which proves the emitter COULD have written the
-  # binding. Here it DOES: `path.pyx`, `path.pxd` and `c_path.pxd` are
-  # not in the repo at all, and the only thing standing behind
-  # `cythonix_bindings.path` is `cythonix-idl/src/cythonix_idl/decl/path.py`.
+  # binding. Here it DOES: there is no binding source in the repo at
+  # all, and the only thing standing behind `cythonix_bindings.path`
+  # is `cythonix-idl/src/cythonix_idl/decl/path.py`.
   bindings-src = pkgs.runCommand "cythonix-bindings-src" { } ''
     cp -r ${./cythonix-bindings} $out
     chmod -R u+w $out
     ${lib.getExe idlPython} -m cythonix_idl.generate $out/cythonix_bindings
   '';
   # The bindings. Every module is a nanobind extension whose C++ is
-  # written from a declaration before this builds - no pyx, no pxd.
+  # written from a declaration before this builds.
   cythonix-bindings = pkgs.callPackage ./cythonix-bindings {
     inherit fake-library cythonix-idl;
     src = bindings-src;
@@ -48,7 +48,9 @@ rec {
     inherit cythonix-bindings;
     inherit cythonix-generated;
   };
-  # AST codegen layer between bindings and python: pxd + live bindings -> generated stubs
+  # AST codegen layer between bindings and python: the declarations
+  # -> async wrappers, protocols, an RPC client, a wire schema and
+  # the binding stubs.
   cythonix-generated = pkgs.callPackage ./cythonix-generated {
     inherit fake-library;
     inherit cythonix-bindings;
@@ -118,11 +120,11 @@ rec {
   # The declaration's one remaining text gate.
   #
   # There were three. Two compared an emitted file against something
-  # built the other way: emitted Cython against the repo's Cython,
-  # and a nanobind StorePath against a Cython one. Both are gone,
-  # because what they compared against is gone - `cythonix_bindings`
-  # IS the emitted nanobind now, and a diff of a file against itself
-  # proves nothing.
+  # built the other way: emitted Cython against the repo's own, and a
+  # nanobind StorePath against a Cython one. Both are gone, because
+  # what they compared against is gone - `cythonix_bindings` IS the
+  # emitted nanobind now, and a diff of a file against itself proves
+  # nothing.
   #
   # What replaced them is stronger than a text diff and it is already
   # in this file: the modules COMPILE from the declarations, they

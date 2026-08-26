@@ -144,7 +144,8 @@ async def main() -> None:
         print("caught InternalError:", e.to_dict())
 
     print("\n=== constructors are typed, so arity fails at the call site ===")
-    # The wrapper states its constructor parameters, taken from the pxd.
+    # The wrapper states its constructor parameters, from the
+    # declaration that also wrote the binding.
     # A wrong call used to sail through __init__(*args) and surface much
     # later, from inside the lazy factory on a worker thread.
     try:

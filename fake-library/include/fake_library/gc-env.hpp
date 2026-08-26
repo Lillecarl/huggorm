@@ -15,8 +15,9 @@
 // fallback branch behind it. Both are gone. Detection made ODR agreement
 // depend on every TU seeing the same include path - true here by luck,
 // silent when it stopped being true. The fallback could never compile in
-// this build graph either, because c_eval.pxd includes gc/gc.h and binds
-// GC_malloc_uncollectable directly. Real Nix does support a no-GC build;
+// this build graph either, because the binding's own `_cpp/eval.hpp`
+// includes gc/gc.h and calls GC_malloc_uncollectable directly. Real Nix
+// does support a no-GC build;
 // reintroducing one here means building and testing it, not restoring a
 // branch nothing ever compiled.
 
