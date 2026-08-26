@@ -266,9 +266,16 @@ def type_of(node: ast.expr, vocab: dict[str, str]) -> Type:
         if get_origin(alias) is not None:
             for meta in get_args(alias)[1:]:
                 if isinstance(meta, Cxx):
-                    # The PYTHON spelling of an alias is its first arg:
-                    # `Annotated[str, Cxx("string_view")]` is a str.
-                    return Type(python=get_args(alias)[0].__name__, cxx=meta)
+                    # The PYTHON spelling of an alias is its first
+                    # arg: `Annotated[str, Cxx("string_view")]` is a
+                    # str. QUALIFIED when it is not a builtin, because
+                    # `Path` alone is ambiguous and `pathlib.Path` is
+                    # what an annotation has to say to typecheck.
+                    inner = get_args(alias)[0]
+                    name = inner.__name__
+                    if inner.__module__ != "builtins":
+                        name = f"{inner.__module__}.{name}"
+                    return Type(python=name, cxx=meta)
         raise DeclarationError(
             node, f"'{node.id}' is vocabulary but carries no C++ spelling. "
                   f"Annotate the alias with Cxx(...) in declare.py.")

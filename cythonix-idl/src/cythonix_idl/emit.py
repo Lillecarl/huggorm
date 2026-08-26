@@ -93,6 +93,12 @@ def _py_type(t: Type, python_style: bool = False) -> str:
         raise TypeError(
             f"'{t.cxx.spelling}' has no pyx spelling. Add it to "
             f"emit.PYX_SPELLING once the boundary knows how to marshal it.")
+    if "." in t.python:
+        # A qualified name: the alias names a Python CLASS rather than
+        # a builtin, and that class is what the signature promises.
+        # `real_path` crosses as a std::string and reads as a
+        # pathlib.Path, because a path on THIS machine is a path.
+        return t.python
     table = PY_SPELLING if python_style else PYX_SPELLING
     return table[t.cxx.spelling]
 
@@ -318,7 +324,13 @@ def _marshal_out(t: Type, expr: str,
     if t.cxx.copy == "view":
         return [], [f"{pad}return _view({expr})"]
     if t.cxx.spelling == "string":
-        return [], [f"{pad}return {expr}.decode('utf-8')"]
+        decoded = f"{expr}.decode('utf-8')"
+        if t.python != "str":
+            # A string at the boundary and something else above it.
+            # The Python type's own constructor is the conversion, and
+            # naming it is the whole of what the alias promised.
+            decoded = f"{t.python}({decoded})"
+        return [], [f"{pad}return {decoded}"]
     return [], [f"{pad}return {expr}"]
 
 

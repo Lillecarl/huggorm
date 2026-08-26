@@ -22,6 +22,7 @@ be copied before it reaches Python is the emitter's rule, because it
 is a fact about the boundary rather than about nix::StorePath.
 """
 
+import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any
@@ -54,6 +55,12 @@ Bint = Annotated[bool, Cxx("bint")]
 # guess, and it would guess the same for two fields that differ.
 U64 = Annotated[int, Cxx("uint64_t")]
 I64 = Annotated[int, Cxx("int64_t")]
+# A std::string at the boundary and a pathlib.Path above it. Not the
+# same as `Str`, and the difference is the whole point of the two:
+# `print_store_path` answers in the STORE's terms, which may name a
+# directory this machine does not have, and `real_path` answers where
+# the bytes are here. Only the second is a path a caller can open.
+Path = Annotated[pathlib.Path, Cxx("string")]
 
 
 @dataclass(frozen=True)
