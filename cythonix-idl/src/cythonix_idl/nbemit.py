@@ -63,6 +63,22 @@ CXX_PARAM = {
     "string": ("const std::string &", "string"),
     "string_view": ("std::string_view", "string_view"),
     "bint": ("bool", None),
+    "uint64_t": ("std::uint64_t", None),
+    "int64_t": ("std::int64_t", None),
+}
+
+# A declared Python type with no C++ alias behind it, and the C++ it
+# crosses as. Each entry is a caster nanobind ships, so nothing here
+# is flattened on the way through.
+#
+# This is where the two backends part company. Cython could declare
+# none of these - a pxd has no std::set, no std::optional and no
+# non-default-constructible member - so its emitter turned every one
+# of them into a string and parsed it back. nanobind casts them, so
+# a store path stays a store path from libstore to Python.
+CXX_PYTHON = {
+    "bytes": ("nb::bytes", None),
+    "pathlib.Path": ("const std::filesystem::path &", "filesystem"),
 }
 
 # Comparison dunders and the C++ operator each one binds. Every entry
@@ -94,6 +110,57 @@ def _self(cls: Class) -> str:
     return "".join(c for c in cls.name if c.isupper()).lower() or "self"
 
 
+def _bare(cls: Class) -> str:
+    """The C++ type behind a declared class, or a refusal."""
+    if cls.is_words:
+        # A vocabulary. The member IS the string a Nix parser takes,
+        # so it crosses as one - a fact about the words rather than
+        # about either binding.
+        return "std::string"
+    if not cls.decl.cxx:
+        raise TypeError(
+            f"'{cls.name}' has no C++ type behind it. Only a class with "
+            f"@binding(cxx=...) can cross as one.")
+    return cls.decl.cxx
+
+
+def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | None]:
+    """A declared type as C++ carries it BY VALUE, and its caster.
+
+    The value form, not the parameter form. A return is a value, a
+    vector's element is a value, and an optional's payload is a
+    value - so this is the shape everything else is built from and
+    `_param` adds the reference where a parameter wants one."""
+    known = known or {}
+    inner = t.python.removesuffix("| None").strip()
+    if t.python.endswith("| None"):
+        held, _ = _cxx(Type(python=inner, cxx=t.cxx, bound=t.bound), known)
+        return f"std::optional<{held}>", "optional"
+    if inner.startswith("list["):
+        item = inner[len("list["):-1]
+        held, _ = _cxx(Type(python=item, bound=item[:1].isupper()), known)
+        # A vector, not the std::set libstore keeps them in. A set
+        # casts to a Python set, which has no order - and every one
+        # of these answers is sorted, which is information a caller
+        # can use.
+        return f"std::vector<{held}>", "vector"
+    if t.bound or inner in known:
+        if inner not in known:
+            raise TypeError(
+                f"'{inner}' names a class this run has not read. Pass its "
+                f"declaration too, so the C++ spelling can be resolved.")
+        spelled = _bare(known[inner])
+        return spelled, "string" if spelled == "std::string" else None
+    if inner in CXX_PYTHON:
+        return CXX_PYTHON[inner]
+    if t.cxx is None or t.cxx.spelling not in CXX_PARAM:
+        raise TypeError(
+            f"'{t.python}' has no C++ spelling. A bound class names types "
+            f"through an Annotated alias in declare.py.")
+    spelled, caster = CXX_PARAM[t.cxx.spelling]
+    return spelled.removeprefix("const ").removesuffix(" &"), caster
+
+
 def _param(t: Type, known: dict[str, Class] | None = None
            ) -> tuple[str, str | None]:
     """The C++ spelling of a declared type, and the caster it needs.
@@ -102,6 +169,15 @@ def _param(t: Type, known: dict[str, Class] | None = None
     through `known`, which maps a declared name to its C++ spelling.
     So `is_valid_path(path: StorePath)` becomes `const nix::StorePath
     &`, and neither declaration repeats the other's C++ name."""
+    inner = t.python.removesuffix("| None").strip()
+    if (t.python.endswith("| None") or inner.startswith("list[")
+            or inner in CXX_PYTHON):
+        spelled, caster = _cxx(t, known)
+        # By const reference, because these are the types worth not
+        # copying. `nb::bytes` is already a handle and says so itself.
+        if spelled.startswith(("nb::", "const ")):
+            return spelled, caster
+        return f"const {spelled} &", caster
     if t.bound:
         if not known or t.python not in known:
             raise TypeError(
@@ -126,7 +202,7 @@ def _param(t: Type, known: dict[str, Class] | None = None
     return CXX_PARAM[t.cxx.spelling]
 
 
-def includes(cls: Class) -> list[str]:
+def includes(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     """Exactly the headers this binding needs, and no others.
 
     Derived from the declared types rather than listed. A caster left
@@ -134,42 +210,50 @@ def includes(cls: Class) -> list[str]:
     at RUNTIME with a bare std::bad_cast out of module init, which is
     a bad way to learn about a missing include.
 
-    Two readings, because the two shapes speak different vocabularies.
-    A bound class names C++ types through Annotated aliases, so the
-    caster comes from the C++ spelling. A PRODUCED value's accessors
-    are plain Python, so it comes from the Python one."""
+    Every declared type of every method, parameter and return alike.
+    A return needs its caster as much as a parameter does, and the
+    first version only walked the parameters - which held while the
+    only return was a string_view and stopped the moment one was a
+    vector."""
     casters: set[str] = set()
 
-    def from_cxx(t: Type) -> None:
-        if (c := _param(t)[1]):
-            casters.add(c)
+    def note(t: Type | None) -> None:
+        if t is None:
+            return
+        try:
+            _, caster = _cxx(t, known)
+        except TypeError:
+            # A type this emitter cannot spell is reported where it is
+            # emitted, with the method that named it. Failing here
+            # would name only the type.
+            return
+        if caster:
+            casters.add(caster)
+        # A container or an optional needs its ELEMENT's caster too:
+        # `list[StorePath]` needs <vector>, and a `list[str]` needs
+        # <string> beneath it.
+        inner = t.python.removesuffix("| None").strip()
+        if inner.startswith("list["):
+            note(Type(python=inner[len("list["):-1],
+                      bound=inner[len("list["):-1][:1].isupper()))
+        elif inner != t.python:
+            note(Type(python=inner, cxx=t.cxx, bound=t.bound))
 
-    def from_python(spelled: str) -> None:
-        if spelled in CXX_OPTIONAL:
-            casters.add("optional")
-        if "str" in spelled:
-            casters.add("string")
-
-    if cls.decl.built_by:
-        for m in cls.methods:
-            if m.ret is not None:
-                from_python(m.ret.python)
-    else:
-        for m in cls.methods:
-            for _, t in m.params:
-                from_cxx(t)
-            if m.ret is not None:
-                from_cxx(m.ret)
-        if cls.ctor is not None:
-            for _, t in cls.ctor.params:
-                from_cxx(t)
+    for m in cls.methods:
+        for _, t in m.params:
+            note(t)
+        note(m.ret)
+    if cls.ctor is not None:
+        for _, t in cls.ctor.params:
+            note(t)
 
     out = ["#include <nanobind/nanobind.h>"]
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
     if cls.decl.wire == "value" and cls.decl.text:
         # std::hash lives in <functional>, and the value hash uses it.
         out.append("#include <functional>")
-    out.append(f'#include "{cls.decl.header}"')
+    if cls.decl.header:
+        out.append(f'#include "{cls.decl.header}"')
     return out
 
 
@@ -186,7 +270,45 @@ def waits(cls: Class, m: Method) -> bool:
     return cls.decl.blocking or m.blocks
 
 
-def _extras(cls: Class, m: Method) -> str:
+def _default(pr, known: dict[str, Class] | None = None) -> str:
+    """A Python default, as C++ spells the same value.
+
+    Two cases the table cannot hold, because both need the
+    declaration to resolve them.
+
+    A VOCABULARY member is a name in Python and a string in C++:
+    `HashAlgorithm.SHA256` is `"sha256"`, and only the vocabulary
+    knows which. Emitting the Python spelling put an undeclared
+    identifier in the C++.
+
+    `None` on a CONTAINER is an empty one. A repeated field has no
+    presence and needs none - an absent container IS an empty one,
+    which is what the declaration's own docstring says - so `nullptr`
+    would be a null reference where a value belongs."""
+    known = known or {}
+    value = pr.default
+    if value is None:
+        return ""
+    head = value.split(".")[0]
+    if head in known and known[head].is_words:
+        member = value.split(".", 1)[1]
+        word = next((w for w in known[head].members if w.name == member), None)
+        if word is None:
+            raise TypeError(
+                f"{head} has no word called {member}.")
+        return f'"{word.value}"'
+    inner = pr.type.python.removesuffix("| None").strip()
+    if value == "None" and inner.startswith("list["):
+        # SPELLED, not `{}`. A braced initialiser has no type to
+        # deduce, so nanobind takes the default and silently drops
+        # the parameter's NAME with it - the signature comes out as
+        # `arg4` and the keyword stops working.
+        spelled, _ = _cxx(pr.type, known)
+        return f"{spelled}{{}}"
+    return CXX_DEFAULT.get(value, value)
+
+
+def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str:
     """The annotations that follow a `.def`, in nanobind's order.
 
     `nb::call_guard<nb::gil_scoped_release>()` comes from the SAME
@@ -205,7 +327,7 @@ def _extras(cls: Class, m: Method) -> str:
     for pr in m.params:
         arg = f'"{pr.name}"_a'
         if pr.default is not None:
-            arg += f" = {CXX_DEFAULT.get(pr.default, pr.default)}"
+            arg += f" = {_default(pr, known)}"
         out.append(arg)
     return "".join(f", {x}" for x in out)
 
@@ -233,10 +355,10 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
                 f"[]({cls.decl.cxx} &{obj}{args}) {{")
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in m.cxx_body.strip().splitlines()]
-        return [head, *body, f"{INDENT * 2}}}{_extras(cls, m)})"]
+        return [head, *body, f"{INDENT * 2}}}{_extras(cls, m, known)})"]
     spelled = m.cxx_name or m.name
     return [f'{INDENT * 2}.def("{m.name}", &{cls.decl.cxx}::{spelled}'
-            f"{_extras(cls, m)})"]
+            f"{_extras(cls, m, known)})"]
 
 
 def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
@@ -503,14 +625,54 @@ def free_functions(fns: tuple[Method, ...],
                        *body, "}"]) + "\n"
 
 
-def module(cls: Class) -> str:
+# The two conversions a CONTAINER needs, and the only ones.
+#
+# libstore answers with std::set and takes std::set; the binding
+# hands Python a list, because these answers are sorted and a Python
+# set would throw that away. Both directions are one line of C++, and
+# neither copies a string or parses a name - which is the whole
+# difference from what a pxd forced.
+CONTAINERS = """
+/** A libstore set as the list a caller reads. Sorted, because the set is. */
+template <typename T>
+inline std::vector<typename T::value_type> as_list(const T & items)
+{
+    return {items.begin(), items.end()};
+}
+
+/** The mirror: a list as the set libstore takes. */
+template <typename T, typename I>
+inline T as_set(const I & items)
+{
+    return {items.begin(), items.end()};
+}
+"""
+
+
+def _crosses_container(cls: Class) -> bool:
+    """Whether any declared type here is a list of bound values."""
+    for m in cls.methods:
+        spelled = [t.python for _, t in m.params]
+        if m.ret is not None:
+            spelled.append(m.ret.python)
+        for one in spelled:
+            inner = one.removesuffix("| None").strip()
+            if inner.startswith("list[") and inner[5:-1][:1].isupper():
+                return True
+    return False
+
+
+def module(cls: Class, known: dict[str, Class] | None = None) -> str:
     """One translation unit: the includes, then the bind function."""
-    head = [*includes(cls), "", "namespace nb = nanobind;",
+    head = [*includes(cls, known), "", "namespace nb = nanobind;",
             "using namespace nb::literals;", ""]
-    return "\n".join(head) + "\n" + bind_function(cls)
+    if _crosses_container(cls):
+        head += [*CONTAINERS.strip().splitlines(), ""]
+    return "\n".join(head) + "\n" + bind_function(cls, known)
 
 
-def extension(cls: Class, name: str) -> str:
+def extension(cls: Class, name: str,
+              known: dict[str, Class] | None = None) -> str:
     """One whole extension module: includes, bindings, entry point.
 
     `module` stops at the `bind_<name>` function because that is the
@@ -523,7 +685,7 @@ def extension(cls: Class, name: str) -> str:
     function; a project that has finished takes this."""
     return "\n".join([
         '#include "cythonix_bindings/_cpp/errors.hpp"',
-        module(cls),
+        module(cls, known),
         TRANSLATOR,
         f"NB_MODULE({name}, m) {{",
         f"{INDENT}register_nix_errors();",
