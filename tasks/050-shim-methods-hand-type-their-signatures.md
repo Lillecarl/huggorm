@@ -77,3 +77,17 @@ descriptors), a generated binding layer makes a backend swap a
 contained project: the manifest and everything above it would not
 notice. No migration is proposed now; steps 1-2 are the work, and
 they aim at this shape.
+
+## Parked, 2026-08-26
+
+Superseded before it started. Carl is considering a Python-IDL source
+format: plain `.py` declaration files as the single source of truth,
+from which the generator emits the pxd AND the pyx.
+
+Steps 1-2 are scaffolding for a HAND-WRITTEN pyx. A generated pyx
+cannot drift from its declaration, so a marker linking the two and a
+check comparing them both describe a problem that would no longer
+exist. Nothing here is started, and nothing should be.
+
+The "end state" section above survives, and is the reason: it is what
+the IDL idea arrives at, faster.

@@ -53,6 +53,33 @@ Findings reference three architectural reviews: 2026-08-23,
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
+All seven findings of the 2026-08-26 review are resolved except 050,
+which was superseded rather than fixed.
+
+- 051 (the front door) is done. `import cythonix` re-exports the real
+  surface by kind, the demos moved to examples/, the server reports
+  through a logger, and the pool takes a size. A test derives the
+  export list from the two packages rather than keeping a second copy.
+- 050 (shim methods hand-type their signatures) is PARKED, not fixed.
+  Its steps 1-2 are scaffolding for a hand-written pyx, which a
+  generated one obsoletes. Its "end state" section survives and is
+  what the Python-IDL idea arrives at.
+- 049 (ping resurrects dead connections) is done. Ping asks a lookup
+  that does not create, answers ok=False, and takes its token from the
+  metadata like every other rpc. The client stops rather than
+  re-binding: a fresh bind would hand back a live-looking client whose
+  every handle is dead.
+- 048 (proto3 optional exists) is done. The schema emits the synthetic
+  oneof, so an optional SCALAR has real presence and the codec reads
+  every optional through HasField. PathInfo.ca proves both arms.
+- 047 (enums disagree across the layers) is done. An enum is a scalar
+  everywhere, including inside a container and inside a wire field.
+- 046 (value types need dunders) is done for the dunders; the
+  property question is deferred to the source-format spike, where its
+  one real cost disappears.
+- 045 (wire names before they freeze) is done. cythonix.v1,
+  x-cythonix-conn, cythonix-* threads, and one casing for a method's
+  two message names.
 - 044 (the store as a graph) is done. references had one edge, one
   way, one path at a time; query_referrers is its inverse and
   compute_fs_closure is the transitive reading that makes either worth
