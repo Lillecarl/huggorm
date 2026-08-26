@@ -224,8 +224,15 @@ def _param(t: Type, known: dict[str, Class] | None = None
             or inner in CXX_PYTHON):
         spelled, caster = _cxx(t, known)
         # By const reference, because these are the types worth not
-        # copying. `nb::bytes` is already a handle and says so itself.
-        if spelled.startswith(("nb::", "const ")):
+        # copying - and, for `nb::bytes`, because a copy would be
+        # WRONG. A method that releases the GIL runs its whole body
+        # with the guard held, so a by-value Python handle changes a
+        # reference count without the GIL and nanobind aborts the
+        # process: "attempted to change the reference count of a
+        # Python object while the GIL was not held". A reference
+        # binds to the caster's own object, which nanobind destroys
+        # after the guard.
+        if spelled.startswith("const "):
             return spelled, caster
         return f"const {spelled} &", caster
     if t.bound:
