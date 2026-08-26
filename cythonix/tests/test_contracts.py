@@ -381,3 +381,46 @@ def test_reflection_would_still_get_the_order_wrong(
             assert getattr(cls, "__lt__", None) is not None, name
             found.append(name)
     assert found, "no value type without a declared order was found"
+
+
+def test_the_stubs_promise_the_same_order_the_manifest_does(
+        manifest: dict[str, Any]) -> None:
+    """The stubs are what a caller's typechecker reads.
+
+    tasks/052 was a complaint about the STUBS, and fixing the manifest
+    did not fix them: they were re-extracted by reflection on a second
+    route that never saw the declaration, so `manifest.json` stopped
+    claiming PathInfo has an ordering while `store.pyi` went on
+    claiming it. A second route to the same fact is a second answer to
+    it.
+
+    So this compares the two artefacts rather than calling anything.
+    An earlier version built an instance and tried `<`, which looked
+    stronger and was weaker: a produced value has no constructor, so
+    the check skipped exactly the two classes that were wrong."""
+    import sys
+
+    # Found on the path, not beside the bindings. A PEP 561 stub
+    # package is its own distribution and Nix installs it in its own
+    # store path, so `cythonix_bindings.__file__` is the wrong anchor.
+    stubs = next((d for entry in sys.path
+                  if (d := pathlib.Path(entry) / "cythonix_bindings-stubs")
+                  .is_dir()), None)
+    assert stubs is not None, "cythonix_bindings-stubs is not on sys.path"
+
+    declared = {name: set(entry["dunders"])
+                for group in ("wrappers", "returned_types")
+                for name, entry in manifest[group].items()}
+    checked = 0
+    for pyi in sorted(stubs.glob("*.pyi")):
+        for node in ast.parse(pyi.read_text()).body:
+            if not isinstance(node, ast.ClassDef) or node.name not in declared:
+                continue
+            stubbed = {n.name for n in node.body
+                       if isinstance(n, ast.FunctionDef)
+                       and n.name.startswith("__") and n.name != "__init__"}
+            assert stubbed == declared[node.name], (
+                f"{pyi.name}:{node.name} stubs {sorted(stubbed)}, "
+                f"the manifest says {sorted(declared[node.name])}")
+            checked += 1
+    assert checked, "no stubbed class was found in the manifest"

@@ -548,10 +548,16 @@ def main(argv: list[str] | None = None) -> None:
     # Re-extracted, NOT the protos above: those have been through the
     # affine-return drop and 018's hierarchy split, which are rules
     # about the async wrappers. The bindings themselves have neither.
+    #
+    # Through `_proto`, so a declared class is declared here too. It
+    # was `extract_wrapper` directly, and that quietly undid the fix
+    # this seam exists for: `manifest.json` stopped claiming PathInfo
+    # has an ordering, and `store.pyi` went on claiming it, because
+    # the stubs never saw the declaration. A second route to the same
+    # fact is a second answer to it.
     all_protos = (
-        [extract_wrapper(k, api=api, mapping=mapping) for k in returned_classes]
-        + [extract_wrapper(k, api=api, mapping=mapping, constructible=True)
-           for k in wrapper_classes])
+        [_proto(k) for k in returned_classes]
+        + [_proto(k, constructible=True) for k in wrapper_classes])
     # Bases before subclasses: a stub may forward-reference, but there
     # is no reason to make a reader do it.
     order_of = {p["name"]: i for i, p in enumerate(all_protos)}
