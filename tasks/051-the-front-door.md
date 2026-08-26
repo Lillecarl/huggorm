@@ -1,0 +1,50 @@
+# The library has no front door
+
+Found by the Claude Fable review agent (2026-08-26 review).
+
+## Problem
+
+The stated goal is a Python library people want to use. Today a
+user faces three packages and no guidance on which to import:
+
+- `import cythonix` exports exactly `LoudLocal` and `MyCache` -
+  two mock DEMO classes from custom.py. That is the current front
+  door.
+- The sync surface lives in `cythonix_bindings`, the async and RPC
+  surfaces in `cythonix_generated`, the client and server in
+  `cythonix.remote` / `cythonix.server`. A user must learn the
+  build topology before the first import.
+- Demo modules (`custom.py`, `async_demo.py`, `remote_demo.py`,
+  `run_remote.py`) ship inside the installable package.
+- The server reports through `print()` (sweeps, listen address)
+  and the client's ping loop swallows every exception. A library
+  embeds in someone's process; stdout and silence are both wrong
+  there. `logging` is the boring, right answer.
+- The shared pool is hard-coded at 4 workers (runtime.py). Four
+  concurrent blocking store calls saturate it, and nothing lets an
+  application say otherwise.
+
+None of this blocks development. All of it shapes the first ten
+minutes of every future user, and the import surface is the
+hardest thing to change after there are users.
+
+## Fix sketch
+
+- Decide the public import story once. The obvious shape:
+  `cythonix` re-exports the surface by kind - `Store`, `StorePath`,
+  `PathInfo` (sync), `AsyncStore` and friends, `connect`, `serve` -
+  so one import works and the three-package build stays an
+  implementation detail. The generated `__init__` already computes
+  its export list; the front door can re-export it rather than
+  keep a second list by hand.
+- Move the demos out of the package into an `examples/` directory
+  (custom.py's trampoline demo is genuinely useful reading; it is
+  still not library surface).
+- Replace `print()` in server.py with a module logger; give the
+  ping loop a `logger.warning` on failure instead of `pass`.
+- Make the pool size configurable at one entry point, defaulting
+  as today.
+- A user-facing quickstart in the README (or a docs page the
+  README links): open a store, add a path, query the closure -
+  sync, then async, then remote. The current README is
+  contributor-facing by design; users need the other document.

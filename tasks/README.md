@@ -9,8 +9,9 @@ Keep files short: problem, evidence, fix sketch. A closed file keeps
 its original text and gains a "## Done" section, so the fix stays
 readable next to what it fixed.
 
-Findings reference two architectural reviews, 2026-08-23 and
-2026-08-25. Where they disagree, the later one wins.
+Findings reference three architectural reviews: 2026-08-23,
+2026-08-25, and 2026-08-26 (the Claude Fable review agent, tasks
+045-051). Where they disagree, the later one wins.
 
 ## Open, roughly by what blocks what
 
@@ -113,6 +114,17 @@ Findings reference two architectural reviews, 2026-08-23 and
   and 033 is the harder one - a primop runs inside evaluation, so it
   cannot hop threads, cannot await, and its arguments do not outlive
   the call.
+- 045 (wire names) and 048 (proto3 optional) want doing BEFORE 022:
+  both change the schema, and the lockfile should pin the fixed
+  names and the synthetic oneofs, not the current ones.
+- 047 (enums across the layers) and 049 (ping resurrection) are
+  latent defects with small fixes: the codec crashes on a container
+  of enums the schema accepts, and a swept client learns of its
+  death from an unrelated error.
+- 046 (dunders on value types), 050 (shim signatures stated twice)
+  and 051 (the front door) are the DX and maintainability half of
+  the 2026-08-26 review. 050 is the one that grows with every bound
+  method; 046 and 051 are cheapest before there are users.
 - 014 (transport shims) and 016 (evaluation server) are the
   destinations. 016's lifecycle contract is settled and executable -
   a detached evaluator survives its creator's death and a successor
