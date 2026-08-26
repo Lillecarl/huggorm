@@ -50,8 +50,10 @@ A shape it cannot derive stops with a reason. The escape hatch is
 becomes the place the real code lives.
 """
 
+from collections.abc import Sequence
+
 from cythonix_idl.declare import Field
-from cythonix_idl.read import Class, Method, Type
+from cythonix_idl.read import Class, Method, Module, Type
 
 INDENT = "    "
 
@@ -202,8 +204,9 @@ def _param(t: Type, known: dict[str, Class] | None = None
     return CXX_PARAM[t.cxx.spelling]
 
 
-def includes(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
-    """Exactly the headers this binding needs, and no others.
+def includes(classes: Sequence[Class],
+             known: dict[str, Class] | None = None) -> list[str]:
+    """Exactly the headers this translation unit needs, and no others.
 
     Derived from the declared types rather than listed. A caster left
     out does not fail at compile time - nanobind fails the conversion
@@ -239,24 +242,26 @@ def includes(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
         elif inner != t.python:
             note(Type(python=inner, cxx=t.cxx, bound=t.bound))
 
-    for m in cls.methods:
-        for _, t in m.params:
-            note(t)
-        note(m.ret)
-    if cls.ctor is not None:
-        for _, t in cls.ctor.params:
-            note(t)
+    for cls in classes:
+        for m in cls.methods:
+            for _, t in m.params:
+                note(t)
+            note(m.ret)
+        if cls.ctor is not None:
+            for _, t in cls.ctor.params:
+                note(t)
 
     out = ["#include <nanobind/nanobind.h>"]
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
-    if cls.decl.wire == "value" and cls.decl.text:
+    if any(cls.decl.wire == "value" and cls.decl.text for cls in classes):
         # std::hash lives in <functional>, and the value hash uses it.
         out.append("#include <functional>")
-    # The class's header, then whatever the bodies reach past it.
+    # Each class's header, then whatever the bodies reach past it.
     # Sorted and de-duplicated, because two methods needing one
     # header is normal and the order of a declaration's methods is
     # not an order for includes.
-    wanted = {cls.decl.header} | {h for m in cls.methods for h in m.headers}
+    wanted = {cls.decl.header for cls in classes}
+    wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
     out += [f'#include "{h}"' for h in sorted(wanted - {""})]
     return out
 
@@ -560,6 +565,33 @@ def _unused_record(cls: Class) -> list[str]:
     return out
 
 
+def refused(cls: Class, known: dict[str, Class] | None = None
+            ) -> dict[str, str]:
+    """Methods this emitter cannot spell, and why.
+
+    Every declared type of a method has to have a C++ spelling before
+    the method can be bound, and a RETURN is the case that hides. A
+    method bound by pointer never writes its return type down - the
+    compiler deduces it - so a return naming a class with no
+    `nb::class_` behind it emits a line that looks right and fails at
+    the C++ compiler with the upstream name, not the declared one.
+
+    `nix::Store::query_path_info` is that case today: it returns
+    PathInfo, which `@cxx_parts` declares as flattened slots rather
+    than as a bound type. Naming it here turns a compile error into a
+    line `generate_nb.py` prints beside what it wrote."""
+    known = known or {}
+    out: dict[str, str] = {}
+    for m in cls.methods:
+        for t in [t for _, t in m.params] + ([m.ret] if m.ret else []):
+            try:
+                _cxx(t, known)
+            except TypeError as exc:
+                out[m.name] = str(exc)
+                break
+    return out
+
+
 def bind_function(cls: Class, known: dict[str, Class] | None = None) -> str:
     """The whole `bind_<name>` function for one declared class.
 
@@ -576,7 +608,10 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None) -> str:
     # No nb::init when something else builds one: offering a
     # constructor would advertise a way in that does not exist.
     body = [] if decl.built_by else _ctor(cls, known)
+    skipped = refused(cls, known)
     for m in cls.methods:
+        if m.name in skipped:
+            continue
         body += _accessor(cls, m) if m.prop else _method(cls, m, known)
     body += _value_semantics(cls)
     for source in decl.custom.values():
@@ -653,47 +688,103 @@ inline T as_set(const I & items)
 """
 
 
-def _crosses_container(cls: Class) -> bool:
+def _crosses_container(classes: Sequence[Class]) -> bool:
     """Whether any declared type here is a list of bound values."""
-    for m in cls.methods:
-        spelled = [t.python for _, t in m.params]
-        if m.ret is not None:
-            spelled.append(m.ret.python)
-        for one in spelled:
-            inner = one.removesuffix("| None").strip()
-            if inner.startswith("list[") and inner[5:-1][:1].isupper():
-                return True
+    for cls in classes:
+        for m in cls.methods:
+            spelled = [t.python for _, t in m.params]
+            if m.ret is not None:
+                spelled.append(m.ret.python)
+            for one in spelled:
+                inner = one.removesuffix("| None").strip()
+                if inner.startswith("list[") and inner[5:-1][:1].isupper():
+                    return True
     return False
 
 
-def module(cls: Class, known: dict[str, Class] | None = None) -> str:
-    """One translation unit: the includes, then the bind function."""
-    head = [*includes(cls, known), "", "namespace nb = nanobind;",
+def bindable(mod: Module) -> tuple[Class, ...]:
+    """The classes in this declaration nanobind can bind today.
+
+    A vocabulary has no C++ object, so there is nothing to bind: it
+    crosses as the string its member already is. A produced value has
+    no C++ type either - `@cxx_parts` flattens a libstore object into
+    slots, which is the shape a pxd forced - so it has no
+    `nb::class_` to be until the declaration names the type it came
+    from.
+
+    Skipping is honest here rather than quiet, because
+    `generate_nb.py` prints what it left out beside what it wrote."""
+    return tuple(c for c in mod.classes if c.decl.cxx)
+
+
+def module(classes: Sequence[Class],
+           known: dict[str, Class] | None = None) -> str:
+    """One translation unit: the includes, then a bind function each.
+
+    Several classes, not one. A declaration file owns a module and
+    may declare more than one class in it - `decl/store.py` declares
+    three - and a nanobind extension is one translation unit, so the
+    file and the unit are the same grain."""
+    head = [*includes(classes, known), "", "namespace nb = nanobind;",
             "using namespace nb::literals;", ""]
-    if _crosses_container(cls):
+    if _crosses_container(classes):
         head += [*CONTAINERS.strip().splitlines(), ""]
-    return "\n".join(head) + "\n" + bind_function(cls, known)
+    return "\n".join(head) + "\n" + "\n".join(
+        bind_function(cls, known) for cls in classes)
 
 
-def extension(cls: Class, name: str,
+def imports(mod: Module) -> list[str]:
+    """The other extensions whose types this one names.
+
+    nanobind keeps ONE type registry for the whole process, so a
+    `nix::StorePath` bound in `path` is the same Python class when
+    `store` returns one - but only if `path` has been imported, and
+    an extension cannot rely on a caller to have done that.
+
+    So the module imports what it needs, and the list is derived: a
+    class arrives through `mod.uses` only because the declaration
+    imported it, and it needs binding only if it has C++ behind it. A
+    vocabulary is filtered out here, which is why importing
+    `HashAlgorithm` costs nothing."""
+    return sorted({c.module for c in mod.uses.values()
+                   if c.decl.cxx and c.module != mod.name})
+
+
+def extension(mod: Module, dotted: str,
               known: dict[str, Class] | None = None) -> str:
     """One whole extension module: includes, bindings, entry point.
 
-    `module` stops at the `bind_<name>` function because that is the
+    `module` stops at the `bind_<name>` functions because that is the
     seam a project with a hand-written NB_MODULE needs. This goes the
     last step and writes the NB_MODULE too, which is what a module
     with nothing hand-written about it requires.
 
     The two are one line apart on purpose. A project adopting this
     gradually keeps its own entry point and calls the generated bind
-    function; a project that has finished takes this."""
+    functions; a project that has finished takes this.
+
+    `dotted` is where the build puts the module - `path` on its own,
+    or `cythonix_bindings.path` inside a package. It is the one fact
+    here no declaration carries, and it is what turns a sibling
+    declaration's name into an import a running interpreter can
+    follow."""
+    known = known or mod.known
+    classes = bindable(mod)
+    package = dotted.rpartition(".")[0]
+    reached = [f'{INDENT}nb::module_::import_("'
+               f'{f"{package}." if package else ""}{stem}");'
+               for stem in imports(mod)]
     return "\n".join([
         '#include "cythonix_bindings/_cpp/errors.hpp"',
-        module(cls, known),
+        module(classes, known),
         TRANSLATOR,
-        f"NB_MODULE({name}, m) {{",
+        f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
+        # Before anything is bound: a signature naming a type from
+        # another module is built as the binding is defined, so the
+        # class has to already be registered.
+        *reached,
         f"{INDENT}register_nix_errors();",
-        f"{INDENT}bind_{cls.name.lower()}(m);",
+        *[f"{INDENT}bind_{cls.name.lower()}(m);" for cls in classes],
         "}",
         "",
     ])

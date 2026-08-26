@@ -201,6 +201,12 @@ class Class:
     methods: tuple[Method, ...] = ()
     # The words, for a vocabulary. Empty for every other kind.
     members: tuple[Member, ...] = ()
+    # The declaration file that declared it, without the suffix. The
+    # emitters name a module after its declaration, so this is also
+    # the module the class lands in - and a class that arrived
+    # through `uses` carries the OTHER file's name, which is the only
+    # way an emitter can write the import that reaches it.
+    module: str = ""
 
     @property
     def is_words(self) -> bool:
@@ -484,7 +490,8 @@ def targets_name(item: ast.Assign) -> str:
     return target.id
 
 
-def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
+def _class(node: ast.ClassDef, vocab: dict[str, str],
+           where: str) -> Class:
     if node.bases:
         raise DeclarationError(
             node, f"{node.name}: this spike declares no inheritance.")
@@ -499,6 +506,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
             decl=decl,
             ctor=None,
             members=_members(node),
+            module=where,
         )
 
     ctor: Method | None = None
@@ -518,6 +526,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
         decl=decl,
         ctor=ctor,
         methods=tuple(methods),
+        module=where,
     )
 
 
@@ -526,7 +535,8 @@ def read(path: str) -> Module:
     source = pathlib.Path(path).read_text()
     tree = ast.parse(source, filename=path)
     vocab = _vocabulary(tree)
-    classes = tuple(_class(n, vocab) for n in tree.body
+    stem = pathlib.Path(path).stem
+    classes = tuple(_class(n, vocab, stem) for n in tree.body
                     if isinstance(n, ast.ClassDef) and n.decorator_list)
     # Module-level functions are FREE bindings - nanopynix has 72 of
     # them, `m.def("open_store", &open_store_uri, "uri"_a)` and its
@@ -535,7 +545,7 @@ def read(path: str) -> Module:
     functions = tuple(_method(n, vocab, bound=False) for n in tree.body
                       if isinstance(n, ast.FunctionDef) and n.decorator_list)
     return Module(
-        name=pathlib.Path(path).stem,
+        name=stem,
         doc=ast.get_docstring(tree, clean=False) or "",
         classes=classes,
         functions=functions,
