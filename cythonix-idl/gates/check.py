@@ -335,10 +335,11 @@ def check_methods(decl_path: pathlib.Path, pyx_name: str,
     mod = read(str(decl_path))
     actual = (BINDINGS / pyx_name).read_text()
     cls = next(c for c in mod.classes if c.name == cls_name)
-    # The produced values this module declares, by name. A method that
-    # returns one needs its FIELDS to emit the unpacking, so the
-    # emitter is handed the map rather than reading the file again.
-    values = {c.name: c for c in mod.classes if c.is_value}
+    # Every class this declaration can name - its own, and any it
+    # imported. A method that returns a produced value needs its
+    # FIELDS to emit the unpacking, and one that takes a vocabulary
+    # needs to know it is not a bound class.
+    known = mod.known
     hand = [line.strip()[4:].split("(")[0]
             for line in class_body(actual, cls_name).splitlines()
             if line.strip().startswith("def ")]
@@ -358,7 +359,7 @@ def check_methods(decl_path: pathlib.Path, pyx_name: str,
                             f"{pyx_name} has no such method")
             continue
         got = code_only("\n".join(
-            emit._accessor(m, cls.decl.blocking, cls, values)))
+            emit._accessor(m, cls.decl.blocking, cls, known)))
         want, got = _settled(want), _settled(got)
         if want == got:
             agree += 1
@@ -470,7 +471,7 @@ def check_shim(decl_path: pathlib.Path, hpp_name: str,
     mod = read(str(decl_path))
     cls = next(c for c in mod.classes if c.name == cls_name)
     actual = allow_text((BINDINGS / "_cpp" / hpp_name).read_text(), hpp_name)
-    values = {c.name: c for c in mod.classes if c.is_value}
+    known = mod.known
     problems, agree, declared = [], 0, 0
     # The POD each produced value crosses in. Derived whole from that
     # value's own fields, so nothing declares it - which is exactly
@@ -478,7 +479,7 @@ def check_shim(decl_path: pathlib.Path, hpp_name: str,
     for name in dict.fromkeys(m.ret.python for m in cls.methods
                               if m.parts and m.ret is not None):
         want = cxx_only(struct_body(actual, f"{name}Parts"))
-        got = cxx_only("\n".join(emit.pod_struct(values[name])))
+        got = cxx_only("\n".join(emit.pod_struct(known[name])))
         if not want:
             problems.append(f"{hpp_name}: no struct named {name}Parts")
             continue
@@ -514,9 +515,9 @@ def check_shim(decl_path: pathlib.Path, hpp_name: str,
         if not want:
             problems.append(f"{hpp_name}: no shim named {m.name}")
             continue
-        body = ("\n".join(emit._parts_body(cls, m, values)) if m.parts
+        body = ("\n".join(emit._parts_body(cls, m, known)) if m.parts
                 else m.cxx_body.strip())
-        got = cxx_only(emit._shim_signature(cls, m, values)
+        got = cxx_only(emit._shim_signature(cls, m, known)
                        + "\n{\n" + body + "\n}")
         if want == got:
             agree += 1
@@ -541,13 +542,13 @@ def check_pod_pxd(decl_path: pathlib.Path, pxd_name: str,
     """
     mod = read(str(decl_path))
     cls = next(c for c in mod.classes if c.name == cls_name)
-    values = {c.name: c for c in mod.classes if c.is_value}
+    known = mod.known
     actual = (BINDINGS / pxd_name).read_text()
     problems, agree, declared = [], 0, 0
     for name in dict.fromkeys(m.ret.python for m in cls.methods
                               if m.parts and m.ret is not None):
         want = code_only(pxd_struct(actual, f"C{name}"))
-        got = code_only("\n".join(emit.pod_pxd(values[name])))
+        got = code_only("\n".join(emit.pod_pxd(known[name])))
         if not want:
             problems.append(f"{pxd_name}: no struct named C{name}")
             continue
@@ -670,6 +671,25 @@ KNOWN_WRONG_RETURNS = {
 }
 
 
+# Method keys a LATER pass of the real generator stamps on, from the
+# manifest rather than from a class. `grpc_schema.annotate` writes
+# all three, and it writes them onto a declared entry exactly as it
+# writes them onto a reflected one - so re-deriving them here would
+# be a second copy of rules that already live in one place.
+#
+# The same story as `async_base`, which the entry already leaves
+# None. Named and printed, not dropped quietly.
+STAMPED_LATER = {
+    "rpc": "the path and the two message names, from the class name "
+           "and the method name.",
+    "wire_blockers": "why a method has no rpc. The rules are the "
+                     "schema's - what a protobuf field can hold - not "
+                     "the binding's.",
+    "protocol_blockers": "the same question for the generated "
+                         "protocol.",
+}
+
+
 def _methods_differ(name: str, want: list, got: list) -> list[str]:
     """Method lists compared one method at a time.
 
@@ -681,7 +701,14 @@ def _methods_differ(name: str, want: list, got: list) -> list[str]:
         return [f"  {name}.methods: the method NAMES differ",
                 f"    reflected:   {[m['name'] for m in want]}",
                 f"    declaration: {[m['name'] for m in got]}"]
+    said = False
     for a, b in zip(want, got, strict=True):
+        stamped = [k for k in STAMPED_LATER if k in a and k not in b]
+        if stamped and not said:
+            said = True
+            for key in stamped:
+                print(f"    {key}: STAMPED LATER. {STAMPED_LATER[key]}")
+        a = {k: v for k, v in a.items() if k not in stamped}
         if a == b:
             continue
         pinned = KNOWN_WRONG_RETURNS.get((name, a["name"]))
@@ -755,16 +782,26 @@ def check_manifest(decl_path: pathlib.Path,
                   if want.get(k) != got.get(k)]
         known = [k for k in differ if (cls.name, k) in KNOWN_WRONG]
         real = [k for k in differ if (cls.name, k) not in KNOWN_WRONG]
+        # `methods` is settled by the per-method comparison below, not
+        # by the whole-list one: a key a later pass stamps on makes
+        # every method differ as a list and none of them differ as a
+        # method. Counting the list would report one disagreement
+        # where there is none.
+        method_problems = []
+        if "methods" in real:
+            real.remove("methods")
+            differ.remove("methods")
+            method_problems = _methods_differ(cls.name, want["methods"],
+                                              got["methods"])
+            if method_problems:
+                differ.append("methods")
         agreed = len(set(want) | set(got)) - len(differ)
         print(f"  {cls.name}: {agreed} of {len(set(want) | set(got))} "
               f"fields agree")
         for key in known:
             print(f"    {key}: the reflected entry is WRONG. "
                   f"{KNOWN_WRONG[(cls.name, key)]}")
-        if "methods" in real:
-            real.remove("methods")
-            problems += _methods_differ(cls.name, want["methods"],
-                                        got["methods"])
+        problems += method_problems
         for key in real:
             problems.append(f"  {cls.name}.{key}:")
             problems.append(f"    reflected:   {json.dumps(want.get(key))}")
