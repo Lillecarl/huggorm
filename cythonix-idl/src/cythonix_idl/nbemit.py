@@ -1525,11 +1525,12 @@ def census(cls: Class) -> dict[str, int]:
     """How much of this class the declaration derived, and how much a
     person wrote.
 
-    Printed on every run, because a hatch nobody measures becomes the
-    place the real code lives. The ratio is the honest measure of a binding: StorePath derives whole
-    and hatches nothing; ValidPathInfo joins a store directory to a
-    path, which is a decision rather than a binding, and it says so
-    with seven bodies."""
+    Printed on every build, because a hatch nobody measures becomes
+    the place the real code lives. The ratio is the honest measure of
+    a binding: StorePath derives whole and hatches nothing;
+    ValidPathInfo joins a store directory to a path, which is a
+    decision rather than a binding, and it says so with seven
+    bodies."""
     derived = hatched = hatch_lines = 0
     for m in cls.methods:
         if m.cxx_body:

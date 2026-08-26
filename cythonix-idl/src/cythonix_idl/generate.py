@@ -206,6 +206,15 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     pathlib.Path(out).write_text(extension(mod, dotted))
     names = ", ".join(c.name for c in bound)
     print(f"{decl} -> {out} (module {dotted}): {names}")
+    # How much of each class the declaration derived, and how much a
+    # person wrote. Printed on every build, because a hatch nobody
+    # measures becomes the place the real code lives - and a number
+    # in a build log is cheaper than a review that has to notice.
+    for cls in bound:
+        c = nbemit.census(cls)
+        hatch = (f", {c['hatched']} hatched ({c['hatch_lines']} lines)"
+                 if c["hatched"] else "")
+        print(f"  {cls.name}: {c['derived']} derived{hatch}")
     # What was left out, and why. A declaration under way declares
     # more than the emitter can carry, and a count that only ever
     # goes up is the honest way to see how much is left.
