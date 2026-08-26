@@ -1,30 +1,28 @@
-"""The build entry point: declarations in, Cython out.
+"""The build entry point: declarations in, C++ out.
 
-`emit.py` is the emitter and `check.py` is the gate. This is neither.
-It is the one file the BUILD runs, and it exists so the build has a
-single command with a single answer to "which declarations, and where
-do their files go".
+`nbemit.py` is the emitter. This is the one file the BUILD runs, and
+it exists so the build has a single command with a single answer to
+"which declarations, and where do their files go".
 
-    python3 generate.py <out-dir>
+    python3 -m cythonix_idl.generate <out-dir>
 
-Nothing here decides anything. The list below is the whole
+Nothing here decides anything. The two lists below are the whole
 configuration, and each entry is a declaration that owns a module in
-`cythonix_bindings`. A declaration not listed here emits nothing, and
-a module listed here has no hand-written source at all: the three
-files land in <out-dir> and Cython compiles those.
+`cythonix_bindings`. A declaration not listed emits nothing, and a
+module listed has no hand-written source at all.
 
-This is the step that turns the spike from a claim into the build. Up
-to here the emitter wrote files beside the hand-written ones and a
-gate diffed them, which proves the emitter COULD have written the
-binding. Running it here proves it DID.
+That is the state the spike was arguing for. There is no `.pyx`, no
+`.pxd` and no shim header anywhere in `cythonix_bindings`: every
+module is C++ written from a declaration, and `declared_entries`,
+`declared_functions` and `declared_returned` are how the generated
+layer above learns what is in them - without importing a compiled
+extension or parsing a pxd.
 """
-
 import argparse
 import ast
 import pathlib
 
 from cythonix_idl import generate_nb, manifest, nbemit, pyenum
-from cythonix_idl.emit import emit, produced_pxi
 from cythonix_idl.read import read
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -42,23 +40,13 @@ NANOBIND = (
     "decl/path.py",
     "decl/store.py",
     "decl/eval.py",
+    "decl/mock_store.py",
 )
-
-# Declarations that own a whole module through CYTHON. Empty, and
-# that is the state this spike was arguing for rather than an
-# oversight: `emit.py` still works and nothing is left for it to do.
-MODULES: tuple[str, ...] = ()
-
-# Declarations the emitter has taken over only PART of, as
-# (declaration, include file). Also empty now - `store.pyx` was the
-# one hand-written module with declared values spliced into it, and
-# there is no store.pyx.
-INCLUDES: tuple[tuple[str, str], ...] = ()
 
 # Vocabularies. A StrEnum whose members ARE the strings a Nix parser
 # takes, so there is no C++ and nothing to compile - the emitted
 # module is plain Python and the build writes it whole, the way it
-# writes a MODULES entry.
+# writes a NANOBIND entry.
 VOCABULARIES = (
     "decl/content_address.py",
 )
@@ -106,17 +94,30 @@ def declared_entries() -> dict[str, dict]:
     construction, and an INCLUDES declaration is complete for the
     values it emits, which is what `is_value` already says."""
     out = {}
-    for name in MODULES + NANOBIND:
+    for name in NANOBIND:
         mod = read(str(HERE / name))
+        known = mod.known
         for cls in mod.classes:
-            out[cls.name] = manifest.entry(cls, PACKAGE, mod.name,
-                                           final=False)
-    for name, _ in INCLUDES:
-        mod = read(str(HERE / name))
-        for cls in mod.classes:
-            if cls.is_value:
-                out[cls.name] = manifest.entry(cls, PACKAGE, mod.name,
-                                               final=False)
+            entry = manifest.entry(cls, PACKAGE, mod.name, final=False)
+            # A SUBCLASS carries its base's methods, because that is
+            # what deriving means on both sides of the binding: C++
+            # inherits them and so does the Python class nanobind
+            # builds. The declaration states each leaf's own policy
+            # and its own additions, and says the rest once.
+            #
+            # Reflection got this for free - it read a live class,
+            # where the methods are already there - and the layer
+            # above needs it: an abstract base guarantees the
+            # INTERSECTION of what its subclasses expose, so a leaf
+            # that listed nothing would empty the base.
+            base = known.get(cls.decl.base)
+            if base is not None:
+                mine = {m["name"] for m in entry["methods"]}
+                inherited = manifest.entry(base, PACKAGE, base.module,
+                                           final=False)["methods"]
+                entry["methods"] = [m for m in inherited
+                                    if m["name"] not in mine] + entry["methods"]
+            out[cls.name] = entry
     return out
 
 
@@ -189,14 +190,6 @@ def main(out_dir: str) -> int:
         mod = read(str(HERE / name))
         target = out / f"{mod.name}.cpp"
         generate_nb.main(name, f"{PACKAGE}.{mod.name}", str(target))
-    for name in MODULES:
-        print(f"{name} -> {out}")
-        emit(str(HERE / name), str(out))
-    for name, fname in INCLUDES:
-        mod = read(str(HERE / name))
-        produced = [c.name for c in mod.classes if c.is_value]
-        (out / fname).write_text(produced_pxi(mod, name))
-        print(f"{name} -> {out / fname}: {', '.join(produced)}")
     for name in VOCABULARIES:
         source = HERE / name
         mod = read(str(source))

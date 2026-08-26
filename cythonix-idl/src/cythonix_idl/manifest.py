@@ -270,15 +270,22 @@ def entry(cls: Class, package: str, module: str,
         # that made it flattened one, so there is no declaration to
         # link a `_binds` name to.
         "binds": "" if cls.is_value else "C" + cls.name,
-        # Empty until the vocabulary has inheritance. `read.py`
-        # refuses a declared base class rather than dropping it, so
-        # this cannot silently be wrong.
-        "bases": [],
+        # The C++ base, if the declaration named one, spelled the way
+        # reflection spelled a Python base: module-qualified, because
+        # the stub emitter takes the last component and the async
+        # emitter needs to know which module to import it from.
+        #
+        # One base. Every hierarchy this binds is single inheritance,
+        # and C++ multiple inheritance through a Python type is a
+        # different problem from the one a declaration is for.
+        "bases": ([f"{package}.{module}.{decl.base}"] if decl.base else []),
         "threading": threading,
-        # No vocabulary for either yet. `abstract` describes a
-        # generated base class, which this spike does not emit;
-        # `produced` is what `@produced(by=...)` says.
-        "abstract": False,
+        # `@abstract`: a base that is generated and never
+        # constructed. A caller holds one most of the time - you ask
+        # for a store and use it without caring which implementation
+        # answered - so it needs an async wrapper and a wire identity
+        # of its own, and no constructor.
+        "abstract": decl.abstract,
         "produced": cls.is_value,
         # "proxy" is the safe default on both sides: stateful until a
         # declaration proves otherwise.

@@ -48,17 +48,6 @@ if not fake_lib:
         "FAKE_LIBRARY env var not set - build via Nix, or set "
         "FAKE_LIBRARY=/path/to/fake-library")
 
-ext = Extension(
-    "cythonix_bindings.mock_store",
-    sources=["cythonix_bindings/mock_store.pyx"],
-    language="c++",
-    include_dirs=[os.path.join(fake_lib, "include")],
-    library_dirs=[os.path.join(fake_lib, "lib")],
-    libraries=["fake_library"],
-    extra_compile_args=["-std=c++23", "-DFAKE_LIBRARY_USE_BOEHMGC=1"],
-    extra_link_args=[f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
-)
-
 # The first REAL Nix type, beside the mock rather than replacing it
 # (tasks/015). Nothing about it goes through FAKE_LIBRARY.
 _nix = pkg_config("nix-store")
@@ -138,6 +127,5 @@ def nanobind_extension(module: str) -> Extension:
 
 
 setup(
-    ext_modules=[ext,
-                 *[nanobind_extension(m) for m in nanobind_modules()]],
+    ext_modules=[nanobind_extension(m) for m in nanobind_modules()],
 )

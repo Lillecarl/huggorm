@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools", "cython"]
+requires = ["setuptools", "nanobind", "cythonix-idl"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cythonix-bindings"
 version = "0.1.0"
-description = "Cython bindings for fake-library"
+description = "nanobind bindings, written from declarations"
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]

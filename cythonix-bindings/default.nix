@@ -35,10 +35,10 @@ python3Packages.buildPythonPackage {
 
   build-system = with python3Packages; [
     setuptools
-    # Cython, for what is left of it: the mock modules. The real Nix
-    # bindings are nanobind now, and setup.py reads the module list
-    # out of cythonix-idl rather than naming them again.
-    cython
+    # nanobind, and the declarations. There is no Cython here at all:
+    # every module is C++ written from a declaration before this
+    # builds, and setup.py reads the module list out of cythonix-idl
+    # rather than naming them again.
     nanobind
     cythonix-idl
   ];
