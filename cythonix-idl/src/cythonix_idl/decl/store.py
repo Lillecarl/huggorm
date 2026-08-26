@@ -327,3 +327,60 @@ class Store:
         disagree with `nix` for the same input - so a caller catching
         the narrow type around both calls must catch the wide one
         here."""
+
+    # A bound object crosses back as an OWNING pointer, and the
+    # emitter derives that from the return type alone: the signature,
+    # the temporary, the NULL guard and the __new__-without-__init__
+    # that takes ownership. What the body carries is the call and the
+    # one decision C++ has to make about it.
+    @cxx_body("return new nix::StorePath(s.parseStorePath(path));")
+    def parse_store_path(self, path: Str) -> "StorePath":
+        """This string as a store path of THIS store.
+
+        A store path is a base name, and which directory it belongs
+        under is the store's fact rather than the name's. So parsing
+        one is a question for a store: `/nix/store/<hash>-name` is a
+        path of the default store and not of a chroot store rooted
+        somewhere else.
+
+        Raises when it is not in this store's directory - which is a
+        different question from whether the name is well formed, and
+        the reason this lives on the store rather than on StorePath."""
+
+    @cxx_body("""auto found = s.queryPathFromHashPart(hash_part);
+        return found ? new nix::StorePath(*found) : nullptr;""")
+    def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
+        """Which store path has this hash part, or None.
+
+        A store path's name begins with a 32-character base-32 hash,
+        and that hash alone identifies the object: it is what a
+        substituter is asked for, and what a `.narinfo` is named
+        after. So this is the lookup that turns a bare hash back into
+        a name.
+
+        None is a normal answer, not a failure - the store does not
+        have it. That is upstream's std::optional, and it is a
+        different answer from `query_path_info`, which raises
+        InvalidPath: there the caller named a path and was wrong,
+        here the caller asked whether one exists."""
+
+    @cxx_body("return new nix::StorePath(s.followLinksToStorePath(path));")
+    def follow_links_to_store_path(self, path: Str) -> "StorePath":
+        """Follow symlinks until the path lands in the store, and say
+        which store path it landed in.
+
+        The whole of `follow_links_to_store`, minus the part below the
+        store path. A `result` symlink pointing at a package resolves
+        to `<store path>/bin/foo`, and this answers with the store
+        path alone.
+
+        The symlinks are read on the machine the store runs on. In
+        process that is here; over RPC it is the server's filesystem.
+
+        A path that is already in the store is answered without
+        touching the filesystem at all: the loop tests that first. So
+        this is a superset of `to_store_path`, minus the sub-path.
+
+        Raises BadStorePath when the links run out somewhere else -
+        the narrow type, unlike `to_store_path`, and that asymmetry is
+        upstream's."""
