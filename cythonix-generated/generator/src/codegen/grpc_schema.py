@@ -27,12 +27,14 @@ from typing import Any
 from google.protobuf import descriptor_pb2
 
 from codegen.wiretypes import (
+    CONTAINERS,
     MAP_KEY,
     SCALAR_NAMES,
     entry_name,
     head,
     list_value,
     map_value,
+    optional_value,
 )
 
 Proto = dict[str, Any]
@@ -69,7 +71,14 @@ def _add_field(msg: Any, name: str, number: int, type_str: str,
     repeated field of its element type. A map cannot be described by a
     type constant at all: proto3 spells it as a repeated field of a
     message the containing type carries, so this builds that message
-    too."""
+    too.
+
+    `T | None` builds the field for T and nothing else. Absence is not
+    a fourth shape: a message field HAS presence, so an unset one is
+    the None, and the codec reads it back with HasField. wire_blocker
+    is what makes sure T is a type that gets a message."""
+    if (inner := optional_value(type_str)) is not None:
+        type_str = inner
     if (value_type := map_value(type_str)) is not None:
         return _add_map_field(msg, name, number, value_type, kinds)
     if (item_type := list_value(type_str)) is not None:
@@ -153,6 +162,24 @@ def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
     today still gets its in-process wrapper and the build says exactly
     what is missing."""
     try:
+        # `T | None` is T plus presence, so from here on it is T that
+        # is under test - a field the schema cannot build has nothing
+        # to be absent FROM.
+        if (inner := optional_value(type_str)) is not None:
+            if inner in SCALARS or kinds.get(inner) == ENUM:
+                return (f"{type_str}: proto3 gives a scalar field no "
+                        f"presence, so an absent one and a default one are "
+                        f"the same bytes. Only a message field can be None.")
+            if head(inner) in CONTAINERS:
+                return (f"{type_str}: a repeated field has no presence and "
+                        f"needs none - an absent container IS an empty one. "
+                        f"Declare {inner} and return it empty.")
+            if kinds.get(inner) == "proxy":
+                return (f"{type_str}: a proxy return is adopted into a "
+                        f"wrapper by every layer, and none of them adopts "
+                        f"nothing. Absence would arrive as an object that is "
+                        f"not one.")
+            type_str = inner
         value_type = map_value(type_str)
         item_type = list_value(type_str)
     except TypeError as e:

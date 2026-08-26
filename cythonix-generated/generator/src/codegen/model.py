@@ -20,6 +20,7 @@ from codegen.wiretypes import (
     list_value,
     map_value,
     names_in,
+    optional_value,
 )
 
 # One class or function, reflected into the plain dict every layer
@@ -772,6 +773,40 @@ def check_wrap_contract(protos: list[Proto]) -> list[str]:
                     f"which needs a wrapper. An unwrapped class cannot "
                     f"attach one; declare _blocking on one side or the "
                     f"other so the two agree.")
+    return bad
+
+
+def check_optional_contract(protos: list[Proto]) -> list[str]:
+    """An optional return may name a value, never a wrapped type.
+
+    `T | None` works because a protobuf message field has presence, so
+    the wire needs nothing new. What has no answer is the layer above
+    it: every layer adopts a wrapped return into a runner - the async
+    wrapper writes `AsyncX(result, self._runner)`, the server puts a
+    handle, the client builds a proxy - and none of them adopts
+    nothing.
+
+    grpc_schema already refuses it for the WIRE, but that would leave
+    the in-process wrapper handing back a bare sync object with no
+    runner attached: accepted, built, and wrong at the first await.
+    So it is refused here, for every surface at once.
+
+    Returns a list of complaints; empty means the contract holds."""
+    wrapped = {p["name"] for p in protos if p["wrapped"]}
+    bad = []
+    for proto in protos:
+        for m in proto["methods"]:
+            try:
+                inner = optional_value(m["return_type"])
+            except TypeError as e:
+                bad.append(f"{proto['name']}.{m['name']}: {e}")
+                continue
+            if inner is not None and inner in wrapped:
+                bad.append(
+                    f"{proto['name']}.{m['name']} returns {m['return_type']}, "
+                    f"and {inner} needs a runner attached. Every layer adopts "
+                    f"one object and none of them adopts nothing. Raise "
+                    f"instead, or return a wire value.")
     return bad
 
 

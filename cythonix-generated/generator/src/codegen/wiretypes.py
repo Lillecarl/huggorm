@@ -166,6 +166,44 @@ def list_value(type_str: str) -> str | None:
     return item
 
 
+def optional_value(type_str: str) -> str | None:
+    """The T of a `T | None` annotation, or None when this is not an
+    optional at all.
+
+    The RETURN spelling of what `_wire_fields` marks with a trailing
+    `?`. Two spellings for one idea, and deliberately: a field
+    declaration is a tuple of strings the binding writes by hand,
+    while a return type is an annotation a typechecker also reads, and
+    `StorePath?` is not one.
+
+    Raises TypeError for a union the wire cannot spell. Absence rides
+    on a protobuf message field's presence, which is one bit, so it
+    can separate ONE type from nothing - `str | int` has no field to
+    put either arm in."""
+    node = ast.parse(type_str, mode="eval").body
+    if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)):
+        return None
+    arms: list[ast.expr] = []
+    def flatten(n: ast.expr) -> None:
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
+            flatten(n.left)
+            flatten(n.right)
+        else:
+            arms.append(n)
+    flatten(node)
+    written = [ast.unparse(a) for a in arms]
+    rest = [w for w in written if w != "None"]
+    if len(rest) == len(written):
+        raise TypeError(
+            f"{type_str}: a union without None has no wire representation. A "
+            f"field holds one type, and presence is one bit.")
+    if len(rest) != 1:
+        raise TypeError(
+            f"{type_str}: a union of {len(rest)} types plus None has no wire "
+            f"representation. Presence separates one type from nothing.")
+    return rest[0]
+
+
 def entry_name(field_name: str) -> str:
     """The synthesised MapEntry message for one map field, following
     protobuf's own convention: field `gc_counts` -> `GcCountsEntry`."""

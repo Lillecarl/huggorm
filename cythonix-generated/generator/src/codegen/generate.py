@@ -32,6 +32,7 @@ from codegen.model import (
     check_binding_map,
     check_collection_contract,
     check_error_contract,
+    check_optional_contract,
     check_wire_contract,
     check_wrap_contract,
     extract_enum,
@@ -270,6 +271,14 @@ def main(argv: list[str] | None = None) -> None:
     if complaints:
         for c in complaints:
             print(f"collection contract: {c}", file=sys.stderr)
+        sys.exit(1)
+    # ...and an optional return may name a VALUE, never a wrapped
+    # type. The wire can carry absence - a message field has presence
+    # - but no layer adopts nothing into a runner.
+    complaints = check_optional_contract(protos + returned_protos)
+    if complaints:
+        for c in complaints:
+            print(f"optional contract: {c}", file=sys.stderr)
         sys.exit(1)
     unwrapped = sorted(p["name"] for p in protos + returned_protos
                        if not p["wrapped"])

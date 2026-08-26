@@ -217,6 +217,54 @@ def test_a_default_is_written_or_refused() -> None:
             raise AssertionError(f"{bad!r} was accepted as a default")
 
 
+def test_an_optional_return_names_a_value_or_nothing() -> None:
+    """`T | None` is a real return type, and only for some T.
+
+    Absence rides on a protobuf message field's presence, which is one
+    bit. So it separates ONE type from nothing: a union of two real
+    types has no field to put either arm in, and a scalar has no
+    presence to spend.
+
+    The refusal that matters most is a WRAPPED T. The wire could
+    almost carry it - a Handle is a message - but every layer above
+    adopts a returned proxy into a runner, and none of them adopts
+    nothing. That one is refused for every surface at once rather than
+    only for the wire."""
+    from codegen.grpc_schema import wire_blocker
+    from codegen.model import check_optional_contract
+    from codegen.wiretypes import optional_value
+
+    assert optional_value("StorePath | None") == "StorePath"
+    assert optional_value("None | StorePath") == "StorePath"
+    assert optional_value("StorePath") is None
+    assert optional_value("list[StorePath]") is None
+
+    for bad in ("str | int", "str | int | None"):
+        try:
+            optional_value(bad)
+        except TypeError as e:
+            assert "no wire representation" in str(e), (bad, str(e))
+        else:
+            raise AssertionError(f"{bad!r} was accepted as an optional")
+
+    kinds = {"StorePath": "value", "Store": "proxy", "Word": "enum"}
+    assert wire_blocker("StorePath | None", kinds) is None
+    for bad, why in (("str | None", "no presence"),
+                     ("Word | None", "no presence"),
+                     ("list[StorePath] | None", "IS an empty one"),
+                     ("Store | None", "adopts nothing")):
+        blocker = wire_blocker(bad, kinds)
+        assert blocker is not None and why in blocker, (bad, blocker)
+
+    def proto(rt: str) -> dict[str, object]:
+        return {"name": "Probe", "wrapped": True, "threading": "pool",
+                "methods": [{"name": "find", "return_type": rt, "params": []}]}
+
+    assert check_optional_contract([proto("StorePath | None")]) == []
+    complaints = check_optional_contract([proto("Probe | None")])
+    assert len(complaints) == 1 and "adopts nothing" in complaints[0]
+
+
 def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference
     the runtime only via `from _runtime import X`; a rename on either

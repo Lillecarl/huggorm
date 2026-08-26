@@ -25,7 +25,12 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any, ClassVar
 
-from cythonix_generated._wiretypes import SCALAR_NAMES, list_value, map_value
+from cythonix_generated._wiretypes import (
+    SCALAR_NAMES,
+    list_value,
+    map_value,
+    optional_value,
+)
 
 # The scalars as a lookup. Annotated because the inferred value type is
 # the join of unrelated classes, which is `type[object]` - and object
@@ -92,6 +97,17 @@ class WireCodec:
         return _SCALARS[type_str]
 
     # -- classification ---------------------------------------------------
+    @staticmethod
+    def split_optional(type_str: str) -> tuple[str, bool]:
+        """`T | None` as (T, True); anything else as (type_str, False).
+
+        Absence is not a kind of its own. It is presence on the field
+        the inner type would have had anyway, which is why this
+        answers with that type and a flag rather than with a sixth
+        kind."""
+        inner = optional_value(type_str)
+        return (inner, True) if inner is not None else (type_str, False)
+
     def kind(self, type_str: str) -> str:
         """"none", "scalar", "map", "list", "value" or "proxy"."""
         if type_str == "None":
@@ -295,15 +311,19 @@ class WireCodec:
                proxy_id: Callable[[Any], str]) -> None:
         """Put `value` into `container.field`. proxy_id(value) -> handle
         id, called only for proxy types."""
+        type_str, optional = self.split_optional(type_str)
         kind = self.kind(type_str)
         if kind == "none":
             return
-        if value is None and kind in ("map", "list"):
-            # A container parameter defaults to None, and this is where
-            # that absence stops. A repeated protobuf field has no
-            # presence, so writing nothing IS writing an empty one -
-            # which is what None means for a container and why it is
-            # the one type whose default may be None (tasks/041).
+        if value is None and (optional or kind in ("map", "list")):
+            # Two absences, one answer: write nothing.
+            #
+            # A declared `T | None` leaves its message field unset, and
+            # proto3 tracks that, so the far side reads it back as
+            # None. A container parameter defaults to None and a
+            # repeated field has no presence - writing nothing IS
+            # writing an empty one, which is what None means for a
+            # container (tasks/041).
             return
         if kind == "scalar":
             # str() of a StrEnum member is its value, so an enum needs
@@ -328,7 +348,14 @@ class WireCodec:
         as its default. proto3 tracks presence for message fields, so
         those are exact; a scalar cannot tell an unset string from an
         empty one, which is the same limitation _wire_fields marks with
-        a trailing "?"."""
+        a trailing "?".
+
+        A `T | None` type says the same thing in the annotation rather
+        than in the call, so the two are OR-ed: a caller that already
+        knows the field is optional need not read the type, and a type
+        that says so need not be told twice."""
+        type_str, declared = self.split_optional(type_str)
+        optional = optional or declared
         kind = self.kind(type_str)
         if kind == "none":
             return None
