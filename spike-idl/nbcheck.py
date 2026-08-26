@@ -32,7 +32,7 @@ import pathlib
 import re
 import sys
 
-import nanobind
+import nbemit
 from read import read
 
 NANOPYNIX = pathlib.Path.home() / "Code/nanopynix/nanopynix-bindings/src"
@@ -180,7 +180,7 @@ def check_functions(decl_path: str) -> list[str]:
         if not theirs:
             print(f"  {fn.name}: SKIPPED - not in nanopynix")
             continue
-        ours = " ".join(nanobind.free_function(fn)).strip()
+        ours = " ".join(nbemit.free_function(fn)).strip()
         # Overloads share a name, so a match against ANY registration
         # is the honest test - the declaration lists each arity and
         # nanobind resolves them by type at call time.
@@ -220,8 +220,8 @@ def check(decl_path: str) -> list[str]:
         if not want:
             print(f"  {cls.name}: SKIPPED - not in nanopynix")
             continue
-        got = accessors(strip_comments(nanobind.bind_function(cls)))
-        c = nanobind.census(cls)
+        got = accessors(strip_comments(nbemit.bind_function(cls)))
+        c = nbemit.census(cls)
         print(f"  {cls.name}: {len(got)} emitted, {len(want)} hand-written "
               f"({c['derived']} derived, {c['hatched']} hatched)")
 

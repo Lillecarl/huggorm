@@ -453,6 +453,26 @@ def module(cls: Class) -> str:
     return "\n".join(head) + "\n" + bind_function(cls)
 
 
+def extension(cls: Class, name: str) -> str:
+    """One whole extension module: includes, bindings, entry point.
+
+    `module` stops at the `bind_<name>` function because that is the
+    seam a project with a hand-written NB_MODULE needs. This goes the
+    last step and writes the NB_MODULE too, which is what a module
+    with nothing hand-written about it requires.
+
+    The two are one line apart on purpose. A project adopting this
+    gradually keeps its own entry point and calls the generated bind
+    function; a project that has finished takes this."""
+    return "\n".join([
+        module(cls),
+        f"NB_MODULE({name}, m) {{",
+        f"{INDENT}bind_{cls.name.lower()}(m);",
+        "}",
+        "",
+    ])
+
+
 def census(cls: Class) -> dict[str, int]:
     """How much of this class the declaration derived, and how much a
     person wrote.

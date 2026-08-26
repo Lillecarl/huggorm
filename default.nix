@@ -15,11 +15,49 @@ rec {
     root = ./spike-idl;
     fileset = lib.fileset.unions [
       ./spike-idl/generate.py
+      ./spike-idl/generate_nb.py
       ./spike-idl/emit.py
+      ./spike-idl/nbemit.py
       ./spike-idl/read.py
       ./spike-idl/declare.py
       ./spike-idl/decl
     ];
+  };
+  # The SAME declaration, through the other backend.
+  #
+  # `emit.py` writes Cython from `decl/path.py`; `nanobind.py` writes
+  # C++ from the same file. Until this existed the second one had only
+  # ever been checked as TEXT, which proves it could have written a
+  # binding and not that the binding works. This compiles it against
+  # real Nix, and `parity.py` then asks both modules the same
+  # questions.
+  #
+  # nanobind ships its runtime as source rather than a library, so the
+  # extension compiles `nb_combined.cpp` beside our own translation
+  # unit. `ext/robin_map` is nanobind's vendored hash map, which its
+  # own headers include and its wheel does not put on the include
+  # path.
+  path-nb = pkgs.stdenv.mkDerivation {
+    name = "path-nb";
+    src = idl;
+    nativeBuildInputs = [ pkgs.pkg-config python ];
+    buildInputs = [ python python.pkgs.nanobind ] ++ (with pkgs.nix.libs; [
+      nix-util
+      nix-store
+    ]);
+    buildPhase = ''
+      python3 generate_nb.py decl/path.py path path_nb.cpp
+      inc=$(python3 -c 'import nanobind; print(nanobind.include_dir())')
+      src=$(python3 -c 'import nanobind; print(nanobind.source_dir())')
+      pyinc=$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
+      ext=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
+      $CXX -std=c++23 -O1 -fPIC -shared -fvisibility=hidden         -I"$inc" -I"$pyinc" -I"$inc/../ext/robin_map/include"         $(pkg-config --cflags nix-store)         path_nb.cpp "$src/nb_combined.cpp"         $(pkg-config --libs nix-store)         -o "path$ext"
+    '';
+    installPhase = ''
+      mkdir -p $out
+      cp path*.so $out/
+      cp path_nb.cpp $out/
+    '';
   };
   # The binding source that actually gets compiled.
   #
@@ -126,6 +164,8 @@ rec {
       manifest="${cythonix-generated}/lib/python3.14/site-packages/cythonix_generated/manifest.json"
       echo "--- declaration -> Cython, and -> manifest ---"
       python3 check.py --manifest "$manifest"
+      echo "--- one declaration, two compiled backends ---"
+      python3 parity.py "${path-nb}"
       if [ -d "$HOME/Code/nanopynix" ]; then
         echo "--- declaration -> nanobind ---"
         python3 nbcheck.py
