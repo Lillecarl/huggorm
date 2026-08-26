@@ -68,7 +68,7 @@ owns. Both are counted, and the build prints the ratio per class:
     decl/store.py -> .../store.cpp (...): PathInfo, StoreLocation, Store
       PathInfo: 9 derived
       StoreLocation: 2 derived
-      Store: 6 derived, 12 hatched (41 lines)
+      Store: 8 derived, 10 hatched (39 lines)
 
 Same bargain as `_cpp/README`: a hatch nobody measures becomes the
 place the real code lives. A number in a build log is cheaper than a

@@ -85,7 +85,6 @@ class Value:
         value once - values are immutable and shared freely, so
         without it a diamond is copied and a cycle never ends."""
 
-    @cxx_body("return v.is_gc_managed();")
     def is_gc_managed(self) -> Bint:
         """True when this value lives inside a GC-allocated block.
 
@@ -170,7 +169,6 @@ class EvalState:
         store, and the async layer has to route every call that
         follows onto this state's own thread."""
 
-    @cxx_body("return es.get_store_uri();")
     def get_store_uri(self) -> Str:
         """The URI this state was opened with."""
 

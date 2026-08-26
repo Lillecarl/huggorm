@@ -23,6 +23,7 @@ from cythonix_idl.declare import (
     binding,
     binds,
     cxx_body,
+    cxx_name,
     derives,
     header,
     produced,
@@ -58,11 +59,11 @@ class MockStorePath:
     def to_string(self) -> Str:
         """The full base name, '<hash>-<name>'."""
 
-    @cxx_body("return msp.hash();")
+    @cxx_name("hash")
     def hash_part(self) -> Str:
         """The 32-character hash at the front."""
 
-    @cxx_body("return msp.name();")
+    @cxx_name("name")
     def name_part(self) -> Str:
         """The part after the hash."""
 
@@ -133,7 +134,6 @@ class MockDerivedPath:
     def describe(self) -> Str:
         """'opaque <path>' or '<path>!<output>'."""
 
-    @cxx_body("return mdp.path();")
     def path(self) -> "MockStorePath":
         """The store path this request names."""
 
@@ -170,11 +170,9 @@ class MockStore:
         virtual dispatch, so an override has to be visible from
         there."""
 
-    @cxx_body("return ms.is_valid_path(path);")
     def is_valid_path(self, path: "MockStorePath") -> Bint:
         """Whether this store holds that path."""
 
-    @cxx_body("return ms.query_all_valid_paths();")
     def query_all_valid_paths(self) -> "list[MockStorePath]":
         """Every path this store holds.
 
@@ -183,15 +181,12 @@ class MockStore:
         handle - a list of proxies is refused, because nothing grants
         leases in bulk."""
 
-    @cxx_body("return ms.add_text_to_store(name, contents);")
     def add_text_to_store(self, name: Str, contents: Str) -> "MockStorePath":
         """Add a text file and hand back the path it landed at."""
 
-    @cxx_body("return ms.build_derivation(request);")
     def build_derivation(self, request: "MockDerivedPath") -> "MockStorePath":
         """Build one request and hand back the output path."""
 
-    @cxx_body("return ms.query_derivation(drv_path);")
     def query_derivation(self, drv_path: "MockStorePath") -> "MockDerivation":
         """Parse a .drv previously added to this store.
 

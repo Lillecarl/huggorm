@@ -19,6 +19,7 @@ from cythonix_idl.declare import (
     Bytes,
     Path,
     Str,
+    StrView,
     binding,
     binds,
     blocks,
@@ -533,8 +534,8 @@ class Store:
         same meaning `add_path_to_store` already carries.
 
         Raises BadStorePath when the links run out somewhere else."""
-    @cxx_body("return s.followLinksToStorePath(path);")
-    def follow_links_to_store_path(self, path: Str) -> "StorePath":
+    @cxx_name("followLinksToStorePath")
+    def follow_links_to_store_path(self, path: StrView) -> "StorePath":
         """Follow symlinks until the path lands in the store, and say
         which store path it landed in.
 
@@ -562,13 +563,11 @@ class Store:
         keeps `/nix/store` in its paths while its files live under a
         root somewhere else, so this is what the store calls the path
         and `real_path` is where the bytes are."""
-    # A bound object crosses back as an OWNING pointer, and the
-    # emitter derives that from the return type alone: the signature,
-    # the temporary, the NULL guard and the __new__-without-__init__
-    # that takes ownership. What the body carries is the call and the
-    # one decision C++ has to make about it.
-    @cxx_body("return s.parseStorePath(path);")
-    def parse_store_path(self, path: Str) -> "StorePath":
+    # A bound object crosses back as itself, and the emitter derives
+    # the whole binding from the return type alone. All this says is
+    # what C++ calls the method.
+    @cxx_name("parseStorePath")
+    def parse_store_path(self, path: StrView) -> "StorePath":
         """This string as a store path of THIS store.
 
         A store path is a base name, and which directory it belongs
