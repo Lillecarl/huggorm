@@ -325,6 +325,12 @@ def includes(classes: Sequence[Class],
     # header its C++ lives in. `wanted` below is where that lands.
 
     out = ["#include <nanobind/nanobind.h>"]
+    if any(_overridable(cls) for cls in classes):
+        # NB_TRAMPOLINE and NB_OVERRIDE live here, not in the main
+        # header. Derived like every other include: a declaration that
+        # marks no method @virtual needs no trampoline and does not
+        # get this line.
+        out.append("#include <nanobind/trampoline.h>")
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
     if any(cls.decl.wire == "value" and cls.decl.text for cls in classes):
         # std::hash lives in <functional>, and the value hash uses it.
@@ -380,6 +386,11 @@ def _default(pr, known: dict[str, Class] | None = None) -> str:
             raise TypeError(
                 f"{head} has no word called {member}.")
         return f'"{word.value}"'
+    if value == "None" and pr.type.python.endswith("| None"):
+        # An optional parameter, absent. `nullptr` is what CXX_DEFAULT
+        # would give and it is a null POINTER, which a std::optional
+        # parameter cannot take.
+        return "nb::none()"
     if absent(pr, known):
         # None, and the signature says so. The parameter arrives as a
         # std::optional and an emitted line turns it into an empty
@@ -443,8 +454,14 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         # A method the declaration could not derive, carried verbatim.
         obj = _self(cls)
         args, opening = _signature(cls, m, known)
+        # An OPTIONAL return needs its type spelled. A lambda with two
+        # return paths - the value and std::nullopt - cannot deduce
+        # one, and the declaration already said which type it is.
+        ret = ""
+        if m.ret is not None and m.ret.python.endswith("| None"):
+            ret = f" -> {_cxx(m.ret, known)[0]}"
         head = (f'{INDENT * 2}.def("{m.name}", '
-                f"[]({_held(cls)} &{obj}{args}) {{")
+                f"[]({_held(cls)} &{obj}{args}){ret} {{")
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in m.cxx_body.strip().splitlines()]
         return [head, *opening, *body,
@@ -542,6 +559,29 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     decoration."""
     if cls.ctor is None:
         return []
+    if cls.ctor.cxx_body:
+        # Placement new, because `__init__` is handed storage rather
+        # than asked for an object. One Python signature over several
+        # C++ constructors needs this: nb::init picks by C++ type at
+        # compile time, and which constructor to call is a decision
+        # about a VALUE - MockDerivedPath is opaque when it carries no
+        # output name and built when it does.
+        obj = _self(cls)
+        args, opening = _signature(cls, cls.ctor, known)
+        names = "".join(
+            f', "{pr.name}"_a'
+            + (f" = {_default(pr, known)}" if pr.default is not None else "")
+            for pr in cls.ctor.params)
+        body = [f"{INDENT * 4}{ln}".rstrip()
+                for ln in cls.ctor.cxx_body.strip().splitlines()]
+        head = (f'{INDENT * 2}.def("__init__", '
+                f"[]({_held(cls)} *{obj}{args}) {{")
+        tail = f"{INDENT * 2}}}{names}"
+        if not cls.ctor.doc:
+            return [head, *opening, *body, tail + ")"]
+        doc = " ".join(cls.ctor.doc.split()).replace("\\", "\\\\").replace('"', r'\"')
+        return [head, *opening, *body, tail + ",",
+                f'{INDENT * 3}     "{doc}")']
     types = ", ".join(_param(t, known)[0] for _, t in cls.ctor.params)
     args = "".join(f', "{n}"_a' for n, _ in cls.ctor.params)
     line = f"{INDENT * 2}.def(nb::init<{types}>(){args}"
@@ -580,25 +620,73 @@ def _render(cls: Class, accessor: str) -> str:
         f"{cls.name}: \"{accessor}\" names no accessor on this class.")
 
 
-def _repr_parts(cls: Class) -> str:
-    """`"name='" + <read> + "'"` for every declared field, joined.
+def _identity_semantics(cls: Class,
+                        known: dict[str, Class] | None = None
+                        ) -> list[str]:
+    """The repr and the hash every wire value owes a reader.
 
-    Str fields only, and it refuses rather than guessing. A number
-    would need `std::to_string` and a nested value its own repr;
-    inventing either here would put a wrong answer in an emitted file
-    instead of a message in this one."""
-    decl = cls.decl
-    fields = decl.fields or (Field(decl.shown, "str", read=decl.shown),)
-    parts = []
-    for i, f in enumerate(fields):
-        if f.type != "str":
-            raise TypeError(
-                f"{cls.name}.{f.name}: a repr of a {f.type} is not derived "
-                f"yet. Only str fields render without a second decision.")
-        lead = ", " if i else ""
-        parts.append(f'+ "{lead}{f.name}=\'" + {_render(cls, f.read)} '
-                     f'+ "\'"')
-    return " ".join(parts)
+    Both from the declared PARTS, and both through the Python object.
+    `nb::repr(h.attr("path")())` asks MockStorePath for its own repr,
+    so a part of any type renders without this emitter knowing what it
+    is - which is what lets one line cover a str, a store path and a
+    list of them. `_value.py` gave the Cython side the same two
+    answers from the same declaration.
+
+    A list part is hashed as a TUPLE. A list is unhashable for the
+    good reason that it can change, and this one cannot: it is a copy
+    of what the object said.
+
+    The hash agrees with equality because it hashes the same parts in
+    the same order, and equality is either those parts or a C++
+    `operator==` over the members they are read from."""
+    fields = wire_fields(cls)
+    if not fields and cls.decl.shown:
+        # A value that declares no FIELDS and one thing worth showing.
+        # The repr then has no name to print, so it prints the value
+        # alone - `ValidPathInfo('/nix/store/...')`. Weaker than a
+        # named field, and it is what the declaration carries.
+        return [f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
+                f'{INDENT * 3}return nb::str("{cls.name}({{!r}})").format(',
+                f'{INDENT * 4}h.attr("{cls.decl.shown}")());',
+                f"{INDENT * 2}}})"]
+    if not fields:
+        return []
+    spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
+    reads = ", ".join(read for _, _, read in fields)
+    hashed = ", ".join(
+        f"{NAMESPACE}::as_tuple({read})" if wire.startswith("list[") else read
+        for _, wire, read in fields)
+    out = []
+    if cls.decl.compare != "cxx":
+        # Equal when the SAME CLASS carries the same declared parts.
+        #
+        # `b.type().is(a.type())` rather than isinstance: a subclass
+        # of a value type would carry parts this one does not compare,
+        # so saying "equal" would be a claim the parts do not support.
+        # `_value.py` gave the Cython side the same two lines.
+        #
+        # NotImplemented rather than False for another type, which is
+        # what lets the other side answer - and what `nb::is_operator`
+        # already does for an overload that does not match.
+        out += [
+            f'{INDENT * 2}.def("__eq__", [](nb::handle a, nb::handle b)',
+            f"{INDENT * 3} -> nb::object {{",
+            f"{INDENT * 3}if (!b.type().is(a.type()))",
+            f"{INDENT * 4}return nb::not_implemented();",
+            f'{INDENT * 3}return nb::cast(a.attr("_parts")()'
+            f'.equal(b.attr("_parts")()));',
+            f"{INDENT * 2}}}, nb::is_operator())",
+        ]
+    return [
+        *out,
+        f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
+        f'{INDENT * 3}return nb::str("{cls.name}({spec})").format(',
+        f"{INDENT * 4}{reads});",
+        f"{INDENT * 2}}})",
+        f'{INDENT * 2}.def("__hash__", [](nb::handle h) {{',
+        f"{INDENT * 3}return nb::hash(nb::make_tuple({hashed}));",
+        f"{INDENT * 2}}})",
+    ]
 
 
 def _value_semantics(cls: Class) -> list[str]:
@@ -621,24 +709,6 @@ def _value_semantics(cls: Class) -> list[str]:
         # A CONVERSION, and only for a value that IS a string.
         out.append(f'{INDENT * 2}.def("__str__", []({ref}) '
                    f"{{ return {_render(cls, decl.text)}; }})")
-    if decl.fields or decl.shown:
-        # An IDENTIFICATION, which every value owes a reader.
-        #
-        # From the FIELDS where there are any, because a field carries
-        # both halves of what a repr says: its name, and the accessor
-        # that reads it. `shown` carries only the second, so a repr
-        # built from it drops the name and prints `StorePath('...')`
-        # where `_value.py` prints `StorePath(base_name='...')` from
-        # the same declaration. One declaration answering twice is the
-        # one thing two backends must not do.
-        out += [f'{INDENT * 2}.def("__repr__", []({ref}) {{',
-                # std::string on the leading literal: two `const
-                # char*` added with + is pointer arithmetic in C++,
-                # not concatenation, and it does not compile.
-                f'{INDENT * 3}return std::string("{cls.name}(") '
-                f'{_repr_parts(cls)} + ")";',
-                f"{INDENT * 2}}})"]
-
     if decl.wire == "value":
         # A value COPIES. Without these, copy.copy falls through to
         # pickle, which a bound C++ type cannot do - so a caller gets
@@ -664,14 +734,6 @@ def _value_semantics(cls: Class) -> list[str]:
                 f"const {held} &b)",
                 f"{INDENT * 3} {{ return a {op} b; }}, nb::is_operator())"]
 
-    if decl.compare == "cxx" and decl.text:
-        # Only where __eq__ exists. A hash must agree with equality,
-        # and a class with no declared comparison has none to agree
-        # with - Python's identity hash is then the honest answer.
-        out += [f'{INDENT * 2}.def("__hash__", []({ref}) {{',
-                f"{INDENT * 3}return std::hash<std::string_view>{{}}"
-                f"({obj}.{decl.text}());",
-                f"{INDENT * 2}}})"]
     return out
 
 
@@ -776,6 +838,29 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     decoration."""
     if cls.ctor is None:
         return []
+    if cls.ctor.cxx_body:
+        # Placement new, because `__init__` is handed storage rather
+        # than asked for an object. One Python signature over several
+        # C++ constructors needs this: nb::init picks by C++ type at
+        # compile time, and which constructor to call is a decision
+        # about a VALUE - MockDerivedPath is opaque when it carries no
+        # output name and built when it does.
+        obj = _self(cls)
+        args, opening = _signature(cls, cls.ctor, known)
+        names = "".join(
+            f', "{pr.name}"_a'
+            + (f" = {_default(pr, known)}" if pr.default is not None else "")
+            for pr in cls.ctor.params)
+        body = [f"{INDENT * 4}{ln}".rstrip()
+                for ln in cls.ctor.cxx_body.strip().splitlines()]
+        head = (f'{INDENT * 2}.def("__init__", '
+                f"[]({_held(cls)} *{obj}{args}) {{")
+        tail = f"{INDENT * 2}}}{names}"
+        if not cls.ctor.doc:
+            return [head, *opening, *body, tail + ")"]
+        doc = " ".join(cls.ctor.doc.split()).replace("\\", "\\\\").replace('"', r'\"')
+        return [head, *opening, *body, tail + ",",
+                f'{INDENT * 3}     "{doc}")']
     types = ", ".join(_param(t, known)[0] for _, t in cls.ctor.params)
     args = "".join(f', "{n}"_a' for n, _ in cls.ctor.params)
     line = f"{INDENT * 2}.def(nb::init<{types}>(){args}"
@@ -855,24 +940,6 @@ def _value_semantics(cls: Class) -> list[str]:
         # A CONVERSION, and only for a value that IS a string.
         out.append(f'{INDENT * 2}.def("__str__", []({ref}) '
                    f"{{ return {_render(cls, decl.text)}; }})")
-    if decl.fields or decl.shown:
-        # An IDENTIFICATION, which every value owes a reader.
-        #
-        # From the FIELDS where there are any, because a field carries
-        # both halves of what a repr says: its name, and the accessor
-        # that reads it. `shown` carries only the second, so a repr
-        # built from it drops the name and prints `StorePath('...')`
-        # where `_value.py` prints `StorePath(base_name='...')` from
-        # the same declaration. One declaration answering twice is the
-        # one thing two backends must not do.
-        out += [f'{INDENT * 2}.def("__repr__", []({ref}) {{',
-                # std::string on the leading literal: two `const
-                # char*` added with + is pointer arithmetic in C++,
-                # not concatenation, and it does not compile.
-                f'{INDENT * 3}return std::string("{cls.name}(") '
-                f'{_repr_parts(cls)} + ")";',
-                f"{INDENT * 2}}})"]
-
     if decl.wire == "value":
         # A value COPIES. Without these, copy.copy falls through to
         # pickle, which a bound C++ type cannot do - so a caller gets
@@ -898,14 +965,6 @@ def _value_semantics(cls: Class) -> list[str]:
                 f"const {held} &b)",
                 f"{INDENT * 3} {{ return a {op} b; }}, nb::is_operator())"]
 
-    if decl.compare == "cxx" and decl.text:
-        # Only where __eq__ exists. A hash must agree with equality,
-        # and a class with no declared comparison has none to agree
-        # with - Python's identity hash is then the honest answer.
-        out += [f'{INDENT * 2}.def("__hash__", []({ref}) {{',
-                f"{INDENT * 3}return std::hash<std::string_view>{{}}"
-                f"({obj}.{decl.text}());",
-                f"{INDENT * 2}}})"]
     return out
 
 
@@ -1059,52 +1118,19 @@ inline nb::tuple as_tuple(nb::handle items)
 
 def _record_semantics(cls: Class,
                       known: dict[str, Class] | None = None) -> list[str]:
-    """What a RECORD owes Python, beyond reading its own fields.
+    """What a RECORD owes Python beyond reading its own fields.
 
-    A repr, an equality and a hash, and all three derived from the
-    field list rather than from a type table. The trick is that each
-    one goes through the PYTHON object: `nb::repr(h.attr("path"))`
-    asks StorePath for its repr, so a field of any bound type renders
-    without this emitter knowing anything about it. The Cython
-    backend gets the same three from `_value.py` and the same
-    declaration.
+    Equality, and only equality. The repr and the hash beside it are
+    what EVERY wire value owes and come from `_identity_semantics`,
+    which reads the same declared parts for a record and for a
+    constructed value alike.
 
     `__ne__` is not here and does not need to be. Python fills the
     slot as soon as `__eq__` exists."""
-    declared = [(m.name, m.ret.python) for m in cls.methods
-                if m.ret is not None]
-    fields = [name for name, _ in declared]
     held = _held(cls)
-    spec = ", ".join(f"{name}={{!r}}" for name in fields)
-    reads = ", ".join(f'h.attr("{name}")()' for name in fields)
-    # A LIST field becomes a tuple before it is hashed. A list is
-    # unhashable for the good reason that it can change, and this one
-    # cannot - it is a copy of what the store said. `_value.py` makes
-    # the same substitution from the same declaration, so the two
-    # backends hash the same thing.
-    hashed = ", ".join(
-        (f'{NAMESPACE}::as_tuple(h.attr("{name}")())'
-         if python.startswith("list[")
-         else f'h.attr("{name}")()')
-        for name, python in declared)
     return [
-        # An IDENTIFICATION, which every value owes a reader. The
-        # same shape `_value.py` writes: the class name, then every
-        # field as `name=<repr>`.
-        f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
-        f'{INDENT * 3}return nb::str("{cls.name}({spec})").format(',
-        f"{INDENT * 4}{reads});",
-        f"{INDENT * 2}}})",
-        # Equality is the struct's, which is its members'.
         f'{INDENT * 2}.def("__eq__", [](const {held} &a, const {held} &b)',
         f"{INDENT * 3} {{ return a == b; }}, nb::is_operator())",
-        # And the hash agrees with it, because it hashes the same
-        # fields in the same order. A tuple, so Python does the
-        # combining - which is one fewer thing to get subtly wrong
-        # than a hand-rolled mix.
-        f'{INDENT * 2}.def("__hash__", [](nb::handle h) {{',
-        f"{INDENT * 3}return nb::hash(nb::make_tuple({hashed}));",
-        f"{INDENT * 2}}})",
     ]
 
 
@@ -1205,6 +1231,52 @@ PARTS_DOC = ("Wire-serialization helper (private): one value per "
              "_wire_fields entry, in order.")
 
 
+# A declared field's WIRE type, and the C++ that carries it. The wire
+# spells types the way the manifest does - `str`, `int`, `str?`, or
+# another declared class - because that is the vocabulary the message
+# shape is written in, not C++'s.
+FIELD_CXX = {"str": "std::string", "int": "std::int64_t", "bool": "bool"}
+
+
+def _field_cxx(wire: str, known: dict[str, Class] | None = None) -> str:
+    """One declared field's type, as C++ holds it."""
+    known = known or {}
+    if wire.endswith("?"):
+        return f"std::optional<{_field_cxx(wire[:-1], known)}>"
+    if wire in FIELD_CXX:
+        return FIELD_CXX[wire]
+    if wire in known:
+        return _bare(known[wire])
+    raise TypeError(
+        f"'{wire}' has no C++ spelling as a field. Add it to "
+        f"nbemit.FIELD_CXX, or declare the class it names.")
+
+
+def _from_parts(cls: Class, known: dict[str, Class] | None = None
+                ) -> list[str]:
+    """`_from_parts`, for a value nothing constructs.
+
+    A wire value has to be rebuildable from its parts: it crosses as a
+    message and the far side has only those. Where a public
+    constructor takes exactly the parts, `markers` names the class and
+    there is nothing to write. Where there is no public constructor,
+    the C++ one still takes them - MockStorePath refuses
+    `MockStorePath(...)` in Python and fake_library::StorePath parses
+    a base name happily - so this calls it directly, under the private
+    name the wire layer asks for."""
+    fields = wire_fields(cls)
+    if not fields:
+        return []
+    types = [_field_cxx(wire, known) for _, wire, _ in fields]
+    args = ", ".join(f"{t} {n}" for (n, _, _), t in zip(fields, types,
+                                                        strict=True))
+    names = ", ".join(n for n, _, _ in fields)
+    keywords = "".join(f', "{n}"_a' for n, _, _ in fields)
+    return [f'{INDENT * 2}.def_static("_from_parts", []({args}) {{',
+            f"{INDENT * 3}return {_held(cls)}({names});",
+            f'{INDENT * 2}}}{keywords}, "{FROM_PARTS_DOC}")']
+
+
 def _round_trip(cls: Class) -> list[str]:
     """`_parts`, the half of the wire round trip that is a method.
 
@@ -1223,6 +1295,58 @@ def _round_trip(cls: Class) -> list[str]:
     return [f'{INDENT * 2}.def("_parts", [](nb::handle h) {{',
             f"{INDENT * 3}return nb::make_tuple({reads});",
             f'{INDENT * 2}}}, "{PARTS_DOC}")']
+
+
+def _overridable(cls: Class) -> tuple[Method, ...]:
+    """The methods a Python subclass may override.
+
+    Empty for almost every class. A binding over a C++ hierarchy that
+    Python is meant to EXTEND is the exception, and it needs a
+    trampoline - see `trampoline`."""
+    return tuple(m for m in cls.methods if m.virtual)
+
+
+def trampoline(cls: Class, known: dict[str, Class] | None = None) -> str:
+    """The C++ subclass that forwards a virtual back to Python.
+
+    Without one, a Python override is invisible: a free function
+    taking the base calls the C++ implementation, and the class that
+    overrode `get_uri` in Python is never asked.
+
+    nanobind ships the whole mechanism as two macros, so this emits
+    six lines where the Cython binding embedded forty - a hand-written
+    PyStore with PyGILState_Ensure, PyObject_CallMethod, a UTF-8
+    encode and the reference counting around all of it.
+
+    NB_TRAMPOLINE takes the arity because it sizes a small table of
+    cached lookups. Derived, like everything else here: it is the
+    number of methods the declaration marked `@virtual`.
+
+    `NB_OVERRIDE_PURE` for a method with no implementation behind it.
+    The plain macro falls back to the base's own implementation when
+    no Python subclass overrides, and a pure virtual has none - which
+    is a LINK error rather than a compile one, so it surfaces on
+    import as an undefined symbol."""
+    methods = _overridable(cls)
+    if not methods:
+        return ""
+    held = _held(cls)
+    out = [f"namespace {NAMESPACE} {{", "",
+           f"/** Forwards {cls.name}'s virtuals to a Python override. */",
+           f"struct Py{cls.name} : public {held}",
+           "{",
+           f"{INDENT}NB_TRAMPOLINE({held}, {len(methods)});", ""]
+    for m in methods:
+        spelled = m.cxx_name or m.name
+        ret, _ = _cxx(m.ret, known) if m.ret is not None else ("void", None)
+        args = ", ".join(f"{_param(t, known)[0]} {n}" for n, t in m.params)
+        names = "".join(f", {n}" for n, _ in m.params)
+        out += [f"{INDENT}{ret} {spelled}({args}) const override",
+                f"{INDENT}{{",
+                f"{INDENT * 2}NB_OVERRIDE"
+                f"{'_PURE' if m.pure else ''}({spelled}{names});",
+                f"{INDENT}}}", ""]
+    return "\n".join([*out, "};", "", f"}}  // namespace {NAMESPACE}", ""])
 
 
 def markers(cls: Class) -> list[str]:
@@ -1252,6 +1376,11 @@ def markers(cls: Class) -> list[str]:
     # otherwise - and writing it out means a reader of the compiled
     # class is told rather than left to know the default.
     out.append(f'{INDENT}cls.attr("_wire") = "{decl.wire or "proxy"}";')
+    if decl.abstract:
+        # A base that is GENERATED but never constructed. It still
+        # gets an async wrapper and a wire identity - a caller holds
+        # the base far more often than a leaf.
+        out.append(f'{INDENT}cls.attr("_abstract") = true;')
     if cls.is_value:
         out.append(f'{INDENT}cls.attr("_produced") = true;')
     elif decl.built_by:
@@ -1281,7 +1410,7 @@ def markers(cls: Class) -> list[str]:
                           for n, t, _ in fields)
         out.append(f'{INDENT}cls.attr("_wire_fields") = '
                    f"nb::make_tuple({pairs});")
-        if not cls.is_value:
+        if not cls.is_value and cls.ctor is not None:
             # The other half of the round trip, and for a CONSTRUCTED
             # value it is the class.
             #
@@ -1312,8 +1441,20 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         raise TypeError(
             f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
     held = _held(cls)
+    known = known or {}
+    # The C++ base, and the trampoline where the declaration named a
+    # virtual. nanobind takes both as template arguments and does the
+    # rest: a method declared once on the base is reachable from every
+    # leaf, and a Python override becomes visible to C++.
+    holds = [held]
+    if decl.base:
+        holds.append(_held(known[decl.base]) if decl.base in known
+                     else decl.base)
+    if _overridable(cls):
+        holds.append(f"{NAMESPACE}::Py{cls.name}")
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
-             f'{INDENT}auto cls = nb::class_<{held}>(m, "{cls.name}")']
+             f'{INDENT}auto cls = nb::class_<{", ".join(holds)}>'
+             f'(m, "{cls.name}")']
     if cls.is_value:
         # A RECORD: the emitter declared the struct, so every accessor
         # is a member and the whole binding is derived from the field
@@ -1330,6 +1471,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
                  f"{{ return {obj}.{name}; }})"
                  for name, _ in record_fields(cls, known)]
         body += _record_semantics(cls, known)
+        body += _identity_semantics(cls, known)
         body += _round_trip(cls)
         body += _value_semantics(cls)
         if body:
@@ -1337,12 +1479,29 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
     # No nb::init when something else builds one: there is no
     # constructor to call. A FACTORY takes its place where the
-    # declaration names one.
-    body = (_factory(cls, functions, known) if decl.built_by
-            else _ctor(cls, known))
+    # declaration names one. An ABSTRACT class offers neither: a
+    # caller holds one all the time and constructs one never.
+    if decl.abstract:
+        # No declared constructor, and still a way in - for a SUBCLASS.
+        # A Python class deriving from this one is instantiated as the
+        # trampoline, and nanobind needs an `__init__` to reach it. A
+        # bare MockStore() builds a trampoline whose get_uri calls a
+        # Python method that does not exist, which is what the Cython
+        # binding did too; `_abstract` is what tells the layers above
+        # not to offer it.
+        body = ([f"{INDENT * 2}.def(nb::init<>())"]
+                if _overridable(cls) else [])
+    elif decl.built_by:
+        body = _factory(cls, functions, known)
+    else:
+        body = _ctor(cls, known)
     for m in cls.methods:
         body += _accessor(cls, m) if m.prop else _method(cls, m, known)
-    body += _round_trip(cls) if decl.wire == "value" else []
+    if decl.wire == "value":
+        body += _identity_semantics(cls, known)
+        body += _round_trip(cls)
+        if cls.ctor is None:
+            body += _from_parts(cls, known)
     body += _value_semantics(cls)
     for source in decl.custom.values():
         body += [f"{INDENT * 2}{line}".rstrip()
@@ -1501,6 +1660,8 @@ def module(classes: Sequence[Class],
     # The structs first: a bind function returns one, so the type has
     # to be complete before the compiler reads the lambda.
     head += records(classes, known)
+    for cls in classes:
+        head += trampoline(cls, known).splitlines()
     out = "\n".join(head) + "\n" + "\n".join(
         bind_function(cls, known, functions) for cls in classes)
     exported = public([fn for fn in functions

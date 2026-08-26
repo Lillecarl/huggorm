@@ -71,6 +71,13 @@ BETTER = {
         "ordering. nix::StorePath defaults operator<=> upstream, so "
         "sorted(paths) should work. Nothing in nanopynix binds it."),
     ("StorePath", "__le__"): ("nb::is_operator()", "ordering, as __lt__."),
+    ("StorePath", "__hash__"): (
+        "nb::make_tuple",
+        "a hash must agree with equality, and equality here is the "
+        "declared PARTS - which is what `_value.py` hashes on the "
+        "other side of the same declaration. nanopynix hashes the "
+        "rendered string instead, which agrees today because a store "
+        "path has one field and would stop the day it has two."),
     ("StorePath", "_parts"): (
         "nb::make_tuple",
         "a wire value crosses as its PARTS. nanopynix binds in one "
@@ -99,7 +106,14 @@ BETTER = {
         "prints it - so one declaration was answering twice."),
     ("ValidPathInfo", "__copy__"): ("__copy__", "as StorePath's."),
     ("ValidPathInfo", "__deepcopy__"): ("__deepcopy__", "as StorePath's."),
-    ("ValidPathInfo", "__repr__"): ("store_path=", "as StorePath's."),
+    ("ValidPathInfo", "__repr__"): (
+        "nb::str",
+        "a repr through the PYTHON object, so a part of any bound "
+        "type renders itself. nanopynix concatenates C++ strings, "
+        "which works while every part is a std::string and stops the "
+        "moment one is a store path. The name is missing on both "
+        "sides here, and for the same reason: this declaration names "
+        "one thing worth showing and no fields."),
     ("StorePath", "__gt__"): ("nb::is_operator()", "ordering, as __lt__."),
     ("StorePath", "__ge__"): ("nb::is_operator()", "ordering, as __lt__."),
     # Settled 2026-08-26. A remote store is opened over the network,

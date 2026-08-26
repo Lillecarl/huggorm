@@ -179,6 +179,8 @@ class Method:
     # makes a trampoline necessary and what says which methods it
     # forwards.
     virtual: bool = False
+    # ...and with no implementation to fall back to, from @pure.
+    pure: bool = False
     # Run once at module import, and do not export, from @startup.
     startup: bool = False
     # Register as the module's exception translator, from @translator.
@@ -488,6 +490,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         parts_prelude=getattr(marked, "_cxx_parts", ("", {}))[0],
         parts=tuple(getattr(marked, "_cxx_parts", ("", {}))[1].items()),
         virtual=bool(getattr(marked, "_virtual", False)),
+        pure=bool(getattr(marked, "_pure", False)),
         startup=bool(getattr(marked, "_startup", False)),
         translator=bool(getattr(marked, "_translator", False)),
         policy=getattr(marked, "_policy", ""),
