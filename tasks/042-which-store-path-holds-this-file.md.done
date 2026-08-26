@@ -48,11 +48,33 @@ store directory, so it answers for a file that is not there, and it
 answers in the STORE's terms: a chroot store answers about
 `/nix/store/...` even though its files are under `<root>/nix/store`.
 
-It does not follow symlinks either. `nix::Store::followLinksToStorePath`
-does, and it is a different binding with a different failure mode - it
-reads the filesystem, so it needs a store whose files are reachable
-from here. Worth binding when a caller passes a `result` symlink or
-`/run/current-system`.
+It does not follow symlinks either. That is a different binding, and
+it turned out to be TWO.
+
+`follow_links_to_store_path` answers the same question of a symlink:
+which store object does this eventually point at. It drops the
+sub-path, as upstream does, because the file the caller named is not
+where the link pointed.
+
+`follow_links_to_store` is its first half and keeps the sub-path. A
+`result` symlink pointing INTO a package resolves to `<store
+path>/bin/foo`, and that is the answer a caller who wants the FILE
+needs.
+
+The second one returns a `str`, not a `pathlib.Path`, and that is the
+same distinction option A got wrong above. Its answer is in the
+STORE's terms - the spelling `print_store_path` gives - so a chroot
+store answers about `/nix/store/...` while its files live under
+`<root>/nix/store`. `real_path` is the call that names a location on
+this machine, and it returns a path because it can.
+
+Being a str is also what gives it an rpc where `real_path` has none.
+Asking which store object a link points at is a question about the
+SERVER's filesystem, and the answer travels in the store's terms - the
+same meaning `add_path_to_store` already carries.
+
+Both raise `BadStorePath`, the narrow type, where `to_store_path`
+raises the wide one for the same fact. Upstream's asymmetry again.
 
 ## An upstream asymmetry, kept
 

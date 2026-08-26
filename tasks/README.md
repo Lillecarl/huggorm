@@ -57,7 +57,11 @@ Findings reference two architectural reviews, 2026-08-23 and
   at `<store path>/bin/python3`, which is a file in a store object and
   is not one. The answer is a PAIR, carried by StoreLocation, because
   the store path plus the sub-path is what reaches the file again -
-  through real_path, which closes the loop the other way.
+  through real_path, which closes the loop the other way. Two more
+  calls follow symlinks first: follow_links_to_store_path for the
+  object, follow_links_to_store for the file. The second returns a
+  str because its answer is in the STORE's terms rather than this
+  machine's, which is also what gives it an rpc.
 - 041 (containers inside a wire value) is done, both directions. A
   wire value's field now goes through the same encode and decode an
   rpc field goes through, rather than through a second dispatch that
