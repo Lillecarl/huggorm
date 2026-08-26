@@ -52,6 +52,12 @@ Findings reference two architectural reviews, 2026-08-23 and
   declaration of their own, and the wire did not move: a member is a
   str. A value read off the wire comes back typed, and libstore stays
   the authority on what the words mean.
+- 042 (which store path holds this file) is done. to_store_path
+  answers the question parse_store_path cannot: an interpreter lives
+  at `<store path>/bin/python3`, which is a file in a store object and
+  is not one. The answer is a PAIR, carried by StoreLocation, because
+  the store path plus the sub-path is what reaches the file again -
+  through real_path, which closes the loop the other way.
 - 041 (containers inside a wire value) is done, both directions. A
   wire value's field now goes through the same encode and decode an
   rpc field goes through, rather than through a second dispatch that

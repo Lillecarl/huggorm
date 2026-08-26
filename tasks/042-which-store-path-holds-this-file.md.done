@@ -1,0 +1,67 @@
+# Which store path holds this file
+
+Noticed while writing the live test for `query_path_info`. The
+interpreter running the suite lives at `<store path>/bin/python3.14`,
+and `parse_store_path` refuses that string: it takes a store path and
+nothing below one. So the test used `sys.prefix` and a comment said
+the call was missing.
+
+## Two questions, not one
+
+`parse_store_path` asks "is this string a store path in this store".
+`to_store_path` asks "which store path CONTAINS this file". Upstream
+keeps them apart for the same reason: `parseStorePath` requires the
+path's directory to BE the store directory, while `toStorePath` splits
+on it.
+
+Both live on the STORE, and both have to. Only a store knows its own
+directory.
+
+## The answer is a pair
+
+`StoreDirConfig::toStorePath` returns `(StorePath, CanonPath)` - the
+object, and where inside it the file sits. Both halves are the answer,
+so `StoreLocation` carries both.
+
+Dropping the sub-path was the tempting shortcut and it loses the loop:
+`real_path(where.path()) / where.sub_path()` is where the file really
+is, which is the thing `real_path` alone could not say for a file
+rather than for a store object. The live test asserts exactly that
+round trip.
+
+The sub-path is EMPTY when the path given was the store path itself.
+That is a real answer - nothing below it - which is why the field
+carries no `?`. `absOrEmpty` is upstream's own spelling of it.
+
+## Why a wire value and not a tuple
+
+A tuple has no protobuf representation, so a method returning one gets
+no rpc and the manifest says why. Asking a remote store which of ITS
+paths holds a file is a normal thing to want, so the pair is a
+declared wire value - two fields, a `StorePath` and a `str`, produced
+rather than constructed like `PathInfo`.
+
+## What it does not do
+
+It does not touch the filesystem. The split is string work on the
+store directory, so it answers for a file that is not there, and it
+answers in the STORE's terms: a chroot store answers about
+`/nix/store/...` even though its files are under `<root>/nix/store`.
+
+It does not follow symlinks either. `nix::Store::followLinksToStorePath`
+does, and it is a different binding with a different failure mode - it
+reads the filesystem, so it needs a store whose files are reachable
+from here. Worth binding when a caller passes a `result` symlink or
+`/run/current-system`.
+
+## An upstream asymmetry, kept
+
+A path outside the store raises `NixError`, not `BadStorePath`.
+`toStorePath` throws a bare `Error` where `parseStorePath` throws
+`BadStorePath`, for the same fact.
+
+The binding does not correct it. Correcting means disagreeing with
+`nix` for the same input, and it would turn a future upstream fix into
+a silent change here. The test asserts the wide type AND asserts the
+narrow one does not apply, so an upstream fix arrives as a build
+failure rather than as a surprise for a caller.

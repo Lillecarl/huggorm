@@ -89,3 +89,5 @@ before libstore sees it.
 this file", which is a different question from `parse_store_path`.
 `sys.executable` is inside a store path and is not one, and the live
 test had to use `sys.prefix` to avoid the gap.
+
+Closed by 042.

@@ -179,3 +179,8 @@ Nothing here gives a StorePath a `pathlib` surface of its own. That
 was the original ask and it stays refused for the reason at the top: a
 StorePath is a name, not a location, and only a store can turn one
 into the other.
+
+The other direction closed in 042. `to_store_path` takes a file's
+path and answers which store path holds it, plus where inside - so
+`real_path(where.path()) / where.sub_path()` is a round trip, and a
+caller can go from a file on disk to a store object and back.
