@@ -302,7 +302,7 @@ def check_manifest(decl_path: pathlib.Path,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("declaration", nargs="*", default=["path.py", "store.py"])
+    ap.add_argument("declaration", nargs="*", default=["decl/path.py", "decl/store.py"])
     ap.add_argument("--manifest", default="")
     args = ap.parse_args()
     here = pathlib.Path(__file__).resolve().parent
