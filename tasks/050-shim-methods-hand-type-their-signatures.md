@@ -108,8 +108,7 @@ have shipped - three of which compiled fine.
 could be extended rather than worked around. It can, in about ninety
 lines using Cython's own idiom, and then the implementation file IS the
 declaration: the same file compiles as a C++ extension type and imports
-as ordinary Python. `spike-idl/PURE-MODE.md` has the evidence and the
-costs; `spike-idl/probe/` rebuilds it in one command.
+as ordinary Python. Task 054 has the evidence and the costs.
 
 Under that shape a module is two hand-written `.py` files and two
 GENERATED `.pxd` files - so the duplication this task exists to
