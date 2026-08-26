@@ -82,18 +82,6 @@ KNOWN: dict[str, str] = {}
 # Emptying this table is what makes removing Cython a decision rather
 # than a gamble.
 NOT_YET: dict[str, str] = {
-    "repr": "one declaration, two reprs. The Cython emitter writes "
-            "`StorePath(base_name='...')` from the constructor's "
-            "parameter name; the nanobind one writes `StorePath('...')` "
-            "and drops it. Both read the same declaration, so one of "
-            "them is not deriving what it could.",
-    "copy": "a VALUE must copy, and nanobind gives no __copy__ - so "
-            "copy.copy falls through to pickle, which a bound C++ type "
-            "cannot do. The Cython emitter writes both dunders from "
-            "`@wire_value`; the nanobind one writes neither.",
-    "deepcopy": "the same gap as copy. A bound value is immutable, so "
-                "a deep copy IS a copy, which is what the Cython "
-                "emitter already says.",
     "bad-name": "error translation. Cython carries `except "
                 "+translate_nix_error` on every declaration, which maps "
                 "a nix exception onto the right Python class and strips "

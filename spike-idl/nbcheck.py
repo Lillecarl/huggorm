@@ -70,6 +70,28 @@ BETTER = {
         "ordering. nix::StorePath defaults operator<=> upstream, so "
         "sorted(paths) should work. Nothing in nanopynix binds it."),
     ("StorePath", "__le__"): ("nb::is_operator()", "ordering, as __lt__."),
+    # Found by parity.py, which is a stronger instrument than this
+    # file: it imports the two COMPILED modules and asks them the same
+    # questions, where this compares text against a project that is
+    # not in this repo.
+    ("StorePath", "__copy__"): (
+        "__copy__",
+        "a value COPIES. Without it copy.copy falls through to pickle, "
+        "which a bound C++ type cannot do - verified: the built module "
+        "raises TypeError where the Cython one hands back a copy."),
+    ("StorePath", "__deepcopy__"): (
+        "__deepcopy__",
+        "as __copy__. A bound value is immutable, so a deep copy IS a "
+        "copy."),
+    ("StorePath", "__repr__"): (
+        "base_name=",
+        "a repr names its fields. The declaration says the one field is "
+        "called base_name and is read by to_string; a repr built from "
+        "the accessor alone drops the name, and the Cython backend "
+        "prints it - so one declaration was answering twice."),
+    ("ValidPathInfo", "__copy__"): ("__copy__", "as StorePath's."),
+    ("ValidPathInfo", "__deepcopy__"): ("__deepcopy__", "as StorePath's."),
+    ("ValidPathInfo", "__repr__"): ("store_path=", "as StorePath's."),
     ("StorePath", "__gt__"): ("nb::is_operator()", "ordering, as __lt__."),
     ("StorePath", "__ge__"): ("nb::is_operator()", "ordering, as __lt__."),
     # Settled 2026-08-26. A remote store is opened over the network,

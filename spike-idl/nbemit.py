@@ -50,6 +50,7 @@ A shape it cannot derive stops with a reason. The escape hatch is
 becomes the place the real code lives.
 """
 
+from declare import Field
 from read import Class, Method, Type
 
 INDENT = "    "
@@ -273,6 +274,27 @@ def _render(cls: Class, accessor: str) -> str:
         f"{cls.name}: \"{accessor}\" names no accessor on this class.")
 
 
+def _repr_parts(cls: Class) -> str:
+    """`"name='" + <read> + "'"` for every declared field, joined.
+
+    Str fields only, and it refuses rather than guessing. A number
+    would need `std::to_string` and a nested value its own repr;
+    inventing either here would put a wrong answer in an emitted file
+    instead of a message in this one."""
+    decl = cls.decl
+    fields = decl.fields or (Field(decl.shown, "str", read=decl.shown),)
+    parts = []
+    for i, f in enumerate(fields):
+        if f.type != "str":
+            raise TypeError(
+                f"{cls.name}.{f.name}: a repr of a {f.type} is not derived "
+                f"yet. Only str fields render without a second decision.")
+        lead = ", " if i else ""
+        parts.append(f'+ "{lead}{f.name}=\'" + {_render(cls, f.read)} '
+                     f'+ "\'"')
+    return " ".join(parts)
+
+
 def _value_semantics(cls: Class) -> list[str]:
     """What a wire value owes Python, in nanobind's spelling.
 
@@ -292,12 +314,36 @@ def _value_semantics(cls: Class) -> list[str]:
         # A CONVERSION, and only for a value that IS a string.
         out.append(f'{INDENT * 2}.def("__str__", []({ref}) '
                    f"{{ return {_render(cls, decl.text)}; }})")
-    if decl.shown:
+    if decl.fields or decl.shown:
         # An IDENTIFICATION, which every value owes a reader.
-        shown = _render(cls, decl.shown)
+        #
+        # From the FIELDS where there are any, because a field carries
+        # both halves of what a repr says: its name, and the accessor
+        # that reads it. `shown` carries only the second, so a repr
+        # built from it drops the name and prints `StorePath('...')`
+        # where `_value.py` prints `StorePath(base_name='...')` from
+        # the same declaration. One declaration answering twice is the
+        # one thing two backends must not do.
         out += [f'{INDENT * 2}.def("__repr__", []({ref}) {{',
-                f'{INDENT * 3}return "{cls.name}(\'" + {shown} + "\')";',
+                # std::string on the leading literal: two `const
+                # char*` added with + is pointer arithmetic in C++,
+                # not concatenation, and it does not compile.
+                f'{INDENT * 3}return std::string("{cls.name}(") '
+                f'{_repr_parts(cls)} + ")";',
                 f"{INDENT * 2}}})"]
+
+    if decl.wire == "value":
+        # A value COPIES. Without these, copy.copy falls through to
+        # pickle, which a bound C++ type cannot do - so a caller gets
+        # TypeError where the Cython backend hands back a copy.
+        #
+        # A bound value is immutable, so a deep copy IS a copy. The
+        # Cython emitter already says exactly that; this is the same
+        # sentence in the other language.
+        out += [f'{INDENT * 2}.def("__copy__", []({ref}) '
+                f"{{ return {decl.cxx}({obj}); }})",
+                f'{INDENT * 2}.def("__deepcopy__", []({ref}, nb::dict) '
+                f"{{ return {decl.cxx}({obj}); }}, \"memo\"_a)"]
 
     facts = {"value": decl.compare == "cxx",
              "order": decl.compare == "cxx" and decl.order}
