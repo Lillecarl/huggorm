@@ -66,6 +66,15 @@ CXX_PARAM = {
 
 # Comparison dunders and the C++ operator each one binds. Every entry
 # is emitted with nb::is_operator(); see the module docstring.
+# A produced value's optional field needs an EXPLICIT C++ return type,
+# because a lambda with two return paths - the value and std::nullopt -
+# cannot deduce one. Derived from the declared Python type, so the
+# declaration says `str | None` once and both backends read it.
+CXX_OPTIONAL = {
+    "str | None": "std::optional<std::string>",
+    "int | None": "std::optional<std::int64_t>",
+}
+
 COMPARISONS = (("__eq__", "==", "value"), ("__lt__", "<", "order"),
                ("__le__", "<=", "order"), ("__gt__", ">", "order"),
                ("__ge__", ">=", "order"))
@@ -94,18 +103,38 @@ def includes(cls: Class) -> list[str]:
     Derived from the declared types rather than listed. A caster left
     out does not fail at compile time - nanobind fails the conversion
     at RUNTIME with a bare std::bad_cast out of module init, which is
-    a bad way to learn about a missing include."""
+    a bad way to learn about a missing include.
+
+    Two readings, because the two shapes speak different vocabularies.
+    A bound class names C++ types through Annotated aliases, so the
+    caster comes from the C++ spelling. A PRODUCED value's accessors
+    are plain Python, so it comes from the Python one."""
     casters: set[str] = set()
-    for m in cls.methods:
-        for _, t in m.params:
-            if (c := _param(t)[1]):
-                casters.add(c)
-        if m.ret is not None and (c := _param(m.ret)[1]):
+
+    def from_cxx(t: Type) -> None:
+        if (c := _param(t)[1]):
             casters.add(c)
-    if cls.ctor is not None:
-        for _, t in cls.ctor.params:
-            if (c := _param(t)[1]):
-                casters.add(c)
+
+    def from_python(spelled: str) -> None:
+        if spelled in CXX_OPTIONAL:
+            casters.add("optional")
+        if "str" in spelled:
+            casters.add("string")
+
+    if cls.decl.built_by:
+        for m in cls.methods:
+            if m.ret is not None:
+                from_python(m.ret.python)
+    else:
+        for m in cls.methods:
+            for _, t in m.params:
+                from_cxx(t)
+            if m.ret is not None:
+                from_cxx(m.ret)
+        if cls.ctor is not None:
+            for _, t in cls.ctor.params:
+                from_cxx(t)
+
     out = ["#include <nanobind/nanobind.h>"]
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
     if cls.decl.wire == "value" and cls.decl.text:
@@ -196,6 +225,55 @@ def _value_semantics(cls: Class) -> list[str]:
     return out
 
 
+def _accessor(cls: Class, m: Method) -> list[str]:
+    """One accessor of a PRODUCED value, in the smallest form it fits.
+
+    Three forms, and the declaration picks by saying what it knows:
+
+    `@reads("storeDir")` is a plain data member, so `def_ro` binds it
+    and nanobind writes the accessor - `def_ro` IS `def_prop_ro` with
+    a generated lambda (nb_class.h:784), so this is strictly less code
+    for the same result.
+
+    `@cxx_body(...)` is an accessor nothing can derive, and it becomes
+    a `def_prop_ro` lambda carrying that source. `nix::ValidPathInfo`
+    renders a store path against its own store directory; that is real
+    logic, not a binding, and pretending otherwise would put a
+    template where a person's decision belongs.
+
+    Anything else is refused rather than guessed."""
+    obj = _self(cls)
+    if m.reads:
+        return [f'{INDENT * 2}.def_ro("{m.name}", &{cls.decl.cxx}::{m.reads})']
+    if m.cxx_body:
+        body = m.cxx_body.strip().splitlines()
+        spelled = CXX_OPTIONAL.get(m.ret.python if m.ret else "", "")
+        ret = f" -> {spelled}" if spelled else ""
+        head = (f'{INDENT * 2}.def_prop_ro("{m.name}", '
+                f"[](const {cls.decl.cxx} &{obj}){ret} {{")
+        return [head, *[f"{INDENT * 4}{ln}".rstrip() for ln in body],
+                f"{INDENT * 2}}})"]
+    raise TypeError(
+        f"{cls.name}.{m.name}: a produced value's accessor must say what it "
+        f"reads. Use @reads(\"member\") for a data member, or @cxx_body(...) "
+        f"when it is computed.")
+
+
+def _produced(cls: Class) -> list[str]:
+    """A value the C++ side builds and Python only reads.
+
+    Unlike the Cython backend, nothing is flattened. Cython cannot
+    easily hand back a C++ struct, so cythonix copies nine fields into
+    Python slots; nanobind binds `nix::ValidPathInfo` itself and each
+    accessor reads the live object. So `@produced` means "no
+    constructor" here and "no C++ at all" there - the same declared
+    fact, two honest readings."""
+    out: list[str] = []
+    for m in cls.methods:
+        out += _accessor(cls, m)
+    return out
+
+
 def bind_function(cls: Class) -> str:
     """The whole `bind_<name>` function for one declared class.
 
@@ -204,17 +282,19 @@ def bind_function(cls: Class) -> str:
     and friends. Generated code drops in beside hand-written code, one
     class at a time, and NB_MODULE does not change."""
     decl = cls.decl
-    if decl.built_by:
+    if not decl.cxx:
         raise TypeError(
-            f"{cls.name}: a produced value needs def_ro and def_prop_ro, "
-            f"which this emitter does not write yet. Unlike the Cython "
-            f"side it need not be flattened - nanobind can bind the C++ "
-            f"struct itself.")
+            f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
              f'{INDENT}nb::class_<{decl.cxx}>(m, "{cls.name}")']
-    body = _ctor(cls)
-    for m in cls.methods:
-        body += _method(cls, m)
+    if decl.built_by:
+        # No nb::init: something else builds one, and offering a
+        # constructor would advertise a way in that does not exist.
+        body = _produced(cls)
+    else:
+        body = _ctor(cls)
+        for m in cls.methods:
+            body += _method(cls, m)
     body += _value_semantics(cls)
     for source in decl.custom.values():
         body += [f"{INDENT * 2}{line}".rstrip()
@@ -229,3 +309,45 @@ def module(cls: Class) -> str:
     head = [*includes(cls), "", "namespace nb = nanobind;",
             "using namespace nb::literals;", ""]
     return "\n".join(head) + "\n" + bind_function(cls)
+
+
+def census(cls: Class) -> dict[str, int]:
+    """How much of this class the declaration derived, and how much a
+    person wrote.
+
+    Printed on every run, like `emit.py`'s custom-hatch count. The
+    ratio is the honest measure of a binding: StorePath derives whole
+    and hatches nothing; ValidPathInfo joins a store directory to a
+    path, which is a decision rather than a binding, and it says so
+    with seven bodies."""
+    derived = hatched = hatch_lines = 0
+    for m in cls.methods:
+        if m.cxx_body:
+            hatched += 1
+            hatch_lines += len(m.cxx_body.strip().splitlines())
+        else:
+            derived += 1
+    if cls.ctor is not None:
+        derived += 1
+    derived += len(_value_semantics(cls)) and sum(
+        1 for name, _, fact in COMPARISONS
+        if {"value": cls.decl.compare == "cxx",
+            "order": cls.decl.compare == "cxx" and cls.decl.order}[fact])
+    return {"derived": derived, "hatched": hatched,
+            "hatch_lines": hatch_lines}
+
+
+if __name__ == "__main__":
+    import sys
+
+    from read import read
+
+    for path in sys.argv[1:]:
+        mod = read(path)
+        for cls in mod.classes:
+            print(module(cls) if len(mod.classes) == 1 else bind_function(cls))
+            c = census(cls)
+            total = c["derived"] + c["hatched"]
+            print(f"// {cls.name}: {c['derived']}/{total} derived, "
+                  f"{c['hatched']} through the hatch "
+                  f"({c['hatch_lines']} lines of C++)", file=sys.stderr)
