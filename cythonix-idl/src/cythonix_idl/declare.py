@@ -228,6 +228,33 @@ def cxx_body[F: Callable[..., Any]](source: str) -> Callable[[F], F]:
     return apply
 
 
+def cxx_parts[F: Callable[..., Any]](
+        prelude: str, **fields: str) -> Callable[[F], F]:
+    """Where C++ finds each part of the value this call returns.
+
+    The shape a produced value crosses in is a POD struct, and none of
+    that shape is a decision: the struct, its members, the pxd that
+    declares it and the Cython that unpacks it all follow from the
+    fields the value declares. So the emitter writes them, and this
+    carries the ONE thing it cannot know - which C++ expression yields
+    each part.
+
+    `prelude` is the call itself, as one or more statements. Each
+    keyword names a declared field and gives C++ that evaluates to the
+    wire type of that field: a `std::string` for a store path or a
+    string, the width itself for an integer, a `std::vector` for a
+    list. An optional field says the empty string when it is absent,
+    which is the sentinel the emitter's Cython reads back.
+
+    Every field must be named. A missing one is a struct member with
+    nothing in it, which C++ would zero-initialise and Python would
+    then read as a real answer."""
+    def apply(fn: F) -> F:
+        fn._cxx_parts = (prelude, dict(fields))  # type: ignore[attr-defined]
+        return fn
+    return apply
+
+
 def instant[F: Callable[..., Any]](fn: F) -> F:
     """This method cannot wait, on a class whose calls generally can.
 

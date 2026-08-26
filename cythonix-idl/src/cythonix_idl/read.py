@@ -158,6 +158,14 @@ class Method:
     reads: str = ""
     # Verbatim C++ for an accessor nothing can derive, from @cxx_body.
     cxx_body: str = ""
+    # The call that produces a POD, from @cxx_parts. One or more C++
+    # statements; the emitter writes the struct and the return around
+    # them.
+    parts_prelude: str = ""
+    # Field name -> the C++ expression that yields it. A tuple rather
+    # than a dict because a Method is frozen and hashable, and a dict
+    # member is neither.
+    parts: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -388,6 +396,8 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                      for d in node.decorator_list),
         reads=getattr(marked, "_reads", ""),
         cxx_body=getattr(marked, "_cxx_body", ""),
+        parts_prelude=getattr(marked, "_cxx_parts", ("", {}))[0],
+        parts=tuple(getattr(marked, "_cxx_parts", ("", {}))[1].items()),
     )
 
 

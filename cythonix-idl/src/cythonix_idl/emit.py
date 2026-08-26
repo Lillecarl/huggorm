@@ -181,6 +181,18 @@ def waits(cls: Class, m: Method) -> bool:
     return cls.decl.blocking or m.blocks
 
 
+def shimmed(m: Method) -> bool:
+    """Whether a free function in the shim header backs this method.
+
+    Two ways to say so and one meaning. `@cxx_body` gives the whole
+    body; `@cxx_parts` gives the call and the field map, and the
+    emitter writes the body around them. Everything downstream - the
+    call shape, the annotation style, the receiver as a first argument
+    - follows from the fact rather than from which decorator said
+    it."""
+    return bool(m.cxx_body or m.parts)
+
+
 def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
     """Python arguments to C++ ones, as (declarations, call arguments).
 
@@ -209,7 +221,7 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
             # shim-backed method writes `path: StorePath`, which
             # Cython leaves as an object, so `path._get()` does not
             # compile until something says what it is.
-            if m.cxx_body:
+            if shimmed(m):
                 decls.append(f"{INDENT * 2}cdef {t.python} b_{name} = {name}")
                 decls.append(f"{INDENT * 2}cdef C{t.python}* c_{name} = "
                              f"b_{name}._get()")
@@ -226,23 +238,96 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
     return decls, args
 
 
-def _marshal_out(t: Type, expr: str) -> str:
-    """One C++ result as the Python object the signature promised."""
+def _from_pod(t: Type, src: str) -> str:
+    """One POD member as the Python object the field promised.
+
+    Scalars only. An optional needs a statement before the return and
+    `_marshal_out` writes that; what reaches here is the member as it
+    reads when it IS present."""
+    inner = t.python.removesuffix("| None").strip()
+    if inner.startswith("list["):
+        item = inner[len("list["):-1]
+        # Base names to store paths, or a vector of strings to a list
+        # of str. One helper each, named rather than written: the
+        # module that includes this already has both, for the same
+        # reason every set-returning call needs them.
+        return (f"_store_paths({src})" if item[:1].isupper()
+                else f"_strings({src})")
+    if inner[:1].isupper():
+        # Another declared class. A base name is what it crossed as,
+        # so its own constructor is what turns it back.
+        return f"{inner}({src}.decode('utf-8'))"
+    if inner == "str":
+        return f"{src}.decode('utf-8')"
+    # An integer or a bool. Cython converts the C value itself.
+    return src
+
+
+def _marshal_out(t: Type, expr: str,
+                 values: dict[str, Class]) -> tuple[list[str], list[str]]:
+    """One C++ result as the Python object the signature promised.
+
+    Two lists, not one string: a POD arrives as a struct and its
+    optional members need a statement each before anything can be
+    returned. So this answers with the statements that go first and
+    the `return` that goes last.
+
+    `values` holds the produced classes this module declares, by name.
+    A POD crossing is the one shape where an emitter must read a
+    SECOND declaration - the value's own fields say what the struct
+    holds - and it is handed the map rather than reading the file
+    again, because the caller already has it."""
+    pad = INDENT * 2
+    if t.python in values:
+        return _from_parts(values[t.python], expr)
     if t.python.startswith("list[") and t.bound:
         # The inverse of the parameter rule: base names in, objects
         # out, and one helper for every call that returns a set
         # because every one of them crosses the same way.
-        return f"_store_paths({expr})"
+        return [], [f"{pad}return _store_paths({expr})"]
     if t.cxx is None:
         raise TypeError(f"no C++ spelling for a return of {t.python}")
     if t.cxx.copy == "view":
-        return f"_view({expr})"
+        return [], [f"{pad}return _view({expr})"]
     if t.cxx.spelling == "string":
-        return f"{expr}.decode('utf-8')"
-    return expr
+        return [], [f"{pad}return {expr}.decode('utf-8')"]
+    return [], [f"{pad}return {expr}"]
 
 
-def _accessor(m: Method, blocking: bool, cls: Class | None = None) -> list[str]:
+def _from_parts(cls: Class, out: str) -> tuple[list[str], list[str]]:
+    """A POD unpacked into the value it carries.
+
+    Field for field, in the order the value declares them, because
+    that is the order `_from_parts` takes them in and both come from
+    the same list.
+
+    An optional field is the one that cannot be an argument. It
+    crossed as the empty string - a sentinel no store path and no
+    rendered content address can be - so reading it back is a test and
+    a branch, and both have to happen before the call."""
+    pad = INDENT * 2
+    pre: list[str] = []
+    args: list[str] = []
+    for m in cls.methods:
+        assert m.ret is not None
+        src = f"{out}.{m.name}"
+        if not m.ret.python.endswith("| None"):
+            args.append(_from_pod(m.ret, src))
+            continue
+        pre += [
+            f"{pad}cdef object {m.name} = None",
+            f"{pad}if not {src}.empty():",
+            f"{pad}{INDENT}{m.name} = {_from_pod(m.ret, src)}",
+        ]
+        args.append(m.name)
+    ret = [f"{pad}return {cls.name}._from_parts("]
+    ret += [f"{pad}{INDENT}{a}," for a in args[:-1]]
+    ret.append(f"{pad}{INDENT}{args[-1]})")
+    return pre, ret
+
+
+def _accessor(m: Method, blocking: bool, cls: Class | None = None,
+              values: dict[str, Class] | None = None) -> list[str]:
     """One bound method: marshal in, call, marshal out.
 
     The copy rule lives HERE rather than in the declaration. The
@@ -267,12 +352,13 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None) -> list[str]:
     # shim has no such declaration, so `str path` reaches it as Any
     # and `path: str` does not. Derived from whether there is a body,
     # like the call shape itself.
-    if m.cxx_body:
+    if shimmed(m):
         typed = "".join(f", {n}: {_py_type(t)}" for n, t in m.params)
     else:
         typed = "".join(f", {_py_type(t)} {n}" for n, t in m.params)
     lines = [f"{INDENT}def {m.name}(self{typed}) -> {_py_type(m.ret)}:"]
     lines += _doc(m.doc, 2)
+    values = values or {}
     hoists, args = _marshal_in(m)
     waiting = waits(cls, m) if cls is not None else (blocking or m.blocks)
     # `self._get()` is an attribute reach through a Python object, so
@@ -288,12 +374,12 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None) -> list[str]:
         # every hoisting call has, so putting it first makes the block
         # read the same shape in every method.
         hoists.insert(0, f"{INDENT * 2}cdef {cname}* c_self = self._get()")
-        target = "deref(c_self)" if m.cxx_body else "c_self"
+        target = "deref(c_self)" if shimmed(m) else "c_self"
     else:
         # No nogil block, so nothing has to be a C local first and the
         # pointer is reached where it is used.
-        target = "deref(self._get())" if m.cxx_body else "self._get()"
-    if m.cxx_body:
+        target = "deref(self._get())" if shimmed(m) else "self._get()"
+    if shimmed(m):
         call = f"{m.name}(" + ", ".join([target, *args]) + ")"
     else:
         call = f"{target}.{m.name}(" + ", ".join(args) + ")"
@@ -307,6 +393,12 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None) -> list[str]:
         # signature promises.
         if m.ret.python.startswith("list[") and m.ret.bound:
             held, temp = "vector[string]", "found"
+        elif m.ret.python in values:
+            # A produced value crosses as the POD the shim fills, so
+            # the temporary is that struct rather than the value: the
+            # value itself is Python, and nothing Python may be built
+            # while the GIL is released.
+            held, temp = f"C{m.ret.python}", "out"
         else:
             assert m.ret.cxx is not None
             held, temp = m.ret.cxx.spelling, "out"
@@ -316,8 +408,8 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None) -> list[str]:
         result = temp
     else:
         result = call
-    lines.append(f"{INDENT * 2}return {_marshal_out(m.ret, result)}")
-    return lines
+    pre, ret = _marshal_out(m.ret, result, values)
+    return lines + pre + ret
 
 
 def pyx(cls: Class, cname: str, module: str, doc: str) -> str:
@@ -623,10 +715,111 @@ def _cxx_of(t: Type, position: str) -> str:
     return table.get(t.cxx.spelling, t.cxx.spelling)
 
 
-def _shim_signature(cls: Class, m: Method) -> str:
+# What a wire field is, in C++. A produced value's fields are spelled
+# in PYTHON - the value holds Python slots - so the POD that carries
+# them needs the other half of the mapping.
+#
+# `int` is missing on purpose. C++ has many integers and this one
+# refuses rather than picking, which is what `U64` and `I64` are for.
+POD_CXX = {"str": "std::string", "bool": "bool"}
+
+# The same members, as a pxd declares them. A width passes through:
+# `libc.stdint` spells it the way C++ does.
+POD_PXD = {"std::string": "string", "bool": "bint",
+           "std::vector<std::string>": "vector[string]"}
+
+
+def pod_member(t: Type) -> str:
+    """One declared field, as the POD member that carries it.
+
+    Three rules and no table per class. A list of anything is a vector
+    of strings, because that is the crossing `_cxx_of` already makes
+    for a parameter and a set of store paths. Another declared class
+    is its base name. An optional is its own type: the empty string is
+    the sentinel, and no store path and no rendered content address
+    can be empty."""
+    inner = t.python.removesuffix("| None").strip()
+    if inner.startswith("list["):
+        return "std::vector<std::string>"
+    if inner[:1].isupper():
+        return "std::string"
+    if t.cxx is not None:
+        return CXX_RETURN.get(t.cxx.spelling, t.cxx.spelling)
+    if inner not in POD_CXX:
+        raise TypeError(
+            f"'{inner}' has no POD spelling. An `int` is the case this "
+            f"refuses on purpose: C++ has many integers, so the "
+            f"declaration says which with U64 or I64.")
+    return POD_CXX[inner]
+
+
+def _pod_fields(cls: Class) -> list[tuple[str, str]]:
+    """Every field of a produced value, as (name, C++ member type)."""
+    out = []
+    for m in cls.methods:
+        assert m.ret is not None
+        out.append((m.name, pod_member(m.ret)))
+    return out
+
+
+def pod_struct(cls: Class) -> list[str]:
+    """The POD one produced value crosses in, as C++ declares it.
+
+    Nothing here is a decision. The members are the value's own
+    fields, in the order it declares them, and each one's type follows
+    from what that field IS - which is why the struct, the pxd below
+    and the Cython that unpacks it all come from one list and cannot
+    drift apart."""
+    out = [f"struct {cls.name}Parts", "{"]
+    out += [f"{INDENT}{spelling} {name};" for name, spelling in _pod_fields(cls)]
+    out += ["};"]
+    return out
+
+
+def pod_pxd(cls: Class) -> list[str]:
+    """The same struct, as Cython declares it.
+
+    A `cdef struct` and not a cppclass: it default-constructs and
+    every member has a pxd spelling, which is the whole reason the
+    crossing point is a POD."""
+    out = [f'{INDENT}cdef struct C{cls.name} "cythonix::{cls.name}Parts":']
+    out += [f"{INDENT * 2}{POD_PXD.get(spelling, spelling)} {name}"
+            for name, spelling in _pod_fields(cls)]
+    return out
+
+
+def _parts_body(cls: Class, m: Method, values: dict[str, Class]) -> list[str]:
+    """The shim that fills a POD, from the call and the field map.
+
+    `@cxx_parts` carries the call and one expression per field. The
+    aggregate initialisation around them is derived, in the field
+    order the value declares - so a field added to the value moves the
+    struct, the pxd, this initialiser and the Cython together."""
+    assert m.ret is not None
+    target = values[m.ret.python]
+    named = dict(m.parts)
+    want = [f.name for f in target.methods if f.ret is not None]
+    missing = [n for n in want if n not in named]
+    extra = [n for n in named if n not in want]
+    if missing or extra:
+        raise TypeError(
+            f"{m.name}: @cxx_parts must name every field of "
+            f"{target.name} and no other. Missing: {missing or 'none'}. "
+            f"Not a field: {extra or 'none'}.")
+    out = [line for line in m.parts_prelude.strip().splitlines()]
+    out.append(f"return {target.name}Parts{{")
+    out += [f"{INDENT}{named[n]}," for n in want]
+    out.append("};")
+    return out
+
+
+def _shim_signature(cls: Class, m: Method,
+                    values: dict[str, Class] | None = None) -> str:
     """One shim, as C++ declares it."""
     assert m.ret is not None
-    ret = _cxx_of(m.ret, "return")
+    values = values or {}
+    ret = (f"{m.ret.python}Parts" if m.ret.python in values
+           else _cxx_of(m.ret, "return"))
     # Non-const, always. A const reference would document that a call
     # only reads, but the declaration does not carry that fact and a
     # non-const reference binds to the object this binding holds in
@@ -676,6 +869,25 @@ inline std::vector<std::string> base_names(const nix::StorePathSet & paths)
         out.push_back(std::string(path.to_string()));
     return out;
 }
+
+/**
+ * The same, for any set of Nix values that print as one string.
+ *
+ * A template because the sets are unrelated types with one thing in
+ * common: `to_string`. nix::Signature spells itself
+ * `<key-name>:<base64>` there, which is what every Nix tool prints
+ * and parses, so a binding that rendered its own would disagree with
+ * the store it read from.
+ */
+template <typename T>
+inline std::vector<std::string> to_strings(const T & items)
+{
+    std::vector<std::string> out;
+    out.reserve(items.size());
+    for (auto & item : items)
+        out.push_back(std::string(item.to_string()));
+    return out;
+}
 """
 
 
@@ -687,7 +899,8 @@ def _flattens(cls: Class) -> bool:
                          *([m.ret] if m.ret is not None else [])])
 
 
-def shim_hpp(cls: Class, module: str, doc: str) -> str:
+def shim_hpp(cls: Class, module: str, doc: str,
+             values: dict[str, Class] | None = None) -> str:
     """The C++ this module's Cython cannot say, written from the
     declaration.
 
@@ -720,11 +933,24 @@ def shim_hpp(cls: Class, module: str, doc: str) -> str:
     out += ["", "#include <string>", "#include <vector>", ""]
     for path in sorted({cls.decl.header} - {""}):
         out.append(f'#include "{path}"')
+    values = values or {}
     out += ["", "namespace cythonix {", ""]
     if _flattens(cls):
         out += [*FLATTENING.strip().splitlines(), ""]
+    # One struct per produced value this class returns, before the
+    # first shim that fills it. In first-use order, so the header
+    # reads in the order the declaration does.
+    for name in dict.fromkeys(m.ret.python for m in cls.methods
+                              if m.parts and m.ret is not None):
+        value = values[name]
+        out.append("/**")
+        out += [f" * {line}".rstrip()
+                for line in inspect.cleandoc(value.doc).splitlines()]
+        out.append(" */")
+        out += pod_struct(value)
+        out.append("")
     for m in cls.methods:
-        if not m.cxx_body:
+        if not shimmed(m):
             continue
         out.append("/**")
         # cleandoc, like _doc: read.py keeps a docstring at whatever
@@ -733,10 +959,11 @@ def shim_hpp(cls: Class, module: str, doc: str) -> str:
         out += [f" * {line}".rstrip()
                 for line in inspect.cleandoc(m.doc).splitlines()]
         out.append(" */")
-        out.append(_shim_signature(cls, m))
+        out.append(_shim_signature(cls, m, values))
         out.append("{")
-        out += [f"{INDENT}{line}".rstrip()
-                for line in m.cxx_body.strip().splitlines()]
+        body = (_parts_body(cls, m, values) if m.parts
+                else m.cxx_body.strip().splitlines())
+        out += [f"{INDENT}{line}".rstrip() for line in body]
         out += ["}", ""]
     out += ["}  // namespace cythonix", ""]
     return "\n".join(out)
