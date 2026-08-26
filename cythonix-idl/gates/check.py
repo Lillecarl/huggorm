@@ -306,6 +306,14 @@ def check_methods(decl_path: pathlib.Path, pyx_name: str,
     hand = [line.strip()[4:].split("(")[0]
             for line in class_body(actual, cls_name).splitlines()
             if line.strip().startswith("def ")]
+    named = {m.name for m in cls.methods}
+    # Split three ways, because one number was read as two. "8 of 8
+    # declared, 18 written by hand" says nothing about how much is
+    # left: the 18 is every `def` in the class, the 8 declared ones
+    # included, and a dunder the declaration will never carry sits in
+    # it too.
+    dunders = [n for n in hand if n.startswith("__")]
+    todo = [n for n in hand if n not in named and not n.startswith("__")]
     problems, agree = [], 0
     for m in cls.methods:
         want = allow(code_only(method_body(actual, cls_name, m.name)), cls_name)
@@ -337,7 +345,10 @@ def check_methods(decl_path: pathlib.Path, pyx_name: str,
             if line not in want:
                 problems.append(f"    only emitted:     {line}")
     print(f"  {cls_name}: {agree} of {len(cls.methods)} declared methods "
-          f"identical; {len(hand)} written by hand in {pyx_name}")
+          f"identical, {len(todo)} still to declare"
+          + (f", plus {', '.join(dunders)}" if dunders else ""))
+    if todo:
+        print(f"    still hand-written: {', '.join(todo)}")
     return problems
 
 
