@@ -54,3 +54,41 @@ the binding could not say.
 
 Ordering: do this before or with 022. It adds oneof entries to
 messages, which the field-number lockfile must record.
+
+## Done
+
+The schema emits presence. `_with_presence` adds the synthetic
+one-field oneof and the `proto3_optional` flag, which is exactly what
+`optional string x = 1;` compiles to.
+
+Three callers stop throwing optionality away on the way in: a
+`_wire_fields` "?", an omissible constructor parameter, and a
+`T | None` return type. The constructor one was the quietest - the
+client already skipped a None argument and the server already decoded
+with `optional=True`, so the field had been leaning on an empty string
+the whole time.
+
+The codec reads every optional through `HasField`, whatever its kind.
+The `not raw` heuristic is gone.
+
+`wire_blocker` stops refusing an optional scalar or enum. The refusal
+for an optional CONTAINER stands, for the reason 041 gives.
+
+## What proves it
+
+`MockDerivedPath` already had the distinction and the mock already
+gave the two states different meanings - no output is an OPAQUE path,
+an empty output is a BUILT one whose output is unnamed - so the round
+trip asserts `describe()` tells them apart rather than inventing a
+case.
+
+`PathInfo.ca` is the other half, and it is a real binding rather than
+a test fixture: `fixed:r:sha256:...` for a path added to the store,
+None for one that was BUILT, because an input-addressed output is
+named after its derivation and has nothing to address by. Both arms
+are asserted - the first hermetically and over the wire, the second
+live.
+
+Perturbed: with the oneof and the flag removed, protobuf itself
+refuses - "Field nixmock.v1.PathInfoMsg.ca does not have presence" -
+and three tests fail across two suites.
