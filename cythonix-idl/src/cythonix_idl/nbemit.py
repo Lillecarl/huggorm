@@ -382,14 +382,13 @@ def _default(pr, known: dict[str, Class] | None = None) -> str:
             raise TypeError(
                 f"{head} has no word called {member}.")
         return f'"{word.value}"'
-    inner = pr.type.python.removesuffix("| None").strip()
-    if value == "None" and inner.startswith("list["):
-        # SPELLED, not `{}`. A braced initialiser has no type to
-        # deduce, so nanobind takes the default and silently drops
-        # the parameter's NAME with it - the signature comes out as
-        # `arg4` and the keyword stops working.
-        spelled, _ = _cxx(pr.type, known)
-        return f"{spelled}{{}}"
+    if absent(pr, known):
+        # None, and the signature says so. The parameter arrives as a
+        # std::optional and an emitted line turns it into an empty
+        # container - so a caller who passes nothing and a caller who
+        # passes None get the same answer, which is what the Cython
+        # binding did.
+        return "nb::none()"
     if value[:1] in "'\"":
         # A string literal, RE-SPELLED. Python writes one either way
         # round and `ast.unparse` normalises to single quotes - which
@@ -442,16 +441,58 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
     if m.cxx_body:
         # A method the declaration could not derive, carried verbatim.
         obj = _self(cls)
-        args = "".join(f", {_param(pr.type, known)[0]} {pr.name}"
-                       for pr in m.params)
+        args, opening = _signature(cls, m, known)
         head = (f'{INDENT * 2}.def("{m.name}", '
                 f"[]({_held(cls)} &{obj}{args}) {{")
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in m.cxx_body.strip().splitlines()]
-        return [head, *body, f"{INDENT * 2}}}{_extras(cls, m, known)})"]
+        return [head, *opening, *body,
+                f"{INDENT * 2}}}{_extras(cls, m, known)})"]
     spelled = m.cxx_name or m.name
     return [f'{INDENT * 2}.def("{m.name}", &{_held(cls)}::{spelled}'
             f"{_extras(cls, m, known)})"]
+
+
+def absent(pr, known: dict[str, Class] | None = None) -> bool:
+    """Whether this parameter's absence is spelled `None`.
+
+    A CONTAINER whose declared default is None. The declaration's own
+    docstring says what that means - a repeated field has no presence
+    and needs none, so an absent container IS an empty one - and a
+    caller passing None explicitly means the same thing.
+
+    It matters because nanobind's vector caster refuses None: it asks
+    for a sequence, and None is not one. So a parameter that reads
+    None has to say so in its own type."""
+    if pr.default != "None":
+        return False
+    inner = pr.type.python.removesuffix("| None").strip()
+    return inner.startswith("list[")
+
+
+def _signature(cls: Class, m: Method,
+               known: dict[str, Class] | None = None
+               ) -> tuple[str, list[str]]:
+    """A lambda's parameter list, and the lines that open its body.
+
+    Almost always the first alone. The lines exist for one case: a
+    container that reads None. It arrives as a std::optional, and the
+    body wants the plain container - so the parameter is renamed and
+    one derived line puts the declared name back, holding an empty
+    container where the caller passed nothing.
+
+    The body then reads exactly what the declaration wrote."""
+    args, opening = "", []
+    for pr in m.params:
+        spelled, _ = _param(pr.type, known)
+        if not absent(pr, known):
+            args += f", {spelled} {pr.name}"
+            continue
+        held, _ = _cxx(pr.type, known)
+        args += f", const std::optional<{held}> & {pr.name}_"
+        opening.append(f"{INDENT * 4}const {held} {pr.name} = "
+                       f"{pr.name}_.value_or({held}{{}});")
+    return args, opening
 
 
 def _parts_method(cls: Class, m: Method,
@@ -688,30 +729,237 @@ def _unused_record(cls: Class) -> list[str]:
     return out
 
 
-def refused(cls: Class, known: dict[str, Class] | None = None
-            ) -> dict[str, str]:
-    """Methods this emitter cannot spell, and why.
+def _parts_method(cls: Class, m: Method,
+                  known: dict[str, Class]) -> list[str]:
+    """One `.def` that BUILDS a record and hands it back.
 
-    Every declared type of a method has to have a C++ spelling before
-    the method can be bound, and a RETURN is the case that hides. A
-    method bound by pointer never writes its return type down - the
-    compiler deduces it - so a return naming a class with no
-    `nb::class_` behind it emits a line that looks right and fails at
-    the C++ compiler with the upstream name, not the declared one.
+    `@cxx_parts` carries the call and one expression per field. The
+    aggregate initialisation around them is derived, in the order the
+    record declares its members - so a field added to the value moves
+    the struct, the constructor, this initialiser and the accessors
+    together.
 
-    `nix::Store::query_path_info` is that case today: it returns
-    PathInfo, which `@cxx_parts` declares as flattened slots rather
-    than as a bound type. Naming it here turns a compile error into a
-    line `generate_nb.py` prints beside what it wrote."""
-    known = known or {}
-    out: dict[str, str] = {}
+    It also refuses a field map that misses a field or invents one.
+    Aggregate initialisation is positional, so a map with the right
+    count and the wrong names would compile and put every value in
+    the wrong slot."""
+    assert m.ret is not None
+    target = known[m.ret.python]
+    named = dict(m.parts)
+    want = [name for name, _ in record_fields(target, known)]
+    missing = [n for n in want if n not in named]
+    extra = [n for n in named if n not in want]
+    if missing or extra:
+        raise TypeError(
+            f"{m.name}: @cxx_parts must name every field of "
+            f"{target.name} and no other. Missing: {missing or 'none'}. "
+            f"Not a field: {extra or 'none'}.")
+    obj = _self(cls)
+    args = "".join(f", {_param(pr.type, known)[0]} {pr.name}"
+                   for pr in m.params)
+    body = [f"{INDENT * 4}{ln}".rstrip()
+            for ln in m.parts_prelude.strip().splitlines()]
+    body.append(f"{INDENT * 4}return {_held(target)}{{")
+    body += [f"{INDENT * 5}{named[n]}," for n in want]
+    body.append(f"{INDENT * 4}}};")
+    return [f'{INDENT * 2}.def("{m.name}", '
+            f"[]({_held(cls)} &{obj}{args}) {{",
+            *body, f"{INDENT * 2}}}{_extras(cls, m, known)})"]
+
+
+def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
+    """`nb::init<...>`, with the declared parameter named for Python.
+
+    `"name"_a` is what makes the parameter usable as a keyword, so the
+    declaration's parameter NAME reaches callers rather than being
+    decoration."""
+    if cls.ctor is None:
+        return []
+    types = ", ".join(_param(t, known)[0] for _, t in cls.ctor.params)
+    args = "".join(f', "{n}"_a' for n, _ in cls.ctor.params)
+    line = f"{INDENT * 2}.def(nb::init<{types}>(){args}"
+    if not cls.ctor.doc:
+        return [line + ")"]
+    # One line, however the declaration wrapped it: a C++ string
+    # literal has no continuation and gluing two is noise.
+    doc = " ".join(cls.ctor.doc.split()).replace("\\", "\\\\").replace('"', r'\"')
+    return [line + ",", f'{INDENT * 3}     "{doc}")']
+
+
+def _render(cls: Class, accessor: str) -> str:
+    """The C++ that renders one of this value's accessors as text.
+
+    The accessor names one of the class's OWN, and the emitter
+    resolves it rather than the declaration spelling C++. Two steps,
+    both derived:
+
+    An accessor that `@reads` a member addresses the member, because
+    there is no method to call - `vpi.path`, not `vpi.store_path()`.
+
+    An accessor returning something other than `str` cannot render
+    itself, so its own type must. `to_string` is what a declared value
+    type names for that, which is how `vpi.path` becomes
+    `vpi.path.to_string()` without this file knowing what a StorePath
+    is."""
+    obj = _self(cls)
     for m in cls.methods:
-        for t in [t for _, t in m.params] + ([m.ret] if m.ret else []):
-            try:
-                _cxx(t, known)
-            except TypeError as exc:
-                out[m.name] = str(exc)
-                break
+        if m.name != accessor:
+            continue
+        expr = f"{obj}.{m.reads}" if m.reads else f"{obj}.{m.cxx_name or m.name}()"
+        if m.ret is not None and m.ret.python != "str":
+            expr += ".to_string()"
+        return f"std::string({expr})"
+    raise TypeError(
+        f"{cls.name}: \"{accessor}\" names no accessor on this class.")
+
+
+def _repr_parts(cls: Class) -> str:
+    """`"name='" + <read> + "'"` for every declared field, joined.
+
+    Str fields only, and it refuses rather than guessing. A number
+    would need `std::to_string` and a nested value its own repr;
+    inventing either here would put a wrong answer in an emitted file
+    instead of a message in this one."""
+    decl = cls.decl
+    fields = decl.fields or (Field(decl.shown, "str", read=decl.shown),)
+    parts = []
+    for i, f in enumerate(fields):
+        if f.type != "str":
+            raise TypeError(
+                f"{cls.name}.{f.name}: a repr of a {f.type} is not derived "
+                f"yet. Only str fields render without a second decision.")
+        lead = ", " if i else ""
+        parts.append(f'+ "{lead}{f.name}=\'" + {_render(cls, f.read)} '
+                     f'+ "\'"')
+    return " ".join(parts)
+
+
+def _value_semantics(cls: Class) -> list[str]:
+    """What a wire value owes Python, in nanobind's spelling.
+
+    The same answers `_value.py` gives the Cython side, from the same
+    two declarations - so a value prints and compares as the thing it
+    IS on either backend, and neither emitter had to be told twice.
+
+    Every comparison carries `nb::is_operator()`. That is not a style
+    choice: without it, comparing against an unrelated type raises
+    TypeError where Python's protocol wants NotImplemented."""
+    decl = cls.decl
+    obj = _self(cls)
+    held = _held(cls)
+    ref = f"const {held} &{obj}"
+    out: list[str] = []
+
+    if decl.text:
+        # A CONVERSION, and only for a value that IS a string.
+        out.append(f'{INDENT * 2}.def("__str__", []({ref}) '
+                   f"{{ return {_render(cls, decl.text)}; }})")
+    if decl.fields or decl.shown:
+        # An IDENTIFICATION, which every value owes a reader.
+        #
+        # From the FIELDS where there are any, because a field carries
+        # both halves of what a repr says: its name, and the accessor
+        # that reads it. `shown` carries only the second, so a repr
+        # built from it drops the name and prints `StorePath('...')`
+        # where `_value.py` prints `StorePath(base_name='...')` from
+        # the same declaration. One declaration answering twice is the
+        # one thing two backends must not do.
+        out += [f'{INDENT * 2}.def("__repr__", []({ref}) {{',
+                # std::string on the leading literal: two `const
+                # char*` added with + is pointer arithmetic in C++,
+                # not concatenation, and it does not compile.
+                f'{INDENT * 3}return std::string("{cls.name}(") '
+                f'{_repr_parts(cls)} + ")";',
+                f"{INDENT * 2}}})"]
+
+    if decl.wire == "value":
+        # A value COPIES. Without these, copy.copy falls through to
+        # pickle, which a bound C++ type cannot do - so a caller gets
+        # TypeError where the Cython backend hands back a copy.
+        #
+        # A bound value is immutable, so a deep copy IS a copy. The
+        # Cython emitter already says exactly that; this is the same
+        # sentence in the other language.
+        out += [f'{INDENT * 2}.def("__copy__", []({ref}) '
+                f"{{ return {held}({obj}); }})",
+                f'{INDENT * 2}.def("__deepcopy__", []({ref}, nb::dict) '
+                f"{{ return {held}({obj}); }}, \"memo\"_a)"]
+
+    facts = {"value": decl.compare == "cxx",
+             "order": decl.compare == "cxx" and decl.order}
+    for name, op, fact in COMPARISONS:
+        if not facts[fact]:
+            continue
+        # The C++ comparison, not a Python one on the rendered text.
+        # Upstream defaults these, so declaring them means the binding
+        # follows if that ever stops being true.
+        out += [f'{INDENT * 2}.def("{name}", [](const {held} &a, '
+                f"const {held} &b)",
+                f"{INDENT * 3} {{ return a {op} b; }}, nb::is_operator())"]
+
+    if decl.compare == "cxx" and decl.text:
+        # Only where __eq__ exists. A hash must agree with equality,
+        # and a class with no declared comparison has none to agree
+        # with - Python's identity hash is then the honest answer.
+        out += [f'{INDENT * 2}.def("__hash__", []({ref}) {{',
+                f"{INDENT * 3}return std::hash<std::string_view>{{}}"
+                f"({obj}.{decl.text}());",
+                f"{INDENT * 2}}})"]
+    return out
+
+
+def _accessor(cls: Class, m: Method) -> list[str]:
+    """One accessor of a PRODUCED value, in the smallest form it fits.
+
+    Three forms, and the declaration picks by saying what it knows:
+
+    `@reads("storeDir")` is a plain data member, so `def_ro` binds it
+    and nanobind writes the accessor - `def_ro` IS `def_prop_ro` with
+    a generated lambda (nb_class.h:784), so this is strictly less code
+    for the same result.
+
+    `@cxx_body(...)` is an accessor nothing can derive, and it becomes
+    a `def_prop_ro` lambda carrying that source. `nix::ValidPathInfo`
+    renders a store path against its own store directory; that is real
+    logic, not a binding, and pretending otherwise would put a
+    template where a person's decision belongs.
+
+    Anything else is refused rather than guessed."""
+    obj = _self(cls)
+    if m.reads:
+        return [f'{INDENT * 2}.def_ro("{m.name}", &{_held(cls)}::{m.reads})']
+    if m.cxx_body:
+        body = m.cxx_body.strip().splitlines()
+        spelled = CXX_OPTIONAL.get(m.ret.python if m.ret else "", "")
+        ret = f" -> {spelled}" if spelled else ""
+        head = (f'{INDENT * 2}.def_prop_ro("{m.name}", '
+                f"[](const {_held(cls)} &{obj}){ret} {{")
+        return [head, *[f"{INDENT * 4}{ln}".rstrip() for ln in body],
+                f"{INDENT * 2}}})"]
+    raise TypeError(
+        f"{cls.name}.{m.name}: a produced value's accessor must say what it "
+        f"reads. Use @reads(\"member\") for a data member, or @cxx_body(...) "
+        f"when it is computed.")
+
+
+def _unused_record(cls: Class) -> list[str]:
+    """A VALUE's accessors, which are its fields.
+
+    What decides this shape is `@wire_value`, not `@produced`. The
+    two were conflated once and the Store declaration caught it: a
+    value is a RECORD, so Python reads its parts as attributes, while
+    a proxy is a HANDLE, so Python calls its methods. `@produced`
+    answers a third question - whether a constructor exists - and it
+    is true of both `nix::ValidPathInfo` and `nix::Store` for
+    completely different reasons.
+
+    Unlike the Cython backend, nothing is flattened. Cython cannot
+    easily hand back a C++ struct, so cythonix copies nine fields into
+    Python slots; nanobind binds `nix::ValidPathInfo` itself and each
+    accessor reads the live object."""
+    out: list[str] = []
+    for m in cls.methods:
+        out += _accessor(cls, m)
     return out
 
 
@@ -827,16 +1075,16 @@ def _record_semantics(cls: Class,
     fields = [name for name, _ in declared]
     held = _held(cls)
     spec = ", ".join(f"{name}={{!r}}" for name in fields)
-    reads = ", ".join(f'h.attr("{name}")' for name in fields)
+    reads = ", ".join(f'h.attr("{name}")()' for name in fields)
     # A LIST field becomes a tuple before it is hashed. A list is
     # unhashable for the good reason that it can change, and this one
     # cannot - it is a copy of what the store said. `_value.py` makes
     # the same substitution from the same declaration, so the two
     # backends hash the same thing.
     hashed = ", ".join(
-        (f'{NAMESPACE}::as_tuple(h.attr("{name}"))'
+        (f'{NAMESPACE}::as_tuple(h.attr("{name}")())'
          if python.startswith("list[")
-         else f'h.attr("{name}")')
+         else f'h.attr("{name}")()')
         for name, python in declared)
     return [
         # An IDENTIFICATION, which every value owes a reader. The
@@ -861,17 +1109,38 @@ def _record_semantics(cls: Class,
 
 def _record_ctor(cls: Class, known: dict[str, Class] | None = None
                  ) -> list[str]:
-    """`nb::init` over every field, named for Python.
+    """The two ways a record is and is not built.
 
-    A produced value is PRODUCED, so nothing a caller does should
-    build one from nothing - but it still has to be reconstructible,
-    because it crosses the wire and the far side has only the parts.
-    That is what `@wire_value` means, and it is why the constructor
-    is here rather than refused the way a handle's is."""
+    A produced value is PRODUCED. Nothing a caller does should build
+    one from nothing, and `__init__` says so in the sentence
+    `@produced(by=...)` supplied - so a caller who guesses wrong is
+    told where to look instead of getting an argument-count error.
+
+    It still has to be RECONSTRUCTIBLE, because it crosses the wire
+    and the far side has only the parts. So the constructor is bound
+    privately, as `_from_parts`, which is exactly the name the wire
+    layer asks for. The Cython backend arrives at the same pair from
+    the other direction: an `__init__` that raises, and a classmethod
+    that goes through `__new__`."""
     fields = record_fields(cls, known)
-    types = ", ".join(spelling for _, spelling in fields)
+    held = _held(cls)
     args = "".join(f', "{name}"_a' for name, _ in fields)
-    return [f"{INDENT * 2}.def(nb::init<{types}>(){args})"]
+    made = ", ".join(f"{spelling} {name}" for name, spelling in fields)
+    values = ", ".join(name for name, _ in fields)
+    return [
+        f'{INDENT * 2}.def("__init__", []({held} *) {{',
+        f"{INDENT * 3}throw nb::type_error(",
+        f'{INDENT * 4}"{cls.name} objects come from {cls.decl.built_by}, '
+        f'not from a constructor");',
+        f"{INDENT * 2}}})",
+        f'{INDENT * 2}.def_static("_from_parts", []({made}) {{',
+        f"{INDENT * 3}return {held}{{{values}}};",
+        f'{INDENT * 2}}}{args}, "{FROM_PARTS_DOC}")',
+    ]
+
+
+# What `_from_parts` is for, in the Cython emitter's own words.
+FROM_PARTS_DOC = "Wire-deserialization helper (private, never surfaced)."
 
 
 def _factory(cls: Class, functions: Sequence[Method],
@@ -924,7 +1193,7 @@ def wire_fields(cls: Class) -> list[tuple[str, str, str]]:
                 for f in cls.decl.fields]
     if not cls.is_value:
         return []
-    return [(m.name, m.ret.wire, f'h.attr("{m.name}")')
+    return [(m.name, m.ret.wire, f'h.attr("{m.name}")()')
             for m in cls.methods if m.ret is not None]
 
 
@@ -994,18 +1263,21 @@ def markers(cls: Class) -> list[str]:
                           for n, t, _ in fields)
         out.append(f'{INDENT}cls.attr("_wire_fields") = '
                    f"nb::make_tuple({pairs});")
-        # The other half of the round trip, and it is the class.
-        #
-        # `_from_parts` takes one value per _wire_fields entry, in
-        # order, and hands back the value they make. That is exactly
-        # what the constructor takes: a record's members ARE its
-        # parts, and a constructed value's parts are its constructor's
-        # arguments - the Cython emitter refuses to derive one unless
-        # those two agree.
-        #
-        # So there is nothing to write. Naming the class is the whole
-        # helper, and it cannot drift from the constructor.
-        out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
+        if not cls.is_value:
+            # The other half of the round trip, and for a CONSTRUCTED
+            # value it is the class.
+            #
+            # `_from_parts` takes one value per _wire_fields entry, in
+            # order, and hands back the value they make. That is
+            # exactly what the constructor takes - the Cython emitter
+            # refuses to derive the helper unless those two agree - so
+            # naming the class is the whole helper, and it cannot
+            # drift from the constructor.
+            #
+            # A PRODUCED value has no public constructor to name: its
+            # `__init__` raises, and `_from_parts` is bound beside it
+            # as a static method.
+            out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
     return out
 
 
@@ -1029,7 +1301,15 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         # is a member and the whole binding is derived from the field
         # list.
         body = _record_ctor(cls, known)
-        body += [f'{INDENT * 2}.def_ro("{name}", &{held}::{name})'
+        obj = _self(cls)
+        # METHODS, not `def_ro` properties. The declaration writes
+        # `def path(self) -> StorePath`, and the Cython backend
+        # renders that as a method - so a caller writes `info.path()`
+        # on either. A property would read better and would be a
+        # DIFFERENT surface, which is not a choice an emitter makes
+        # on its own.
+        body += [f'{INDENT * 2}.def("{name}", [](const {held} &{obj}) '
+                 f"{{ return {obj}.{name}; }})"
                  for name, _ in record_fields(cls, known)]
         body += _record_semantics(cls, known)
         body += _round_trip(cls)
@@ -1042,10 +1322,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # declaration names one.
     body = (_factory(cls, functions, known) if decl.built_by
             else _ctor(cls, known))
-    skipped = refused(cls, known)
     for m in cls.methods:
-        if m.name in skipped:
-            continue
         body += _accessor(cls, m) if m.prop else _method(cls, m, known)
     body += _round_trip(cls) if decl.wire == "value" else []
     body += _value_semantics(cls)
@@ -1083,6 +1360,22 @@ def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str
         extras.append(arg)
     tail = "".join(f", {x}" for x in extras)
     return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
+
+
+def public(fns: Sequence[Method],
+           classes: Sequence[Class]) -> tuple[Method, ...]:
+    """The free functions the MODULE exports.
+
+    A function some class names as its factory is not one. It is
+    bound as that class's `__new__` instead, so `Store(uri)` is the
+    one way in - and exporting it beside that would be a second
+    spelling of the same call.
+
+    Derived from `@produced(by=...)`, which already had to name it.
+    A declaration that wants the function public as well says so by
+    not naming it there."""
+    made = {cls.decl.built_by for cls in classes if cls.ctor is not None}
+    return tuple(fn for fn in fns if fn.name not in made)
 
 
 def free_functions(fns: tuple[Method, ...],
@@ -1182,8 +1475,9 @@ def module(classes: Sequence[Class],
     head += records(classes, known)
     out = "\n".join(head) + "\n" + "\n".join(
         bind_function(cls, known, functions) for cls in classes)
-    return out + ("\n" + free_functions(tuple(functions), known)
-                  if functions else "")
+    exported = public(functions, classes)
+    return out + ("\n" + free_functions(exported, known)
+                  if exported else "")
 
 
 def imports(mod: Module) -> list[str]:
@@ -1242,7 +1536,8 @@ def extension(mod: Module, dotted: str,
         *reached,
         f"{INDENT}register_nix_errors();",
         *[f"{INDENT}bind_{cls.name.lower()}(m);" for cls in classes],
-        *([f"{INDENT}bind_functions(m);"] if mod.functions else []),
+        *([f"{INDENT}bind_functions(m);"]
+          if public(mod.functions, classes) else []),
         "}",
         "",
     ])

@@ -21,7 +21,7 @@ types it names.
 import pathlib
 import sys
 
-from cythonix_idl.nbemit import bindable, extension, refused
+from cythonix_idl.nbemit import bindable, extension
 from cythonix_idl.read import read
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -43,9 +43,6 @@ def main(decl: str, dotted: str, out: str) -> int:
     skipped = [c.name for c in mod.classes if c not in bound]
     if skipped:
         print(f"  not bound: {', '.join(skipped)}")
-    for cls in bound:
-        for name, why in refused(cls, mod.known).items():
-            print(f"  {cls.name}.{name}: {why}")
     return 0
 
 
