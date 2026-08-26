@@ -15,6 +15,7 @@ from cythonix_idl.declare import (
     binding,
     cxx_body,
     cxx_name,
+    cxx_parts,
     header,
     instant,
     produced,
@@ -254,3 +255,75 @@ class Store:
         implementation raises "not supported by store", the way
         `query_all_valid_paths` does, because a substituter has no such
         index."""
+
+    # The POD crossing. Every field of PathInfoParts, the pxd that
+    # declares it, and the Cython that unpacks it come from PathInfo's
+    # own accessors - so what is left here is the one thing nothing
+    # can derive: where libstore keeps each part.
+    @cxx_parts(
+        "auto info = s.queryPathInfo(path);",
+        path="std::string(info->path.to_string())",
+        # Nix32 with the algorithm in front, because that is what
+        # `nix path-info` and a .narinfo print. The algorithm travels
+        # with the digest, so a caller is never told separately which
+        # one it is.
+        nar_hash="info->narHash.to_string(nix::HashFormat::Nix32,"
+                 " /*includeAlgo=*/true)",
+        nar_size="info->narSize",
+        # The empty string is absence. Nix has no store path whose
+        # base name is empty - parseStorePath refuses one - so the
+        # sentinel cannot collide with an answer.
+        deriver="info->deriver ? std::string(info->deriver->to_string())"
+                " : std::string()",
+        registration_time="static_cast<int64_t>(info->registrationTime)",
+        ultimate="info->ultimate",
+        # The same sentinel, for the same reason: a rendered content
+        # address is never empty. renderContentAddress would collapse
+        # the two on our behalf, which is the collapse this avoids.
+        ca="info->ca ? info->ca->render() : std::string()",
+        references="base_names(info->references)",
+        sigs="to_strings(info->sigs)",
+    )
+    def query_path_info(self, path: "StorePath") -> "PathInfo":
+        """What this store knows about one path it holds.
+
+        Raises InvalidPath when it does not hold it, which is a
+        different answer from a malformed name: BadStorePath means the
+        string is not a store path at all.
+
+        The result is a VALUE - what the store said when asked - so it
+        crosses the wire as a copy and a caller reads it without
+        another round trip."""
+
+    @cxx_parts(
+        "auto [store_path, sub] = s.config.toStorePath(path);",
+        path="std::string(store_path.to_string())",
+        sub_path="sub.absOrEmpty()",
+    )
+    def to_store_path(self, path: Str) -> "StoreLocation":
+        """Which store path CONTAINS this file, and where inside it.
+
+        A different question from `parse_store_path`, which takes the
+        store path itself and refuses anything below it. An
+        interpreter lives at `<store path>/bin/python3`, which is a
+        file in a store object and is not a store object - so asking
+        which one holds it needs this call.
+
+        String work only: it splits on the store DIRECTORY and never
+        touches the filesystem. So it answers for a path that does not
+        exist, and it answers in the store's own terms rather than in
+        this machine's - which is why a chroot store answers about
+        `/nix/store/...` and not about `<root>/nix/store/...`.
+        `real_path` is the call that goes the other way.
+
+        Symlinks are not followed. nix::Store has
+        followLinksToStorePath for that, and it is a different call
+        with a different failure mode: it reads the filesystem.
+
+        A path outside the store raises NixError, not BadStorePath.
+        That is upstream's answer: StoreDirConfig::toStorePath throws
+        a bare Error where parseStorePath throws BadStorePath, for the
+        same fact. The binding does not correct it - it would then
+        disagree with `nix` for the same input - so a caller catching
+        the narrow type around both calls must catch the wide one
+        here."""
