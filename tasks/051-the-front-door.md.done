@@ -48,3 +48,45 @@ hardest thing to change after there are users.
   README links): open a store, add a path, query the closure -
   sync, then async, then remote. The current README is
   contributor-facing by design; users need the other document.
+
+## Done
+
+`import cythonix` is the front door. It re-exports the real surface by
+kind - sync bindings, async wrappers, RPC classes, the protocols both
+async surfaces satisfy, `connect`, `serve`, `errors`, `set_pool_size`
+- so the three-package build stays an implementation detail.
+
+Re-exported by name with `as`, not star-imported, so a typechecker
+sees what a reader sees. The LIST is not maintained twice, though: a
+test asks the two packages what they export and requires the front
+door to carry all of it, so a binding that lands without reaching the
+front door fails the build.
+
+`Mock*` is the deliberate exception, and the test states it. Those
+bind a C++ stand-in on its way out; a front door advertising them
+would be advertising scaffolding.
+
+`cythonix.errors` re-exports the hierarchy that the BINDINGS declare -
+they own it, because libstore raises it and the class names cross the
+wire against that declared set (036) - so a caller never has to learn
+which package holds it.
+
+## The rest
+
+The four demo modules moved to `examples/`. A test keeps them out of
+the installed package.
+
+`server.py` reports through a module logger. The sweep line is one per
+SWEEP rather than one per handle: a reaped connection can hold
+hundreds, and a library writing hundreds of lines into someone else's
+log is the same mistake as writing them to stdout. The ping loop's
+`except Exception: pass` went with 049.
+
+`set_pool_size(n)` sizes the shared pool, and refuses once the pool
+exists - resizing a live ThreadPoolExecutor is not something
+concurrent.futures offers, and pretending otherwise would silently
+keep the old size.
+
+`docs/quickstart.md` is the user-facing document the README is not.
+Every claim in it was run, not written from memory - which caught one:
+`AsyncStore` is constructed, not opened through a classmethod.

@@ -11,6 +11,7 @@ hand-written per method.
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -27,6 +28,8 @@ from .lifecycle import TOKEN_HEADER, HandleTable
 from .wire import WireCodec
 
 # One grpclib handler: it reads the stream and answers on it.
+logger = logging.getLogger(__name__)
+
 Handler = Callable[[Any], Awaitable[None]]
 
 
@@ -519,8 +522,13 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
         while True:
             await asyncio.sleep(interval)
             dropped = dispatcher.table.sweep()
-            for hid in dropped:
-                print(f"swept handle {hid[:8]}")
+            if dropped:
+                # One line per sweep, not per handle: a reaped
+                # connection can hold hundreds, and a library writing
+                # hundreds of lines into someone else's log is the
+                # same mistake as writing them to stdout.
+                logger.info("swept %d handle(s): %s", len(dropped),
+                            ", ".join(hid[:8] for hid in sorted(dropped)))
 
     sweep_task = asyncio.create_task(sweeper()) if lease_ttl else None
 
@@ -550,8 +558,8 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     server = grpclib.server.Server(
         reflected, status_details_codec=SchemaStatusDetails(pool))
     await server.start(host, port)
-    print(f"cythonix gRPC server listening on {host}:{port} "
-          f"(lease ttl: {lease_ttl if lease_ttl else 'off'})")
+    logger.info("listening on %s:%d (lease ttl: %s)", host, port,
+                lease_ttl if lease_ttl else "off")
     try:
         await server.wait_closed()
     finally:

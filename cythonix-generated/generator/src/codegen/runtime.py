@@ -31,6 +31,33 @@ from typing import Any
 
 _POOL: concurrent.futures.ThreadPoolExecutor | None = None
 _POOL_LOCK = threading.Lock()
+# How many blocking calls may be in flight at once. Four is a default,
+# not a law: a store call talks to a daemon or a database and spends
+# most of its time waiting, so an application doing bulk work wants
+# more, and one embedded beside other thread pools may want fewer.
+_POOL_SIZE = 4
+
+
+def set_pool_size(workers: int) -> None:
+    """Size the shared pool, before anything uses it.
+
+    Every pool-threaded call in every generated wrapper runs here, so
+    four concurrent blocking store calls saturate the default and the
+    fifth waits. A library cannot guess the right number - it depends
+    on the application, not on this package - so it takes one.
+
+    Raises once the pool exists. Resizing a live ThreadPoolExecutor is
+    not something concurrent.futures offers, and pretending otherwise
+    would silently keep the old size."""
+    global _POOL_SIZE
+    if workers < 1:
+        raise ValueError(f"pool size must be at least 1, got {workers}")
+    with _POOL_LOCK:
+        if _POOL is not None:
+            raise RuntimeError(
+                "the shared pool is already running; set_pool_size must be "
+                "called before the first pool-threaded call")
+        _POOL_SIZE = workers
 
 
 class WrapperError(Exception):
@@ -75,7 +102,8 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
     with _POOL_LOCK:
         if _POOL is None:
             _POOL = concurrent.futures.ThreadPoolExecutor(
-                max_workers=4, thread_name_prefix="cythonix-pool"
+                max_workers=_POOL_SIZE,
+                thread_name_prefix="cythonix-pool",
             )
         return _POOL
 

@@ -114,6 +114,57 @@ def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
     assert codec.scalar("bytes") is bytes
 
 
+def test_the_front_door_covers_the_surface() -> None:
+    """One import, and nothing real left behind it.
+
+    `import cythonix` used to export two mock DEMO classes, so a user
+    faced three packages and no guidance on which to import - the
+    build topology as the first thing to learn (tasks/051).
+
+    Derived rather than listed twice: this asks the two packages what
+    they export and requires the front door to carry all of it. A new
+    binding that lands without reaching the front door fails here
+    rather than being missed by a reader.
+
+    Mock* is the deliberate exception. Those bind a C++ stand-in on
+    its way out, and a front door advertising them would be
+    advertising scaffolding."""
+    import cythonix
+    import cythonix_bindings
+    import cythonix_generated
+
+    behind = {
+        name
+        for pkg in (cythonix_bindings, cythonix_generated)
+        for name in pkg.__all__
+        if not name.startswith("Mock")
+        and not name.startswith(("AsyncMock", "RPCMock"))
+        and "Mock" not in name
+    }
+    # RPC_CLASSES is a registry the client uses to turn a handle into
+    # an object; it is plumbing, not surface.
+    behind -= {"RPC_CLASSES", "describe"}
+
+    missing = sorted(behind - set(cythonix.__all__))
+    assert not missing, f"not reachable from `import cythonix`: {missing}"
+    assert all(hasattr(cythonix, n) for n in cythonix.__all__)
+
+
+def test_the_package_ships_no_demos() -> None:
+    """A demo is reading material, not library surface.
+
+    custom.py, async_demo.py, remote_demo.py and run_remote.py shipped
+    inside the installable package. They live in examples/ now, and
+    this is what keeps them there."""
+    import cythonix
+
+    installed = pathlib.Path(cythonix.__file__).parent
+    demos = sorted(f.name for f in installed.glob("*.py")
+                   if f.stem.endswith("_demo") or f.stem in
+                   ("custom", "run_remote"))
+    assert demos == [], demos
+
+
 def _probe_message() -> Any:
     """A message with one repeated string and one map<string, string>.
 

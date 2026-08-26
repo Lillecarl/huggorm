@@ -8,9 +8,9 @@ wrapper, the protocol, the RPC client and the gRPC schema. Adding a
 type means editing a `.pyx` and nothing else. That is the whole
 premise, and it is what a reviewer should push on.
 
-This file is how to DRIVE the repo. `tasks/README.md` is what the
-design is and why. Each `tasks/NNN-*.md` is one decision, with the
-alternatives it rejected.
+This file is how to DRIVE the repo. `docs/quickstart.md` is how to USE
+the library. `tasks/README.md` is what the design is and why, and each
+`tasks/NNN-*.md` is one decision with the alternatives it rejected.
 
 ## Commands
 
@@ -63,6 +63,8 @@ comment about an upstream behaviour that was read rather than assumed.
     cythonix-bindings/     the Cython bindings - the bottom of the stack
     cythonix-generated/    the generator, and the package it emits
     cythonix/              the hand-written layer: server, client, codec
+    examples/              runnable demos - not shipped in the package
+    docs/                  user-facing; quickstart.md is the front door
     tasks/                 one file per decision, NNN-name.md[.done]
 
 ### cythonix-bindings

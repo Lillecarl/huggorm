@@ -1189,7 +1189,7 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     Store, and 018 moves the shared methods off the subclasses. Both
     are rules about the async wrappers. A stub describing the sync
     bindings that way would hide LocalStore.query_derivation, which
-    exists and which custom.py calls."""
+    exists and which examples/custom.py calls."""
     mod = ast.Module(body=[], type_ignores=[])
     short = module.rsplit(".", 1)[-1]
     mod.body.append(ast.Expr(value=ast.Constant(value=(
