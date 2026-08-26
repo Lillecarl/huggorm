@@ -1,0 +1,185 @@
+"""
+Declaration -> manifest entry.
+
+This is the half of the spike that is not about Cython at all, and it
+is the half that decides whether the idea is worth adopting.
+
+## The ordering the manifest lives under today
+
+`model.py` builds the manifest by IMPORTING `cythonix_bindings` and
+reflecting on the classes it finds: `getattr(cls, "_threading")`,
+`cls.__dict__["_binds"]`, `getattr(cls, d) is not getattr(object, d)`
+for the dunders. Every one of those reads a COMPILED extension type.
+
+So the build has one possible order. C++ compiles, Cython compiles,
+the manifest is learnt, and only then can the async wrappers, the
+protocols, the RPC stubs and the type stubs be written. Four surfaces
+wait behind a C++ compiler for facts that were decided by hand in a
+.pyx before any of it started.
+
+## What this module does instead
+
+It reads the same facts out of the declaration, which is a text file.
+`_binds` is "C" plus the class name. `_threading` is what `@binding`
+said. The nine value dunders are what `@wire_value` implies: a value
+compares, hashes and prints; `order=True` adds the four comparisons
+`functools.total_ordering` fills in; `text=` adds `__str__`.
+
+Every one of those is knowable before a compiler runs, because the
+declaration is where the decision was made. Reflection was reading
+back a fact that had been written down two files earlier.
+
+## The check that makes this a claim rather than a hope
+
+`check.py` diffs what this emits against the entry the real build
+produced by reflection. Equal means the declaration carries the whole
+manifest and reflection is redundant. Anything else names the field
+this route cannot reach, which is the honest measure of how far the
+idea goes.
+"""
+
+from typing import Any
+
+from declare import Decl
+from read import Class, Cxx, Method
+
+# C++ spelling -> the Python type the manifest names. A second table
+# from `emit._py_type`, and deliberately: that one spells a pyx
+# ANNOTATION, where Cython's own `bint` reads better than `bool`.
+# This one spells the manifest, which every layer above reads as
+# Python. Same fact, two vocabularies, so one table would have to
+# lie to one of them.
+PYTHON = {
+    "string": "str",
+    # A view is a str by the time it reaches Python: the binding
+    # copies it, because a view outliving its owner is a dangling
+    # pointer rather than an exception.
+    "string_view": "str",
+    "bint": "bool",
+}
+
+# What a wire value defines, and what makes it define each one. Read
+# as: this dunder is present when this fact about the declaration is
+# true. `model.VALUE_DUNDERS` is the same nine names on the other
+# side of the boundary, found there by asking a compiled class.
+DUNDERS: tuple[tuple[str, str], ...] = (
+    # A value compares, hashes and prints as the thing it IS. Not
+    # optional: model.REQUIRED_DUNDERS names the first three, and the
+    # wire contract refuses a value type missing any of them.
+    ("__eq__", "value"),
+    # Python gives `!=` a slot of its own the moment `__eq__` exists,
+    # so it is present by consequence rather than by choice.
+    ("__ne__", "value"),
+    ("__hash__", "value"),
+    ("__repr__", "value"),
+    # One declared comparison, plus the three functools.total_ordering
+    # writes from it.
+    ("__lt__", "order"),
+    ("__le__", "order"),
+    ("__gt__", "order"),
+    ("__ge__", "order"),
+    # Only when the declaration named an accessor worth printing.
+    ("__str__", "text"),
+)
+
+
+def _type(c: Cxx | None) -> str:
+    """The manifest's spelling of a declared type.
+
+    Refuses rather than defaults. A type this table does not know is
+    a type the surfaces above cannot marshal, and inventing a name
+    for it here would push the failure into an emitted file."""
+    if c is None:
+        return "None"
+    if c.spelling not in PYTHON:
+        raise TypeError(
+            f"'{c.spelling}' has no Python spelling. Add it to manifest.PYTHON "
+            f"once the boundary knows how to marshal it.")
+    return PYTHON[c.spelling]
+
+
+def _param(name: str, c: Cxx) -> dict[str, Any]:
+    # `default: None` always: C++ default arguments are not in the
+    # vocabulary yet, and a declaration cannot express one. When it
+    # can, this reads it rather than assuming.
+    return {"name": name, "type": _type(c), "default": None}
+
+
+def _method(m: Method) -> dict[str, Any]:
+    return {
+        "name": m.name,
+        "params": [_param(n, c) for n, c in m.params],
+        "return_type": _type(m.ret),
+        # Cleaned, unlike the class docstring below. That asymmetry is
+        # the current manifest's, not this module's: model.py reads a
+        # class doc from __dict__ raw and a method doc through
+        # inspect.getdoc, which cleans. Matching it is the point.
+        "doc": _clean(m.doc),
+    }
+
+
+def _clean(text: str) -> str:
+    import inspect
+    return inspect.cleandoc(text) if text else ""
+
+
+def dunders(decl: Decl) -> list[str]:
+    """The value dunders this declaration implies.
+
+    Sorted, like the manifest's, so the two are comparable as lists
+    rather than as sets that happen to agree."""
+    facts = {
+        "value": decl.wire == "value",
+        "order": bool(decl.order),
+        "text": bool(decl.text),
+    }
+    return sorted(name for name, fact in DUNDERS if facts[fact])
+
+
+def entry(cls: Class, package: str, module: str) -> dict[str, Any]:
+    """One wrapper entry, in the manifest's own key order.
+
+    Key order matters only for reading a diff, and a diff of this
+    against the real manifest is the whole point of the exercise."""
+    decl = cls.decl
+    threading = decl.threading
+    return {
+        "name": cls.name,
+        # The one fact the declaration cannot hold: which package the
+        # emitted binding lands in is the build's decision, not the
+        # declaration's.
+        "module": f"{package}.{module}",
+        # RAW, matching model.py: it reads cls.__dict__["__doc__"],
+        # which is the literal text, so the stubs carry the same
+        # indentation the source had.
+        "doc": cls.doc,
+        "binds": "C" + cls.name,
+        # Empty until the vocabulary has inheritance. `read.py`
+        # refuses a declared base class rather than dropping it, so
+        # this cannot silently be wrong.
+        "bases": [],
+        "threading": threading,
+        # No vocabulary for either yet. `abstract` describes a
+        # generated base class, which this spike does not emit;
+        # `produced` is what `@produced(by=...)` says.
+        "abstract": False,
+        "produced": bool(decl.built_by),
+        # "proxy" is the safe default on both sides: stateful until a
+        # declaration proves otherwise.
+        "wire": decl.wire or "proxy",
+        "wire_fields": [[f.name, f.type] for f in decl.fields],
+        "blocking": decl.blocking,
+        # Two things a wrapper buys: a hop onto a home thread, and
+        # releasing the GIL around a call that waits. A pool class
+        # whose methods cannot block needs neither.
+        "wrapped": threading == "affine" or decl.blocking,
+        "dunders": dunders(decl),
+        "ctor": [_param(n, c) for n, c in
+                 (cls.ctor.params if cls.ctor is not None else ())],
+        "methods": [_method(m) for m in cls.methods],
+        # Both are written by later stages of the real generator: the
+        # async twin's base and the proto message name. The message
+        # name is derivable here; async_base is a package-level fact.
+        "async_base": None,
+        "message": f"{cls.name}Msg",
+    }
