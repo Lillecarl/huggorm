@@ -100,6 +100,11 @@ class Method:
     ret: Type | None
     cxx_name: str = ""
     blocks: bool = False
+    # The C++ data member behind this name, from @reads. Empty when
+    # the accessor is a call rather than a field.
+    reads: str = ""
+    # Verbatim C++ for an accessor nothing can derive, from @cxx_body.
+    cxx_body: str = ""
 
 
 @dataclass(frozen=True)
@@ -284,6 +289,8 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         ret=ret,
         cxx_name=getattr(marked, "_cxx_name", ""),
         blocks=bool(getattr(marked, "_blocks", False)),
+        reads=getattr(marked, "_reads", ""),
+        cxx_body=getattr(marked, "_cxx_body", ""),
     )
 
 

@@ -172,3 +172,38 @@ def blocks(fn: F) -> F:
     mostly block still has accessors that cannot."""
     fn._blocks = True  # type: ignore[attr-defined]
     return fn
+
+
+def reads(member: str) -> Callable[[F], F]:
+    """This accessor reads a C++ DATA MEMBER, not a method.
+
+    The distinction is not pedantry, it decides what gets emitted. A
+    member read binds as `def_ro("name", &Cls::member)` and nanobind
+    writes the accessor itself; a method call needs a lambda or a
+    method pointer. `@cxx_name` says what C++ calls a FUNCTION, this
+    says which FIELD is behind a name.
+
+    On the Cython side the same fact reaches the pxd as a field
+    declaration rather than a method, so one word serves both."""
+    def apply(fn: F) -> F:
+        fn._reads = member  # type: ignore[attr-defined]
+        return fn
+    return apply
+
+
+def cxx_body(source: str) -> Callable[[F], F]:
+    """The C++ this accessor cannot be derived into, carried verbatim.
+
+    Per-method, and per-BACKEND: the body is C++, so it means nothing
+    to the Cython emitter, which has `@custom` for the same job in its
+    own language. A hatch that pretended to be portable would be
+    lying about the one thing it exists to carry.
+
+    Counted and printed, like `@custom`. `nix::ValidPathInfo` renders
+    a store path against its own store directory, and that rendering
+    is real logic rather than a binding - so it comes through here and
+    shows up in the count."""
+    def apply(fn: F) -> F:
+        fn._cxx_body = source  # type: ignore[attr-defined]
+        return fn
+    return apply
