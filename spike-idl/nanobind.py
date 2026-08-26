@@ -70,6 +70,10 @@ CXX_PARAM = {
 # because a lambda with two return paths - the value and std::nullopt -
 # cannot deduce one. Derived from the declared Python type, so the
 # declaration says `str | None` once and both backends read it.
+# A Python default, spelled for C++. Only where the two differ: a
+# number or a string literal already reads the same in both.
+CXX_DEFAULT = {"True": "true", "False": "false", "None": "nullptr"}
+
 CXX_OPTIONAL = {
     "str | None": "std::optional<std::string>",
     "int | None": "std::optional<std::int64_t>",
@@ -89,7 +93,20 @@ def _self(cls: Class) -> str:
     return "".join(c for c in cls.name if c.isupper()).lower() or "self"
 
 
-def _param(t: Type) -> tuple[str, str | None]:
+def _param(t: Type, known: dict[str, str] | None = None
+           ) -> tuple[str, str | None]:
+    """The C++ spelling of a declared type, and the caster it needs.
+
+    A BOUND type - one naming another declared class - resolves
+    through `known`, which maps a declared name to its C++ spelling.
+    So `is_valid_path(path: StorePath)` becomes `const nix::StorePath
+    &`, and neither declaration repeats the other's C++ name."""
+    if t.bound:
+        if not known or t.python not in known:
+            raise TypeError(
+                f"'{t.python}' names a class this run has not read. Pass its "
+                f"declaration too, so the C++ spelling can be resolved.")
+        return f"const {known[t.python]} &", None
     if t.cxx is None or t.cxx.spelling not in CXX_PARAM:
         raise TypeError(
             f"'{t.python}' has no C++ parameter spelling. A bound class "
@@ -144,7 +161,45 @@ def includes(cls: Class) -> list[str]:
     return out
 
 
-def _method(cls: Class, m: Method) -> list[str]:
+def waits(cls: Class, m: Method) -> bool:
+    """Whether this call can block, and so needs the GIL released.
+
+    The class states the general case and a method overrides it in
+    either direction - `@blocks` on a class that mostly does not,
+    `@instant` on one that mostly does. Releasing the GIL is not free:
+    it costs two thread-state transitions, so doing it around a read
+    of a string already in memory is a loss."""
+    if m.instant:
+        return False
+    return cls.decl.blocking or m.blocks
+
+
+def _extras(cls: Class, m: Method) -> str:
+    """The annotations that follow a `.def`, in nanobind's order.
+
+    `nb::call_guard<nb::gil_scoped_release>()` comes from the SAME
+    declared fact that makes the Cython emitter write `with nogil:` -
+    `blocking` on the class, or `@blocks` on the method. One decision,
+    two spellings, and the declaration never learns which backend read
+    it.
+
+    `"name"_a` follows, because a parameter's name is part of the
+    Python signature rather than decoration, and `= value` after it
+    when the declaration gave a default. Dropping a default would
+    silently change the signature a caller sees."""
+    out = []
+    if waits(cls, m):
+        out.append("nb::call_guard<nb::gil_scoped_release>()")
+    for pr in m.params:
+        arg = f'"{pr.name}"_a'
+        if pr.default is not None:
+            arg += f" = {CXX_DEFAULT.get(pr.default, pr.default)}"
+        out.append(arg)
+    return "".join(f", {x}" for x in out)
+
+
+def _method(cls: Class, m: Method, known: dict[str, str] | None = None
+            ) -> list[str]:
     """One `.def`, bound by POINTER wherever nanobind allows it.
 
     A method pointer costs no lambda and no closure, and it keeps the
@@ -157,11 +212,22 @@ def _method(cls: Class, m: Method) -> list[str]:
     header from this same declaration rather than trusting a human to
     remember."""
     assert m.ret is not None
+    if m.cxx_body:
+        # A method the declaration could not derive, carried verbatim.
+        obj = _self(cls)
+        args = "".join(f", {_param(pr.type, known)[0]} {pr.name}"
+                       for pr in m.params)
+        head = (f'{INDENT * 2}.def("{m.name}", '
+                f"[]({cls.decl.cxx} &{obj}{args}) {{")
+        body = [f"{INDENT * 4}{ln}".rstrip()
+                for ln in m.cxx_body.strip().splitlines()]
+        return [head, *body, f"{INDENT * 2}}}{_extras(cls, m)})"]
     spelled = m.cxx_name or m.name
-    return [f'{INDENT * 2}.def("{m.name}", &{cls.decl.cxx}::{spelled})']
+    return [f'{INDENT * 2}.def("{m.name}", &{cls.decl.cxx}::{spelled}'
+            f"{_extras(cls, m)})"]
 
 
-def _ctor(cls: Class) -> list[str]:
+def _ctor(cls: Class, known: dict[str, str] | None = None) -> list[str]:
     """`nb::init<...>`, with the declared parameter named for Python.
 
     `"name"_a` is what makes the parameter usable as a keyword, so the
@@ -169,7 +235,7 @@ def _ctor(cls: Class) -> list[str]:
     decoration."""
     if cls.ctor is None:
         return []
-    types = ", ".join(_param(t)[0] for _, t in cls.ctor.params)
+    types = ", ".join(_param(t, known)[0] for _, t in cls.ctor.params)
     args = "".join(f', "{n}"_a' for n, _ in cls.ctor.params)
     line = f"{INDENT * 2}.def(nb::init<{types}>(){args}"
     if not cls.ctor.doc:
@@ -290,22 +356,28 @@ def _accessor(cls: Class, m: Method) -> list[str]:
         f"when it is computed.")
 
 
-def _produced(cls: Class) -> list[str]:
-    """A value the C++ side builds and Python only reads.
+def _unused_record(cls: Class) -> list[str]:
+    """A VALUE's accessors, which are its fields.
+
+    What decides this shape is `@wire_value`, not `@produced`. The
+    two were conflated once and the Store declaration caught it: a
+    value is a RECORD, so Python reads its parts as attributes, while
+    a proxy is a HANDLE, so Python calls its methods. `@produced`
+    answers a third question - whether a constructor exists - and it
+    is true of both `nix::ValidPathInfo` and `nix::Store` for
+    completely different reasons.
 
     Unlike the Cython backend, nothing is flattened. Cython cannot
     easily hand back a C++ struct, so cythonix copies nine fields into
     Python slots; nanobind binds `nix::ValidPathInfo` itself and each
-    accessor reads the live object. So `@produced` means "no
-    constructor" here and "no C++ at all" there - the same declared
-    fact, two honest readings."""
+    accessor reads the live object."""
     out: list[str] = []
     for m in cls.methods:
         out += _accessor(cls, m)
     return out
 
 
-def bind_function(cls: Class) -> str:
+def bind_function(cls: Class, known: dict[str, str] | None = None) -> str:
     """The whole `bind_<name>` function for one declared class.
 
     A function per class, because that is the seam nanopynix already
@@ -318,14 +390,11 @@ def bind_function(cls: Class) -> str:
             f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
              f'{INDENT}nb::class_<{decl.cxx}>(m, "{cls.name}")']
-    if decl.built_by:
-        # No nb::init: something else builds one, and offering a
-        # constructor would advertise a way in that does not exist.
-        body = _produced(cls)
-    else:
-        body = _ctor(cls)
-        for m in cls.methods:
-            body += _method(cls, m)
+    # No nb::init when something else builds one: offering a
+    # constructor would advertise a way in that does not exist.
+    body = [] if decl.built_by else _ctor(cls, known)
+    for m in cls.methods:
+        body += _accessor(cls, m) if m.prop else _method(cls, m, known)
     body += _value_semantics(cls)
     for source in decl.custom.values():
         body += [f"{INDENT * 2}{line}".rstrip()

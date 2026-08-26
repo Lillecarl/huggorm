@@ -40,19 +40,23 @@ class ValidPathInfo:
     own database, so there is nothing a caller could correctly build
     one from."""
 
+    @property
     @reads("storeDir")
     def store_dir(self) -> str:
         """The store directory this path lives under."""
 
+    @property
     @reads("path")
     def store_path(self) -> "StorePath":
         """The path itself, for a caller that wants to compare or hash
         one and never needs the text."""
 
+    @property
     @reads("narSize")
     def nar_size(self) -> int:
         """The size of the NAR in bytes. Not the size on disk."""
 
+    @property
     @reads("ultimate")
     def ultimate(self) -> bool:
         """Whether this store built it itself, as opposed to receiving
@@ -65,6 +69,7 @@ class ValidPathInfo:
     # rather than facts about nix::ValidPathInfo.
 
     @cxx_body('return (vpi.storeDir + "/").append(vpi.path.to_string());')
+    @property
     def path(self) -> str:
         """The full path, store directory included."""
 
@@ -72,6 +77,7 @@ class ValidPathInfo:
 for (auto &r : vpi.references)
     refs.append((vpi.storeDir + "/").append(r.to_string()));
 return refs;""")
+    @property
     def references(self) -> "list[str]":
         """The store paths this one points at, its own included when
         it does.
@@ -82,6 +88,7 @@ return refs;""")
     @cxx_body("""if (!vpi.deriver)
     return std::nullopt;
 return (vpi.storeDir + "/").append(vpi.deriver->to_string());""")
+    @property
     def deriver(self) -> "str | None":
         """The .drv that built this, or None.
 
@@ -89,6 +96,7 @@ return (vpi.storeDir + "/").append(vpi.deriver->to_string());""")
         store was not built by anything."""
 
     @cxx_body("return vpi.narHash.to_string(nix::HashFormat::SRI, true);")
+    @property
     def nar_hash(self) -> str:
         """The hash of the path's NAR serialisation, algorithm first:
         `sha256:<base32>`, the same spelling `nix path-info` prints."""
@@ -96,6 +104,7 @@ return (vpi.storeDir + "/").append(vpi.deriver->to_string());""")
     @cxx_body("""if (!vpi.registrationTime)
     return std::nullopt;
 return static_cast<std::int64_t>(vpi.registrationTime);""")
+    @property
     def registration_time(self) -> "int | None":
         """When the store learnt about this path, as a Unix time.
 
@@ -105,6 +114,7 @@ return static_cast<std::int64_t>(vpi.registrationTime);""")
     @cxx_body("""if (!vpi.ca)
     return std::nullopt;
 return nix::renderContentAddress(*vpi.ca);""")
+    @property
     def ca(self) -> "str | None":
         """How this path's content addresses itself, or None.
 
@@ -116,5 +126,6 @@ return nix::renderContentAddress(*vpi.ca);""")
 for (auto &sig : nix::Signature::toStrings(vpi.sigs))
     sigs.append(sig);
 return sigs;""")
+    @property
     def sigs(self) -> "list[str]":
         """Who vouched for this path, as `<key-name>:<base64>`."""
