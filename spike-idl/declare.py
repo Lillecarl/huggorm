@@ -217,3 +217,17 @@ def cxx_body(source: str) -> Callable[[F], F]:
         fn._cxx_body = source  # type: ignore[attr-defined]
         return fn
     return apply
+
+
+def instant(fn: F) -> F:
+    """This method cannot wait, on a class whose calls generally can.
+
+    The inverse of `@blocks`, and both are needed for the same reason:
+    `blocking` is a property of a CLASS's calls in general, and a
+    general rule has exceptions in both directions. nix::Store talks
+    to a daemon, so `blocking=True` is right for it - and
+    `get_store_dir` reads a string the config already holds, so
+    releasing the GIL around it would cost two thread-state
+    transitions to save nothing."""
+    fn._instant = True  # type: ignore[attr-defined]
+    return fn

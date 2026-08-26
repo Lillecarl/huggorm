@@ -47,6 +47,10 @@ from typing import Any, get_args, get_origin
 import declare
 from declare import Cxx, Decl
 
+# Decorators that are Python's, not ours. A declaration may use them
+# and they are read rather than applied.
+BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod"})
+
 
 class DeclarationError(Exception):
     """A declaration this reader will not guess at.
@@ -70,6 +74,10 @@ class Type:
 
     python: str
     cxx: Cxx | None = None
+    # This type names another DECLARED class rather than a primitive.
+    # The emitter resolves the C++ spelling through the other
+    # declaration, so neither file repeats it.
+    bound: bool = False
 
     @property
     def wire(self) -> str:
@@ -81,6 +89,28 @@ class Type:
         if inner.endswith("| None"):
             inner, optional = inner[:-len("| None")].strip(), True
         return f"{inner}?" if optional else inner
+
+
+@dataclass(frozen=True)
+class Param:
+    """One declared parameter: its name, its type, and its default.
+
+    `default` is the Python source of the default expression, or None
+    when there is none. A binding that drops a default silently
+    changes the Python signature, so it is read rather than ignored."""
+
+    name: str
+    type: Type
+    default: str | None = None
+
+    def __iter__(self):
+        """Unpacks as `(name, type)`.
+
+        Every emitter reads a parameter as that pair, and a default is
+        a fourth thing only two of them care about. Rather than churn
+        each call site into `pr.name, pr.type`, the pair stays the
+        parameter's shape and the default is an attribute beside it."""
+        return iter((self.name, self.type))
 
 
 @dataclass(frozen=True)
@@ -96,10 +126,20 @@ class Method:
     # emitter's problem: the manifest wants the literal text a class
     # carries, and `_doc` re-indents from raw anyway.
     doc: str
-    params: tuple[tuple[str, Type], ...]
+    params: tuple[Param, ...]
     ret: Type | None
     cxx_name: str = ""
     blocks: bool = False
+    # This one cannot wait, on a class whose calls generally can.
+    instant: bool = False
+    # Declared with Python's own @property: an ATTRIBUTE, not a call.
+    # A value's parts read as attributes and a handle's actions read
+    # as methods, and which one an accessor is was never a property
+    # of its class - nanopynix presents StorePath.to_string() as a
+    # method and ValidPathInfo.path as an attribute, and both are
+    # values. So the declaration says it, in the word Python already
+    # has for it.
+    prop: bool = False
     # The C++ data member behind this name, from @reads. Empty when
     # the accessor is a call rather than a field.
     reads: str = ""
@@ -160,19 +200,25 @@ def _from_vocabulary(name: str, vocab: dict[str, str], node: ast.AST) -> Any:
     return obj
 
 
-def type_of(node: ast.expr, vocab: dict[str, str], cxx: bool) -> Type:
+def type_of(node: ast.expr, vocab: dict[str, str]) -> Type:
     """One annotation, resolved.
 
-    `cxx=True` for a class that binds a C++ object: then every type
-    must carry a C++ spelling, because a bare `str` leaves this
-    guessing between std::string and string_view - and those differ by
-    whether the boundary owes the value a copy, which is the
-    difference between a correct binding and a dangling pointer.
+    Three answers, and the reader gives whichever the annotation
+    supports rather than deciding per class. An earlier version had a
+    per-class flag for this and it was wrong twice: first it keyed off
+    `@produced`, which made nix::Store's C++ parameters Python; then
+    off `wire`, which did the same to nix::StorePath. The fact was
+    never a property of the class.
 
-    `cxx=False` for a PRODUCED value. Nothing there crosses from C++:
-    the object that made it flattened one, and what is left is Python
-    slots. So a plain annotation is not a gap in the declaration, it
-    is the whole truth about the field."""
+    A name in the vocabulary carries a C++ spelling. A capitalised
+    name that is not vocabulary refers to another declared class.
+    Anything else is a plain Python type, which is the whole truth
+    about a field the C++ side already flattened.
+
+    What this does NOT do is guess. A bare `str` where C++ is needed
+    reaches an emitter with `cxx=None`, and the emitter refuses it
+    there - which is the right place, because only the emitter knows
+    whether it needed one."""
     # A string annotation is the forward reference a declaration needs
     # to name a type declared in another file. Unwrapped here so the
     # rest of the reader sees one spelling.
@@ -180,22 +226,23 @@ def type_of(node: ast.expr, vocab: dict[str, str], cxx: bool) -> Type:
         spelled = node.value
     else:
         spelled = ast.unparse(node)
-    if not cxx:
-        return Type(python=spelled)
-    if not isinstance(node, ast.Name):
+    if isinstance(node, ast.Name) and node.id in vocab:
+        alias = _from_vocabulary(node.id, vocab, node)
+        if get_origin(alias) is not None:
+            for meta in get_args(alias)[1:]:
+                if isinstance(meta, Cxx):
+                    # The PYTHON spelling of an alias is its first arg:
+                    # `Annotated[str, Cxx("string_view")]` is a str.
+                    return Type(python=get_args(alias)[0].__name__, cxx=meta)
         raise DeclarationError(
-            node, f"'{spelled}' is not a declared type name. Give it an "
-                  f"Annotated alias in declare.py.")
-    alias = _from_vocabulary(node.id, vocab, node)
-    if get_origin(alias) is not None:
-        for meta in get_args(alias)[1:]:
-            if isinstance(meta, Cxx):
-                # The PYTHON spelling of an alias is its first arg:
-                # `Annotated[str, Cxx("string_view")]` is a str.
-                return Type(python=get_args(alias)[0].__name__, cxx=meta)
-    raise DeclarationError(
-        node, f"'{node.id}' carries no C++ spelling. Annotate the alias with "
-              f"Cxx(...) in declare.py.")
+            node, f"'{node.id}' is vocabulary but carries no C++ spelling. "
+                  f"Annotate the alias with Cxx(...) in declare.py.")
+    # The reader records a reference to another declared class;
+    # resolving it needs that declaration, which only the emitter has.
+    bare = spelled.replace(" | None", "").removeprefix("list[").rstrip("]")
+    if bare[:1].isupper():
+        return Type(python=spelled, bound=True)
+    return Type(python=spelled)
 
 
 # -- literals -------------------------------------------------------------
@@ -249,6 +296,11 @@ def _apply(decorators: list[ast.expr], vocab: dict[str, str],
                       for k in node.keywords if k.arg is not None}
             target = fn(*args, **kwargs)(target)
         elif isinstance(node, ast.Name):
+            if node.id in BUILTIN_DECORATORS:
+                # Python's own words, and they mean here what they
+                # mean everywhere. @property says an accessor is an
+                # attribute rather than a call.
+                continue
             target = _from_vocabulary(node.id, vocab, node)(target)
         else:
             raise DeclarationError(node, f"cannot read @{ast.unparse(node)}")
@@ -257,26 +309,31 @@ def _apply(decorators: list[ast.expr], vocab: dict[str, str],
 
 # -- methods --------------------------------------------------------------
 
-def _method(node: ast.FunctionDef, vocab: dict[str, str],
-            cxx: bool = True) -> Method:
+def _method(node: ast.FunctionDef, vocab: dict[str, str]) -> Method:
     args = node.args
     if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         raise DeclarationError(
             node, f"{node.name}: a bound method takes plain positional "
                   f"parameters. C++ has no *args.")
+    # Defaults bind to the LAST parameters, so line them up from the
+    # right - `f(a, b=1)` has one default and it belongs to b.
+    positional = args.args[1:]
+    pad = len(positional) - len(args.defaults)
     params = []
-    for arg in args.args[1:]:
+    for i, arg in enumerate(positional):
         if arg.annotation is None:
             raise DeclarationError(
                 arg, f"{node.name}({arg.arg}): every parameter states its "
                      f"type.")
-        params.append((arg.arg, type_of(arg.annotation, vocab, cxx)))
+        d = args.defaults[i - pad] if i >= pad else None
+        params.append(Param(arg.arg, type_of(arg.annotation, vocab),
+                            ast.unparse(d) if d is not None else None))
 
     ret: Type | None = None
     returns = node.returns
     if returns is not None and not (isinstance(returns, ast.Constant)
                                     and returns.value is None):
-        ret = type_of(returns, vocab, cxx)
+        ret = type_of(returns, vocab)
 
     # A method decorator writes an attribute on a function, so the
     # same trick works: decorate a stand-in and read what was written.
@@ -289,6 +346,9 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         ret=ret,
         cxx_name=getattr(marked, "_cxx_name", ""),
         blocks=bool(getattr(marked, "_blocks", False)),
+        instant=bool(getattr(marked, "_instant", False)),
+        prop=any(isinstance(d, ast.Name) and d.id == "property"
+                 for d in node.decorator_list),
         reads=getattr(marked, "_reads", ""),
         cxx_body=getattr(marked, "_cxx_body", ""),
     )
@@ -301,10 +361,6 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}))
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
-    # A produced value binds nothing, so nothing it names needs a C++
-    # spelling. `built_by` is what @produced writes, and it is the one
-    # fact that decides which vocabulary the annotations are in.
-    cxx = not decl.built_by
 
     ctor: Method | None = None
     methods: list[Method] = []
@@ -312,11 +368,11 @@ def _class(node: ast.ClassDef, vocab: dict[str, str]) -> Class:
         if not isinstance(item, ast.FunctionDef):
             continue
         if item.name == "__init__":
-            ctor = _method(item, vocab, cxx)
+            ctor = _method(item, vocab)
         elif not item.name.startswith("_"):
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.
-            methods.append(_method(item, vocab, cxx))
+            methods.append(_method(item, vocab))
     return Class(
         name=node.name,
         doc=ast.get_docstring(node, clean=False) or "",
