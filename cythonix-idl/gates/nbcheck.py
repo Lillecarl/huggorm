@@ -71,6 +71,13 @@ BETTER = {
         "ordering. nix::StorePath defaults operator<=> upstream, so "
         "sorted(paths) should work. Nothing in nanopynix binds it."),
     ("StorePath", "__le__"): ("nb::is_operator()", "ordering, as __lt__."),
+    ("StorePath", "_parts"): (
+        "nb::make_tuple",
+        "a wire value crosses as its PARTS. nanopynix binds in one "
+        "process and has no wire, so it needs neither this nor the "
+        "`_from_parts` beside it; this repo sends a StorePath over "
+        "gRPC, and `_wire_fields` says what a message holds. Emitted "
+        "here, absent there, and both are right for what they are."),
     # Found by parity.py, which is a stronger instrument than this
     # file: it imports the two COMPILED modules and asks them the same
     # questions, where this compares text against a project that is
