@@ -45,6 +45,11 @@ class Cxx:
 Str = Annotated[str, Cxx("string")]
 StrView = Annotated[str, Cxx("string_view", copy="view")]
 Bint = Annotated[bool, Cxx("bint")]
+# Bytes, not text, and a std::string carries both. The difference is
+# above the boundary: a store holds FILES, and the hash that names a
+# store path is a hash of exactly these bytes - so a caller who has
+# text has to say which encoding made it a file.
+Bytes = Annotated[bytes, Cxx("string")]
 # Widths. Python has one integer type and C++ has many, so a plain
 # `int` says what a CALLER sees and nothing about what crosses. These
 # say both: `int` above the boundary, a fixed width at it.

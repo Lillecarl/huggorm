@@ -56,51 +56,42 @@ def _doc(text: str, level: int) -> list[str]:
     return out
 
 
-# How each C++ spelling reads in a pyx signature. `bint` is Cython's
-# own bool and reads as one; std::string and string_view are both a
-# `str` by the time a caller sees them, because a view is copied at
-# the boundary; a fixed width is a Python int.
-PYX_SPELLING = {
-    "string": "str",
-    "string_view": "str",
-    "bint": "bint",
-    "uint64_t": "int",
-    "int64_t": "int",
-}
-
-
-# The same, in a PYTHON-style signature. `bint` is Cython's own bool
-# and is the type itself where Cython reads the annotation; where
-# Python does - a shim-backed method, whose signature is the Python
-# surface and which the codegen above reads as type names - it is
-# `bool`.
-PY_SPELLING = {**PYX_SPELLING, "bint": "bool"}
+# Every C++ spelling this boundary knows how to marshal. A set, not
+# a table: what a type READS as is the declaration's own Python
+# spelling - `Bytes` and `Str` are both a std::string and are not the
+# same thing above the line - so there is nothing here to look up. It
+# is a gate, and an unknown spelling stops rather than guessing.
+SPELLINGS = frozenset({
+    "string", "string_view", "bint", "uint64_t", "int64_t",
+})
 
 
 def _py_type(t: Type, python_style: bool = False) -> str:
     """How a declared type is spelled in a pyx signature.
 
-    A type with no C++ behind it - a produced value's field - is
-    already Python and says so itself.
+    The declaration's own Python spelling, in almost every case. The
+    alias said `Annotated[bytes, Cxx("string")]` or
+    `Annotated[pathlib.Path, Cxx("string")]`, and only the alias
+    knows which of those a std::string is here.
 
-    One with a C++ spelling this table does not know REFUSES. It used
-    to fall through to `str`, which is a guess that compiles: a
-    declaration naming a width nobody had taught the emitter would
-    have emitted a binding whose signature said the wrong thing."""
+    One exception, and it is about Cython rather than about the type:
+    where CYTHON reads the annotation, `bool` is spelled `bint`.
+    Where Python reads it - a shim-backed method, whose signature is
+    the Python surface - it stays `bool`.
+
+    A spelling this file does not know REFUSES. It used to fall
+    through to `str`, which is a guess that compiles: a declaration
+    naming a width nobody had taught the emitter would have emitted a
+    binding whose signature said the wrong thing."""
     if t.cxx is None:
         return "bint" if t.python == "bool" else t.python
-    if t.cxx.spelling not in PYX_SPELLING:
+    if t.cxx.spelling not in SPELLINGS:
         raise TypeError(
             f"'{t.cxx.spelling}' has no pyx spelling. Add it to "
-            f"emit.PYX_SPELLING once the boundary knows how to marshal it.")
-    if "." in t.python:
-        # A qualified name: the alias names a Python CLASS rather than
-        # a builtin, and that class is what the signature promises.
-        # `real_path` crosses as a std::string and reads as a
-        # pathlib.Path, because a path on THIS machine is a path.
-        return t.python
-    table = PY_SPELLING if python_style else PYX_SPELLING
-    return table[t.cxx.spelling]
+            f"emit.SPELLINGS once the boundary knows how to marshal it.")
+    if t.python == "bool" and not python_style:
+        return "bint"
+    return t.python
 
 
 # -- c_<name>.pxd ---------------------------------------------------------
@@ -208,7 +199,8 @@ def shimmed(m: Method) -> bool:
     return bool(m.cxx_body or m.parts)
 
 
-def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
+def _marshal_in(m: Method,
+                known: dict[str, Class]) -> tuple[list[str], list[str]]:
     """Python arguments to C++ ones, as (declarations, call arguments).
 
     Everything a `nogil` block touches has to be a C local before the
@@ -218,7 +210,15 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
     is Python work, and it must already be done."""
     decls, args = [], []
     for name, t in m.params:
-        if t.python.startswith("list[") and t.bound:
+        if _words(known, t.python):
+            # A vocabulary. The member IS the string a Nix parser
+            # takes, so it crosses as one and nothing here translates
+            # - which is the whole reason such a class is declared
+            # rather than bound.
+            decls.append(
+                f"{INDENT * 2}cdef string c_{name} = {name}.encode('utf-8')")
+            args.append(f"c_{name}")
+        elif t.python.startswith("list[") and t.bound:
             # A LIST of a bound type crosses as base names. A pxd
             # cannot declare the std::set libstore takes, and a base
             # name is what a store path IS - so the vector of strings
@@ -245,8 +245,13 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
                              f"{name}._get()")
             args.append(f"deref(c_{name})")
         elif t.cxx is not None and t.cxx.spelling == "string":
-            decls.append(
-                f"{INDENT * 2}cdef string c_{name} = {name}.encode('utf-8')")
+            # A std::string either way, and how it is FILLED is the
+            # difference between the two Python types behind it.
+            # Bytes are already the bytes the store will hash, so
+            # encoding them would be a second guess about a file whose
+            # contents the caller already decided.
+            source = name if t.python == "bytes" else f"{name}.encode('utf-8')"
+            decls.append(f"{INDENT * 2}cdef string c_{name} = {source}")
             args.append(f"c_{name}")
         elif t.cxx is not None and t.cxx.spelling == "bint":
             # A Python-style annotation leaves this an object, and a
@@ -257,6 +262,24 @@ def _marshal_in(m: Method) -> tuple[list[str], list[str]]:
         else:
             args.append(name)
     return decls, args
+
+
+def _produced(known: dict[str, Class], name: str) -> Class | None:
+    """That name as a produced VALUE, or None if it is anything else.
+
+    `known` holds every class a declaration can name, and three kinds
+    live in it. A produced value crosses as a POD, a bound class
+    crosses as an owning pointer, and a vocabulary crosses as the
+    string its member already is. Asking the map is how each emitter
+    tells them apart, rather than a name-shaped guess."""
+    cls = known.get(name)
+    return cls if cls is not None and cls.is_value else None
+
+
+def _words(known: dict[str, Class], name: str) -> bool:
+    """Whether that name is a vocabulary."""
+    cls = known.get(name)
+    return cls is not None and cls.is_words
 
 
 def _from_pod(t: Type, src: str) -> str:
@@ -285,7 +308,7 @@ def _from_pod(t: Type, src: str) -> str:
 
 
 def _marshal_out(t: Type, expr: str,
-                 values: dict[str, Class]) -> tuple[list[str], list[str]]:
+                 known: dict[str, Class]) -> tuple[list[str], list[str]]:
     """One C++ result as the Python object the signature promised.
 
     Two lists, not one string: a POD arrives as a struct and its
@@ -293,14 +316,15 @@ def _marshal_out(t: Type, expr: str,
     returned. So this answers with the statements that go first and
     the `return` that goes last.
 
-    `values` holds the produced classes this module declares, by name.
+    `known` holds every class this declaration can name, by name.
     A POD crossing is the one shape where an emitter must read a
     SECOND declaration - the value's own fields say what the struct
     holds - and it is handed the map rather than reading the file
     again, because the caller already has it."""
     pad = INDENT * 2
-    if t.python in values:
-        return _from_parts(values[t.python], expr)
+    produced = _produced(known, t.python)
+    if produced is not None:
+        return _from_parts(produced, expr)
     if t.bound and not t.python.startswith("list["):
         # A bound object arrives as a pointer this binding now owns,
         # so it is wrapped rather than converted: __new__ WITHOUT
@@ -367,7 +391,7 @@ def _from_parts(cls: Class, out: str) -> tuple[list[str], list[str]]:
 
 
 def _accessor(m: Method, blocking: bool, cls: Class | None = None,
-              values: dict[str, Class] | None = None) -> list[str]:
+              known: dict[str, Class] | None = None) -> list[str]:
     """One bound method: marshal in, call, marshal out.
 
     The copy rule lives HERE rather than in the declaration. The
@@ -402,8 +426,8 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None,
     lines = [f"{INDENT}def {m.name}(self{typed}) "
              f"-> {_py_type(m.ret, python_style=shimmed(m))}:"]
     lines += _doc(m.doc, 2)
-    values = values or {}
-    hoists, args = _marshal_in(m)
+    known = known or {}
+    hoists, args = _marshal_in(m, known)
     waiting = waits(cls, m) if cls is not None else (blocking or m.blocks)
     # `self._get()` is an attribute reach through a Python object, so
     # it cannot happen inside `nogil` - there is no interpreter in
@@ -437,7 +461,7 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None,
         # signature promises.
         if m.ret.python.startswith("list[") and m.ret.bound:
             held, temp = "vector[string]", "found"
-        elif m.ret.python in values:
+        elif _produced(known, m.ret.python) is not None:
             # A produced value crosses as the POD the shim fills, so
             # the temporary is that struct rather than the value: the
             # value itself is Python, and nothing Python may be built
@@ -458,7 +482,7 @@ def _accessor(m: Method, blocking: bool, cls: Class | None = None,
         result = temp
     else:
         result = call
-    pre, ret = _marshal_out(m.ret, result, values)
+    pre, ret = _marshal_out(m.ret, result, known)
     return lines + pre + ret
 
 
@@ -747,7 +771,8 @@ CXX_PARAM = {"string": "const std::string &", "string_view": "std::string_view",
              "bint": "bool"}
 
 
-def _cxx_of(t: Type, position: str) -> str:
+def _cxx_of(t: Type, position: str,
+            known: dict[str, Class] | None = None) -> str:
     """One declared type, as the shim spells it.
 
     A bound CONTAINER flattens. `std::set<nix::StorePath>` cannot be
@@ -755,6 +780,8 @@ def _cxx_of(t: Type, position: str) -> str:
     vector of strings is what crosses - which is the same rule the
     Cython side marshals by, written once for both."""
     table = CXX_RETURN if position == "return" else CXX_PARAM
+    if _words(known or {}, t.python):
+        return table["string"]
     if t.python.startswith("list[") and t.bound:
         return ("std::vector<std::string>" if position == "return"
                 else "const std::vector<std::string> &")
@@ -848,7 +875,8 @@ def pod_pxd(cls: Class) -> list[str]:
     return out
 
 
-def _parts_body(cls: Class, m: Method, values: dict[str, Class]) -> list[str]:
+def _parts_body(cls: Class, m: Method,
+                known: dict[str, Class]) -> list[str]:
     """The shim that fills a POD, from the call and the field map.
 
     `@cxx_parts` carries the call and one expression per field. The
@@ -856,7 +884,7 @@ def _parts_body(cls: Class, m: Method, values: dict[str, Class]) -> list[str]:
     order the value declares - so a field added to the value moves the
     struct, the pxd, this initialiser and the Cython together."""
     assert m.ret is not None
-    target = values[m.ret.python]
+    target = known[m.ret.python]
     named = dict(m.parts)
     want = [f.name for f in target.methods if f.ret is not None]
     missing = [n for n in want if n not in named]
@@ -874,19 +902,20 @@ def _parts_body(cls: Class, m: Method, values: dict[str, Class]) -> list[str]:
 
 
 def _shim_signature(cls: Class, m: Method,
-                    values: dict[str, Class] | None = None) -> str:
+                    known: dict[str, Class] | None = None) -> str:
     """One shim, as C++ declares it."""
     assert m.ret is not None
-    values = values or {}
-    ret = (f"{m.ret.python}Parts" if m.ret.python in values
-           else _cxx_of(m.ret, "return"))
+    known = known or {}
+    ret = (f"{m.ret.python}Parts"
+           if _produced(known, m.ret.python) is not None
+           else _cxx_of(m.ret, "return", known))
     # Non-const, always. A const reference would document that a call
     # only reads, but the declaration does not carry that fact and a
     # non-const reference binds to the object this binding holds in
     # every case - so guessing const would be a compile error waiting
     # for the first method that mutates.
     args = [f"{cls.decl.cxx} & s"]
-    args += [f"{_cxx_of(t, 'param')} {name}" for name, t in m.params]
+    args += [f"{_cxx_of(t, 'param', known)} {name}" for name, t in m.params]
     return f"inline {ret} {m.name}({', '.join(args)})"
 
 
@@ -960,7 +989,7 @@ def _flattens(cls: Class) -> bool:
 
 
 def shim_hpp(cls: Class, module: str, doc: str,
-             values: dict[str, Class] | None = None) -> str:
+             known: dict[str, Class] | None = None) -> str:
     """The C++ this module's Cython cannot say, written from the
     declaration.
 
@@ -993,7 +1022,7 @@ def shim_hpp(cls: Class, module: str, doc: str,
     out += ["", "#include <string>", "#include <vector>", ""]
     for path in sorted({cls.decl.header} - {""}):
         out.append(f'#include "{path}"')
-    values = values or {}
+    known = known or {}
     out += ["", "namespace cythonix {", ""]
     if _flattens(cls):
         out += [*FLATTENING.strip().splitlines(), ""]
@@ -1002,7 +1031,7 @@ def shim_hpp(cls: Class, module: str, doc: str,
     # reads in the order the declaration does.
     for name in dict.fromkeys(m.ret.python for m in cls.methods
                               if m.parts and m.ret is not None):
-        value = values[name]
+        value = known[name]
         out.append("/**")
         out += [f" * {line}".rstrip()
                 for line in inspect.cleandoc(value.doc).splitlines()]
@@ -1019,9 +1048,9 @@ def shim_hpp(cls: Class, module: str, doc: str,
         out += [f" * {line}".rstrip()
                 for line in inspect.cleandoc(m.doc).splitlines()]
         out.append(" */")
-        out.append(_shim_signature(cls, m, values))
+        out.append(_shim_signature(cls, m, known))
         out.append("{")
-        body = (_parts_body(cls, m, values) if m.parts
+        body = (_parts_body(cls, m, known) if m.parts
                 else m.cxx_body.strip().splitlines())
         out += [f"{INDENT}{line}".rstrip() for line in body]
         out += ["}", ""]
