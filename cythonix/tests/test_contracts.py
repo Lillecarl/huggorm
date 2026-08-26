@@ -114,6 +114,92 @@ def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
     assert codec.scalar("bytes") is bytes
 
 
+def _probe_message() -> Any:
+    """A message with one repeated string and one map<string, string>.
+
+    Built here rather than borrowed from the real schema, because no
+    binding declares an enum container yet - which is the point of
+    tasks/047. The two field shapes are the ones the schema builder
+    gives an enum, since an enum crosses as a string.
+
+    Hand-built the way grpc_schema builds one: a map is not a type
+    constant in proto3, it is a repeated field of an entry message the
+    containing type carries."""
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+    file_dp = descriptor_pb2.FileDescriptorProto()  # type: ignore[attr-defined]
+    file_dp.name, file_dp.package, file_dp.syntax = "probe.proto", "probe", "proto3"
+    msg = file_dp.message_type.add()
+    msg.name = "Probe"
+
+    words = msg.field.add()
+    words.name, words.number = "words", 1
+    words.type, words.label = words.TYPE_STRING, words.LABEL_REPEATED
+
+    entry = msg.nested_type.add()
+    entry.name = "TableEntry"
+    entry.options.map_entry = True
+    for name, number in (("key", 1), ("value", 2)):
+        f = entry.field.add()
+        f.name, f.number = name, number
+        f.type, f.label = f.TYPE_STRING, f.LABEL_OPTIONAL
+    table = msg.field.add()
+    table.name, table.number = "table", 2
+    table.type, table.label = table.TYPE_MESSAGE, table.LABEL_REPEATED
+    table.type_name = ".probe.Probe.TableEntry"
+
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(file_dp)  # type: ignore[no-untyped-call]
+    # protobuf ships no stubs for its own factory or pool lookups.
+    return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
+        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+            "probe.Probe"))()
+
+
+def test_an_enum_survives_a_container(manifest: dict[str, Any]) -> None:
+    """An enum is a scalar, and a container does not change that.
+
+    The schema already said so - wire_blocker accepts an enum
+    anywhere a scalar goes - while the codec's container helpers
+    indexed the raw scalar TABLE, which holds no enum. Two of the four
+    sites raised KeyError on the first call; the other two returned
+    bare strs and broke the promise the test above asserts for a
+    singular field.
+
+    Nothing declares an enum container today, so the case is built
+    here. That is the whole reason it stayed latent."""
+    from cythonix.wire import WireCodec
+    from cythonix_bindings import ContentAddressMethod as CA
+    from cythonix_bindings import HashAlgorithm
+
+    codec = WireCodec(manifest)
+    probe = _probe_message()
+
+    codec.list_to_msg("list[HashAlgorithm]",
+                      [HashAlgorithm.SHA256, HashAlgorithm.SHA512],
+                      probe.words)
+    assert list(probe.words) == ["sha256", "sha512"], "a member IS its string"
+    assert codec.list_from_msg("list[HashAlgorithm]", probe.words) == [
+        HashAlgorithm.SHA256, HashAlgorithm.SHA512]
+    assert all(isinstance(v, HashAlgorithm)
+               for v in codec.list_from_msg("list[HashAlgorithm]", probe.words))
+
+    codec.map_to_msg("dict[str, ContentAddressMethod]",
+                     {"a": CA.NAR, "b": CA.FLAT}, probe.table)
+    assert dict(probe.table) == {"a": "nar", "b": "flat"}
+    assert codec.map_from_msg("dict[str, ContentAddressMethod]", probe.table) == {
+        "a": CA.NAR, "b": CA.FLAT}
+    assert all(isinstance(v, CA) for v in
+               codec.map_from_msg("dict[str, ContentAddressMethod]",
+                                  probe.table).values())
+
+    # A member that is not one raises here rather than reaching
+    # libstore - the same guarantee a singular field has.
+    probe.words.append("nonsense")
+    with pytest.raises(ValueError, match="not a valid"):
+        codec.list_from_msg("list[HashAlgorithm]", probe.words)
+
+
 def test_a_method_with_no_wire_form_is_absent_everywhere(
         manifest: dict[str, Any]) -> None:
     """A method the wire cannot carry leaves three places at once.

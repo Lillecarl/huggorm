@@ -375,7 +375,12 @@ def main(argv: list[str] | None = None) -> None:
 
     # The wire policy and the serialization contract must agree before
     # anything downstream trusts either. Loud, at build time.
-    complaints = check_wire_contract(protos + returned_protos)
+    #
+    # The enum NAMES go in with them: an enum is a scalar everywhere
+    # else, so a wire field may declare one. Read here rather than
+    # from the manifest, which is not built yet.
+    enum_names = {k.__name__ for k in _enum_classes(bindings)}
+    complaints = check_wire_contract(protos + returned_protos, enum_names)
     if complaints:
         for c in complaints:
             print(f"wire contract: {c}", file=sys.stderr)

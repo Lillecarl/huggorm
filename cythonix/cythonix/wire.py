@@ -175,7 +175,12 @@ class WireCodec:
                 # is no assigning one.
                 self.value_to_msg(vtype, val, msg[key])
         else:
-            cast = _SCALARS[vtype]
+            # self.scalar, not the _SCALARS table: an enum is a scalar
+            # and its constructor is the enum CLASS, which that table
+            # does not hold. Indexing it directly raised KeyError on
+            # the first dict[str, HashAlgorithm] to be encoded - a
+            # declaration the schema accepts (tasks/047).
+            cast = self.scalar(vtype)
             for key, val in obj.items():
                 msg[key] = cast(val)
 
@@ -183,7 +188,12 @@ class WireCodec:
         vtype = self._map_value(type_str)
         if self.kind(vtype) == "value":
             return {k: self.value_from_msg(vtype, v) for k, v in msg.items()}
-        return dict(msg)
+        # Cast on the way back too. `dict(msg)` kept the raw strs, so
+        # an enum map arrived untyped - the quieter half of the same
+        # bug, and the one that breaks 038's promise that a value read
+        # off the wire comes back TYPED.
+        cast = self.scalar(vtype)
+        return {k: cast(v) for k, v in msg.items()}
 
     @staticmethod
     def _map_value(type_str: str) -> str:
@@ -205,14 +215,15 @@ class WireCodec:
                 # place, never assigned.
                 self.value_to_msg(itype, item, field.add())
         else:
-            cast = _SCALARS[itype]
+            cast = self.scalar(itype)
             field.extend(cast(v) for v in seq)
 
     def list_from_msg(self, type_str: str, field: Any) -> list[Any]:
         itype = self._list_item(type_str)
         if self.kind(itype) == "value":
             return [self.value_from_msg(itype, m) for m in field]
-        return list(field)
+        cast = self.scalar(itype)
+        return [cast(v) for v in field]
 
     @staticmethod
     def _list_item(type_str: str) -> str:

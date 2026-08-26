@@ -581,7 +581,8 @@ def extract_free_function(fn: Any, api: Api,
     }
 
 
-def check_wire_contract(protos: list[Proto]) -> list[str]:
+def check_wire_contract(protos: list[Proto],
+                        enums: set[str] | None = None) -> list[str]:
     """The wire policy and the serialization contract must agree.
 
     A "value" type promises the RPC layer it can be rebuilt from its
@@ -591,7 +592,12 @@ def check_wire_contract(protos: list[Proto]) -> list[str]:
     touched it. Fail the build instead, naming the type.
 
     Returns a list of complaints; empty means the contract holds."""
-    known = {p["name"] for p in protos}
+    # A string enum is a NAME the wire knows and not a class in the
+    # manifest's groups, so it has to be handed in. Without it a
+    # _wire_fields entry of enum type failed as "unknown field type" -
+    # refused here while the rpc layer accepted the same declaration
+    # anywhere a scalar goes (tasks/047).
+    known = {p["name"] for p in protos} | (enums or set())
     kinds = {p["name"]: p["wire"] for p in protos}
     bad = []
     for proto in protos:

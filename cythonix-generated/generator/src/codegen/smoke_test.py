@@ -218,6 +218,38 @@ def test_a_default_is_written_or_refused() -> None:
             raise AssertionError(f"{bad!r} was accepted as a default")
 
 
+def test_an_enum_is_a_scalar_everywhere() -> None:
+    """One rule, held by all three layers that had an opinion.
+
+    The schema always accepted an enum wherever a scalar goes -
+    alone, in a list, in a map - because a StrEnum member IS a string.
+    check_wire_contract did not: it tested a field type against the
+    primitives and the class protos, and an enum is in neither, so a
+    _wire_fields entry of enum type failed the build as an unknown
+    type while the rpc layer accepted the same declaration.
+
+    The codec half of this is tested where the codec lives; here is
+    the half the generator decides."""
+    from codegen.grpc_schema import wire_blocker
+    from codegen.model import check_wire_contract
+
+    kinds = {"StorePath": "value", "Word": "enum"}
+    for spelling in ("Word", "list[Word]", "dict[str, Word]"):
+        assert wire_blocker(spelling, kinds) is None, spelling
+
+    def proto(ftype: str) -> dict[str, object]:
+        return {"name": "Probe", "wire": "value", "threading": "pool",
+                "wire_fields": [["kind", ftype]],
+                "_helpers": ["_from_parts", "_parts"]}
+
+    for ftype in ("Word", "list[Word]"):
+        assert check_wire_contract([proto(ftype)], {"Word"}) == [], ftype
+    # ...and a name that is neither a class nor a declared enum still
+    # fails, so the set widened rather than the check weakening.
+    complaints = check_wire_contract([proto("Nonsense")], {"Word"})
+    assert len(complaints) == 1 and "unknown field type" in complaints[0]
+
+
 def test_an_optional_return_names_a_value_or_nothing() -> None:
     """`T | None` is a real return type, and only for some T.
 
