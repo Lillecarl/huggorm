@@ -44,25 +44,41 @@ COSMETIC = {
     ("ValidPathInfo", "out"): "sigs",
 }
 
-# Where the emitter is RIGHT and the hand-written file is not. Each
-# carries the evidence, because "mine is better" is a claim.
+# Where the emitter is RIGHT and the hand-written file is not.
+#
+# Each entry PINS what makes it better, as text the emitted line must
+# contain (or must not). An unpinned "mine is better" excuses every
+# future difference on that accessor, the emitter REGRESSING to match
+# the hand-written version included - verified: with the reason alone
+# and no pin, deleting nb::is_operator() from the emitter left this
+# gate green.
+#
+# The reason is for a reader; the pin is what the gate checks, and it
+# is checked UNCONDITIONALLY rather than as an explanation for a diff.
+# Verified why: deleting nb::is_operator() makes the emitted line
+# identical to the hand-written one, so there is no diff left to
+# explain and a pin checked only on difference never fires. The claim
+# is an invariant about the emitter, not a note about a disagreement.
 BETTER = {
-    ("StorePath", "__eq__"):
-        "nb::is_operator(). Without it a failed overload raises TypeError; "
-        "with it nanobind returns NotImplemented (nb_func.cpp:530). Verified "
-        "against the built module: `sp == None` raises there today.",
-    ("StorePath", "to_string"):
-        "bound by method pointer. <nanobind/stl/string_view.h> copies into a "
-        "Python str, which is the copy the hand-written lambda was making, so "
-        "the lambda hid the method behind a closure for nothing.",
-    ("StorePath", "name"): "same as to_string.",
-    ("StorePath", "hash_part"): "same as to_string.",
-    ("StorePath", "__lt__"):
+    ("StorePath", "__eq__"): (
+        "nb::is_operator()",
+        "Without it a failed overload raises TypeError; with it nanobind "
+        "returns NotImplemented (nb_func.cpp:530). Verified against the "
+        "built module: `sp == None` raises there today."),
+    ("StorePath", "__lt__"): (
+        "nb::is_operator()",
         "ordering. nix::StorePath defaults operator<=> upstream, so "
-        "sorted(paths) should work. Nothing in nanopynix binds it.",
-    ("StorePath", "__le__"): "ordering, as __lt__.",
-    ("StorePath", "__gt__"): "ordering, as __lt__.",
-    ("StorePath", "__ge__"): "ordering, as __lt__.",
+        "sorted(paths) should work. Nothing in nanopynix binds it."),
+    ("StorePath", "__le__"): ("nb::is_operator()", "ordering, as __lt__."),
+    ("StorePath", "__gt__"): ("nb::is_operator()", "ordering, as __lt__."),
+    ("StorePath", "__ge__"): ("nb::is_operator()", "ordering, as __lt__."),
+    ("StorePath", "to_string"): (
+        "&nix::StorePath::to_string",
+        "bound by method pointer. <nanobind/stl/string_view.h> copies into a "
+        "Python str, which is the copy the hand-written lambda was making, "
+        "so the lambda hid the method behind a closure for nothing."),
+    ("StorePath", "name"): ("&nix::StorePath::name", "as to_string."),
+    ("StorePath", "hash_part"): ("&nix::StorePath::hashPart", "as to_string."),
 }
 
 # The two projects disagree, and only a person can settle it.
@@ -126,6 +142,22 @@ def check(decl_path: str) -> list[str]:
         print(f"  {cls.name}: {len(got)} emitted, {len(want)} hand-written "
               f"({c['derived']} derived, {c['hatched']} hatched)")
 
+        # Every claim of "the emitter is right", first and on its own.
+        for (kls, name), (pin, why) in BETTER.items():
+            if kls != cls.name:
+                continue
+            line = got.get(name)
+            if line is None:
+                problems.append(f"  {cls.name}.{name}: claimed better, but "
+                                f"the emitter no longer binds it at all.")
+            elif pin not in line:
+                problems.append(
+                    f"  {cls.name}.{name}: claimed better, but the emitted "
+                    f"line no longer contains {pin!r}. Either the emitter "
+                    f"regressed or the claim is stale.")
+            else:
+                print(f"    {name}: EMITTER IS RIGHT ({pin}). {why}")
+
         for name in sorted(set(want) | set(got)):
             a, b = want.get(name), got.get(name)
             for (kls, old), new in COSMETIC.items():
@@ -134,9 +166,8 @@ def check(decl_path: str) -> list[str]:
             if a == b:
                 continue
             if (cls.name, name) in BETTER:
-                print(f"    {name}: EMITTER IS RIGHT. "
-                      f"{BETTER[(cls.name, name)]}")
-            elif (cls.name, name) in DIVERGENT:
+                continue  # already checked, above and unconditionally
+            if (cls.name, name) in DIVERGENT:
                 print(f"    {name}: THE TWO PROJECTS DISAGREE. "
                       f"{DIVERGENT[(cls.name, name)]}")
             elif a is None:
