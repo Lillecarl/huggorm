@@ -59,6 +59,13 @@ from cythonix_idl.read import Class, Method, Module, Type
 
 INDENT = "    "
 
+# C++ every emitted extension calls, whatever it declares. Neither
+# backend owns either file: `errors.hpp` maps a nix exception onto
+# the right Python class, and `libstore.hpp` initialises libstore and
+# opens a store. A module includes both once, at the top.
+PRELUDE = ("cythonix_bindings/_cpp/errors.hpp",
+           "cythonix_bindings/_cpp/libstore.hpp")
+
 # How a declared type is spelled in a C++ signature, and which caster
 # has to be included for it to cross. Nothing here is guessed from a
 # Python name: a type reaches this table only through an Annotated
@@ -186,7 +193,13 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
             raise TypeError(
                 f"'{inner}' names a class this run has not read. Pass its "
                 f"declaration too, so the C++ spelling can be resolved.")
-        spelled = _bare(known[inner])
+        other = known[inner]
+        spelled = _bare(other)
+        if other.decl.cxx and other.decl.built_by:
+            # A HANDLE nothing constructs. libstore hands one back
+            # reference-counted, and Python has to hold a share or
+            # the store closes under the object that names it.
+            return f"std::shared_ptr<{spelled}>", "shared_ptr"
         return spelled, "string" if spelled == "std::string" else None
     # Three tables, in the order the declaration meant them. A Python
     # type nanobind casts natively wins outright - `pathlib.Path`
@@ -256,6 +269,7 @@ def _param(t: Type, known: dict[str, Class] | None = None
 
 
 def includes(classes: Sequence[Class],
+             functions: Sequence[Method] = (),
              known: dict[str, Class] | None = None) -> list[str]:
     """Exactly the headers this translation unit needs, and no others.
 
@@ -301,6 +315,13 @@ def includes(classes: Sequence[Class],
         if cls.ctor is not None:
             for _, t in cls.ctor.params:
                 note(t)
+    # A free function belongs to no class, so its types reach this
+    # list only from here - and `open_store` is the one that brings
+    # <nanobind/stl/shared_ptr.h> in.
+    for fn in functions:
+        for _, t in fn.params:
+            note(t)
+        note(fn.ret)
 
     out = ["#include <nanobind/nanobind.h>"]
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
@@ -313,7 +334,11 @@ def includes(classes: Sequence[Class],
     # not an order for includes.
     wanted = {cls.decl.header for cls in classes}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
-    out += [f'#include "{h}"' for h in sorted(wanted - {""})]
+    wanted |= {h for fn in functions for h in fn.headers}
+    # PRELUDE is dropped rather than repeated: `extension` writes
+    # those two itself, because a module calls into both whether or
+    # not a declared type mentions them.
+    out += [f'#include "{h}"' for h in sorted(wanted - {""} - set(PRELUDE))]
     return out
 
 
@@ -999,6 +1024,7 @@ def bindable(mod: Module) -> tuple[Class, ...]:
 
 
 def module(classes: Sequence[Class],
+           functions: Sequence[Method] = (),
            known: dict[str, Class] | None = None) -> str:
     """One translation unit: the includes, then a bind function each.
 
@@ -1006,15 +1032,18 @@ def module(classes: Sequence[Class],
     may declare more than one class in it - `decl/store.py` declares
     three - and a nanobind extension is one translation unit, so the
     file and the unit are the same grain."""
-    head = [*includes(classes, known), "", "namespace nb = nanobind;",
+    head = [*includes(classes, functions, known), "",
+            "namespace nb = nanobind;",
             "using namespace nb::literals;", ""]
     if _crosses_container(classes):
         head += [*CONTAINERS.strip().splitlines(), ""]
     # The structs first: a bind function returns one, so the type has
     # to be complete before the compiler reads the lambda.
     head += records(classes, known)
-    return "\n".join(head) + "\n" + "\n".join(
+    out = "\n".join(head) + "\n" + "\n".join(
         bind_function(cls, known) for cls in classes)
+    return out + ("\n" + free_functions(tuple(functions), known)
+                  if functions else "")
 
 
 def imports(mod: Module) -> list[str]:
@@ -1059,16 +1088,21 @@ def extension(mod: Module, dotted: str,
                f'{f"{package}." if package else ""}{stem}");'
                for stem in imports(mod)]
     return "\n".join([
-        '#include "cythonix_bindings/_cpp/errors.hpp"',
-        module(classes, known),
+        *[f'#include "{h}"' for h in PRELUDE],
+        module(classes, mod.functions, known),
         TRANSLATOR,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
+        # libstore ABORTS the process when it is called before this,
+        # so it goes ahead of everything - including the imports,
+        # which run another module's initialisation.
+        f"{INDENT}cythonix::init_libstore();",
         # Before anything is bound: a signature naming a type from
         # another module is built as the binding is defined, so the
         # class has to already be registered.
         *reached,
         f"{INDENT}register_nix_errors();",
         *[f"{INDENT}bind_{cls.name.lower()}(m);" for cls in classes],
+        *([f"{INDENT}bind_functions(m);"] if mod.functions else []),
         "}",
         "",
     ])

@@ -20,6 +20,8 @@ from cythonix_idl.declare import (
     Path,
     Str,
     binding,
+    binds,
+    blocks,
     cxx_body,
     cxx_name,
     cxx_parts,
@@ -572,3 +574,29 @@ class Store:
         Raises when it is not in this store's directory - which is a
         different question from whether the name is well formed, and
         the reason this lives on the store rather than on StorePath."""
+
+
+# A FREE binding: it belongs to no class, because it is what makes a
+# class. `nix::openStore` picks an implementation from a URI, so
+# there is no constructor to declare and `@produced(by="open_store")`
+# on Store above names this function as the way in.
+@needs("cythonix_bindings/_cpp/libstore.hpp")
+@binds("cythonix::open_store")
+@blocks
+def open_store(uri: Str = "auto") -> "Store":
+    """Open the store this URI names.
+
+    The URI picks the implementation. "auto" is what the `nix` command
+    itself uses: the daemon when one is running, the local store when
+    it is not. "dummy://" is in memory and touches no disk, which is
+    what makes a store testable in a build sandbox. A path opens a
+    chroot store rooted there.
+
+    The store stays open for as long as Python holds it. libstore
+    hands back a reference-counted handle and the binding keeps it, so
+    a store outliving the call that opened it is the normal case
+    rather than a leak.
+
+    Blocks. Opening a daemon store connects to it, and opening a local
+    store may create its database.
+    """
