@@ -21,8 +21,10 @@ extension or parsing a pxd.
 import argparse
 import ast
 import pathlib
+import sys
 
-from cythonix_idl import generate_nb, manifest, nbemit, pyenum
+from cythonix_idl import manifest, nbemit, pyenum
+from cythonix_idl.nbemit import bindable, extension
 from cythonix_idl.read import read
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -184,12 +186,41 @@ def declared_returned() -> list[str]:
     return sorted(out)
 
 
+def emit_module(decl: str, dotted: str, out: str) -> int:
+    """One declaration file, as the one C++ translation unit it owns.
+
+    A file, not a class: a nanobind extension is one translation unit,
+    and a declaration file may declare several classes, so all of them
+    land in the one unit.
+
+    `dotted` is where the module goes. `path` on its own is the
+    standalone shape a spike builds; `cythonix_bindings.path` is the
+    shape inside a package, and it is also what lets a module import
+    the sibling whose types it names."""
+    mod = read(str(HERE / decl) if not pathlib.Path(decl).is_absolute()
+               else decl)
+    bound = bindable(mod)
+    if not bound:
+        print(f"{decl}: nothing to bind", file=sys.stderr)
+        return 2
+    pathlib.Path(out).write_text(extension(mod, dotted))
+    names = ", ".join(c.name for c in bound)
+    print(f"{decl} -> {out} (module {dotted}): {names}")
+    # What was left out, and why. A declaration under way declares
+    # more than the emitter can carry, and a count that only ever
+    # goes up is the honest way to see how much is left.
+    skipped = [c.name for c in mod.classes if c not in bound]
+    if skipped:
+        print(f"  not bound: {', '.join(skipped)}")
+    return 0
+
+
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     for name in NANOBIND:
         mod = read(str(HERE / name))
         target = out / f"{mod.name}.cpp"
-        generate_nb.main(name, f"{PACKAGE}.{mod.name}", str(target))
+        emit_module(name, f"{PACKAGE}.{mod.name}", str(target))
     for name in VOCABULARIES:
         source = HERE / name
         mod = read(str(source))

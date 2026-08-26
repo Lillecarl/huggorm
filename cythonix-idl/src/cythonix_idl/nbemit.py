@@ -1639,7 +1639,8 @@ def bindable(mod: Module) -> tuple[Class, ...]:
     from.
 
     Skipping is honest here rather than quiet, because
-    `generate_nb.py` prints what it left out beside what it wrote."""
+    `generate.emit_module` prints what it left out beside what it
+    wrote."""
     return tuple(c for c in mod.classes if c.decl.cxx or c.is_value)
 
 
