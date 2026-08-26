@@ -51,6 +51,14 @@ def _arguments(leading: list[ast.arg], params: list[Proto],
     args = list(leading)
     defaults: list[ast.expr] = []
     for p, type_str in zip(params, types, strict=True):
+        if p["default"] == "None":
+            # A parameter that may be omitted is spelled `T | None`.
+            # `output: str = None` is implicit Optional, which strict
+            # typecheckers reject and which misdescribes the default
+            # the emitter itself writes. Here rather than at each call
+            # site: the four surfaces spell the TYPE differently and
+            # none of them spells this differently.
+            type_str = f"{type_str} | None"
         args.append(ast.arg(arg=p["name"],
                             annotation=_ann(type_str, f"{where}:{p['name']}")))
         if p["default"] is not None:
@@ -82,18 +90,9 @@ def _ctor_args(proto: Proto, async_types: set[str]) -> ast.arguments:
     site instead of inside a lazy factory on some worker thread, and a
     typechecker can see it."""
     return _arguments([ast.arg(arg="self")], proto["ctor"],
-                      [_ctor_ann(p, async_types) for p in proto["ctor"]],
+                      [_param_ann(p["type"], async_types)
+                       for p in proto["ctor"]],
                       f"{proto['name']}.__init__")
-
-
-def _ctor_ann(p: Proto, async_types: set[str]) -> str:
-    """One constructor parameter's annotation.
-
-    A parameter that may be omitted is spelled `T | None`. `output: str
-    = None` is implicit Optional, which strict typecheckers reject and
-    which misdescribes the default the emitter itself writes."""
-    ann = _param_ann(p["type"], async_types)
-    return f"{ann} | None" if p["default"] == "None" else ann
 
 
 def _return_ann(rt: str, bound_policies: dict[str, str],
