@@ -50,3 +50,27 @@ Alternative: refuse enums in containers and wire fields at build
 time, consistently. That is smaller, but it refuses something the
 schema can already spell, and a real Nix signature will want a list
 of hash algorithms eventually.
+
+## Done
+
+One rule, held everywhere: an enum is a scalar.
+
+All four container sites go through `self.scalar()`, which is what
+`encode` and `decode` already did for a singular field.
+`check_wire_contract` takes the enum names in with the class protos,
+so a `_wire_fields` entry may declare one.
+
+The test builds the case rather than borrowing one, because no binding
+declares an enum container - a probe message with a repeated string
+and a `map<string, string>`, built the way `grpc_schema` builds one.
+Both shapes, both directions, and a member that is not one still
+raises where a singular field would.
+
+## Found on the way
+
+`smoke_test.main` called a hand-written LIST of checks. The two added
+this session were not in it, so they existed, linted, typechecked and
+never ran - which is worse than no gate, because the file reads as
+covered. It discovers them from the module now. The perturbation for
+the `check_wire_contract` half of this task is what surfaced it: the
+build passed with the fix removed.
