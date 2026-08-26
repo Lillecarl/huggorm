@@ -29,6 +29,8 @@ from cythonix_bindings.c_store cimport (
     path_info,
     query_all_valid_paths,
     query_path_from_hash_part,
+    query_referrers,
+    query_valid_derivers,
     real_path,
     store_uri,
     to_store_path,
@@ -444,6 +446,45 @@ cdef class Store:
         cdef vector[string] found
         with nogil:
             found = query_all_valid_paths(deref(store))
+        return _store_paths(found)
+
+    def query_valid_derivers(self, path: StorePath) -> list[StorePath]:
+        """Every derivation this store still holds that has `path` as
+        an output.
+
+        A different question from `PathInfo.deriver`, which names the
+        .drv that actually BUILT this path - and which may be gone. A
+        path that several derivations can produce has several derivers,
+        and one whose .drv was collected has none.
+
+        Empty is a normal answer. nix::Store's own implementation
+        returns an empty set rather than raising, so a store that does
+        not track this says nothing rather than failing."""
+        cdef StorePath sp = path
+        cdef CStore* store = self._get()
+        cdef CStorePath* p = sp._get()
+        cdef vector[string] found
+        with nogil:
+            found = query_valid_derivers(deref(store), deref(p))
+        return _store_paths(found)
+
+    def query_referrers(self, path: StorePath) -> list[StorePath]:
+        """Which store paths point AT this one.
+
+        The inverse of `PathInfo.references`, and the direction a
+        garbage collector reads: a path with referrers is one something
+        else still needs.
+
+        Only a store with a database can answer. nix::Store's own
+        implementation raises "not supported by store", the way
+        `query_all_valid_paths` does, because a substituter has no such
+        index."""
+        cdef StorePath sp = path
+        cdef CStore* store = self._get()
+        cdef CStorePath* p = sp._get()
+        cdef vector[string] found
+        with nogil:
+            found = query_referrers(deref(store), deref(p))
         return _store_paths(found)
 
     def real_path(self, path: StorePath) -> pathlib.Path:

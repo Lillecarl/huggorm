@@ -463,6 +463,31 @@ async def test_a_store_location_crosses_as_a_value(
     await store.aclose()
 
 
+async def test_the_reference_graph_crosses_both_ways(
+        client: Any, tmp_path: Any) -> None:
+    """query_referrers over the wire, against the edge that made it.
+
+    The same list machinery in both directions and at two levels: a
+    repeated field of messages as a RETURN here, and as a wire-value's
+    own field in query_path_info. Asserting them against each other is
+    what proves they agree - one edge, read forwards and backwards."""
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    target = await store.add_to_store("target", b"pointed at\n")
+    holder = await store.add_to_store(
+        "holder", b"points at a target\n", references=[target])
+
+    referrers = await store.query_referrers(target)
+    assert [r.to_string() for r in referrers] == [holder.to_string()]
+    assert all(isinstance(r, cythonix_bindings.StorePath) for r in referrers)
+
+    info = await store.query_path_info(holder)
+    assert [r.to_string() for r in info.references()] == [target.to_string()]
+
+    assert await store.query_referrers(holder) == []
+    assert await store.query_valid_derivers(target) == []
+    await store.aclose()
+
+
 async def test_absence_crosses_as_absence(
         client: Any, tmp_path: Any) -> None:
     """A `T | None` return, both arms, over the wire.

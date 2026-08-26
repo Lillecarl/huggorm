@@ -290,6 +290,60 @@ def test_a_store_records_the_references_it_is_told(
         assert chroot.query_path_info(alone).references() == []
 
 
+def test_a_store_reads_the_reference_graph_backwards(
+        chroot: Store, source: pathlib.Path) -> None:
+    """query_referrers is the inverse of PathInfo.references.
+
+    One says what a path points at, the other says what points at it.
+    Together they are the edge in both directions, which is what makes
+    the store a graph a caller can walk either way - and the direction
+    a garbage collector reads: a path with referrers is one something
+    else still needs.
+
+    Only a store with a database answers. nix::Store's own
+    implementation raises, the way query_all_valid_paths does, because
+    a substituter has no such index."""
+    target = chroot.add_path_to_store("tree", str(source))
+    holder = chroot.add_to_store("holder", b"points at a tree\n",
+                                 references=[target])
+
+    assert [r.to_string() for r in chroot.query_referrers(target)] == [
+        holder.to_string()]
+    # And the edge the other way round is the one PathInfo carries.
+    assert [r.to_string() for r in
+            chroot.query_path_info(holder).references()] == [
+        target.to_string()]
+
+    # The holder points at nothing that points back.
+    assert chroot.query_referrers(holder) == []
+
+
+def test_a_store_without_a_database_cannot_read_backwards(
+        store: Store) -> None:
+    """The dummy store, which is what nix::Store's own implementation
+    answers for."""
+    with pytest.raises(Unsupported, match="not supported by store"):
+        store.query_referrers(StorePath(HELLO))
+
+
+def test_an_added_path_has_no_derivers(
+        chroot: Store, source: pathlib.Path) -> None:
+    """query_valid_derivers, and empty is a normal answer.
+
+    A different question from PathInfo.deriver, which names the .drv
+    that actually BUILT this path. Nothing built this one, so neither
+    has anything to say - and the live test is where a real answer
+    shows up.
+
+    nix::Store's own implementation returns an empty set rather than
+    raising, so a store that does not track this says nothing rather
+    than failing. The dummy store proves that half."""
+    path = chroot.add_path_to_store("tree", str(source))
+    assert chroot.query_valid_derivers(path) == []
+    assert chroot.query_path_info(path).deriver() is None
+    assert Store("dummy://").query_valid_derivers(path) == []
+
+
 def test_a_reference_must_be_a_store_path(chroot: Store) -> None:
     """The list is typed, so a string is refused before libstore sees
     it. A base name is not a StorePath even when it reads like one:
@@ -668,6 +722,33 @@ def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
     assert all(isinstance(r, StorePath) for r in references)
     assert sorted(r.to_string() for r in references) == [
         r.to_string() for r in references], "a set's order is sorted"
+
+
+@pytest.mark.live
+def test_a_built_path_names_the_derivations_that_make_it(
+        ambient_store: Store) -> None:
+    """query_valid_derivers against a path something really built.
+
+    Two things it can promise, and one it cannot. Every deriver is a
+    .drv, always. And the deriver PathInfo names is among them WHEN
+    the store still holds it - which is the whole difference between
+    the two calls: PathInfo remembers what built this path, and this
+    answers what could build it now. A collected .drv is remembered
+    and not held.
+
+    So the second assertion is conditional, and that is not a hedge:
+    an unconditional one would fail on a machine that has run a
+    garbage collection, which is most of them."""
+    path = ambient_store.parse_store_path(sys.prefix)
+    derivers = ambient_store.query_valid_derivers(path)
+
+    assert all(d.is_derivation() for d in derivers), [
+        d.to_string() for d in derivers]
+
+    deriver = ambient_store.query_path_info(path).deriver()
+    assert deriver is not None
+    if ambient_store.is_valid_path(deriver):
+        assert deriver.to_string() in [d.to_string() for d in derivers]
 
 
 @pytest.mark.live

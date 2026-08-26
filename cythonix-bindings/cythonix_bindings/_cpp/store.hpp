@@ -385,5 +385,30 @@ inline std::vector<std::string> query_all_valid_paths(nix::Store & store)
     return base_names(store.queryAllValidPaths());
 }
 
+/**
+ * Every currently valid derivation that has `path` as an output.
+ *
+ * Not the same as the deriver PathInfo reports: that one is the .drv
+ * that actually built this path and may be gone, while these are the
+ * ones the store still holds.
+ */
+inline std::vector<std::string> query_valid_derivers(nix::Store & store, const nix::StorePath & path)
+{
+    return base_names(store.queryValidDerivers(path));
+}
+
+/**
+ * Which store paths point AT this one - the inverse of references.
+ *
+ * An out-parameter upstream, because the caller may accumulate into
+ * one set across several calls. This binding asks one question at a
+ * time, so it owns the set.
+ */
+inline std::vector<std::string> query_referrers(nix::Store & store, const nix::StorePath & path)
+{
+    nix::StorePathSet referrers;
+    store.queryReferrers(path, referrers);
+    return base_names(referrers);
+}
 
 }  // namespace cythonix

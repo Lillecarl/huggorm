@@ -51,6 +51,11 @@ cdef extern from "cythonix_bindings/_cpp/store.hpp" namespace "cythonix" nogil:
     # libstore answers with, and a name is what a StorePath is - see
     # _cpp/store.hpp for why this stopped being a vector of pointers.
     vector[string] query_all_valid_paths(CStore & store) except +translate_nix_error
+    # The same shape, asked about one path. Derivers are the .drvs the
+    # store still holds that have this path as an output; referrers are
+    # the paths that point at it, which is the inverse of references.
+    vector[string] query_valid_derivers(CStore & store, const CStorePath & path) except +translate_nix_error
+    vector[string] query_referrers(CStore & store, const CStorePath & path) except +translate_nix_error
     # The enums arrive as the strings Nix parses, so the vocabulary -
     # and the error for a wrong one - stays Nix's.
     # `references` is what this path points AT. Nix is told them; it
