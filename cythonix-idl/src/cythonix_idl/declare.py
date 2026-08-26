@@ -106,6 +106,103 @@ class Decl:
     # Where the words come from, for a vocabulary. Prose only: the
     # emitted module names it so a reader can check the list.
     parsed_by: str = ""
+    # The class this one derives from, by DECLARED name. One base:
+    # every hierarchy this binds is single inheritance, and C++
+    # multiple inheritance through a Python type is a different
+    # problem from the one a declaration is for.
+    base: str = ""
+    # Whether Python may construct one. An abstract base still gets a
+    # class, an async wrapper and a wire identity - a caller holds a
+    # MockStore most of the time - but calling it would build an
+    # object with no implementation behind it.
+    abstract: bool = False
+    # How a value TREE is walked, for a type that holds others. Read
+    # by the RPC layer, so no layer above the declaration knows what
+    # the type is or which of its methods do what.
+    tree: str = ""
+
+
+def derives(base: str) -> Callable[[type], type]:
+    """The class this one derives from, by declared name.
+
+    C++ inheritance, not Python's. The declaration names a base and
+    the emitter passes it to `nb::class_`, which is what makes a
+    method declared once on the base reachable from every leaf - and
+    what lets a free function taking the base accept a leaf.
+
+    A declaration states no Python base class of its own: `class
+    MockLocalStore(MockStore)` in a declaration file would be a
+    Python hierarchy among objects that are never constructed, and
+    `read.py` refuses one so the two cannot drift."""
+    def apply(cls: type) -> type:
+        _decl(cls).base = base
+        return cls
+    return apply
+
+
+def abstract(cls: type) -> type:
+    """Python may not construct one of these.
+
+    The base of a hierarchy whose leaves are the implementations. It
+    still gets a class, because a caller holds the base far more
+    often than a leaf - what it does not get is a constructor."""
+    _decl(cls).abstract = True
+    return cls
+
+
+def tree(**shape: object) -> Callable[[type], type]:
+    """How a value TREE is walked, for a type that holds others.
+
+    A map the RPC layer reads so that no layer above this declaration
+    knows what the type is or which of its methods do what: `kind`
+    names the accessor that says what a node is, and its answer picks
+    one of the branches beside it.
+
+    Carried as the SOURCE of the literal, because it is data rather
+    than a shape this vocabulary should learn to describe. The
+    emitter builds the same structure in the binding."""
+    def apply(cls: type) -> type:
+        _decl(cls).tree = repr(shape)
+        return cls
+    return apply
+
+
+def virtual[F: Callable[..., Any]](fn: F) -> F:
+    """A C++ method a Python subclass may override.
+
+    What makes a trampoline necessary and what says which methods it
+    forwards. Without one, a Python override is invisible to C++: a
+    free function taking the base calls the C++ implementation and
+    never sees it."""
+    fn._virtual = True  # type: ignore[attr-defined]
+    return fn
+
+
+def startup[F: Callable[..., Any]](fn: F) -> F:
+    """Call this once, when the module is imported.
+
+    Not exported. It is what a library demands before anything else
+    in it is touched - `initLibStore`, the collector's `init` - and a
+    caller has no business calling it twice or forgetting to call it
+    once.
+
+    Declared rather than assumed, because which one a module needs is
+    a fact about the library it binds. The emitter used to name
+    libstore's in every extension, which is wrong for a module that
+    does not bind libstore."""
+    fn._startup = True  # type: ignore[attr-defined]
+    return fn
+
+
+def translator[F: Callable[..., Any]](fn: F) -> F:
+    """The C++ that turns a library exception into a Python one.
+
+    Registered once for the module, and not exported. The default is
+    already right for a library that throws std::exception - nanobind
+    maps that to RuntimeError - so a declaration says this only when
+    the library has a hierarchy worth keeping."""
+    fn._translator = True  # type: ignore[attr-defined]
+    return fn
 
 
 def _decl(cls: type) -> Decl:

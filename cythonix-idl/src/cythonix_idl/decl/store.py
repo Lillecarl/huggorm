@@ -29,6 +29,8 @@ from cythonix_idl.declare import (
     instant,
     needs,
     produced,
+    startup,
+    translator,
     wire_value,
 )
 
@@ -599,4 +601,39 @@ def open_store(uri: Str = "auto") -> "Store":
 
     Blocks. Opening a daemon store connects to it, and opening a local
     store may create its database.
+    """
+
+
+# --- what the module does before a caller exists -------------------
+
+# Neither of these is surface. They are declared because this is
+# where a module's C++ facts live, and a module that does not bind
+# libstore needs neither - which is what the emitter used to assume
+# and get wrong.
+
+
+@needs("cythonix_bindings/_cpp/libstore.hpp")
+@binds("cythonix::init_libstore")
+@startup
+def _init_libstore() -> None:
+    """Initialise libstore, once, at import.
+
+    libstore does not raise when it has not been initialised: it
+    ABORTS the process, with "The program must call nix::initNix()
+    before calling any libstore library functions". A binding cannot
+    let a caller discover that, so this runs before anything else in
+    the module - including the imports, which run another module's
+    initialisation.
+    """
+
+
+@needs("cythonix_bindings/_cpp/errors.hpp")
+@binds("cythonix::translate_nix_error")
+@translator
+def _translate_nix_error() -> None:
+    """Map a nix exception onto the right class in errors.py.
+
+    nix has an exception hierarchy worth keeping - BadStorePath is a
+    different answer from InvalidPath - and nanobind's default would
+    flatten every one of them to RuntimeError.
     """

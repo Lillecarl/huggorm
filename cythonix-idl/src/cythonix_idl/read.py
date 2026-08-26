@@ -175,6 +175,14 @@ class Method:
     # than a dict because a Method is frozen and hashable, and a dict
     # member is neither.
     parts: tuple[tuple[str, str], ...] = ()
+    # A C++ method a Python subclass may override, from @virtual. What
+    # makes a trampoline necessary and what says which methods it
+    # forwards.
+    virtual: bool = False
+    # Run once at module import, and do not export, from @startup.
+    startup: bool = False
+    # Register as the module's exception translator, from @translator.
+    translator: bool = False
 
 
 @dataclass(frozen=True)
@@ -243,6 +251,27 @@ class Module:
     # file and several bindings take one, so the alternative was
     # every emitter guessing which other files to read.
     uses: dict[str, Class] = field(default_factory=dict)
+
+    @property
+    def startup(self) -> tuple[Method, ...]:
+        """What runs once when the module is imported."""
+        return tuple(fn for fn in self.functions if fn.startup)
+
+    @property
+    def translators(self) -> tuple[Method, ...]:
+        """The C++ that turns a library exception into a Python one."""
+        return tuple(fn for fn in self.functions if fn.translator)
+
+    @property
+    def exported(self) -> tuple[Method, ...]:
+        """The free functions the module actually offers a caller.
+
+        A startup hook and a translator are declared here because
+        this is where a module's C++ facts live, and neither is
+        surface: one runs before a caller exists and the other runs
+        instead of one."""
+        return tuple(fn for fn in self.functions
+                     if not (fn.startup or fn.translator))
 
     @property
     def known(self) -> dict[str, Class]:
@@ -454,6 +483,9 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         headers=tuple(getattr(marked, "_needs", ())),
         parts_prelude=getattr(marked, "_cxx_parts", ("", {}))[0],
         parts=tuple(getattr(marked, "_cxx_parts", ("", {}))[1].items()),
+        virtual=bool(getattr(marked, "_virtual", False)),
+        startup=bool(getattr(marked, "_startup", False)),
+        translator=bool(getattr(marked, "_translator", False)),
     )
 
 
@@ -494,7 +526,10 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
            where: str) -> Class:
     if node.bases:
         raise DeclarationError(
-            node, f"{node.name}: this spike declares no inheritance.")
+            node, f"{node.name}: a declaration states its base with "
+                  f"@derives, not as a Python base class. A Python "
+                  f"hierarchy here would be one among objects that are "
+                  f"never constructed, and the two would drift.")
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}))
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
@@ -516,7 +551,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             continue
         if item.name == "__init__":
             ctor = _method(item, vocab)
-        elif not item.name.startswith("_"):
+        elif not item.name.startswith("__"):
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.
             methods.append(_method(item, vocab))

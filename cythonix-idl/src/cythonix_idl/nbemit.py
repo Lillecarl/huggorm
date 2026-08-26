@@ -59,13 +59,6 @@ from cythonix_idl.read import Class, Method, Module, Type
 
 INDENT = "    "
 
-# C++ every emitted extension calls, whatever it declares. Neither
-# backend owns either file: `errors.hpp` maps a nix exception onto
-# the right Python class, and `libstore.hpp` initialises libstore and
-# opens a store. A module includes both once, at the top.
-PRELUDE = ("cythonix_bindings/_cpp/errors.hpp",
-           "cythonix_bindings/_cpp/libstore.hpp")
-
 # How a declared type is spelled in a C++ signature, and which caster
 # has to be included for it to cross. Nothing here is guessed from a
 # Python name: a type reaches this table only through an Annotated
@@ -322,6 +315,8 @@ def includes(classes: Sequence[Class],
         for _, t in fn.params:
             note(t)
         note(fn.ret)
+    # A hook has no signature worth casting, and it still names the
+    # header its C++ lives in. `wanted` below is where that lands.
 
     out = ["#include <nanobind/nanobind.h>"]
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
@@ -335,10 +330,7 @@ def includes(classes: Sequence[Class],
     wanted = {cls.decl.header for cls in classes}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
     wanted |= {h for fn in functions for h in fn.headers}
-    # PRELUDE is dropped rather than repeated: `extension` writes
-    # those two itself, because a module calls into both whether or
-    # not a declared type mentions them.
-    out += [f'#include "{h}"' for h in sorted(wanted - {""} - set(PRELUDE))]
+    out += [f'#include "{h}"' for h in sorted(wanted - {""})]
     return out
 
 
@@ -1475,7 +1467,8 @@ def module(classes: Sequence[Class],
     head += records(classes, known)
     out = "\n".join(head) + "\n" + "\n".join(
         bind_function(cls, known, functions) for cls in classes)
-    exported = public(functions, classes)
+    exported = public([fn for fn in functions
+                       if not (fn.startup or fn.translator)], classes)
     return out + ("\n" + free_functions(exported, known)
                   if exported else "")
 
@@ -1521,56 +1514,59 @@ def extension(mod: Module, dotted: str,
     reached = [f'{INDENT}nb::module_::import_("'
                f'{f"{package}." if package else ""}{stem}");'
                for stem in imports(mod)]
+    translators = [translator(fn) for fn in mod.translators]
     return "\n".join([
-        *[f'#include "{h}"' for h in PRELUDE],
         module(classes, mod.functions, known),
-        TRANSLATOR,
+        *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
-        # libstore ABORTS the process when it is called before this,
-        # so it goes ahead of everything - including the imports,
-        # which run another module's initialisation.
-        f"{INDENT}cythonix::init_libstore();",
-        # Before anything is bound: a signature naming a type from
-        # another module is built as the binding is defined, so the
-        # class has to already be registered.
+        # A startup hook goes ahead of everything, imports included -
+        # an import runs another module's initialisation, and a
+        # library that demands initialisation is entitled to it
+        # before any of its code runs. libstore does not raise when
+        # it has not been initialised; it aborts the process.
+        *[f"{INDENT}{fn.binds}();" for fn in mod.startup],
+        # Then the other modules: a signature naming a type from one
+        # of them is built as the binding is defined, so the class has
+        # to already be registered.
         *reached,
-        f"{INDENT}register_nix_errors();",
+        *[f"{INDENT}register_{fn.name.lstrip('_')}();"
+          for fn in mod.translators],
         *[f"{INDENT}bind_{cls.name.lower()}(m);" for cls in classes],
         *([f"{INDENT}bind_functions(m);"]
-          if public(mod.functions, classes) else []),
+          if public(mod.exported, classes) else []),
         "}",
         "",
     ])
 
 
-# Every declared method can raise a nix exception, so every module
-# has to turn one into the right Python class. The two backends do
-# that at different granularities and from one piece of C++.
-#
-# Cython writes `except +translate_nix_error` on every method in the
-# pxd, so the hook runs per call. nanobind registers a translator
-# ONCE for the module, and it runs for any binding in it. Same fact,
-# two spellings, and neither is in the declaration - a nix binding
-# translates nix errors, which is not a choice a declaration makes.
-#
-# The ladder itself is shared rather than emitted twice. `errors.hpp`
-# maps nix::BadStorePath onto cythonix_bindings.errors.BadStorePath
-# and strips libstore's terminal escapes; nothing about that is
-# Cython's, and writing it a second time in this file would be one
-# fact in two places with no gate between them.
-TRANSLATOR = """
-static void register_nix_errors() {
+def translator(fn: Method) -> str:
+    """The module's exception translator, registered once.
+
+    Cython wrote `except +translate_nix_error` on every method in the
+    pxd, so the hook ran per call. nanobind registers a translator
+    ONCE for the module and it runs for any binding in it. Same fact,
+    two spellings, and the C++ is shared rather than emitted twice:
+    `errors.hpp` maps nix::BadStorePath onto
+    cythonix_bindings.errors.BadStorePath and strips libstore's
+    terminal escapes.
+
+    Which C++ - or whether there is any - is the declaration's to
+    say. A library that throws plain std::exception needs none:
+    nanobind already maps that to RuntimeError, which is what the
+    mock relies on."""
+    return f"""
+static void register_{fn.name.lstrip("_")}() {{
     nb::register_exception_translator(
-        [](const std::exception_ptr &p, void *) {
-            try {
+        [](const std::exception_ptr &p, void *) {{
+            try {{
                 std::rethrow_exception(p);
-            } catch (...) {
+            }} catch (...) {{
                 // Sets the Python error from inside catch(...), which
-                // is the same position Cython calls it from.
-                cythonix::translate_nix_error();
-            }
-        });
-}
+                // is the same position Cython called it from.
+                {fn.binds}();
+            }}
+        }});
+}}
 """
 
 
