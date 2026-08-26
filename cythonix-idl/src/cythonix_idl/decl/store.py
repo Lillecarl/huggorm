@@ -411,13 +411,14 @@ class Store:
 
         The answer is for the machine the store runs on. In process
         that is here; over RPC it is the server's (tasks/040)."""
-    # The POD crossing. Every field of PathInfoParts, the pxd that
-    # declares it, and the Cython that unpacks it come from PathInfo's
-    # own accessors - so what is left here is the one thing nothing
-    # can derive: where libstore keeps each part.
+    # The record crossing. Every member of the C++ struct, its
+    # constructor, and every accessor Python reads come from
+    # PathInfo's own declaration - so what is left here is the one
+    # thing nothing can derive: where libstore keeps each part.
+    @needs("nix/store/path-info.hh")
     @cxx_parts(
         "auto info = s.queryPathInfo(path);",
-        path="std::string(info->path.to_string())",
+        path="info->path",
         # Nix32 with the algorithm in front, because that is what
         # `nix path-info` and a .narinfo print. The algorithm travels
         # with the digest, so a caller is never told separately which
@@ -425,18 +426,22 @@ class Store:
         nar_hash="info->narHash.to_string(nix::HashFormat::Nix32,"
                  " /*includeAlgo=*/true)",
         nar_size="info->narSize",
-        # The empty string is absence. Nix has no store path whose
-        # base name is empty - parseStorePath refuses one - so the
-        # sentinel cannot collide with an answer.
-        deriver="info->deriver ? std::string(info->deriver->to_string())"
-                " : std::string()",
-        registration_time="static_cast<int64_t>(info->registrationTime)",
+        # Straight across. libstore already keeps this as
+        # std::optional<nix::StorePath>, and the record's member has
+        # the same type - so absence stays absence rather than
+        # becoming a sentinel a reader has to know about.
+        deriver="info->deriver",
+        registration_time="static_cast<std::int64_t>("
+                          "info->registrationTime)",
         ultimate="info->ultimate",
-        # The same sentinel, for the same reason: a rendered content
-        # address is never empty. renderContentAddress would collapse
-        # the two on our behalf, which is the collapse this avoids.
-        ca="info->ca ? info->ca->render() : std::string()",
-        references="base_names(info->references)",
+        # Rendered, because there is no caster for nix::ContentAddress
+        # and `fixed:r:sha256:<hash>` is the spelling `nix path-info
+        # --json` prints.
+        ca="info->ca ? std::optional<std::string>(info->ca->render())"
+           " : std::nullopt",
+        references="as_list(info->references)",
+        # A set of nix::Signature, not of strings. Each one prints
+        # itself, which is what a caller wants to see.
         sigs="to_strings(info->sigs)",
     )
     def query_path_info(self, path: "StorePath") -> "PathInfo":
@@ -451,7 +456,7 @@ class Store:
         another round trip."""
     @cxx_parts(
         "auto [store_path, sub] = s.config.toStorePath(path);",
-        path="std::string(store_path.to_string())",
+        path="store_path",
         sub_path="sub.absOrEmpty()",
     )
     def to_store_path(self, path: Str) -> "StoreLocation":
