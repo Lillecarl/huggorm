@@ -7,6 +7,7 @@ Installed as the `codegen-generate` entry point.
 
 import argparse
 import ast
+import copy
 import json
 import pathlib
 import shutil
@@ -28,8 +29,6 @@ from codegen.emitter import (
     wrapper_module,
 )
 from codegen.model import (
-    binding_map,
-    check_binding_map,
     check_collection_contract,
     check_error_contract,
     check_optional_contract,
@@ -37,12 +36,8 @@ from codegen.model import (
     check_wrap_contract,
     extract_enum,
     extract_errors,
-    extract_free_function,
     extract_wrapper,
-    returned_types_from_api,
-    unbound_pxd_classes,
 )
-from codegen.pxd import extract_api
 from codegen.wiretypes import MANIFEST_SCHEMA, names_in
 from cythonix_idl.generate import (
     declared_entries,
@@ -207,49 +202,20 @@ def _hierarchy(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, help="output directory for cythonix_generated")
-    parser.add_argument(
-        "--pxd",
-        required=True,
-        nargs="+",
-        help="paths to the bindings .pxd declaration files (the C++ mapping)",
-    )
     args = parser.parse_args(argv)
 
     bindings = _load_bindings_module()
-
-    api: dict[str, Any] = {"classes": {}, "free_functions": []}
-    for path_str in args.pxd:
-        part = extract_api(pathlib.Path(path_str).read_text())
-        api["classes"].update(part["classes"])
-        # Free functions used to be parsed here and dropped on the floor.
-        api["free_functions"] += part["free_functions"]
-        print(f"parsed pxd: {len(part['classes'])} classes, "
-              f"{len(part['free_functions'])} free function(s) from {path_str}")
-
-    # The pxd and the pyx are the two hand-written files, and _binds is
-    # the only thing joining them. Check the join before trusting either.
-    mapping = binding_map(bindings)
-    complaints = check_binding_map(api, mapping)
-    if complaints:
-        for c in complaints:
-            print(f"binding map: {c}", file=sys.stderr)
-        sys.exit(1)
-    for c_name in unbound_pxd_classes(api, mapping):
-        print(f"warning: pxd declares {c_name}, no binding claims it with _binds")
-    print(f"binding map: {len(mapping)} classes "
-          + ", ".join(f"{c}->{py}" for c, py in sorted(mapping.items())))
 
     wrapper_classes = _wrapper_classes(bindings)
 
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    # Two routes to the same question, one per backend. The pxd walk
-    # answers it for a Cython module; for a nanobind one there is no
-    # pxd, and the declaration says which of its classes are handed
-    # back rather than constructed.
-    returned_classes = returned_types_from_api(api, bindings, mapping)
-    named = {c.__name__ for c in returned_classes}
+    # Which classes are HANDED BACK rather than constructed. The
+    # declaration says, and it is the only thing that could: this used
+    # to be a walk over the pxd's return types.
+    returned_classes: list[type] = []
+    named: set[str] = set()
     for name in declared_returned():
         kls = getattr(bindings, name, None)
         if isinstance(kls, type) and name not in named:
@@ -300,8 +266,14 @@ def main(argv: list[str] | None = None) -> None:
         if want is not None and not kls.__dict__.get("_binds"):
             print(f"  {want['name']}: from the declaration, not reflected"
                   f" (no pxd - this class is nanobind)")
-            return want
-        reflected = extract_wrapper(kls, api=api, mapping=mapping, **kw)
+            # A COPY. `_proto` is called twice for every class - once
+            # for the wrappers and once for the stubs - and the
+            # wrapper pass edits `methods` in place, dropping the
+            # affine-returning ones from a pool class. Handing back
+            # the same dict both times let that edit reach the stubs,
+            # which describe the BINDING and have no such rule.
+            return copy.deepcopy(want)
+        reflected = extract_wrapper(kls, **kw)
         if want is None:
             return reflected
         differ = [k for k in sorted(set(want) | set(reflected))
@@ -442,9 +414,9 @@ def main(argv: list[str] | None = None) -> None:
     # nanobind function is a builtin: `inspect.signature` refuses it,
     # so there is nothing to reflect.
     declared_fns = declared_functions()
-    free_protos = [declared_fns.get(fn.__name__)
-                   or extract_free_function(fn, api, mapping)
-                   for fn in _free_functions(bindings)]
+    free_protos = [declared_fns[fn.__name__]
+                   for fn in _free_functions(bindings)
+                   if fn.__name__ in declared_fns]
     from_decl = sorted(set(declared_fns) &
                        {fn.__name__ for fn in _free_functions(bindings)})
     if from_decl:

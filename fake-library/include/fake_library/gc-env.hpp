@@ -9,7 +9,7 @@
 // and one of them would free GC memory with plain free().
 //
 // The build files carry the flag: meson.build for the library,
-// setup.py for the Cython extensions.
+// setup.py for the extensions.
 //
 // This used to AUTO-DETECT boehmgc through __has_include, with a no-GC
 // fallback branch behind it. Both are gone. Detection made ODR agreement

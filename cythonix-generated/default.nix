@@ -64,13 +64,12 @@ python3Packages.buildPythonPackage {
   src = ./.;
 
   # setup.py's build_py hook imports codegen to run it, and the generated
-  # package imports cythonix_bindings - both are standard build requirements.
-  # codegen parses each .pxd with Cython's own parser.
-  # PXD_FILE lists the bindings' declaration files so returned types
-  # derive from pxd usage.
+  # package imports cythonix_bindings - both are standard build
+  # requirements. cythonix-idl is the third: the manifest comes from
+  # the declarations now, not from parsing a pxd and reflecting on a
+  # compiled class.
   build-system = [
     python3Packages.setuptools
-    python3Packages.cython
     python3Packages.protobuf
     codegen
     cythonix-bindings
@@ -78,10 +77,6 @@ python3Packages.buildPythonPackage {
     python3Packages.anyio
   ];
 
-  # Only the MOCK modules are Cython now. path and store are nanobind
-  # extensions written from their declarations, so they have no pxd -
-  # and `declared_entries` is where the generator learns about them.
-  env.PXD_FILE = "${cythonix-bindings.src}/cythonix_bindings/c_mock_store.pxd";
 
   # anyio because a generated wrapper hands back the async spelling of
   # a type when the bindings declare one: Store.real_path returns a

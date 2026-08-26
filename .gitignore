@@ -17,7 +17,7 @@ dist/
 venv/
 *.so
 
-# Cython generated
+# generated C++
 *.c
 # Keep hand-written .cpp in fake-library, ignore generated C++ next to pyx
 fake-library-bindings/fake_library/*.cpp

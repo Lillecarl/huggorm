@@ -26,11 +26,7 @@ class build_with_codegen(build_py):
 
         cwd = os.getcwd()
         pkg_dir = os.path.join(cwd, "cythonix_generated")
-        argv = ["--out", pkg_dir]
-        pxds = os.environ.get("PXD_FILE", "").split()
-        if pxds:
-            argv += ["--pxd", *pxds]
-        generate(argv)
+        generate(["--out", pkg_dir])
         smoke(["--out", pkg_dir])
         super().run()
 

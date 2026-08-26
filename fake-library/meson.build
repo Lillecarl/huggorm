@@ -22,7 +22,7 @@ lib = library('fake_library',
 pkg = import('pkgconfig')
 pkg.generate(lib,
   name : 'fake_library',
-  description : 'Mock of the Nix store domain for the Cython wrapper experiment',
+  description : 'Mock of the Nix store domain for the binding experiment',
 )
 
 install_subdir('include/fake_library', install_dir : get_option('includedir'))

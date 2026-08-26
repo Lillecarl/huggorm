@@ -49,10 +49,11 @@ public:
     // may be an unforced thunk: forcing a list forces the list, not
     // what is in it, exactly as in libexpr.
     //
-    // Index-based, and no container in any signature. The pxd is what
-    // declares this API to Cython, and a template type in it renders
-    // as itself and maps to nothing - so a binding surface built out of
-    // scalars and Value pointers is the one a declaration can carry.
+    // Index-based, and no container in any signature. That was a
+    // Cython constraint once - a template type in a pxd rendered as
+    // itself and mapped to nothing - and it outlived it: a collection
+    // of PROXIES is the recursive value message, not another loop in
+    // a binding.
     size_t size() const;                            // list or attrs
     Value * at(size_t index) const;                 // list
     // Attribute sets are kept in NAME ORDER, so walking the index

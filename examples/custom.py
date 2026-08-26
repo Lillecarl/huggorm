@@ -1,5 +1,5 @@
 # This file demonstrates the key learning goal:
-# Python subclasses of Cython-bound C++ classes.
+# Python subclasses of C++ classes bound through nanobind.
 #
 # Two patterns, now on the MockStore hierarchy:
 # 1. Subclassing concrete MockLocalStore — Python-only override (no C++

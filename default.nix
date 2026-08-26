@@ -36,7 +36,8 @@ rec {
     chmod -R u+w $out
     ${lib.getExe idlPython} -m cythonix_idl.generate $out/cythonix_bindings
   '';
-  # this is Cython bindings into fake-library, should contain pxd and pyx (I believe)
+  # The bindings. Every module is a nanobind extension whose C++ is
+  # written from a declaration before this builds - no pyx, no pxd.
   cythonix-bindings = pkgs.callPackage ./cythonix-bindings {
     inherit fake-library cythonix-idl;
     src = bindings-src;
@@ -55,12 +56,11 @@ rec {
   };
   # nix run --file . python -- $args
   # to be able to run Python commands
-  python = pkgs.python3.withPackages (ps: with ps; [ cython ]);
+  python = pkgs.python3;
   # nix run --file . python -- $args
   # to be able to run Python commands with our packages loaded
   ourPython = pkgs.python3.withPackages (
     ps: with ps; [
-      cython
       cythonix-bindings
       cythonix-generated
       cythonix

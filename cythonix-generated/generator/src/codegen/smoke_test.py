@@ -30,54 +30,6 @@ def test_parse(out: pathlib.Path) -> None:
         ast.parse(py.read_text(), filename=str(py))
 
 
-def test_pxd_renders_every_type() -> None:
-    """The pxd parser must never answer "void" for a type it does not
-    recognise.
-
-    It used to. A `vector[string]` return rendered as void, mapped to
-    None, and the codegen emitted a method that claimed to return
-    nothing - a silent lie of exactly the kind the unmapped-type rule
-    one layer up exists to stop. A template renders as itself now, so
-    map_c_type either has a spelling for it or refuses it by name."""
-    from codegen.model import map_c_type
-    from codegen.pxd import extract_api
-
-    src = """# cython: language_level=3
-from libcpp.string cimport string
-from libcpp.vector cimport vector
-
-cdef extern from "x.hpp" nogil:
-    cdef cppclass CThing "ns::Thing":
-        CThing() except +
-        vector[string] names() except +
-        void take(const vector[CThing *] & items) except +
-"""
-    info = extract_api(src)["classes"]["CThing"]
-    methods = {m["name"]: m for m in info["methods"]}
-    assert methods["names"]["ret"] == "vector[string]", methods["names"]
-    assert methods["take"]["params"] == [("items", "vector[CThing*]&")], methods["take"]
-    # A constructor genuinely has no return type. It still parses, which
-    # is what the "void" answer was ever for.
-    assert info["ctors"] == [[]], info["ctors"]
-
-    # ...and the layer above maps the one container the surface can
-    # spell, element first. A pointer element maps like a value one:
-    # holding each element by pointer is a question about C++, not
-    # about the surface.
-    assert map_c_type("vector[string]", {}) == "list[str]"
-    assert map_c_type("vector[CThing*]&", {"CThing": "Thing"}) == "list[Thing]"
-
-    # Every other template is still refused by name rather than
-    # believed to return None. std::set has the same Python spelling as
-    # a vector and would lose the distinction; nothing maps it yet.
-    try:
-        map_c_type("set[CThing]", {"CThing": "Thing"})
-    except ValueError as e:
-        assert "set[CThing]" in str(e), e
-    else:
-        raise AssertionError("map_c_type accepted an unmapped template")
-
-
 def test_annotation_rendering() -> None:
     """A subscripted generic renders in full, wherever it is written.
 
@@ -108,27 +60,6 @@ def test_annotation_rendering() -> None:
     bad = check_collection_contract(protos)
     assert len(bad) == 2, bad
     assert all("attrs" in b or "items" in b for b in bad), bad
-
-
-def test_declarations_are_found_by_binds() -> None:
-    """The pxd is linked to the bindings by _binds, not by a naming
-    convention.
-
-    tasks/020 replaced "strip a leading C and hope" with a
-    declaration, and this lookup was missed: a class whose _binds did
-    not happen to match the convention got no signature backfill at
-    all, silently, and every parameter Cython could not annotate
-    stayed Any."""
-    from codegen.model import _pxd_signature_table
-
-    odd = type("Odd", (), {"_binds": "SomethingElse",
-                           "__module__": "cythonix_bindings.odd"})
-    api = {"classes": {"SomethingElse": {
-        "methods": [{"name": "m", "params": [("a", "string")], "ret": "bint"}],
-        "ctors": []}}}
-    assert "C" + odd.__name__ != "SomethingElse", "the convention must not match"
-    table = _pxd_signature_table(odd, api, {})
-    assert table["m"] == {"params": ["str"], "ret": "bool"}, table
 
 
 def test_a_resolved_class_keeps_its_module() -> None:
