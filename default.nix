@@ -52,11 +52,13 @@ rec {
       pkgs.ruff
       pkgs.zuban
       ourPython
+      spike
     ];
     text = ''
       cd "''${1:-.}"
       echo "--- lint ---"
-      ruff check --no-cache cythonix cythonix-generated cythonix-bindings
+      ruff check --no-cache cythonix cythonix-generated cythonix-bindings \
+        spike-idl
       echo "--- typecheck: the generator ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         --exclude 'smoke_test\.py$' \
@@ -68,7 +70,37 @@ rec {
       echo "--- typecheck: the emitted package ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         "${cythonix-generated}/lib/python3.14/site-packages/cythonix_generated"
+      echo "--- the spike's gates ---"
+      spike
       echo "all checks passed"
+    '';
+  };
+
+  # nix run --file . spike
+  #
+  # The declaration spike's own gates: emit from a declaration and diff
+  # against something built the other way.
+  #
+  # Two references, and only one of them is in this repo. The Cython
+  # half compares against cythonix-bindings and the manifest a real
+  # build produced, so it is hermetic and always runs. The nanobind
+  # half compares against ~/Code/nanopynix, which is hand-written,
+  # tested and NOT here - so it is skipped with a reason rather than
+  # failing on a machine that does not have it.
+  spike = pkgs.writeShellApplication {
+    name = "spike";
+    runtimeInputs = [ ourPython ];
+    text = ''
+      cd "''${1:-.}/spike-idl"
+      manifest="${cythonix-generated}/lib/python3.14/site-packages/cythonix_generated/manifest.json"
+      echo "--- declaration -> Cython, and -> manifest ---"
+      python3 check.py --manifest "$manifest"
+      if [ -d "$HOME/Code/nanopynix" ]; then
+        echo "--- declaration -> nanobind ---"
+        python3 nbcheck.py
+      else
+        echo "--- declaration -> nanobind: SKIPPED, no ~/Code/nanopynix ---"
+      fi
     '';
   };
 
