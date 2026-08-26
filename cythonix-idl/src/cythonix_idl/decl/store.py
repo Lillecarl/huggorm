@@ -384,3 +384,38 @@ class Store:
         Raises BadStorePath when the links run out somewhere else -
         the narrow type, unlike `to_store_path`, and that asymmetry is
         upstream's."""
+
+    # The first declared method with DEFAULTS. They are libstore's
+    # own, not a judgement made here: a caller who omits all three
+    # gets what `nix-store -qR` does.
+    @cxx_body("""nix::StorePathSet out;
+        s.computeFSClosure(
+            store_path_set(paths), out, flip_direction, include_outputs,
+            include_derivers);
+        return base_names(out);""")
+    def compute_fs_closure(
+        self,
+        paths: "list[StorePath]",
+        flip_direction: Bint = False,
+        include_outputs: Bint = False,
+        include_derivers: Bint = False,
+    ) -> "list[StorePath]":
+        """Every path reachable from these, transitively.
+
+        What `nix-store --query --requisites` answers, and the reason
+        `references` is worth having: one edge is a fact, the closure
+        is what a caller can copy, sign or delete as a unit. The
+        starting paths are included.
+
+        `flip_direction` walks referrers instead, so the answer is
+        what would BREAK if these paths went away - the question a
+        garbage collector asks.
+
+        `include_outputs` and `include_derivers` widen the walk at a
+        .drv: the first follows a derivation to what it builds, the
+        second follows a path back to what could build it. Both are
+        off, which is what `nix-store -qR` does.
+
+        Sorted, because libstore answers with a set - so the order is
+        NOT topological. A caller who needs build order has to ask for
+        it another way."""
