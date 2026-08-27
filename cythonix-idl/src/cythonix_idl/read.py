@@ -456,6 +456,20 @@ def type_of(node: ast.expr, vocab: dict[str, str]) -> Type:
         held = type_of(ast.Name(id=bare), vocab)
         return Type(python=spelled.replace(bare, held.python),
                     cxx=held.cxx)
+    if hasattr(declare, bare):
+        # Vocabulary this file did NOT import. It resolves for a
+        # reader of the source, because Python finds it in declare.py,
+        # and it resolves for nothing here - `vocab` is only what this
+        # file imported, which is what keeps a declaration from
+        # gaining phantom vocabulary by convenience.
+        #
+        # Refused HERE rather than in the emitter, which sees only a
+        # capitalised name and says "names a class this run has not
+        # read" - true, unhelpful, and pointing at the wrong fix.
+        raise DeclarationError(
+            node, f"'{bare}' is vocabulary, and this file does not import "
+                  f"it. Add it to the `from {VOCABULARY} import` above, or "
+                  f"name a class some declaration declares.")
     # The reader records a reference to another declared class;
     # resolving it needs that declaration, which only the emitter has.
     if bare[:1].isupper():
@@ -792,7 +806,11 @@ def _mentions(cls: Class, node: ast.AST) -> None:
                 node,
                 f"{cls.name}.{FROM_PARTS} never mentions '{f.name}', which "
                 f"crosses the wire. A body that drops a part compiles and "
-                f"loses it in silence.")
+                f"loses it in silence.\n"
+                f"An accessor joins the wire by existing, so a NEW one "
+                f"lands here: either consume it in {FROM_PARTS}, or - once "
+                f"@local exists - mark it as a value this side computes "
+                f"and does not send.")
 
 
 def _live(path: str) -> set[int] | None:
