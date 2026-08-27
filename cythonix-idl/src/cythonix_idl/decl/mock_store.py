@@ -16,6 +16,7 @@ real Nix side has needed any of those yet.
 """
 
 from cythonix_idl.declare import (
+    I64,
     Bint,
     Field,
     Str,
@@ -93,7 +94,12 @@ class MockDerivation:
         Mutates an internal counter, which is why the type is
         affine."""
 
-    def queries(self) -> Bint:
+    # A COUNT, and `int queries() const` upstream (store.hpp:64). It
+    # was declared Bint, so the stub said bool, the message carried
+    # `bool result = 1`, and a count of three crossed the wire as
+    # True. Found by diffing nanobind's rendered signature against
+    # this file.
+    def queries(self) -> I64:
         """How many times `describe` has been called."""
 
 
