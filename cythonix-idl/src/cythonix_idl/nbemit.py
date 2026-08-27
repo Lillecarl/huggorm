@@ -390,12 +390,6 @@ def includes(classes: Sequence[Class],
     # header its C++ lives in. `wanted` below is where that lands.
 
     out = ["#include <nanobind/nanobind.h>"]
-    if any(_overridable(cls) for cls in classes):
-        # NB_TRAMPOLINE and NB_OVERRIDE live here, not in the main
-        # header. Derived like every other include: a declaration that
-        # marks no method @virtual needs no trampoline and does not
-        # get this line.
-        out.append("#include <nanobind/trampoline.h>")
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
     if any(cls.decl.wire == "value" and cls.decl.text for cls in classes):
         # std::hash lives in <functional>, and the value hash uses it.
@@ -1061,8 +1055,12 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     ]
 
 
-def _produced_ctor(cls: Class) -> list[str]:
+def _produced_ctor(cls: Class, because: str = "") -> list[str]:
     """The `__init__` of a class nothing constructs.
+
+    `because` is the sentence, for a class that is unconstructible for
+    a reason `@produced(by=...)` does not supply - an abstract base is
+    the other one.
 
     It raises, and the message names what DOES make one. Without it
     nanobind answers `TypeError: PathInfo: no constructor defined!`,
@@ -1070,11 +1068,12 @@ def _produced_ctor(cls: Class) -> list[str]:
 
     The sentence comes from `@produced(by=...)`, so the declaration
     wrote it once and no emitted string invents a second wording."""
+    said = because or (f"objects come from {cls.decl.built_by}, "
+                       f"not from a constructor")
     return [
         f'{INDENT * 2}.def("__init__", []({_held(cls)} *) {{',
         f"{INDENT * 3}throw nb::type_error(",
-        f'{INDENT * 4}"{cls.name} objects come from {cls.decl.built_by}, '
-        f'not from a constructor");',
+        f'{INDENT * 4}"{cls.name} {said}");',
         f"{INDENT * 2}}})",
     ]
 
@@ -1244,58 +1243,6 @@ def _round_trip(cls: Class) -> list[str]:
             f'{INDENT * 2}}}, "{PARTS_DOC}")']
 
 
-def _overridable(cls: Class) -> tuple[Method, ...]:
-    """The methods a Python subclass may override.
-
-    Empty for almost every class. A binding over a C++ hierarchy that
-    Python is meant to EXTEND is the exception, and it needs a
-    trampoline - see `trampoline`."""
-    return tuple(m for m in cls.methods if m.virtual)
-
-
-def trampoline(cls: Class, known: dict[str, Class] | None = None) -> str:
-    """The C++ subclass that forwards a virtual back to Python.
-
-    Without one, a Python override is invisible: a free function
-    taking the base calls the C++ implementation, and the class that
-    overrode `get_uri` in Python is never asked.
-
-    nanobind ships the whole mechanism as two macros, so this emits
-    six lines. Reaching Python by hand takes forty: a PyStore with
-    PyGILState_Ensure, PyObject_CallMethod, a UTF-8 encode and the
-    reference counting around all of it.
-
-    NB_TRAMPOLINE takes the arity because it sizes a small table of
-    cached lookups. Derived, like everything else here: it is the
-    number of methods the declaration marked `@virtual`.
-
-    `NB_OVERRIDE_PURE` for a method with no implementation behind it.
-    The plain macro falls back to the base's own implementation when
-    no Python subclass overrides, and a pure virtual has none - which
-    is a LINK error rather than a compile one, so it surfaces on
-    import as an undefined symbol."""
-    methods = _overridable(cls)
-    if not methods:
-        return ""
-    held = _held(cls)
-    out = [f"namespace {NAMESPACE} {{", "",
-           f"/** Forwards {cls.name}'s virtuals to a Python override. */",
-           f"struct Py{cls.name} : public {held}",
-           "{",
-           f"{INDENT}NB_TRAMPOLINE({held}, {len(methods)});", ""]
-    for m in methods:
-        spelled = m.cxx_name or m.name
-        ret, _ = _cxx(m.ret, known) if m.ret is not None else ("void", None)
-        args = ", ".join(f"{_param(t, known)[0]} {n}" for n, t in m.params)
-        names = "".join(f", {n}" for n, _ in m.params)
-        out += [f"{INDENT}{ret} {spelled}({args}) const override",
-                f"{INDENT}{{",
-                f"{INDENT * 2}NB_OVERRIDE"
-                f"{'_PURE' if m.pure else ''}({spelled}{names});",
-                f"{INDENT}}}", ""]
-    return "\n".join([*out, "};", "", f"}}  // namespace {NAMESPACE}", ""])
-
-
 def markers(cls: Class) -> list[str]:
     """The facts every layer above reads off the compiled class.
 
@@ -1410,8 +1357,6 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     if decl.base:
         holds.append(_held(known[decl.base]) if decl.base in known
                      else decl.base)
-    if _overridable(cls):
-        holds.append(f"{NAMESPACE}::Py{cls.name}")
     # A WIRE VALUE is final, and that is a contract rather than a
     # preference. Such a class crosses as its declared parts, so a
     # subclass carrying state no part reads would arrive on the far
@@ -1470,32 +1415,16 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # declaration names one. An ABSTRACT class offers neither: a
     # caller holds one all the time and constructs one never.
     if decl.abstract:
-        # No declared constructor, and still a way in - for a SUBCLASS
-        # only. A Python class deriving from this one is instantiated
-        # as the trampoline, and nanobind needs an `__init__` to reach
-        # it; `@abstract` says a caller may not reach it directly.
+        # No constructor, and a refusal that says so.
         #
-        # `nb::init<>()` alone gives BOTH, because the held type is
-        # abstract in C++ too: `std::is_constructible_v<Type>` is
-        # false, so nanobind's own init always builds the trampoline
-        # and `MockStore()` succeeds. It then raises from the first
-        # call, which is a worse place to learn about it.
-        #
-        # `pointer_and_handle` and `nb_inst_python_derived` are how
-        # nanobind's `init` asks the same question (nb_class.h:393) -
-        # the storage to construct into, and whether the Python type
-        # being built is a subclass of the bound one.
-        body = ([f'{INDENT * 2}.def("__init__", '
-                 f"[](nb::pointer_and_handle<{_held(cls)}> v) {{",
-                 f"{INDENT * 3}if (!nb::detail::nb_inst_python_derived("
-                 f"v.h.ptr()))",
-                 f'{INDENT * 4}throw nb::type_error("{cls.name} is '
-                 f'abstract: derive from it, or open one through a '
-                 f'factory.");',
-                 f"{INDENT * 3}new ((void *) v.p) "
-                 f"{NAMESPACE}::Py{cls.name}();",
-                 f"{INDENT * 2}}})"]
-                if _overridable(cls) else [])
+        # It used to be a `pointer_and_handle` guard, which refused a
+        # direct call and let a SUBCLASS through - because a Python
+        # class deriving from this one was instantiated as the
+        # trampoline. There are no trampolines any more (tasks/060),
+        # so there is no door to hold open and no reason for the
+        # binding to know what `nb_inst_python_derived` is.
+        body = _produced_ctor(
+            cls, "is abstract: open one through a factory")
     elif decl.built_by:
         # A factory this module BINDS, where the declaration names a
         # free function - `open_store` becomes `Store.__new__`. Where
@@ -1680,8 +1609,6 @@ def module(classes: Sequence[Class],
     # The structs first: a bind function returns one, so the type has
     # to be complete before the compiler reads the lambda.
     head += records(classes, known)
-    for cls in classes:
-        head += trampoline(cls, known).splitlines()
     out = "\n".join(head) + "\n" + "\n".join(
         bind_function(cls, known, functions) for cls in classes)
     exported = public([fn for fn in functions

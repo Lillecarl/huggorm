@@ -491,12 +491,15 @@ def test_an_abstract_class_refuses_to_be_built(
     a constructor, so the BINDING has to agree or the layers are
     describing a class that does not behave that way.
 
-    It did not agree. nanobind's `nb::init<>()` is the only way to
-    reach a trampoline, and the held C++ type is abstract too - so
-    `std::is_constructible_v<Type>` is false, nanobind always built
+    It did not agree, and the reason is worth keeping even though the
+    machinery is gone. `nb::init<>()` was the only way to reach a
+    trampoline, and the held C++ type is abstract too - so
+    `std::is_constructible_v<Type>` was false, nanobind always built
     the trampoline, and `MockStore()` succeeded. The failure moved to
     the first call, as "tried to call a pure virtual function", which
-    is a worse place to learn about it.
+    is a worse place to learn about it. There are no trampolines now
+    (tasks/060) and the binding simply declares no constructor, but
+    the guard this test drives is the same one.
 
     This is the test that says the guard holds. It asks the manifest
     which classes claim to be abstract rather than naming one, so a
@@ -512,28 +515,6 @@ def test_an_abstract_class_refuses_to_be_built(
             cls()
         checked.append(name)
     assert checked, "the manifest declares no abstract class"
-
-
-def test_a_python_subclass_of_an_abstract_class_still_builds(
-        manifest: dict[str, Any]) -> None:
-    """...and the refusal must not close the door it exists to keep
-    open.
-
-    The whole reason an abstract binding carries an `__init__` at all
-    is the trampoline: a Python class deriving from it is instantiated
-    THROUGH the base, and nanobind needs a constructor to reach. A
-    guard that refused both would be a simpler binding and a useless
-    one, so this drives the other half - and `describe` proves the
-    override is reached through C++ virtual dispatch rather than by
-    Python attribute lookup."""
-    import cythonix_bindings
-
-    class Custom(cythonix_bindings.MockStore):  # type: ignore[misc]
-        def get_uri(self) -> str:
-            return "python://custom"
-
-    assert Custom().get_uri() == "python://custom"
-    assert cythonix_bindings.describe(Custom()) == "store(python://custom)"
 
 
 def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:

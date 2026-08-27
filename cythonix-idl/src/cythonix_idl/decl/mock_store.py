@@ -28,7 +28,6 @@ from cythonix_idl.declare import (
     derives,
     header,
     produced,
-    pure,
     threading,
     wire_value,
 )
@@ -171,14 +170,8 @@ class MockStore:
     MockStore() would be an object with no implementation behind it.
     """
 
-    @pure
     def get_uri(self) -> Str:
-        """How this store describes itself.
-
-        The one method a Python subclass may override, and the reason
-        this binding has a trampoline: `describe` goes through C++
-        virtual dispatch, so an override has to be visible from
-        there."""
+        """How this store describes itself."""
 
     def is_valid_path(self, path: "MockStorePath") -> Bint:
         """Whether this store holds that path."""

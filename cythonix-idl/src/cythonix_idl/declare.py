@@ -219,32 +219,6 @@ def tree(**shape: object) -> Callable[[type], type]:
     return apply
 
 
-def virtual[F: Callable[..., Any]](fn: F) -> F:
-    """A C++ method a Python subclass may override.
-
-    What makes a trampoline necessary and what says which methods it
-    forwards. Without one, a Python override is invisible to C++: a
-    free function taking the base calls the C++ implementation and
-    never sees it."""
-    fn._virtual = True  # type: ignore[attr-defined]
-    return fn
-
-
-def pure[F: Callable[..., Any]](fn: F) -> F:
-    """A virtual with NO implementation behind it.
-
-    `@virtual` says a Python subclass may override; this says there is
-    nothing to fall back to when none does. C++ spells it `= 0`, and
-    the difference is not cosmetic: a trampoline that forwards to the
-    base implementation of a pure virtual is a link error, because
-    there is no such implementation to link against.
-
-    Implies `@virtual`. A pure virtual is one by definition."""
-    fn._virtual = True  # type: ignore[attr-defined]
-    fn._pure = True  # type: ignore[attr-defined]
-    return fn
-
-
 def startup[F: Callable[..., Any]](fn: F) -> F:
     """Call this once, when the module is imported.
 
