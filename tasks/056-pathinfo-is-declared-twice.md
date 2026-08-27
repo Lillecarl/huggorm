@@ -1,6 +1,33 @@
 # PathInfo is declared twice, and the two disagree
 
-**OPEN.** Found by Carl asking why `@cxx_parts` exists at all.
+**HALF DONE.** The duplicate is gone: `decl/pathinfo.py`, which only
+the corpus gate read, is deleted. PathInfo stays synthetic and stays
+in `decl/store.py`.
+
+**What is left is one coherent change, not several.** Binding
+nix::ValidPathInfo, the move to `decl/pathinfo.py`, `store_dir`
+joining the wire and the hand-written `_from_parts` are the same
+decision. `_from_parts` cannot be written without `store_dir` on the
+wire, so the wire moves with the type whatever the order - and
+same-version-only makes that change free (055). A step that faked
+`store_dir` to keep the surface still would be a lie in the
+reconstruction path.
+
+A synthetic value binds no Nix class, so "one Nix class, one file"
+does not yet cover `cythonix::PathInfo` - it belongs to its producer,
+beside `Store.query_path_info`. The file is EARNED when the type
+becomes nix::ValidPathInfo, because path-info.hh is that type's
+header.
+
+**First step when it starts, before the real `_from_parts` is
+finished:** write the bijection with one field deliberately dropped,
+run the round-trip gate, watch it fail NAMING the field, restore. The
+gate has never been seen to fail because nothing yet can make it -
+and if some other test catches the dropped field first, then the
+gate's failure mode is shadowed and that is worth learning before
+`_from_parts` exists rather than after.
+
+**Originally.** Found by Carl asking why `@cxx_parts` exists at all.
 
 ## Problem
 
