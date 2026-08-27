@@ -150,6 +150,60 @@ def test_the_front_door_covers_the_surface() -> None:
     assert all(hasattr(cythonix, n) for n in cythonix.__all__)
 
 
+def test_every_name_the_manifest_DECLARES_reaches_the_front_door() -> None:
+    """The same question as above, asked of the manifest instead.
+
+    The test above walks the two packages' `__all__`, which covers
+    everything that IS a Python object in one of them. A union is not:
+    `DerivedPath = StorePath | DerivedPathBuilt` is an alias the
+    generated package writes from the manifest, and it reached the
+    front door because a person put it there.
+
+    That is the hole. The manifest grows TABLES - wrappers and
+    returned_types, then free_functions, then enums, then unions - and
+    a test that names them is a test the next table is born outside
+    of. So this names none of them.
+
+    A NAME TABLE is one whose keys are all identifiers and whose
+    values are all descriptions - a dict or a list. That is what
+    separates the five from `errors` (which maps "module" to a string,
+    so it describes one thing rather than naming many), from
+    `async_twins` (whose key is `pathlib.Path`, not an identifier) and
+    from the two plain settings. The next table is covered by being
+    that shape, which is the shape a table of declared names has.
+
+    Mock* is the same deliberate exception the test above makes."""
+    import json
+
+    import cythonix
+    import cythonix_generated
+
+    manifest = json.loads(
+        (pathlib.Path(cythonix_generated.__file__).parent
+         / "manifest.json").read_text())
+
+    def names_things(table: object) -> bool:
+        return (isinstance(table, dict) and bool(table)
+                and all(str(k).isidentifier() for k in table)
+                and all(isinstance(v, (dict, list)) for v in table.values()))
+
+    declared = {
+        name
+        for table in manifest.values() if names_things(table)
+        for name in table
+        if "Mock" not in name
+    }
+    assert "DerivedPath" in declared, (
+        "the union table stopped being read, so this gate is asleep")
+    declared -= {"describe"}
+
+    missing = sorted(declared - set(cythonix.__all__))
+    assert not missing, (
+        f"the manifest declares {missing}, and `import cythonix` does not "
+        f"reach them. A declared name that no front door carries is a "
+        f"name only a reader of the manifest knows about.")
+
+
 def test_the_package_ships_no_demos() -> None:
     """A demo is reading material, not library surface.
 
