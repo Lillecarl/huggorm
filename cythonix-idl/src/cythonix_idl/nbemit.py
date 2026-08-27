@@ -1004,7 +1004,15 @@ def _factory(cls: Class, functions: Sequence[Method],
     agree. `@produced(by="open_store")` names the factory by its
     PYTHON name; the free function called `open_store` names the C++
     it binds. So this resolves one through the other and neither
-    declaration repeats the other's spelling."""
+    declaration repeats the other's spelling.
+
+    The extras come from the FACTORY, not from the `__init__` beside
+    it, because the factory is what runs. `open_store` carries
+    `@blocks` - opening a daemon store connects, and a local one may
+    create its database - and it carries the default `uri="auto"`.
+    Reading them off the constructor instead dropped both: the call
+    held the GIL for the length of an open, and `Store()` raised
+    where the declaration said it should work."""
     if cls.ctor is None:
         return []
     made = next((f for f in functions if f.name == cls.decl.built_by), None)
@@ -1013,8 +1021,7 @@ def _factory(cls: Class, functions: Sequence[Method],
         # still bound; it just offers no way in, which is the honest
         # answer until the factory is declared too.
         return []
-    args = "".join(f', "{n}"_a' for n, _ in cls.ctor.params)
-    line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){args}"
+    line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){_extras(cls, made, known)}"
     if not cls.ctor.doc:
         return [line + ")"]
     # One line, however the declaration wrapped it: a C++ string
