@@ -87,7 +87,7 @@ class PathInfo:
         The algorithm travels with the digest, so a caller is never
         told separately which one it is."""
         Cxx("""
-return pi.narHash.to_string(nix::HashFormat::Nix32, /*includeAlgo=*/true);
+return self.narHash.to_string(nix::HashFormat::Nix32, /*includeAlgo=*/true);
         """)
 
     @reads("narSize")
@@ -108,9 +108,9 @@ return pi.narHash.to_string(nix::HashFormat::Nix32, /*includeAlgo=*/true);
         Upstream spells "unknown" as 0, which is also a real Unix
         time. None is the honest reading, and it is what crosses."""
         Cxx("""
-if (!pi.registrationTime)
+if (!self.registrationTime)
     return std::nullopt;
-return static_cast<std::int64_t>(pi.registrationTime);
+return static_cast<std::int64_t>(self.registrationTime);
         """)
 
     @reads("ultimate")
@@ -130,9 +130,9 @@ return static_cast<std::int64_t>(pi.registrationTime);
         None rather than "": the two are different answers, and the
         wire carries them both across (tasks/048)."""
         Cxx("""
-if (!pi.ca)
+if (!self.ca)
     return std::nullopt;
-return pi.ca->render();
+return self.ca->render();
         """)
 
     def references(self) -> "list[StorePath]":
@@ -146,7 +146,7 @@ return pi.ca->render();
 
         Sorted, because Nix keeps them in a set and the order is that
         set's."""
-        Cxx("return as_list(pi.references);")
+        Cxx("return as_list(self.references);")
 
     def sigs(self) -> "list[Str]":
         """Who vouched for this path, as `<key-name>:<base64>`.
@@ -154,7 +154,7 @@ return pi.ca->render();
         Empty for a path this store added itself: a signature says a
         path came from somewhere and arrived intact, and a local add
         travelled nowhere."""
-        Cxx("return to_strings(pi.sigs);")
+        Cxx("return to_strings(self.sigs);")
 
     # --- the wire's other half, where it belongs ---------------------
 

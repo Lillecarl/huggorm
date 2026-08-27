@@ -90,7 +90,7 @@ class Value:
         every generated form. The tree walk uses it to visit a shared
         value once - values are immutable and shared freely, so
         without it a diamond is copied and a cycle never ends."""
-        Cxx("return static_cast<std::int64_t>(v.identity());")
+        Cxx("return static_cast<std::int64_t>(self.identity());")
 
     # On the HANDLE, not on the value it points at - so it says so
     # rather than going through `via`. The same is true of
@@ -102,7 +102,7 @@ class Value:
 
         Bound straight from gc.h: a no-op integration cannot fake
         it."""
-        Cxx("return v.is_gc_managed();")
+        Cxx("return self.is_gc_managed();")
 
     def type_name(self) -> Str:
         """"thunk", "int", "string", "bool", "list" or "attrs"."""

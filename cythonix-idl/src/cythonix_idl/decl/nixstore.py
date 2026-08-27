@@ -79,14 +79,14 @@ class Store:
         Cxx("""
 if (path.empty())
     throw nix::BadStorePath("parse_store_path: store path must not be empty");
-return s.parseStorePath(path);
+return self.parseStorePath(path);
         """)
 
     # Reads a string the config already holds.
     @instant
     def get_store_dir(self) -> Str:
         """The directory this store keeps its objects in."""
-        Cxx("return s.config.storeDir_;")
+        Cxx("return self.config.storeDir_;")
 
     @instant
     def get_uri(self, with_params: Bint = False) -> Str:
@@ -94,5 +94,5 @@ return s.parseStorePath(path);
 
         `with_params=True` includes the query parameters, which carry
         settings a caller may have passed at open time."""
-        Cxx("return nix::StoreReference::parse(s.config.getReference()"
+        Cxx("return nix::StoreReference::parse(self.config.getReference()"
             ".render(with_params)).render(with_params);")

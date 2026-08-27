@@ -53,7 +53,14 @@ from cythonix_idl.read import read
 NANOPYNIX = pathlib.Path.home() / "Code/nanopynix/nanopynix-bindings/src"
 
 # A lambda parameter or local, named differently. Invisible to Python.
+#
+# Rewritten on the HAND-WRITTEN side, so what is left in the diff is a
+# real difference. The emitter calls the bound object `self` in every
+# body of every class, which is what lets a declaration write
+# `self.narHash` and read as the Python it is; nanopynix names it
+# after the class, `sp` for a StorePath.
 COSMETIC = {
+    ("StorePath", "sp"): "self",
 }
 
 # Where the emitter is RIGHT and the hand-written file is not.

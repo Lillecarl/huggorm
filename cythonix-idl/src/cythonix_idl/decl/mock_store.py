@@ -123,9 +123,9 @@ class MockDerivation:
 class MockDerivedPath:
     """Which store path to build, and which output of it."""
 
-    # `mdp` is the storage `__init__` was handed, which is the
-    # emitter's own name for the object - initials of the class, the
-    # same rule every other body here follows.
+    # `self` is the STORAGE `__init__` was handed, not an object -
+    # which is why the body is a placement new. It is the same name
+    # every other body in every declaration uses for the bound thing.
     def __init__(self, path: "MockStorePath",
                  output: "str | None" = None) -> None:
         """A request for a path, or for one output of a derivation.
@@ -134,9 +134,9 @@ class MockDerivedPath:
         request carries no output name, and a built one does."""
         Cxx("""
 if (output.has_value())
-    new (mdp) fake_library::DerivedPath(path, *output);
+    new (self) fake_library::DerivedPath(path, *output);
 else
-    new (mdp) fake_library::DerivedPath(path);
+    new (self) fake_library::DerivedPath(path);
         """)
 
     def describe(self) -> Str:
@@ -148,9 +148,9 @@ else
     def output_name(self) -> "str | None":
         """The output name, or None for an opaque request."""
         Cxx("""
-if (!mdp.is_built())
+if (!self.is_built())
     return std::nullopt;
-return mdp.output_name();
+return self.output_name();
         """)
 
 

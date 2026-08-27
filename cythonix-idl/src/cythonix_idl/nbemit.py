@@ -138,13 +138,24 @@ def _doc(text: str) -> str:
     return " ".join(text.split()).replace("\\", "\\\\").replace('"', r'\"')
 
 
-def _self(cls: Class) -> str:
-    """The lambda's parameter name for the bound object.
+# The lambda's parameter name for the bound object, in every emitted
+# body of every class.
+#
+# It used to be the class's initials - StorePath `sp`, PathInfo `pi`,
+# MockDerivedPath `mdp` - which is consistent and is a second thing to
+# know per class. One name is charm at four classes and a lookup at
+# forty, and a declaration writes its bodies against it: `self.narHash`
+# reads as the Python the file already is, and compiles as the C++ it
+# becomes.
+#
+# Invisible to a caller either way. It names a C++ lambda argument, and
+# `self` is not a C++ keyword.
+SELF = "self"
 
-    Invisible to Python - it names a C++ lambda argument - so the rule
-    only has to be consistent. Initials of the CamelCase class:
-    StorePath is `sp`, ValidPathInfo is `vpi`."""
-    return "".join(c for c in cls.name if c.isupper()).lower() or "self"
+
+def _self(cls: Class) -> str:
+    """The lambda's parameter name for the bound object."""
+    return SELF
 
 
 # Where an emitted C++ type goes. The same namespace `errors.hpp`
@@ -494,7 +505,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
       C++ takes what the handle points at.
 
     ...and one a plain STRUCT forces: `@reads` names a data member,
-    so there is nothing to call - `vpi.narSize`, not `vpi.narSize()`.
+    so there is nothing to call - `self.narSize`, not `self.narSize()`.
     A member read cannot be bound by pointer the way a method can,
     because `.def` takes a function and `&T::narSize` is not one.
 
@@ -752,12 +763,12 @@ def _render(cls: Class, accessor: str) -> str:
     both derived:
 
     An accessor that `@reads` a member addresses the member, because
-    there is no method to call - `vpi.path`, not `vpi.store_path()`.
+    there is no method to call - `self.path`, not `self.path()`.
 
     An accessor returning something other than `str` cannot render
     itself, so its own type must. `to_string` is what a declared value
-    type names for that, which is how `vpi.path` becomes
-    `vpi.path.to_string()` without this file knowing what a StorePath
+    type names for that, which is how `self.path` becomes
+    `self.path.to_string()` without this file knowing what a StorePath
     is."""
     obj = _self(cls)
     for m in cls.methods:
