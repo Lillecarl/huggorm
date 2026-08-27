@@ -174,24 +174,6 @@ class Decl:
     via: str = ""
 
 
-def derives(base: str) -> Callable[[type], type]:
-    """The class this one derives from, by declared name.
-
-    C++ inheritance, not Python's. The declaration names a base and
-    the emitter passes it to `nb::class_`, which is what makes a
-    method declared once on the base reachable from every leaf - and
-    what lets a free function taking the base accept a leaf.
-
-    A declaration states no Python base class of its own: `class
-    MockLocalStore(MockStore)` in a declaration file would be a
-    Python hierarchy among objects that are never constructed, and
-    `read.py` refuses one so the two cannot drift."""
-    def apply(cls: type) -> type:
-        _decl(cls).base = base
-        return cls
-    return apply
-
-
 def abstract(cls: type) -> type:
     """Python may not construct one of these.
 

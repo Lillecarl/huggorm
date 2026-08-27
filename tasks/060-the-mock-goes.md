@@ -51,7 +51,43 @@ acquisition, bounded queues - will reshape it anyway. Keeping
 toy-shaped machinery risks 032 inheriting the mock's shape. Version
 control keeps the code; 032 names the commit.
 
-**3. The store hierarchy.** `nix::Store` (abstract) ->
+**3. The store hierarchy - BLOCKED, and the reason is nanobind's.**
+
+The plan was `nix::Store` (abstract) -> `nix::LocalFSStore` ->
+`nix::LocalStore`, each declared when it has methods of its own, with
+`real_path`'s `dynamic_cast<LocalFSStore *>` hatch dying into the
+type system. It rested on nanobind downcasting a polymorphic pointer
+to the most-derived REGISTERED type.
+
+It does not do that. It downcasts to the most-derived type whose
+`typeid` is registered EXACTLY - `nb_type.cpp:2140` looks up
+`&typeid(*ptr)` in the registry and falls back to the STATIC type
+when it misses. There is no walk up the base chain.
+
+Verified rather than reasoned: `LocalFSStore` was declared and bound,
+and `Store(tmp_path)` still came back as `Store`. The runtime type of
+a chroot store is `nix::LocalStore`, which was not registered, so the
+intermediate registration bought nothing - nothing is ever an
+INSTANCE of `LocalFSStore`.
+
+Making the downcast work means registering every CONCRETE store Nix
+has - LocalStore, LocalOverlayStore, UDSRemoteStore,
+HttpBinaryCacheStore, S3BinaryCacheStore, DummyStore... - and missing
+one makes `real_path` silently vanish for stores that have it. That
+is worse than the hatch: the hatch's `Unsupported` is honest and
+uniform.
+
+So `real_path` KEEPS its `dynamic_cast`. It is not a hatch standing in
+for a hierarchy; it is doing something the type registry cannot. 040
+deferred the hierarchy waiting for a second method to want it, and the
+real blocker turns out to be different and further away.
+
+What this does NOT block: `decl/mock_store.py` still dies, because
+nothing needs a hierarchy to replace it - the mock's hierarchy was
+only ever exercising `@derives`/`@abstract`, and those keep working
+against whatever declares them next.
+
+**3b. The store hierarchy, as it would have been.** `nix::Store` (abstract) ->
 `nix::LocalFSStore` -> `nix::LocalStore`, each declared WHEN it has
 methods of its own. A leaf with none stays undeclared.
 

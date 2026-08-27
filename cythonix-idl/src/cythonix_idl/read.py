@@ -716,15 +716,34 @@ def targets_name(item: ast.Assign) -> str:
 
 def _class(node: ast.ClassDef, vocab: dict[str, str],
            where: str = "", live: set[int] | None = None) -> Class:
-    if node.bases:
-        raise DeclarationError(
-            node, f"{node.name}: a declaration states its base with "
-                  f"@derives, not as a Python base class. A Python "
-                  f"hierarchy here would be one among objects that are "
-                  f"never constructed, and the two would drift.")
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}))
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
+    # The base, said the way Python says it.
+    #
+    # This used to be `@derives("Store")` and a Python base class was
+    # REFUSED, for a reason that has since expired: "a Python
+    # hierarchy here would be one among objects that are never
+    # constructed". Declarations are imported now, so the hierarchy is
+    # real - `LocalFSStore` genuinely is a subclass of `Store`, a type
+    # checker sees it, and the name is a use of the import rather than
+    # a string that happens to match one.
+    #
+    # Found by Carl asking why it was ever an annotation, and by ruff
+    # answering first: `@derives("Store")` left the import unused.
+    if node.bases:
+        if len(node.bases) > 1:
+            raise DeclarationError(
+                node, f"{node.name}: one base. Every hierarchy this binds "
+                      f"is single inheritance, and C++ multiple "
+                      f"inheritance through a Python type is a different "
+                      f"problem from the one a declaration is for.")
+        base = node.bases[0]
+        if not isinstance(base, ast.Name):
+            raise DeclarationError(
+                node, f"{node.name}: a base is a NAME another declaration "
+                      f"declares, not {ast.unparse(base)!r}.")
+        decl.base = base.id
     # `@needs` writes onto whatever it decorates, and on a class that
     # is the stand-in rather than the Decl - so it is read here
     # instead of being restated in declare.py, which is the same trick

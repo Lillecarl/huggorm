@@ -25,7 +25,6 @@ from cythonix_idl.declare import (
     binding,
     binds,
     cxx_name,
-    derives,
     header,
     produced,
     threading,
@@ -199,9 +198,8 @@ class MockStore:
 
 
 @header("fake_library/store.hpp")
-@derives("MockStore")
 @binding(cxx="fake_library::LocalStore", threading="pool")
-class MockLocalStore:
+class MockLocalStore(MockStore):
     """A store on this machine. Constructed, unlike its base."""
 
     def __init__(self) -> None:
@@ -209,13 +207,12 @@ class MockLocalStore:
 
 
 @header("fake_library/store.hpp")
-@derives("MockStore")
 @binding(
     cxx="fake_library::RemoteStore",
     # A remote store talks over a connection it does not share.
     threading="affine",
 )
-class MockRemoteStore:
+class MockRemoteStore(MockStore):
     """A store reached over a connection. Constructed, like its
     sibling."""
 
