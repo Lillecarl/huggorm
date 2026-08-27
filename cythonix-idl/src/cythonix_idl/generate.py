@@ -255,6 +255,26 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     skipped = [c.name for c in mod.classes if c not in bound]
     if skipped:
         print(f"  not bound: {', '.join(skipped)}")
+    # ...and the C++ this repo WROTE for the module, which the
+    # per-class census cannot see.
+    #
+    # A hatch nobody measures becomes the place the real code lives -
+    # that is the bargain `_cpp/README` makes - and `_cpp/` was
+    # exactly such a hatch: `census` counts `Cxx` bodies and `@custom`
+    # blocks, both of which live in a declaration, while a helper a
+    # declaration NAMES landed in a directory no number ever read.
+    # Found by cython-reviewer, reviewing a change that added thirty
+    # lines there.
+    #
+    # Found beside the emitted `.cpp` rather than through this
+    # package: the generator writes into the BUILD's copy of
+    # `cythonix_bindings`, and its own installed location is
+    # somewhere else entirely.
+    helper = pathlib.Path(out).parent / "_cpp" / f"{mod.name}.hpp"
+    if helper.exists():
+        real = [ln for ln in helper.read_text().splitlines()
+                if ln.strip() and not ln.strip().startswith(("//", "///"))]
+        print(f"  _cpp/{helper.name}: {len(real)} lines this repo wrote")
     return 0
 
 

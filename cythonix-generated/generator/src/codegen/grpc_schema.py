@@ -30,6 +30,7 @@ from codegen.wiretypes import (
     CONTAINERS,
     MAP_KEY,
     SCALAR_NAMES,
+    arm_field,
     entry_name,
     head,
     list_value,
@@ -145,20 +146,6 @@ def _scalar_const(name: str) -> int:
 
 
 # -- naming: the one place the conventions live ---------------------------
-
-def _arm_field(arm: str) -> str:
-    """One arm's field name inside the oneof.
-
-    The arm's own type name, lowercased with underscores - so
-    `DerivedPathBuilt` is `derived_path_built` and a reader of the
-    schema can see which arm they have without a table."""
-    out = []
-    for i, ch in enumerate(arm):
-        if ch.isupper() and i:
-            out.append("_")
-        out.append(ch.lower())
-    return "".join(out)
-
 
 def union_msg_name(alias: str) -> str:
     """The message one union alias becomes.
@@ -473,7 +460,7 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
             # An arm is never `optional`: the oneof IS the presence,
             # and marking a member optional would add a second,
             # disagreeing one.
-            f = _add_field(m, _arm_field(arm), n, arm, kinds)
+            f = _add_field(m, arm_field(arm), n, arm, kinds)
             f.oneof_index = 0
 
 

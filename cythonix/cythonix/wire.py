@@ -26,7 +26,9 @@ from types import ModuleType
 from typing import Any, ClassVar
 
 from cythonix_generated._wiretypes import (
+    MAX_UNION_DEPTH,
     SCALAR_NAMES,
+    arm_field,
     list_value,
     map_value,
     optional_value,
@@ -70,6 +72,9 @@ class WireCodec:
         # scalars - the only thing this table changes is that a
         # decoded value comes back TYPED rather than as a bare str.
         self.enums: set[str] = set(manifest.get("enums", {}))
+        # SUM types, {alias: [arm, ...]} in declared order - which is
+        # the order the schema numbered the oneof's fields in.
+        self.unions: dict[str, list[str]] = dict(manifest.get("unions", {}))
         self.kinds: dict[str, str] = {}
         self.fields: dict[str, list[list[str]]] = {}
         for group in ("wrappers", "returned_types"):
@@ -114,6 +119,8 @@ class WireCodec:
             return "none"
         if type_str in SCALAR_NAMES or type_str in self.enums:
             return "scalar"
+        if type_str in self.unions:
+            return "union"
         if map_value(type_str) is not None:
             return "map"
         if list_value(type_str) is not None:
@@ -139,7 +146,8 @@ class WireCodec:
         from cythonix_generated._runtime import unwrap_arg
         return unwrap_arg(obj)
 
-    def value_to_msg(self, type_str: str, obj: Any, msg: Any) -> None:
+    def value_to_msg(self, type_str: str, obj: Any, msg: Any,
+                     depth: int = 0) -> None:
         """Fill msg from obj, one declared field at a time.
 
         A field is put the same way an rpc field is. It was its own
@@ -160,7 +168,8 @@ class WireCodec:
                 if not optional:
                     raise TypeError(f"{type_str}.{fname} is not optional")
                 continue  # proto3 default stands in for "unset"
-            self.encode(msg, fname, ftype, val, _no_proxy(type_str, fname))
+            self.encode(msg, fname, ftype, val, _no_proxy(type_str, fname),
+                        depth)
 
     # -- maps -------------------------------------------------------------
     # An attribute set has string keys, always, so `map<string, V>`
@@ -207,21 +216,29 @@ class WireCodec:
     # is no entry message, so a scalar list extends and a message list
     # adds. Both directions keep ORDER, unlike a map, because a
     # repeated field has one and Nix lists depend on it.
-    def list_to_msg(self, type_str: str, seq: list[Any], field: Any) -> None:
+    def list_to_msg(self, type_str: str, seq: list[Any], field: Any,
+                    depth: int = 0) -> None:
         itype = self._list_item(type_str)
-        if self.kind(itype) == "value":
+        kind = self.kind(itype)
+        if kind in ("value", "union"):
+            fill = (self.value_to_msg if kind == "value"
+                    else self.union_to_msg)
             for item in seq:
                 # Same as a map entry: a message element is filled in
                 # place, never assigned.
-                self.value_to_msg(itype, item, field.add())
+                fill(itype, item, field.add(), depth)
         else:
             cast = self.scalar(itype)
             field.extend(cast(v) for v in seq)
 
-    def list_from_msg(self, type_str: str, field: Any) -> list[Any]:
+    def list_from_msg(self, type_str: str, field: Any,
+                      depth: int = 0) -> list[Any]:
         itype = self._list_item(type_str)
-        if self.kind(itype) == "value":
-            return [self.value_from_msg(itype, m) for m in field]
+        kind = self.kind(itype)
+        if kind in ("value", "union"):
+            read = (self.value_from_msg if kind == "value"
+                    else self.union_from_msg)
+            return [read(itype, m, depth) for m in field]
         cast = self.scalar(itype)
         return [cast(v) for v in field]
 
@@ -301,7 +318,8 @@ class WireCodec:
                     for k in sorted(msg.attrs.entries)}
         return getattr(msg, arm)
 
-    def value_from_msg(self, type_str: str, msg: Any) -> Any:
+    def value_from_msg(self, type_str: str, msg: Any,
+                       depth: int = 0) -> Any:
         """Rebuild a sync binding object from its message.
 
         The mirror of value_to_msg, and it delegates for the same
@@ -312,14 +330,77 @@ class WireCodec:
         args = [
             self.decode(msg, fname, ftype.removesuffix("?"),
                         _no_proxy(type_str, fname),
-                        optional=ftype.endswith("?"))
+                        optional=ftype.endswith("?"), depth=depth)
             for fname, ftype in self.fields[type_str]
         ]
         return getattr(self.bindings, type_str)._from_parts(*args)
 
+    # -- unions -----------------------------------------------------------
+    #
+    # A oneof, which is a real tag - unlike either encoding upstream
+    # uses. The daemon sends a DerivedPath as a string and parses it
+    # back; Nix's JSON tags the arms by shape. Here the arm is named
+    # in the message and neither side guesses (tasks/059).
+    def union_to_msg(self, type_str: str, obj: Any, msg: Any,
+                     depth: int = 0) -> None:
+        """Fill msg's oneof from whichever arm `obj` is.
+
+        By isinstance over the declared arms, in order. The arms are
+        distinct bound classes - the reader refuses a scalar or a
+        vocabulary arm precisely so that this test can be exact - so
+        the first match is the only match."""
+        self._not_too_deep(type_str, depth)
+        held = self._sync(obj)
+        for arm in self.unions[type_str]:
+            if isinstance(held, getattr(self.bindings, arm)):
+                self.value_to_msg(arm, held, getattr(msg, arm_field(arm)),
+                                  depth + 1)
+                return
+        raise TypeError(
+            f"{type(obj).__name__} is not one of {type_str}'s arms "
+            f"({', '.join(self.unions[type_str])})")
+
+    def union_from_msg(self, type_str: str, msg: Any, depth: int = 0) -> Any:
+        """Rebuild whichever arm the message carries.
+
+        `WhichOneof` names it, so nothing is inferred from shape."""
+        self._not_too_deep(type_str, depth)
+        which = msg.WhichOneof("raw")
+        if which is None:
+            raise ValueError(
+                f"a {type_str} arrived with no arm set. Every one of "
+                f"{', '.join(self.unions[type_str])} would have named "
+                f"itself, so this message was not written by a peer that "
+                f"read the same schema.")
+        for arm in self.unions[type_str]:
+            if arm_field(arm) == which:
+                return self.value_from_msg(arm, getattr(msg, which),
+                                           depth + 1)
+        raise ValueError(f"{type_str} has no arm called {which!r}")
+
+    def _not_too_deep(self, type_str: str, depth: int) -> None:
+        """Refuse a union nested deeper than anything real.
+
+        A union arm may hold the union again - that is what lets a
+        SingleDerivedPath name the output of a derivation that is
+        itself an output - so a peer can send a chain as long as it
+        likes and Python answers with a RecursionError, which reaches
+        a caller as an anonymous InternalError.
+
+        The wire is a trust boundary, so the limit is here rather than
+        in a declaration: depth is a fact about CROSSING, not about
+        the type. Real chains are one or two deep; the cap is
+        generous so that only an attack or a bug reaches it."""
+        if depth > MAX_UNION_DEPTH:
+            raise ValueError(
+                f"a {type_str} nested more than {MAX_UNION_DEPTH} deep. "
+                f"A derived path names an output of an output, which is "
+                f"one or two levels in anything real - so this is a "
+                f"malformed or hostile message rather than a deep one.")
+
     # -- rpc fields -------------------------------------------------------
     def encode(self, container: Any, field: str, type_str: str, value: Any,
-               proxy_id: Callable[[Any], str]) -> None:
+               proxy_id: Callable[[Any], str], depth: int = 0) -> None:
         """Put `value` into `container.field`. proxy_id(value) -> handle
         id, called only for proxy types."""
         type_str, optional = self.split_optional(type_str)
@@ -343,15 +424,19 @@ class WireCodec:
         elif kind == "map":
             self.map_to_msg(type_str, value, getattr(container, field))
         elif kind == "list":
-            self.list_to_msg(type_str, value, getattr(container, field))
+            self.list_to_msg(type_str, value, getattr(container, field), depth)
         elif kind == "value":
-            self.value_to_msg(type_str, value, getattr(container, field))
+            self.value_to_msg(type_str, value, getattr(container, field),
+                              depth)
+        elif kind == "union":
+            self.union_to_msg(type_str, value, getattr(container, field),
+                              depth)
         else:
             getattr(container, field).id = proxy_id(value)
 
     def decode(self, container: Any, field: str, type_str: str,
                proxy_obj: Callable[[str], Any],
-               optional: bool = False) -> Any:
+               optional: bool = False, depth: int = 0) -> Any:
         """Read `container.field`. proxy_obj(handle_id) -> object,
         called only for proxy types.
 
@@ -386,7 +471,9 @@ class WireCodec:
         if kind == "map":
             return self.map_from_msg(type_str, raw)
         if kind == "list":
-            return self.list_from_msg(type_str, raw)
+            return self.list_from_msg(type_str, raw, depth)
         if kind == "value":
-            return self.value_from_msg(type_str, raw)
+            return self.value_from_msg(type_str, raw, depth)
+        if kind == "union":
+            return self.union_from_msg(type_str, raw, depth)
         return proxy_obj(raw.id)

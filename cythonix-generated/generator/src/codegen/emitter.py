@@ -163,8 +163,32 @@ def _foreign_imports(annotations: list[str]) -> list[ast.Import]:
             for m in sorted(_module_heads(annotations))]
 
 
-def _cythonix_bindings_import(names: set[str]) -> ast.ImportFrom | None:
-    """Import the SYNC binding types an emitted module annotates with.
+# The SUM types, by alias name. A union is not in cythonix_bindings and
+# cannot be: the alias is Python and the module that would hold it is a
+# compiled extension. `_unions.py` is generated from the manifest
+# instead, so the one statement of `DerivedPath = StorePath |
+# DerivedPathBuilt` is the declaration and everything else derives.
+UNIONS_MODULE = "._unions"
+_UNION_NAMES: set[str] = set()
+
+
+def emitter_union_names(names: set[str]) -> None:
+    """Which annotation names are ALIASES rather than bound classes.
+
+    Told once, before anything is written. There is no way to tell the
+    two apart from a name, and the difference decides which import an
+    emitted module gets."""
+    _UNION_NAMES.clear()
+    _UNION_NAMES.update(names)
+
+
+def _cythonix_bindings_import(names: set[str]) -> list[ast.ImportFrom]:
+    """Import the types an emitted module annotates with.
+
+    Two sources, because a union has no home in the bindings. A CLASS
+    comes from cythonix_bindings, which is where it is bound; an ALIAS
+    comes from the generated `_unions`, which is where it is written.
+
     Async* names are excluded: those come from sibling modules. So are
     dotted module heads, which _annotation_names already drops - they
     are imported as themselves."""
@@ -172,11 +196,49 @@ def _cythonix_bindings_import(names: set[str]) -> ast.ImportFrom | None:
         n for n in names
         if n not in _BUILTIN_TYPES and not n.startswith("Async")
     )
-    if not usable:
-        return None
-    return ast.ImportFrom(
-        module="cythonix_bindings", names=[ast.alias(name=n) for n in usable], level=0
-    )
+    out = []
+    bound = [n for n in usable if n not in _UNION_NAMES]
+    if bound:
+        out.append(ast.ImportFrom(
+            module="cythonix_bindings",
+            names=[ast.alias(name=n) for n in bound], level=0))
+    aliases = [n for n in usable if n in _UNION_NAMES]
+    if aliases:
+        out.append(ast.ImportFrom(
+            module=UNIONS_MODULE.lstrip("."),
+            names=[ast.alias(name=n) for n in aliases], level=1))
+    return out
+
+
+def unions_module(unions: dict[str, list[str]]) -> str:
+    """`_unions.py`: one alias per declared sum type.
+
+    Nothing but aliases, and every one derived from the manifest - so
+    the declaration says `DerivedPath = StorePath | DerivedPathBuilt`
+    once and this is the same sentence in the package a caller
+    imports."""
+    arms = sorted({a for v in unions.values() for a in v})
+    body: list[ast.stmt] = [
+        ast.Expr(value=ast.Constant(value=(
+            "The declared SUM types, as the aliases they are.\n\n"
+            "A union has no home in `cythonix_bindings`: the alias is "
+            "Python and the module that binds its arms is a compiled "
+            "extension. So it is written here, from the same "
+            "declaration the arms came from.\n"))),
+        ast.ImportFrom(module="cythonix_bindings",
+                       names=[ast.alias(name=a) for a in arms], level=0),
+    ]
+    for alias, members in unions.items():
+        value: ast.expr = ast.Name(id=members[0])
+        for arm in members[1:]:
+            value = ast.BinOp(left=value, op=ast.BitOr(),
+                              right=ast.Name(id=arm))
+        body.append(ast.Assign(targets=[ast.Name(id=alias)], value=value))
+    body.append(ast.Assign(
+        targets=[ast.Name(id="__all__")],
+        value=ast.List(elts=[ast.Constant(value=a) for a in unions])))
+    return ast.unparse(ast.fix_missing_locations(
+        ast.Module(body=body, type_ignores=[]))) + "\n"
 
 
 def _sibling_imports(names: set[str]) -> list[ast.ImportFrom]:
@@ -252,9 +314,7 @@ def returned_module(proto: Proto,
     # defined right here: importing it would be a self-import.
     mod.body.extend(_sibling_imports(used - {f"Async{svc}"}))
     mod.body.extend(_foreign_imports(annotations))
-    ann_import = _cythonix_bindings_import(used)
-    if ann_import is not None:
-        mod.body.append(ann_import)
+    mod.body.extend(_cythonix_bindings_import(used))
 
     cls = ast.ClassDef(name=f"Async{svc}", bases=[], keywords=[], body=[], decorator_list=[])
     # Docstring FIRST: a string preceded by any other statement is a
@@ -491,9 +551,8 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     if constructs:
         mod.body.append(ast.ImportFrom(
             module="cythonix_bindings", names=[ast.alias(name=svc)], level=0))
-    ann_import = _cythonix_bindings_import(used_types - ({svc} if constructs else set()))
-    if ann_import is not None:
-        mod.body.append(ann_import)
+    mod.body.extend(_cythonix_bindings_import(
+        used_types - ({svc} if constructs else set())))
     if constructs:
         runtime_names.append(runner)
     if runtime_names:
@@ -681,7 +740,7 @@ def _future_annotations() -> ast.ImportFrom:
 
 
 def _sync_imports(annotations: list[str], defined_here: set[str],
-                  defaults: list[str] | None = None) -> ast.ImportFrom | None:
+                  defaults: list[str] | None = None) -> list[ast.ImportFrom]:
     """Import the binding types an all-in-one module annotates with.
 
     Unlike the per-class wrappers there are no siblings to import from:
@@ -689,11 +748,7 @@ def _sync_imports(annotations: list[str], defined_here: set[str],
     used = ((_annotation_names(annotations)
              | _annotation_names(defaults or []))
             - _BUILTIN_TYPES - defined_here)
-    if not used:
-        return None
-    return ast.ImportFrom(module="cythonix_bindings",
-                          names=[ast.alias(name=n) for n in sorted(used)],
-                          level=0)
+    return _cythonix_bindings_import(used)
 
 
 def _params(m: Proto, cls_name: str, ann: dict[str, str]) -> ast.arguments:
@@ -745,8 +800,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
         level=0))
     mod.body.extend(_foreign_imports(annotations))
     sync = _sync_imports(annotations, defined, defaults)
-    if sync is not None:
-        mod.body.append(sync)
+    mod.body.extend(sync)
 
     for proto in ordered:
         name = proto["name"]
@@ -868,8 +922,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     mod.body.extend(_foreign_imports(annotations))
     sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL},
                          defaults)
-    if sync is not None:
-        mod.body.append(sync)
+    mod.body.extend(sync)
 
     # What these classes need from whatever is driving them. Declaring
     # it as a Protocol keeps the dependency pointing the right way: the
@@ -1071,9 +1124,7 @@ def free_function_module(protos: list[Proto],
             module="typing", names=[ast.alias(name="cast")], level=0))
     mod.body.extend(_sibling_imports(used))
     mod.body.extend(_foreign_imports(annotations))
-    ann_import = _cythonix_bindings_import(used)
-    if ann_import is not None:
-        mod.body.append(ann_import)
+    mod.body.extend(_cythonix_bindings_import(used))
     mod.body.append(ast.ImportFrom(
         module="cythonix_bindings",
         names=[ast.alias(name=p["name"], asname="_" + p["name"])

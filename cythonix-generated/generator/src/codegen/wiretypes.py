@@ -54,6 +54,37 @@ MAP_KEY = "str"
 CONTAINERS = ("dict", "list")
 
 
+# How deep a UNION may nest before the codec refuses.
+#
+# A union arm may hold the union again - that is what lets a
+# SingleDerivedPath name the output of a derivation that is itself an
+# output - so a peer can send a chain of any length. The wire is a
+# trust boundary, and without a cap the answer is a RecursionError
+# that reaches a caller as an anonymous InternalError.
+#
+# Generous on purpose: anything real is one or two deep, so only a bug
+# or an attack sees this.
+MAX_UNION_DEPTH = 32
+
+
+def arm_field(arm: str) -> str:
+    """One union arm's field name inside its oneof.
+
+    The arm's own type name, lowercased with underscores, so
+    `DerivedPathBuilt` is `derived_path_built` and a reader of the
+    schema sees which arm they have without a table.
+
+    Here rather than in either side, because BOTH sides name it: the
+    schema builder when it writes the field, and the codec when it
+    reads `WhichOneof` back."""
+    out: list[str] = []
+    for i, ch in enumerate(arm):
+        if ch.isupper() and i:
+            out.append("_")
+        out.append(ch.lower())
+    return "".join(out)
+
+
 def head(type_str: str) -> str | None:
     """The head of an annotation string.
 

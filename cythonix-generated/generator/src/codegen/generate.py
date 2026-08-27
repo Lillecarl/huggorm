@@ -20,6 +20,7 @@ from typing import Any
 from codegen.emitter import (
     FREE_MODULE,
     STUB_PACKAGE,
+    emitter_union_names,
     free_function_module,
     init_module,
     protocol_module,
@@ -27,6 +28,7 @@ from codegen.emitter import (
     rpc_module,
     stub_init_module,
     stub_module,
+    unions_module,
     wrapper_module,
 )
 from codegen.model import (
@@ -206,6 +208,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     bindings = _load_bindings_module()
+
+    # Which annotation names are ALIASES, told before anything is
+    # emitted. The emitter distinguishes a union from a bound class
+    # when it writes an import - one comes from cythonix_bindings and
+    # the other from the generated `_unions` - and there is no way to
+    # tell them apart from a name alone. Set here rather than beside
+    # the manifest, because the wrapper modules are written first.
+    emitter_union_names(set(declared_unions()))
 
     wrapper_classes = _wrapper_classes(bindings)
 
@@ -648,6 +658,13 @@ def main(argv: list[str] | None = None) -> None:
 
     here = pathlib.Path(__file__).parent
     shutil.copy(here / "runtime.py", out / "_runtime.py")
+    # ...and the SUM types, which have no home in the bindings: an
+    # alias is Python and the module binding its arms is a compiled
+    # extension. Written from the manifest, so the declaration states
+    # `DerivedPath = StorePath | DerivedPathBuilt` once.
+    (out / "_unions.py").write_text(unions_module(unions))
+    print(f"generated _unions.py for {len(unions)} sum type(s): "
+          f"{', '.join(unions) or 'none'}")
     # The codec reads declared type strings at run time and the schema
     # builder reads them at build time. One definition, copied, rather
     # than two that agree until one of them changes.
