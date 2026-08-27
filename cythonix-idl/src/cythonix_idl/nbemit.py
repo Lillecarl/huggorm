@@ -756,30 +756,25 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
 
 
 def _render(cls: Class, accessor: str) -> str:
-    """The C++ that renders one of this value's accessors as text.
+    """The Python that renders one of this value's accessors as text.
 
-    The accessor names one of the class's OWN, and the emitter
-    resolves it rather than the declaration spelling C++. Two steps,
-    both derived:
+    Through the PYTHON object, like the repr and the hash beside it,
+    and for the same reason those are: the accessor comes back as
+    whatever its own binding hands over, so this never has to know
+    what it IS. `nb::str` then asks that object to render itself, so a
+    part that is a StorePath prints as a StorePath without a line here
+    saying so.
 
-    An accessor that `@reads` a member addresses the member, because
-    there is no method to call - `self.path`, not `self.path()`.
-
-    An accessor returning something other than `str` cannot render
-    itself, so its own type must. `to_string` is what a declared value
-    type names for that, which is how `self.path` becomes
-    `self.path.to_string()` without this file knowing what a StorePath
-    is."""
-    obj = _self(cls)
-    for m in cls.methods:
-        if m.name != accessor:
-            continue
-        expr = f"{obj}.{m.reads}" if m.reads else f"{obj}.{m.cxx_name or m.name}()"
-        if m.ret is not None and m.ret.python != "str":
-            expr += ".to_string()"
-        return f"std::string({expr})"
-    raise TypeError(
-        f"{cls.name}: \"{accessor}\" names no accessor on this class.")
+    It used to spell the C++ - `self.path`, or `self.to_string()` for
+    a method - which held while every accessor bound a member or a
+    no-argument call and stopped at the first hatched one:
+    `nix::Hash::to_string` takes a format and a flag, so the emitted
+    `self.to_string()` did not compile. The declaration's `to_string`
+    is the BOUND one, and this is how to reach it."""
+    if not any(m.name == accessor for m in cls.methods):
+        raise TypeError(
+            f"{cls.name}: \"{accessor}\" names no accessor on this class.")
+    return f'nb::str(h.attr("{accessor}")())'
 
 
 def _repr_parts(cls: Class) -> str:
@@ -821,7 +816,7 @@ def _value_semantics(cls: Class) -> list[str]:
 
     if decl.text:
         # A CONVERSION, and only for a value that IS a string.
-        out.append(f'{INDENT * 2}.def("__str__", []({ref}) '
+        out.append(f'{INDENT * 2}.def("__str__", [](nb::handle h) '
                    f"{{ return {_render(cls, decl.text)}; }})")
     if decl.wire == "value":
         # A value COPIES. Without these, copy.copy falls through to
@@ -895,7 +890,7 @@ def record_fields(cls: Class,
     reader of the declaration sees and the order the constructor
     takes."""
     return [(m.name, _cxx(m.ret, known)[0])
-            for m in cls.methods if m.ret is not None]
+            for m in cls.methods if m.ret is not None and not m.local]
 
 
 def _paragraph(doc: str) -> list[str]:
@@ -1328,6 +1323,22 @@ def markers(cls: Class) -> list[str]:
             # A PRODUCED value has no public constructor to name: its
             # `__init__` raises, and `_from_parts` is bound beside it
             # as a static method.
+            #
+            # Naming the class CLAIMS the constructor takes the wire
+            # fields, in order. Nothing checked that, and it is exactly
+            # what a forgotten `@local` breaks: an accessor joins the
+            # wire by existing, `_parts` grows a value, and the
+            # constructor does not - which surfaced as `__init__():
+            # incompatible function arguments` from a test rather than
+            # as a sentence from the build.
+            if len(cls.ctor.params) != len(fields):
+                raise TypeError(
+                    f"{cls.name}: `_from_parts` is the constructor, which "
+                    f"takes {len(cls.ctor.params)} parameter(s), and "
+                    f"{len(fields)} accessor(s) cross the wire: "
+                    f"{[n for n, _, _ in fields]}. An accessor joins the "
+                    f"wire by existing - mark the ones that should not "
+                    f"@local, or give the constructor what they send.")
             out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
     return out
 

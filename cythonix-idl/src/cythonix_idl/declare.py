@@ -369,13 +369,10 @@ def wire_value(fields: tuple[Field | str, ...] = (), compare: str = "parts",
     declaration order. That is the common case and it restates
     nothing: the accessors are already there, one screen above.
 
-    The first accessor that must be kept OFF the wire - a rendered
-    convenience, an `is_content_addressed()` a caller computes rather
-    than receives - marks itself `@local`. It is not implemented, and
-    the word is written down here anyway: the alternative is that
-    whoever needs it first reinvents selection as a list somewhere
-    else, which is the second declaration this decorator exists to
-    avoid.
+    An accessor that must be kept OFF the wire says so itself, with
+    `@local`. `Hash` is why: it carries the two facts a hash IS and
+    three ways to print them, and a rendering derived from fields
+    already crossing would be the same bytes a second time.
 
     ORDER is declaration order, which means REORDERING accessors for
     readability moves wire positions. Free while the two sides are
@@ -433,6 +430,23 @@ def blocks[F: Callable[..., Any]](fn: F) -> F:
     Per-method rather than per-class, because a class whose calls
     mostly block still has accessors that cannot."""
     fn._blocks = True  # type: ignore[attr-defined]
+    return fn
+
+
+def local[F: Callable[..., Any]](fn: F) -> F:
+    """This accessor is for a caller, and does not cross the wire.
+
+    A wire value crosses as every accessor it has, so nothing lists
+    them twice - and that makes this the one thing an accessor has to
+    be able to say for itself. `Hash` carries the two facts a hash IS,
+    the algorithm and the digest, and three ways to PRINT them; a
+    rendering derived from fields already on the wire would be a
+    fourth, fifth and sixth copy of the same bytes.
+
+    The test is whether `_from_parts` could not rebuild the value
+    without it. If it could, the accessor is a convenience and belongs
+    here."""
+    fn._local = True  # type: ignore[attr-defined]
     return fn
 
 

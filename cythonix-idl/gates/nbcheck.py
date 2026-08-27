@@ -79,6 +79,17 @@ COSMETIC = {
 # explain and a pin checked only on difference never fires. The claim
 # is an invariant about the emitter, not a note about a disagreement.
 BETTER = {
+    ("StorePath", "__str__"): (
+        'nb::str(h.attr(',
+        "__str__ goes through the PYTHON object, like the repr and the "
+        "hash beside it. Two things follow that the C++ route cannot "
+        "give. It renders whatever `to_string` is BOUND as, so there is "
+        "one definition rather than two that agree today. And it works "
+        "for an accessor whose C++ takes arguments: nix::Hash::to_string "
+        "takes a format and a flag, so the emitted `self.to_string()` "
+        "did not compile - which is how this was found. nanopynix's "
+        "lambda is right for a StorePath and does not generalise.",
+    ),
     ("StorePath", "is_derivation"): (
         "Whether the name ends",
         "a binding carries its own docstring. The declaration writes one "

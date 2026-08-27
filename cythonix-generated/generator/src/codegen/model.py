@@ -24,6 +24,7 @@ from typing import Any, get_args, get_origin
 
 from codegen.wiretypes import (
     CONTAINERS,
+    SCALAR_NAMES,
     head,
     list_value,
     map_value,
@@ -266,7 +267,15 @@ def check_wire_contract(protos: list[Proto],
                         f"be optional. A repeated field has no presence, so "
                         f"an absent one IS an empty one - drop the '?'.")
                 ftype = element
-            if ftype not in _PRIMITIVES.values() and ftype not in known:
+            # SCALAR_NAMES, not `_PRIMITIVES.values()`. The two nearly
+            # agree and the difference is the whole of this check:
+            # _PRIMITIVES maps a C++ SPELLING onto a Python name for a
+            # signature, so it knows `float` and `None` - neither of
+            # which a field can be - and it does not know `bytes`,
+            # which one can. A field is checked against what the WIRE
+            # carries, which is the list the schema and the codec both
+            # read. Found when Hash's `digest` crossed as bytes.
+            if ftype not in SCALAR_NAMES and ftype not in known:
                 bad.append(f"{name}._wire_fields {fname!r}: unknown field type {ftype!r}")
             elif kinds.get(ftype) == "proxy":
                 # The schema would carry it: _msg_arg_type turns a proxy

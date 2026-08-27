@@ -182,6 +182,10 @@ class Method:
     reads: str = ""
     # Verbatim C++ for an accessor nothing can derive, from @cxx_body.
     cxx_body: str = ""
+    # For a caller, not for the wire, from @local. A wire value
+    # crosses as every accessor it has, so this is the one thing an
+    # accessor has to be able to say for itself.
+    local: bool = False
     # Headers this method's BODY needs, beyond its class's, from
     # @needs. Empty when the signature already names everything.
     headers: tuple[str, ...] = ()
@@ -293,12 +297,10 @@ class Class:
         by `to_string`.
 
         A value that declares NO parts is every accessor, in declaration
-        order, whether the emitter wrote the struct or the class binds a
-        real Nix type. Listing ten names that are already ten `def`s one
-        screen above is a second declaration of one fact, and it goes
-        wrong the way every second declaration does. When some accessor
-        must be kept OFF the wire, the place to say so is that accessor -
-        not a list somewhere else.
+        order, minus the ones marked `@local`. Listing ten names that
+        are already ten `def`s one screen above is a second declaration
+        of one fact; an accessor kept OFF the wire says so where it is
+        written, which is the only place that cannot drift from it.
 
         The accessor comes back beside the field because a type is spelled
         two ways at this boundary. The WIRE spelling is what the manifest
@@ -321,7 +323,7 @@ class Class:
         if self.decl.wire != "value":
             return []
         return [(Field(m.name, m.ret.wire, read=m.name), m)
-                for m in self.methods if m.ret is not None]
+                for m in self.methods if m.ret is not None and not m.local]
 
 
 @dataclass(frozen=True)
@@ -656,6 +658,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                      for d in node.decorator_list),
         reads=getattr(marked, "_reads", ""),
         cxx_body=_body(node),
+        local=bool(getattr(marked, "_local", False)),
         headers=tuple(getattr(marked, "_needs", ())),
         virtual=bool(getattr(marked, "_virtual", False)),
         pure=bool(getattr(marked, "_pure", False)),
@@ -808,9 +811,9 @@ def _mentions(cls: Class, node: ast.AST) -> None:
                 f"crosses the wire. A body that drops a part compiles and "
                 f"loses it in silence.\n"
                 f"An accessor joins the wire by existing, so a NEW one "
-                f"lands here: either consume it in {FROM_PARTS}, or - once "
-                f"@local exists - mark it as a value this side computes "
-                f"and does not send.")
+                f"lands here: either consume it in {FROM_PARTS}, or mark "
+                f"it @local - a value this side computes and does not "
+                f"send.")
 
 
 def _live(path: str) -> set[int] | None:
