@@ -480,3 +480,35 @@ def test_a_python_subclass_of_an_abstract_class_still_builds(
 
     assert Custom().get_uri() == "python://custom"
     assert cythonix_bindings.describe(Custom()) == "store(python://custom)"
+
+
+def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
+    """A type that crosses as its PARTS must be final.
+
+    Two things break otherwise, and both are silent. A subclass
+    carrying state no declared field reads arrives on the far side
+    missing it, because the codec sends `_parts()` and nothing else.
+    And `__eq__` and `__hash__` are derived over those same parts, so
+    a subclass compares and hashes equal to a base that is not the
+    same object at all.
+
+    It also settles what `__eq__` means. A record's equality is a
+    typed C++ `const T &` comparison, and nanobind will cast a derived
+    instance to the base - so the same-class rule the declaration
+    states was enforced by nothing but a cast that happened to fail on
+    uninitialised storage. `nb::is_final()` is the enforcement.
+
+    A PROXY is deliberately not final. MockStore exists to be
+    subclassed, and the test above drives exactly that."""
+    import importlib
+
+    checked = []
+    for group in ("wrappers", "returned_types"):
+        for name, entry in manifest[group].items():
+            if entry["wire"] != "value":
+                continue
+            cls = getattr(importlib.import_module(entry["module"]), name)
+            with pytest.raises(TypeError, match=r"prohibit|final"):
+                type(f"Sub{name}", (cls,), {})
+            checked.append(name)
+    assert checked, "the manifest declares no wire value"

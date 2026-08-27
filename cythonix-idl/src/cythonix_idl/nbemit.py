@@ -1310,9 +1310,24 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
                      else decl.base)
     if _overridable(cls):
         holds.append(f"{NAMESPACE}::Py{cls.name}")
+    # A WIRE VALUE is final, and that is a contract rather than a
+    # preference. Such a class crosses as its declared parts, so a
+    # subclass carrying state no part reads would arrive on the far
+    # side silently missing it - and `__eq__` and `__hash__` are
+    # declared over those same parts, so a subclass would compare and
+    # hash equal to a base that is not the same object at all.
+    #
+    # It also closes the one thing that made `__eq__` subtle. A typed
+    # `const T &` comparison accepts a derived instance, so the
+    # same-class rule the declaration states was enforced only by a
+    # cast that happens to fail. Nothing can derive from it now.
+    #
+    # A PROXY is not final: MockStore exists to be subclassed, which
+    # is what its trampoline is for.
+    final = ", nb::is_final()" if decl.wire == "value" else ""
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
              f'{INDENT}auto cls = nb::class_<{", ".join(holds)}>'
-             f'(m, "{cls.name}")']
+             f'(m, "{cls.name}"{final})']
     if cls.is_value:
         # A RECORD: the emitter declared the struct, so every accessor
         # is a member and the whole binding is derived from the field
