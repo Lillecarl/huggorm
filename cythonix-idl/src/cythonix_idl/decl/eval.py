@@ -42,6 +42,13 @@ from cythonix_idl.declare import (
     # and it says so for itself.
     blocking=False,
     cxx="cythonix::Bridge",
+    # Bridge is a HANDLE, not the value. It roots a GC-resident
+    # fake_library::Value so the collector can see it from Python's
+    # heap, and hands the value over through `get()`. Saying so once
+    # is what lets every method below derive: the call goes through
+    # it, a returned Value comes back wrapped in it, and a Value
+    # passed to EvalState is unwrapped out of it.
+    via="get()",
 )
 # How a value TREE is walked, read by the RPC layer so that no layer
 # above this declaration knows what a Value is or which of its methods
@@ -85,26 +92,28 @@ class Value:
         value once - values are immutable and shared freely, so
         without it a diamond is copied and a cycle never ends."""
 
+    # On the HANDLE, not on the value it points at - so it says so
+    # rather than going through `via`. The same is true of
+    # `_identity` above, and those two are the only lines in this
+    # class that are about the Bridge at all. The census counts them,
+    # which is the right answer: they are what a GC root costs.
+    @cxx_body("return v.is_gc_managed();")
     def is_gc_managed(self) -> Bint:
         """True when this value lives inside a GC-allocated block.
 
         Bound straight from gc.h: a no-op integration cannot fake
         it."""
 
-    @cxx_body("return v.get()->type_name();")
     def type_name(self) -> Str:
         """"thunk", "int", "string", "bool", "list" or "attrs"."""
 
-    @cxx_body("return v.get()->integer();")
     def integer(self) -> I64:
         """This value as an integer. Raises on a thunk, or on a value
         of another kind."""
 
-    @cxx_body("return v.get()->string_value();")
     def string_value(self) -> Str:
         """This value as a string. Raises as `integer` does."""
 
-    @cxx_body("return v.get()->boolean();")
     def boolean(self) -> Bint:
         """This value as a bool. Raises as `integer` does."""
 
@@ -116,30 +125,24 @@ class Value:
     # absent. It needs a collection of PROXIES, which is the recursive
     # value message (tasks/030), not another loop here.
 
-    @cxx_body("return static_cast<std::int64_t>(v.get()->size());")
     def size(self) -> I64:
         """Elements in a list, or attributes in an attribute set."""
 
-    @cxx_body("return cythonix::Bridge(v.get()->at(index));")
     def at(self, index: I64) -> "Value":
         """One element of a list.
 
         It may still be a thunk: forcing a list forces the list, not
         what is in it."""
 
-    @cxx_body("return v.get()->name_at(index);")
     def name_at(self, index: I64) -> Str:
         """One attribute name, in alphabetical order."""
 
-    @cxx_body("return cythonix::Bridge(v.get()->value_at(index));")
     def value_at(self, index: I64) -> "Value":
         """One attribute value, in alphabetical order of name."""
 
-    @cxx_body("return v.get()->has(name);")
     def has(self, name: Str) -> Bint:
         """Whether this attribute set carries that name."""
 
-    @cxx_body("return cythonix::Bridge(v.get()->get(name));")
     def get(self, name: Str) -> "Value":
         """One attribute by name. Raises when it is missing."""
 
@@ -172,16 +175,13 @@ class EvalState:
     def get_store_uri(self) -> Str:
         """The URI this state was opened with."""
 
-    @cxx_body("return cythonix::Bridge(es.parse_expr(expr));")
     def parse_expr(self, expr: Str) -> "Value":
         """Parse without evaluating: the result is an unforced
         thunk."""
 
-    @cxx_body("return cythonix::Bridge(es.eval_expr(expr));")
     def eval_expr(self, expr: Str) -> "Value":
         """Parse and evaluate: slow, fully forced result."""
 
-    @cxx_body("es.force(v.get());")
     def force(self, v: "Value") -> None:
         """Force a value in place. Idempotent.
 
@@ -194,31 +194,24 @@ class EvalState:
     # reimplementing Nix's syntax would buy nothing the wire and
     # lifetime paths do not already get from a builder.
 
-    @cxx_body("return cythonix::Bridge(es.make_int(value));")
     def make_int(self, value: I64) -> "Value":
         """A forced integer value."""
 
-    @cxx_body("return cythonix::Bridge(es.make_string(value));")
     def make_string(self, value: Str) -> "Value":
         """A forced string value."""
 
-    @cxx_body("return cythonix::Bridge(es.make_bool(value));")
     def make_bool(self, value: Bint) -> "Value":
         """A forced boolean value."""
 
-    @cxx_body("return cythonix::Bridge(es.make_list());")
     def make_list(self) -> "Value":
         """An empty list. Fill it with `list_append`."""
 
-    @cxx_body("es.list_append(target.get(), item.get());")
     def list_append(self, target: "Value", item: "Value") -> None:
         """Add one element to a list, in place."""
 
-    @cxx_body("return cythonix::Bridge(es.make_attrs());")
     def make_attrs(self) -> "Value":
         """An empty attribute set. Fill it with `attrs_set`."""
 
-    @cxx_body("es.attrs_set(target.get(), name, item.get());")
     def attrs_set(self, target: "Value", name: Str, item: "Value") -> None:
         """Set one attribute, in place.
 

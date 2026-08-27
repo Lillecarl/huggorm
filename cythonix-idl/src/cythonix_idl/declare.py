@@ -128,6 +128,17 @@ class Decl:
     # nix::openStore does, and a store has to stay open for as long
     # as the object naming it does.
     holder: str = ""
+    # How to reach the object whose methods this class binds, when the
+    # bound type is a HANDLE rather than the object itself. Empty for
+    # everything that binds its own methods; "get()" for a wrapper
+    # that exists to own a lifetime - `cythonix::Bridge` roots a
+    # GC-resident value and hands it back through `get()`.
+    #
+    # One fact, three derivations. A method calls through it, a
+    # return of this class wraps in it, and a parameter of this class
+    # unwraps out of it - which is every mechanical line such a
+    # binding used to carry verbatim.
+    via: str = ""
 
 
 def derives(base: str) -> Callable[[type], type]:
@@ -288,7 +299,7 @@ def words(parsed_by: str = "") -> Callable[[type], type]:
 
 
 def binding(cxx: str = "", threading: str = "pool", holder: str = "",
-            blocking: bool = True) -> Callable[[type], type]:
+            blocking: bool = True, via: str = "") -> Callable[[type], type]:
     """The C++ class this binds, and how it may be called.
 
     `blocking=False` means no method here can wait: every one is a
@@ -300,11 +311,20 @@ def binding(cxx: str = "", threading: str = "pool", holder: str = "",
     almost everything. "shared_ptr" is for a class whose factory
     hands back a reference-counted handle: nix::openStore does, and a
     store has to stay open for as long as the object naming it
-    does."""
+    does.
+
+    `via` is for the other kind of indirection: `cxx` names a HANDLE
+    rather than the object itself, and `via` is how the handle hands
+    that object over. `via="get()"` makes every method call through
+    it, wraps a return of this class in it and unwraps a parameter of
+    this class out of it. A method that belongs to the HANDLE rather
+    than to what it points at says so with its own `@cxx_body`, and
+    the census counts it - which is the honest split, because those
+    are the only lines that are about the handle at all."""
     def apply(cls: type) -> type:
         d = _decl(cls)
         d.cxx, d.threading, d.blocking = cxx, threading, blocking
-        d.holder = holder
+        d.holder, d.via = holder, via
         return cls
     return apply
 

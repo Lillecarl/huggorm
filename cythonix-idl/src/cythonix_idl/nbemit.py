@@ -429,6 +429,58 @@ def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str
     return "".join(f", {x}" for x in out)
 
 
+def _handle(t: Type | None, known: dict[str, Class] | None) -> Class | None:
+    """The declared class behind this type, when it binds a HANDLE.
+
+    A handle is a class whose `@binding` carries `via`: the bound C++
+    type owns a lifetime and the object worth calling is one step
+    further in. `None` for everything else, which is almost every
+    type - a bound class that binds its own methods is not a handle,
+    and neither is a str."""
+    if t is None or not t.bound or not known:
+        return None
+    other = known.get(t.python.removesuffix("| None").strip())
+    return other if other is not None and other.decl.via else None
+
+
+def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
+             ) -> list[str] | None:
+    """The body of a method the emitter can write itself, or None.
+
+    Three mechanical things a HANDLE forces, and each of them was a
+    verbatim `@cxx_body` before this existed:
+
+    - the CALL goes through the handle - `v.get()->type_name()`;
+    - a RETURN of a handle class wraps in it - the C++ hands back
+      what it holds, and Python must get the handle;
+    - a PARAMETER of a handle class unwraps out of it, because the
+      C++ takes what the handle points at.
+
+    None when this method needs none of the three. `_method` then
+    binds it by pointer, which is the shorter and better line."""
+    ret_handle = _handle(m.ret, known)
+    args = [(pr.name, _handle(pr.type, known)) for pr in m.params]
+    if not (cls.decl.via or ret_handle or any(h for _, h in args)):
+        return None
+    obj = _self(cls)
+    reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
+    passed = ", ".join(f"{name}.{h.decl.via}" if h else name
+                       for name, h in args)
+    call = f"{reach}{m.cxx_name or m.name}({passed})"
+    if m.ret is None:
+        return [f"{INDENT * 4}{call};"]
+    if ret_handle is not None:
+        return [f"{INDENT * 4}return {_held(ret_handle)}({call});"]
+    # A width the DECLARATION spells. `size()` answers a size_t and
+    # the declaration says I64, so the cast is what makes the emitted
+    # C++ say what the declaration says rather than what this
+    # library's version of the call happens to return.
+    spelled, _ = _cxx(m.ret, known)
+    if spelled in ("std::int64_t", "std::uint64_t"):
+        return [f"{INDENT * 4}return static_cast<{spelled}>({call});"]
+    return [f"{INDENT * 4}return {call};"]
+
+
 def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
             ) -> list[str]:
     """One `.def`, bound by POINTER wherever nanobind allows it.
@@ -463,6 +515,14 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in m.cxx_body.strip().splitlines()]
         return [head, *opening, *body,
+                f"{INDENT * 2}}}{_extras(cls, m, known)})"]
+    derived = _derived(cls, m, known)
+    if derived is not None:
+        obj = _self(cls)
+        args, opening = _signature(cls, m, known)
+        return [f'{INDENT * 2}.def("{m.name}", '
+                f"[]({_held(cls)} &{obj}{args}) {{",
+                *opening, *derived,
                 f"{INDENT * 2}}}{_extras(cls, m, known)})"]
     spelled = m.cxx_name or m.name
     return [f'{INDENT * 2}.def("{m.name}", &{_held(cls)}::{spelled}'
