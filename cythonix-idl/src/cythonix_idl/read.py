@@ -1,10 +1,22 @@
 """
-A declaration file, read WITHOUT running it.
+A declaration file, read TWICE: imported, and parsed.
 
-`ast.parse` turns the file into a tree. Nothing in it executes: no
-import, no decorator call, no class body. So a declaration can name a
-C++ type this machine has never compiled, and reading it costs a
-parse.
+The IMPORT is the authority on WHAT exists. A declaration may branch
+on `NIX_VERSION`, and Python resolves that during the import - so
+nothing here interprets a version condition, because the interpreter
+is already present and is better at it than we would be.
+
+The TREE is the source for HOW to render it. `ast.parse` keeps what
+the import throws away: the C++ inside a body, the exact text of a
+docstring, the order a class declares its methods in.
+
+`_reconcile` holds the two together. Every definition the import kept
+must exist in the tree, and a definition the tree has that the import
+dropped is an `if` arm this Nix version does not take.
+
+A body still never runs: `def` defines, it does not call. So `Cxx(...)`
+in one is dead text this module lifts out of the tree, which is why a
+declaration can name a C++ type this machine has never compiled.
 
 ## Why this matters more than it looks
 
@@ -19,11 +31,11 @@ anything compiles, because the declaration already said everything
 the manifest holds. Then the binding and the manifest are two
 readings of one document rather than two stages of a pipeline.
 
-## What still executes
+## The vocabulary
 
-`declare.py` does. It is the vocabulary, not a declaration: a library
-of decorators and dataclasses with no side effects, which this module
-imports the way a type checker would.
+`declare.py` is not a declaration: it is a library of decorators and
+dataclasses with no side effects, which this module imports the way a
+type checker would.
 
 And it earns its import. A decorator's job is to write a field on a
 `Decl`, so rather than restate that mapping here - `header` sets
@@ -42,11 +54,12 @@ binding that compiles and is wrong.
 
 import ast
 import pathlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, get_args, get_origin
 
 from cythonix_idl import declare
-from cythonix_idl.declare import Cxx, Decl
+from cythonix_idl.declare import Cxx, Decl, Field
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
@@ -63,6 +76,11 @@ VOCABULARY = "cythonix_idl.declare"
 # another declaration owns imports it from here, and the reader
 # follows that import rather than being told the file.
 DECLARATIONS = "cythonix_idl.decl"
+
+# What a hand-written wire reconstructor is called. One name, because
+# the wire layer asks for it by that name and the emitter binds it by
+# that name.
+FROM_PARTS = "_from_parts"
 
 
 class DeclarationError(Exception):
@@ -213,6 +231,11 @@ class Class:
     # through `uses` carries the OTHER file's name, which is the only
     # way an emitter can write the import that reaches it.
     module: str = ""
+    # How to rebuild one from the parts that crossed the wire, when
+    # the declaration says. None for a value whose C++ constructor
+    # already takes exactly those parts: naming the constructor is
+    # then the whole helper, and the emitter writes it.
+    from_parts: Method | None = None
 
     @property
     def is_words(self) -> bool:
@@ -234,6 +257,71 @@ class Class:
         opens - and emitting it as a value produced a module with the
         class in it twice."""
         return bool(self.decl.built_by) and not self.decl.cxx
+
+    @property
+    def is_produced(self) -> bool:
+        """Whether nothing a caller writes can build one.
+
+        Two halves, and `is_value` stood in for both until a produced
+        value bound a real Nix type. Something else makes one -
+        `@produced(by=...)` - AND this declaration offers no way in.
+
+        `nix::Store` has the first half and not the second: it
+        declares an `__init__`, and the emitter binds `open_store`
+        behind it, so `Store(uri)` works and no stub may say NoReturn.
+
+        `ctor is None` is the same test the emitter makes when it
+        decides whether to write a constructor at all, so the surface
+        and this cannot disagree."""
+        return bool(self.decl.built_by) and self.ctor is None
+
+    @property
+    def parts(self) -> list[tuple[Field, Method | None]]:
+        """Every declared part of a wire value, with the accessor it reads.
+
+        Two sources, and which one applies is a real difference. A value
+        that DECLARES its parts says which accessors they are and in what
+        order - selection and order, and nothing else. A RECORD declares
+        none and needs none: the emitter wrote the struct, so every
+        accessor is a field.
+
+        A declared part is either a `Field` or a plain NAME. The name is
+        the common case and it restates nothing: the part is called what
+        the accessor is called, and its type is the annotation the
+        accessor already carries. `Field` is for the other case, where the
+        two names differ - a StorePath's part is `base_name` and is read
+        by `to_string`.
+
+        A value that declares NO parts is every accessor, in declaration
+        order, whether the emitter wrote the struct or the class binds a
+        real Nix type. Listing ten names that are already ten `def`s one
+        screen above is a second declaration of one fact, and it goes
+        wrong the way every second declaration does. When some accessor
+        must be kept OFF the wire, the place to say so is that accessor -
+        not a list somewhere else.
+
+        The accessor comes back beside the field because a type is spelled
+        two ways at this boundary. The WIRE spelling is what the manifest
+        carries; the C++ spelling is what `_from_parts` takes, and only
+        the accessor's own annotation has it."""
+        by_name = {m.name: m for m in self.methods}
+        if self.decl.fields:
+            out = []
+            for f in self.decl.fields:
+                if isinstance(f, str):
+                    m = by_name.get(f)
+                    if m is None or m.ret is None:
+                        raise TypeError(
+                            f"{self.name}: '{f}' is declared a wire field and "
+                            f"names no accessor of this class that answers "
+                            f"anything.")
+                    f = Field(f, m.ret.wire, read=f)
+                out.append((f, by_name.get(f.read)))
+            return out
+        if self.decl.wire != "value":
+            return []
+        return [(Field(m.name, m.ret.wire, read=m.name), m)
+                for m in self.methods if m.ret is not None]
 
 
 @dataclass(frozen=True)
@@ -354,9 +442,22 @@ def type_of(node: ast.expr, vocab: dict[str, str]) -> Type:
         raise DeclarationError(
             node, f"'{node.id}' is vocabulary but carries no C++ spelling. "
                   f"Annotate the alias with Cxx(...) in declare.py.")
+    bare = spelled.replace(" | None", "").removeprefix("list[").rstrip("]")
+    if bare in vocab:
+        # A QUOTED annotation means what the same annotation means
+        # unquoted. `-> I64` and `-> "I64 | None"` name one width, and
+        # a declaration has to quote the second: `I64 | None` is a
+        # union of an Annotated alias, which Python builds eagerly and
+        # a reader of the source cannot see the C++ through.
+        #
+        # Without this the alias fell through to the branch below,
+        # which reads a capital letter as another declared class - so
+        # `"I64 | None"` asked the emitter for a class called I64.
+        held = type_of(ast.Name(id=bare), vocab)
+        return Type(python=spelled.replace(bare, held.python),
+                    cxx=held.cxx)
     # The reader records a reference to another declared class;
     # resolving it needs that declaration, which only the emitter has.
-    bare = spelled.replace(" | None", "").removeprefix("list[").rstrip("]")
     if bare[:1].isupper():
         return Type(python=spelled, bound=True)
     return Type(python=spelled)
@@ -518,6 +619,14 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
     # same trick works: decorate a stand-in and read what was written.
     def probe() -> None: ...
     marked = _apply(node.decorator_list, vocab, probe)
+    if getattr(marked, "_reads", "") and params:
+        # A data member is READ, not called, so there is nowhere for
+        # an argument to go. The emitter drops them silently, which
+        # would leave the Python signature demanding a value nothing
+        # uses.
+        raise DeclarationError(
+            node, f"{node.name}: @reads names a data member, so this "
+                  f"accessor takes no parameters.")
     return Method(
         name=node.name,
         doc=ast.get_docstring(node, clean=False) or "",
@@ -598,10 +707,25 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
         )
 
     ctor: Method | None = None
+    from_parts: Method | None = None
     methods: list[Method] = []
     # ...with any `NIX_VERSION` branch already chosen by the import.
     for item in _resolve(node.body, live):
         if not isinstance(item, ast.FunctionDef):
+            continue
+        if item.name == FROM_PARTS:
+            # Not a method. It takes the parts the wire carried, and
+            # the emitter writes that signature from the field list -
+            # so the declaration writes the BODY and nothing else. A
+            # `self` here would be the object it exists to build.
+            from_parts = _method(item, vocab, bound=False)
+            if from_parts.params:
+                raise DeclarationError(
+                    item,
+                    f"{node.name}.{FROM_PARTS} takes no parameters here. "
+                    f"The wire fields ARE its parameters, and the emitter "
+                    f"writes them from the field list so the two cannot "
+                    f"disagree. The body reads them by name.")
             continue
         if item.name == "__init__":
             ctor = _method(item, vocab)
@@ -629,14 +753,46 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.
             methods.append(_method(item, vocab))
-    return Class(
+    out = Class(
         name=node.name,
         doc=ast.get_docstring(node, clean=False) or "",
         decl=decl,
         ctor=ctor,
         methods=tuple(methods),
         module=where,
+        from_parts=from_parts,
     )
+    if from_parts is not None:
+        _mentions(out, node)
+    return out
+
+
+
+def _mentions(cls: Class, node: ast.AST) -> None:
+    """Every declared wire field must appear in the body, by name.
+
+    Crude, and it buys the one thing the synthetic struct gave away.
+    A record's `_from_parts` was aggregate initialisation, so a
+    missing field could not compile. A hand-written one that never
+    assigns `ultimate` COMPILES and zero-initialises it, and the value
+    then crosses the wire losing a field in silence.
+
+    This does not prove the body USES a field correctly - only the
+    round-trip test can, and it does (tasks/056). It catches the
+    forgetting, which is the failure that costs nothing to catch here
+    and a debugging session to catch there.
+
+    A false positive costs one comment naming the field."""
+    assert cls.from_parts is not None
+    seen = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*",
+                          cls.from_parts.cxx_body))
+    for f, _ in cls.parts:
+        if f.name not in seen:
+            raise DeclarationError(
+                node,
+                f"{cls.name}.{FROM_PARTS} never mentions '{f.name}', which "
+                f"crosses the wire. A body that drops a part compiles and "
+                f"loses it in silence.")
 
 
 def _live(path: str) -> set[int] | None:

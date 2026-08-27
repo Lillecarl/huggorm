@@ -115,7 +115,9 @@ class Decl:
     threading: str = "pool"
     blocking: bool = True
     wire: str = ""
-    fields: tuple[Field, ...] = ()
+    # Each part either a `Field` or the NAME of the accessor that
+    # answers it. See `wire_value`.
+    fields: tuple[Field | str, ...] = ()
     compare: str = ""
     text: str = ""
     shown: str = ""
@@ -350,10 +352,22 @@ def binding(cxx: str = "", threading: str = "pool", holder: str = "",
     return apply
 
 
-def wire_value(fields: tuple[Field, ...] = (), compare: str = "parts",
+def wire_value(fields: tuple[Field | str, ...] = (), compare: str = "parts",
                text: str = "", order: bool = False,
                shown: str = "") -> Callable[[type], type]:
     """This class serializes, and here is what it is made of.
+
+    `fields` says SELECTION and ORDER: which accessors are parts, and
+    which position each takes in the message. A plain NAME is the
+    common case - the part is called what the accessor is called, and
+    its type is the annotation the accessor already carries, so
+    nothing here restates a type. `Field(...)` is for the other case,
+    where the two names differ: a StorePath's part is `base_name` and
+    is read by `to_string`.
+
+    A class that lists none and has no C++ behind it is a RECORD, and
+    every accessor is a part - the emitter declares the struct, so it
+    knows the whole of it.
 
     `compare="cxx"` says the C++ class carries its own equality, so
     the binding declares the operator instead of comparing the parts

@@ -168,23 +168,13 @@ def dunders(decl: Decl) -> list[str]:
 
 
 def _wire_fields(cls: Class) -> list[list[str]]:
-    """What this value is made of.
+    """What this value is made of, in wire spellings.
 
-    Two sources, and the second is the interesting one. A CONSTRUCTED
-    value declares its fields, because the field name and the
-    accessor need not agree: a StorePath's part is called `base_name`
-    and is read by `to_string`.
-
-    A PRODUCED value declares none, and needs none. Every accessor IS
-    a field - the object that made it flattened one and handed over
-    slots - so the name is the accessor's name and the type is what it
-    returns. Declaring them again would be a second place to be wrong.
-    """
-    if cls.decl.fields:
-        return [[f.name, f.type] for f in cls.decl.fields]
-    if not cls.is_value:
-        return []
-    return [[m.name, m.ret.wire] for m in cls.methods if m.ret is not None]
+    One reading of the declaration, shared with the binding: the
+    manifest and the emitted `_wire_fields` say the same thing because
+    they ask the same question, not because two lists agree.
+    `Class.parts` is where that question is answered."""
+    return [[f.name, f.type] for f, _ in cls.parts]
 
 
 def function_entry(fn: Method, package: str, module: str) -> dict[str, Any]:
@@ -302,7 +292,11 @@ def entry(cls: Class, package: str, module: str,
         # answered - so it needs an async wrapper and a wire identity
         # of its own, and no constructor.
         "abstract": decl.abstract,
-        "produced": cls.is_value,
+        # PRODUCED: nothing a caller writes builds one, so a stub
+        # says NoReturn for the constructor. `is_value` stood in for
+        # this until a produced value bound a real Nix type and
+        # stopped being a struct the emitter declares.
+        "produced": cls.is_produced,
         # "proxy" is the safe default on both sides: stateful until a
         # declaration proves otherwise.
         "wire": wire,

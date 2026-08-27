@@ -329,6 +329,8 @@ def includes(classes: Sequence[Class],
         if cls.ctor is not None:
             for _, t in cls.ctor.params:
                 note(t)
+        if cls.from_parts is not None:
+            note(cls.from_parts.ret)
     # A free function belongs to no class, so its types reach this
     # list only from here - and `open_store` is the one that brings
     # <nanobind/stl/shared_ptr.h> in.
@@ -356,6 +358,8 @@ def includes(classes: Sequence[Class],
     # not an order for includes.
     wanted = {cls.decl.header for cls in classes}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
+    wanted |= {h for cls in classes if cls.from_parts is not None
+               for h in cls.from_parts.headers}
     wanted |= {h for fn in functions for h in fn.headers}
     out += [f'#include "{h}"' for h in sorted(wanted - {""})]
     return out
@@ -489,17 +493,27 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     - a PARAMETER of a handle class unwraps out of it, because the
       C++ takes what the handle points at.
 
-    None when this method needs none of the three. `_method` then
+    ...and one a plain STRUCT forces: `@reads` names a data member,
+    so there is nothing to call - `vpi.narSize`, not `vpi.narSize()`.
+    A member read cannot be bound by pointer the way a method can,
+    because `.def` takes a function and `&T::narSize` is not one.
+
+    None when this method needs none of the four. `_method` then
     binds it by pointer, which is the shorter and better line."""
     ret_handle = _handle(m.ret, known)
     args = [(pr.name, _handle(pr.type, known)) for pr in m.params]
-    if not (cls.decl.via or ret_handle or any(h for _, h in args)):
+    if not (cls.decl.via or ret_handle or m.reads
+            or any(h for _, h in args)):
         return None
     obj = _self(cls)
     reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
     passed = ", ".join(f"{name}.{h.decl.via}" if h else name
                        for name, h in args)
-    call = f"{reach}{m.cxx_name or m.name}({passed})"
+    # A member is reached, not called. The declaration says which by
+    # writing @reads, and an accessor that reads one takes no
+    # parameters - so there is no argument list to spell either.
+    call = (f"{reach}{m.reads}" if m.reads
+            else f"{reach}{m.cxx_name or m.name}({passed})")
     if m.ret is None:
         return [f"{INDENT * 4}{call};"]
     if ret_handle is not None:
@@ -765,7 +779,8 @@ def _repr_parts(cls: Class) -> str:
     inventing either here would put a wrong answer in an emitted file
     instead of a message in this one."""
     decl = cls.decl
-    fields = decl.fields or (Field(decl.shown, "str", read=decl.shown),)
+    fields = [f for f, _ in cls.parts] or [
+        Field(decl.shown, "str", read=decl.shown)]
     parts = []
     for i, f in enumerate(fields):
         if f.type != "str":
@@ -922,17 +937,18 @@ def records(classes: Sequence[Class],
     if not values:
         return []
     out = [f"namespace {NAMESPACE} {{", ""]
-    if any(_lists(cls) for cls in values):
-        out += [*HASHABLE.strip().splitlines(), ""]
     for cls in values:
         out += [*record(cls, known), ""]
     return [*out, f"}}  // namespace {NAMESPACE}", ""]
 
 
 def _lists(cls: Class) -> list[str]:
-    """The declared fields of this value that are lists."""
-    return [m.name for m in cls.methods
-            if m.ret is not None and m.ret.python.startswith("list[")]
+    """The wire parts of this value that cross as lists.
+
+    The PARTS, not the accessors. A value's hash is over what it sends,
+    and a list is hashed as a tuple because a list is unhashable -
+    which is the one thing `as_tuple` exists for."""
+    return [f.name for f, _ in cls.parts if f.type.startswith("list[")]
 
 
 # A list field, as something a hash can hold.
@@ -987,14 +1003,28 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     made = ", ".join(f"{spelling} {name}" for name, spelling in fields)
     values = ", ".join(name for name, _ in fields)
     return [
-        f'{INDENT * 2}.def("__init__", []({held} *) {{',
+        *_produced_ctor(cls),
+        f'{INDENT * 2}.def_static("_from_parts", []({made}) {{',
+        f"{INDENT * 3}return {held}{{{values}}};",
+        f'{INDENT * 2}}}{args}, "{FROM_PARTS_DOC}")',
+    ]
+
+
+def _produced_ctor(cls: Class) -> list[str]:
+    """The `__init__` of a class nothing constructs.
+
+    It raises, and the message names what DOES make one. Without it
+    nanobind answers `TypeError: PathInfo: no constructor defined!`,
+    which is true and tells a caller nothing about where to look.
+
+    The sentence comes from `@produced(by=...)`, so the declaration
+    wrote it once and no emitted string invents a second wording."""
+    return [
+        f'{INDENT * 2}.def("__init__", []({_held(cls)} *) {{',
         f"{INDENT * 3}throw nb::type_error(",
         f'{INDENT * 4}"{cls.name} objects come from {cls.decl.built_by}, '
         f'not from a constructor");',
         f"{INDENT * 2}}})",
-        f'{INDENT * 2}.def_static("_from_parts", []({made}) {{',
-        f"{INDENT * 3}return {held}{{{values}}};",
-        f'{INDENT * 2}}}{args}, "{FROM_PARTS_DOC}")',
     ]
 
 
@@ -1045,22 +1075,31 @@ def _factory(cls: Class, functions: Sequence[Method],
 def wire_fields(cls: Class) -> list[tuple[str, str, str]]:
     """What this value is made of, as (name, wire type, how to read).
 
-    Two sources, and which one applies is a real difference. A
-    CONSTRUCTED value declares its fields, because the field name and
-    the accessor need not agree: a StorePath's part is called
-    `base_name` and is read by CALLING `to_string()`. A PRODUCED one
-    declares none and needs none - every accessor IS a field, and the
-    record binds each as an attribute, so the name reads it.
+    The third element is a Python expression on a handle called `h`,
+    which is how one line covers a str, a store path and a list of
+    them: the part comes back as whatever its own binding hands over,
+    so nothing here knows what a part IS."""
+    return [(f.name, f.type, f'h.attr("{f.read}")()')
+            for f, _ in cls.parts]
 
-    The third element carries that difference: a Python expression on
-    a handle called `h`, either an attribute or a call."""
-    if cls.decl.fields:
-        return [(f.name, f.type, f'h.attr("{f.read}")()')
-                for f in cls.decl.fields]
-    if not cls.is_value:
-        return []
-    return [(m.name, m.ret.wire, f'h.attr("{m.name}")()')
-            for m in cls.methods if m.ret is not None]
+
+def part_types(cls: Class, known: dict[str, Class] | None = None
+               ) -> list[str]:
+    """The C++ each part ARRIVES as, one per wire field.
+
+    From the accessor's own annotation wherever there is one, because
+    that is the only place the width lives: `int` is the wire spelling
+    of both `nar_size` and `registration_time`, and they are a
+    uint64_t and an optional int64_t. `list[StorePath]` has no wire
+    spelling at all.
+
+    `_field_cxx` is the fallback, for a part no accessor of this class
+    answers."""
+    out = []
+    for f, m in cls.parts:
+        out.append(_cxx(m.ret, known)[0] if m is not None and m.ret is not None
+                   else _field_cxx(f.type, known))
+    return out
 
 
 # What `_parts` is for, in one sentence a caller can read.
@@ -1100,18 +1139,38 @@ def _from_parts(cls: Class, known: dict[str, Class] | None = None
     the C++ one still takes them - MockStorePath refuses
     `MockStorePath(...)` in Python and fake_library::StorePath parses
     a base name happily - so this calls it directly, under the private
-    name the wire layer asks for."""
+    name the wire layer asks for.
+
+    And where neither is true, the DECLARATION carries the body.
+    `nix::ValidPathInfo` has a virtual base, so it is not an aggregate
+    and cannot be brace-initialised; its only constructor takes an
+    `UnkeyedValidPathInfo`; and two of its parts cross rendered and
+    are parsed back. That is a decision rather than a binding, and it
+    goes where a person writes code.
+
+    The SIGNATURE stays here either way. One typed parameter per wire
+    field, in the field list's order, so a declared body cannot
+    disagree with `_parts` about what crosses or in which order - it
+    can only consume what it is handed."""
     fields = wire_fields(cls)
     if not fields:
         return []
-    types = [_field_cxx(wire, known) for _, wire, _ in fields]
+    types = part_types(cls, known)
     args = ", ".join(f"{t} {n}" for (n, _, _), t in zip(fields, types,
                                                         strict=True))
-    names = ", ".join(n for n, _, _ in fields)
     keywords = "".join(f', "{n}"_a' for n, _, _ in fields)
+    written = cls.from_parts
+    if written is not None and written.cxx_body:
+        body = [f"{INDENT * 3}{ln}".rstrip()
+                for ln in written.cxx_body.strip().splitlines()]
+    else:
+        names = ", ".join(n for n, _, _ in fields)
+        body = [f"{INDENT * 3}return {_held(cls)}({names});"]
+    doc = _doc(written.doc) if written is not None and written.doc \
+        else FROM_PARTS_DOC
     return [f'{INDENT * 2}.def_static("_from_parts", []({args}) {{',
-            f"{INDENT * 3}return {_held(cls)}({names});",
-            f'{INDENT * 2}}}{keywords}, "{FROM_PARTS_DOC}")']
+            *body,
+            f'{INDENT * 2}}}{keywords}, "{doc}")']
 
 
 def _round_trip(cls: Class) -> list[str]:
@@ -1216,7 +1275,7 @@ def markers(cls: Class) -> list[str]:
         # gets an async wrapper and a wire identity - a caller holds
         # the base far more often than a leaf.
         out.append(f'{INDENT}cls.attr("_abstract") = true;')
-    if cls.is_value:
+    if cls.is_produced:
         out.append(f'{INDENT}cls.attr("_produced") = true;')
     elif decl.built_by:
         # Which free function makes one. A handle rather than a
@@ -1371,7 +1430,12 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
                  f"{INDENT * 2}}})"]
                 if _overridable(cls) else [])
     elif decl.built_by:
-        body = _factory(cls, functions, known)
+        # A factory this module BINDS, where the declaration names a
+        # free function - `open_store` becomes `Store.__new__`. Where
+        # it names a method instead, there is no factory to bind and
+        # nothing constructs one, so the constructor says so.
+        body = (_factory(cls, functions, known)
+                or (_produced_ctor(cls) if cls.is_produced else []))
     else:
         body = _ctor(cls, known)
     for m in cls.methods:
@@ -1537,6 +1601,15 @@ def module(classes: Sequence[Class],
             "using namespace nb::literals;", ""]
     if _crosses_container(classes):
         head += [*CONTAINERS.strip().splitlines(), ""]
+    # `as_tuple`, for a value whose hash covers a list part. In its own
+    # namespace and ahead of the structs, because a RECORD is declared
+    # in that namespace too and a class that binds a real Nix type
+    # needs the helper just the same - which is what put it inside
+    # `records()` and left `pathinfo.cpp` without it.
+    if any(_lists(cls) for cls in classes):
+        head += [f"namespace {NAMESPACE} {{", "",
+                 *HASHABLE.strip().splitlines(), "",
+                 f"}}  // namespace {NAMESPACE}", ""]
     # The structs first: a bind function returns one, so the type has
     # to be complete before the compiler reads the lambda.
     head += records(classes, known)
@@ -1658,11 +1731,14 @@ def census(cls: Class) -> dict[str, int]:
     Printed on every build, because a hatch nobody measures becomes
     the place the real code lives. The ratio is the honest measure of
     a binding: StorePath derives whole and hatches nothing;
-    ValidPathInfo joins a store directory to a path, which is a
-    decision rather than a binding, and it says so with seven
-    bodies."""
+    PathInfo renders a hash, a content address and a set of
+    signatures, which are decisions rather than bindings, and it says
+    so with a body each."""
     derived = hatched = hatch_lines = 0
-    for m in cls.methods:
+    # A written `_from_parts` is a hatch like any other, and the one
+    # most worth counting: it is the half of the wire that stopped
+    # being true by construction when the value bound a real type.
+    for m in (*cls.methods, *filter(None, (cls.from_parts,))):
         if m.cxx_body:
             hatched += 1
             hatch_lines += len(m.cxx_body.strip().splitlines())
