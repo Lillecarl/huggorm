@@ -86,6 +86,39 @@ what a caller expects, `store_path()` beside it gives the narrow type,
 and the copy goes away. But it needs `storeDir` on the wire, which is
 a schema change, so it wants doing before the schema matters.
 
+## Reviewed, 2026-08-27
+
+cython-reviewer's verdict on the no-`@cxx_parts` sketch in
+`.scratchpad/no-cxx-parts/`: the direction is right and `@cxx_parts`
+should go. Two conditions.
+
+**A generated round-trip gate per wire value, mandatory.**
+`@cxx_parts` refused a field map that missed a field or invented one.
+A hand-written `_from_parts` that forgets `ultimate` COMPILES and
+zero-inits silently, so the bug comes back through the body. Once
+fidelity is a by-hand bijection rather than a struct copy, the round
+trip must be PROVEN: build one, encode, decode, compare parts.
+
+**`path()` stays a StorePath.** The first sketch renamed it to
+`store_path()` and gave `path()` a rendered string - copied from
+`decl/pathinfo.py`, the declaration this repo does not ship. Upstream
+`ValidPathInfo::path` is a StorePath member called `path`, four tests
+call `info.path().to_string()`, and 040/042 already argue that a
+StorePath is a name while rendering is a separate act.
+
+Also settled there: one declaration file per Nix class, but the
+EXTENSION grain stays per header - several files feed one translation
+unit, and generate.py's list becomes a mapping. `Cxx` in a body is
+what distinguishes a derived binding from a hatched one. The fields
+tuple survives for SELECTION and ORDER only.
+
+## Surface changes this would make, listed rather than silent
+
+- `store_dir` appears - UnkeyedValidPathInfo's constructor needs it
+  and nothing else carries it. New accessor, new wire field.
+- `registration_time` becomes `I64 | None` where today it is `I64`
+  with 0 meaning unknown.
+
 ## Not yet decided
 
 Whether the wire should carry rendered or structured values in
