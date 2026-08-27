@@ -365,9 +365,22 @@ def wire_value(fields: tuple[Field | str, ...] = (), compare: str = "parts",
     where the two names differ: a StorePath's part is `base_name` and
     is read by `to_string`.
 
-    A class that lists none and has no C++ behind it is a RECORD, and
-    every accessor is a part - the emitter declares the struct, so it
-    knows the whole of it.
+    A class that lists none crosses as EVERY accessor it has, in
+    declaration order. That is the common case and it restates
+    nothing: the accessors are already there, one screen above.
+
+    The first accessor that must be kept OFF the wire - a rendered
+    convenience, an `is_content_addressed()` a caller computes rather
+    than receives - marks itself `@local`. It is not implemented, and
+    the word is written down here anyway: the alternative is that
+    whoever needs it first reinvents selection as a list somewhere
+    else, which is the second declaration this decorator exists to
+    avoid.
+
+    ORDER is declaration order, which means REORDERING accessors for
+    readability moves wire positions. Free while the two sides are
+    built together (055); when 022's lockfile pins field numbers, it
+    inherits this and a reorder becomes a schema change.
 
     `compare="cxx"` says the C++ class carries its own equality, so
     the binding declares the operator instead of comparing the parts

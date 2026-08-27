@@ -38,6 +38,14 @@ HERE = pathlib.Path(__file__).resolve().parent
 # back, absence was the empty string, a set became a vector of
 # strings, and a bound object came back as an owning raw pointer.
 # nanobind casts all four, so the declaration stopped carrying them.
+# A LIST, not a mapping of module to files, and the difference will
+# matter one day. One declaration owns one module because one Nix
+# header owns one class: `path-info.hh` is `pathinfo.py` is
+# `cythonix_bindings.pathinfo`. The mapping becomes real the first
+# time one HEADER's classes want separate declaration files -
+# `store-api.hh` the day StoreLocation earns its own, or a genuinely
+# multi-class header. Until then it would be machinery with no
+# second case to keep it honest.
 NANOBIND = (
     "decl/path.py",
     "decl/pathinfo.py",
