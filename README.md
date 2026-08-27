@@ -9,8 +9,10 @@ manifest entry, the async wrapper, the RPC client and the gRPC schema.
 Adding a type means editing one declaration and nothing else. That is
 the whole premise, and it is what a reviewer should push on.
 
-A declaration is never executed. The emitters read it with
-`ast.parse`, so it can name a C++ type this machine has never
+A declaration is read twice: imported, so Python resolves any
+`NIX_VERSION` branch, and parsed, for the C++ in its bodies and the
+order of its methods. No body ever runs - `def` defines, it does not
+call - so a declaration can name a C++ type this machine has never
 compiled, and no surface above the bindings waits on a compiler.
 
 This file is how to DRIVE the repo. `docs/quickstart.md` is how to USE
@@ -81,7 +83,7 @@ comment about an upstream behaviour that was read rather than assumed.
 ### cythonix-idl
 
     src/cythonix_idl/
-      decl/<name>.py  one declaration per bound area. Never executed.
+      decl/<name>.py  one Nix class, named after its header
       decl/README.md  why they sit in their own directory
       declare.py      the vocabulary a declaration is written in
       read.py         ast.parse -> Module, Class, Method
@@ -93,20 +95,22 @@ comment about an upstream behaviour that was read rather than assumed.
     gates/nbcheck.py  emitted C++ against hand-written nanobind
 
 One Nix header, one declaration, named after it:
-`nix/store/store-api.hh` is `decl/store.py`.
+`nix/store/store-api.hh` is `decl/store.py`, and
+`nix/store/path-info.hh` is `decl/pathinfo.py`.
 
-`decl/store.py` is the biggest and the most current - read it first.
-Its `PathInfo` and `StoreLocation` show what a declared wire-value
-looks like; `Store` shows a proxy. `decl/path.py` is the smallest
-complete one, and the place to start if `store.py` is too much at
-once.
+`decl/store.py` is the biggest and the most current - read it first,
+for what a proxy looks like. `decl/pathinfo.py` is the wire-value to
+read: it binds `nix::ValidPathInfo`, and it carries both halves of the
+crossing - accessors that render, and the `_from_parts` that parses
+them back. `decl/path.py` is the smallest complete one, and the place
+to start if `store.py` is too much at once.
 
 `generate.py` names the declarations that own a module. A declaration
-not in that list emits nothing: `decl/pathinfo.py`, `decl/nixstore.py`
-and `decl/storefns.py` are read only by `gates/nbcheck.py`, which
-compares them against the hand-written nanobind in `~/Code/nanopynix`
-- a corpus to beat rather than a reference to match - and is skipped
-on a machine without it.
+not in that list emits nothing: `decl/nixstore.py` and
+`decl/storefns.py` are read only by `gates/nbcheck.py`, which compares
+them against the hand-written nanobind in `~/Code/nanopynix` - a
+corpus to beat rather than a reference to match - and is skipped on a
+machine without it.
 
 ### cythonix-bindings
 
@@ -173,9 +177,11 @@ Adding a store call is the common case, and it touches two files:
    `test_remote.py` if it crosses the wire.
 
 `_cpp/store.hpp` is the third file, and only when the declaration
-cannot say it: a decision about how to render something, or a member
-reached through `Store::config`. `@cxx_body` marks that hatch, and
-`decl/pathinfo.py` counts its own.
+cannot say it: something a whole module needs, such as a startup hook
+or an exception translator. A DECISION - how to render a hash, which
+of two constructors a value takes - goes in the declaration itself, as
+a `Cxx(...)` in the method's body. Every build prints how many of each
+class's methods were derived and how many carry a body.
 
 Nothing else is edited. The emitters write the binding, the stub and
 the manifest entry, and the four surfaces follow from the manifest. If
@@ -191,6 +197,9 @@ to make one of these fail early:
 - a parameter whose type cannot be resolved (it would be `Any`)
 - a wire-value with no `_wire_fields`, no round-trip helpers, or a
   proxy inside one
+- a hand-written `_from_parts` that never names one of its own wire
+  fields, and - in the suite - a wire value whose round trip is not
+  exercised with each part holding two different values
 - a default the surface cannot WRITE, or a mutable one
 - a method returning a container of wrapped types, or an optional one
 - a base and a subclass whose shared method signatures differ
@@ -224,7 +233,8 @@ grew before real Nix was linked. It is on its way out. Each mock class
 took a `Mock` prefix the moment its real counterpart landed, so the
 prefix is a map of what is left to do.
 
-Real Nix is `Store`, `StorePath`, `PathInfo`, `StoreLocation`. The
+Real Nix is `Store`, `StorePath`, `PathInfo` (`nix::ValidPathInfo`)
+and `StoreLocation`. The
 `Mock*` classes still earn their place as the only exercise for
 shapes real Nix has not reached yet - a class hierarchy, a value tree,
 an affine-threaded object.
