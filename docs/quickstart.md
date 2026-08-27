@@ -37,11 +37,31 @@ Going the other way, from a file to the object that holds it:
     info = store.query_path_info(path)
     info.nar_size()            # bytes, of the NAR
     info.deriver()             # the .drv that built it, or None
-    info.ca()                  # 'fixed:r:sha256:...', or None if built
     info.references()          # [StorePath, ...] - what it points at
+    info.sigs()                # [Signature, ...] - who vouched for it
 
-`None` is a real answer in both places: a path that was ADDED has no
+`None` is a real answer in two places: a path that was ADDED has no
 deriver, and one that was BUILT has no content address.
+
+Nothing here is a string you take apart. A hash is an algorithm and a
+digest; a content address is a method and a hash; a signature is a key
+name and some bytes. Each is its own value, and printing one is a
+separate act:
+
+    h = info.nar_hash()
+    h.algorithm()              # 'sha256'
+    h.digest()                 # 32 raw bytes
+    str(h)                     # 'sha256:1abc...' - what nix prints
+    h.base16(), h.sri()        # the other two spellings
+
+    ca = info.ca()             # None when the path was BUILT
+    ca.method()                # 'nar', 'flat', 'text' or 'git'
+    ca.hash().algorithm()      # 'sha256' - a field, not a prefix
+    str(ca)                    # 'fixed:r:sha256:...'
+
+A `Hash` is the one of these a caller can build, because it is the one
+a caller can have: `Hash('sha256', digest)` from a lock file or a
+narinfo. It refuses a digest of the wrong length.
 
 ## The graph
 

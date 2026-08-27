@@ -96,14 +96,21 @@ comment about an upstream behaviour that was read rather than assumed.
 
 One Nix header, one declaration, named after it:
 `nix/store/store-api.hh` is `decl/store.py`, and
-`nix/store/path-info.hh` is `decl/pathinfo.py`.
+`nix/store/path-info.hh` is `decl/pathinfo.py`. The exception is
+`decl/words.py`, because a vocabulary has no C++ and no extension to
+live in - see below.
 
 `decl/store.py` is the biggest and the most current - read it first,
 for what a proxy looks like. `decl/pathinfo.py` is the wire-value to
-read: it binds `nix::ValidPathInfo`, and it carries both halves of the
-crossing - accessors that render, and the `_from_parts` that parses
-them back. `decl/path.py` is the smallest complete one, and the place
-to start if `store.py` is too much at once.
+read: it binds `nix::ValidPathInfo` and carries the `_from_parts` that
+rebuilds one. `decl/hash.py` is the shortest one that shows the whole
+idea - two facts on the wire, three renderings marked `@local` that
+never leave this side. `decl/path.py` is the smallest complete one,
+and the place to start if `store.py` is too much at once.
+
+`decl/words.py` is the odd one out and is not a binding at all: the
+StrEnums whose members ARE the strings a Nix parser takes. Nothing
+about them compiles.
 
 `generate.py` names the declarations that own a module. A declaration
 not in that list emits nothing: `decl/nixstore.py` and
