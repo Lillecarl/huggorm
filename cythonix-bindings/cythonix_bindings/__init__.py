@@ -41,7 +41,6 @@ counterpart lands and takes the plain name, so the prefix is a map of
 what is left to do; when it is gone, so is the mock.
 """
 
-from .content_address import ContentAddressMethod, HashAlgorithm
 from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
 from .mock_store import (
     MockDerivation,
@@ -55,6 +54,7 @@ from .mock_store import (
 from .path import StorePath
 from .pathinfo import PathInfo
 from .store import Store, StoreLocation
+from .words import ContentAddressMethod, HashAlgorithm
 
 # Where the exception hierarchy lives. A declaration, like _binds or
 # _wire, and for the same reason: the codegen must not know a module

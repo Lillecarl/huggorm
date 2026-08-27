@@ -1,11 +1,19 @@
 """
-How a store object is content-addressed: `nix/store/content-address.hh`.
+Nix's own words, as StrEnums a caller can type.
 
-A vocabulary, not a binding. There is nothing to compile: the values
-are Nix's words, and `Store.add_to_store` hands one straight to
-`ContentAddressMethod::parse`, so this translates nothing. It names
-what libstore already accepts, so an editor can offer the words and a
-typo fails before the call.
+A vocabulary is not a binding, and that is why these live together
+rather than one per header. There is nothing to compile: a member IS
+the string libstore parses, so `Store.add_to_store` hands one straight
+to `ContentAddressMethod::parse` and this translates nothing. What it
+buys is that an editor offers the words and a typo fails before the
+call.
+
+Collected here because the split that matters is COMPILES or does not.
+`decl/hash.py` binds nix::Hash and `decl/content_address.py` binds
+nix::ContentAddress, one header each; the words those two headers also
+declare have no C++ behind them and no extension to live in, so a file
+named after either header would have been the wrong home for the
+other's.
 """
 
 from cythonix_idl.declare import header, words

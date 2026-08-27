@@ -10,9 +10,9 @@ what makes this testable in a build sandbox.
 # Declarations this one names. A declaration names another
 # declaration's type by importing it, and the reader follows the
 # import - nothing here runs, so this costs a parse.
-from cythonix_idl.decl.content_address import ContentAddressMethod, HashAlgorithm
 from cythonix_idl.decl.path import StorePath
 from cythonix_idl.decl.pathinfo import PathInfo
+from cythonix_idl.decl.words import ContentAddressMethod, HashAlgorithm
 from cythonix_idl.declare import (
     Bint,
     Bytes,

@@ -961,7 +961,7 @@ def read(path: str) -> Module:
 def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
     """Declarations this one imported, read.
 
-    `from cythonix_idl.decl.content_address import ContentAddressMethod`
+    `from cythonix_idl.decl.words import ContentAddressMethod`
     is how a declaration names a type another declaration owns. The
     import is never executed - nothing here is - but it is the one
     place that says WHICH other file to read, so following it beats

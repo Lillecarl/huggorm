@@ -59,7 +59,7 @@ NANOBIND = (
 # module is plain Python and the build writes it whole, the way it
 # writes a NANOBIND entry.
 VOCABULARIES = (
-    "decl/content_address.py",
+    "decl/words.py",
 )
 
 
