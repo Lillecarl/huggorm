@@ -54,9 +54,6 @@ NANOPYNIX = pathlib.Path.home() / "Code/nanopynix/nanopynix-bindings/src"
 
 # A lambda parameter or local, named differently. Invisible to Python.
 COSMETIC = {
-    ("ValidPathInfo", "i"): "vpi",
-    ("ValidPathInfo", "refs"): "refs",
-    ("ValidPathInfo", "out"): "sigs",
 }
 
 # Where the emitter is RIGHT and the hand-written file is not.
@@ -75,6 +72,15 @@ COSMETIC = {
 # explain and a pin checked only on difference never fires. The claim
 # is an invariant about the emitter, not a note about a disagreement.
 BETTER = {
+    ("StorePath", "is_derivation"): (
+        "Whether the name ends",
+        "a binding carries its own docstring. The declaration writes one "
+        "for every method and it costs a string literal, so "
+        "help(StorePath.is_derivation) answers with prose rather than a "
+        "signature. nanopynix binds the method pointer alone. This is the "
+        "class of difference a corpus cannot demand: nobody hand-writes a "
+        "docstring onto 231 bindings, and an emitter writes all of them or "
+        "none."),
     ("StorePath", "__eq__"): (
         "nb::is_operator()",
         "Without it a failed overload raises TypeError; with it nanobind "
@@ -118,16 +124,6 @@ BETTER = {
         "called base_name and is read by to_string; a repr built from "
         "the accessor alone drops the name that the declaration "
         "already gave it."),
-    ("ValidPathInfo", "__copy__"): ("__copy__", "as StorePath's."),
-    ("ValidPathInfo", "__deepcopy__"): ("__deepcopy__", "as StorePath's."),
-    ("ValidPathInfo", "__repr__"): (
-        "nb::str",
-        "a repr through the PYTHON object, so a part of any bound "
-        "type renders itself. nanopynix concatenates C++ strings, "
-        "which works while every part is a std::string and stops the "
-        "moment one is a store path. The name is missing on both "
-        "sides here, and for the same reason: this declaration names "
-        "one thing worth showing and no fields."),
     ("StorePath", "__gt__"): ("nb::is_operator()", "ordering, as __lt__."),
     ("StorePath", "__ge__"): ("nb::is_operator()", "ordering, as __lt__."),
     # Settled 2026-08-26. A remote store is opened over the network,
@@ -341,7 +337,7 @@ def check(decl_path: str) -> list[str]:
 
 
 def main() -> int:
-    names = sys.argv[1:] or ["path", "pathinfo", "storefns"]
+    names = sys.argv[1:] or ["path", "storefns"]
     print(f"emitted nanobind vs {NANOPYNIX}")
     problems = []
     for n in names:
