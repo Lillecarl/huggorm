@@ -531,7 +531,7 @@ def targets_name(item: ast.Assign) -> str:
 
 
 def _class(node: ast.ClassDef, vocab: dict[str, str],
-           where: str) -> Class:
+           where: str = "", live: set[int] | None = None) -> Class:
     if node.bases:
         raise DeclarationError(
             node, f"{node.name}: a declaration states its base with "
@@ -554,7 +554,8 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
 
     ctor: Method | None = None
     methods: list[Method] = []
-    for item in node.body:
+    # ...with any `NIX_VERSION` branch already chosen by the import.
+    for item in _resolve(node.body, live):
         if not isinstance(item, ast.FunctionDef):
             continue
         if item.name == "__init__":
@@ -593,19 +594,101 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     )
 
 
+def _live(path: str) -> set[int] | None:
+    """The first line of every class and function the IMPORT kept.
+
+    A declaration may branch on `NIX_VERSION`, and Python resolves
+    that during the import. This asks the resulting module which
+    definitions survived, and the answer is a set of LINES.
+
+    Lines, not names: both arms of an `if` define the same name, so a
+    name match keeps both and the emitter binds the method twice.
+    `co_firstlineno` is the first DECORATOR's line when a definition
+    has decorators and the `def`/`class` line when it has none, so a
+    caller matches either.
+
+    `None` when the file will not import. That is not a failure here:
+    a declaration is a document first, and one that cannot be
+    imported still parses - so the reader falls back to the tree
+    alone and every `if` arm is read. `_resolve` says what that
+    costs."""
+    import importlib.util
+
+    name = f"_cythonix_decl_{pathlib.Path(path).stem}"
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:
+        return None
+
+    lines: set[int] = set()
+    for obj in vars(mod).values():
+        code = getattr(obj, "__code__", None)
+        if code is not None:
+            lines.add(code.co_firstlineno)
+        elif isinstance(obj, type) and obj.__module__ == name:
+            lines.add(getattr(obj, "__firstlineno__", 0))
+            for member in vars(obj).values():
+                inner = getattr(member, "__code__", None)
+                if inner is not None:
+                    lines.add(inner.co_firstlineno)
+    lines.discard(0)
+    return lines
+
+
+def _resolve(body: list[ast.stmt], live: set[int] | None) -> list[ast.stmt]:
+    """One body with its `if` arms already chosen.
+
+    Nothing here evaluates a condition. Python did that during the
+    import, and this keeps what Python kept - matched by the line a
+    definition starts on.
+
+    With `live` unknown the `if` is flattened whole, which reads both
+    arms and will usually declare a name twice. That is loud rather
+    than silent: the emitter binds it twice and the build says so."""
+    out: list[ast.stmt] = []
+
+    def walk(nodes: list[ast.stmt]) -> None:
+        for n in nodes:
+            if isinstance(n, ast.If):
+                walk(n.body)
+                walk(n.orelse)
+            elif isinstance(n, ast.ClassDef | ast.FunctionDef):
+                own = {n.lineno} | {d.lineno for d in n.decorator_list}
+                if live is None or own & live:
+                    out.append(n)
+            else:
+                out.append(n)
+
+    walk(body)
+    return out
+
+
 def read(path: str) -> Module:
-    """One declaration file, parsed."""
+    """One declaration file, read twice.
+
+    `ast.parse` gives the tree, which is what every emitter reads and
+    what `pyi.py` transforms. The IMPORT gives one fact the tree
+    cannot: which definitions survive a `NIX_VERSION` branch.
+
+    The import is the authority on WHAT exists. The tree is the source
+    for HOW to render it. No fact is taken from both."""
     source = pathlib.Path(path).read_text()
     tree = ast.parse(source, filename=path)
+    live = _live(path)
+    body = _resolve(tree.body, live)
     vocab = _vocabulary(tree)
     stem = pathlib.Path(path).stem
-    classes = tuple(_class(n, vocab, stem) for n in tree.body
+    classes = tuple(_class(n, vocab, stem, live) for n in body
                     if isinstance(n, ast.ClassDef) and n.decorator_list)
     # Module-level functions are FREE bindings - nanopynix has 72 of
     # them, `m.def("open_store", &open_store_uri, "uri"_a)` and its
     # kind. Only decorated ones: an undecorated def at module level is
     # a helper the declaration wrote for itself.
-    functions = tuple(_method(n, vocab, bound=False) for n in tree.body
+    functions = tuple(_method(n, vocab, bound=False) for n in body
                       if isinstance(n, ast.FunctionDef) and n.decorator_list)
     return Module(
         name=stem,

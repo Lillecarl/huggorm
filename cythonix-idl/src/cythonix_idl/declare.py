@@ -43,6 +43,27 @@ class Cxx:
     copy: str = "value"
 
 
+# The Nix this build links, as a tuple a declaration can compare.
+#
+# The generator sets it before it reads anything. A declaration that
+# spans two Nix versions writes an ordinary `if` against it:
+#
+#     if NIX_VERSION >= (2, 34):
+#         def get_uri(self) -> Str:
+#             """How this store describes itself."""
+#             Cxx("return self.config.getHumanReadableURI();")
+#
+# Python evaluates that during the import. Nothing in this package
+# interprets a version condition, which is the whole reason the
+# declaration is imported as well as parsed: the interpreter is
+# already there and it is better at this than we would be.
+#
+# The default is what a bare `import cythonix_idl.decl.store` sees -
+# a reader, an editor, a typechecker - so it must be a real version
+# rather than a sentinel that makes every comparison false.
+NIX_VERSION: tuple[int, ...] = (2, 34)
+
+
 # The types a Nix binding actually names. Written once, read by name.
 Str = Annotated[str, Cxx("string")]
 StrView = Annotated[str, Cxx("string_view", copy="view")]
