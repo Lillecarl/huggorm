@@ -940,7 +940,15 @@ def test_every_wire_value_survives_its_own_round_trip(
     SAMPLES is the one hand-written part, and the test refuses to pass
     if it does not cover every wire value the manifest declares.
     Adding a value without adding a sample fails here rather than
-    shipping unproven."""
+    shipping unproven.
+
+    WHAT IT STILL DOES NOT PROVE, and cannot here: a hand-written case
+    goes parts -> object -> parts, so it exercises the PARSE and the
+    render of a state no producer in this suite reaches. A PathInfo
+    with `ultimate=True` has never been rendered off an object a store
+    actually made, because a hermetic store cannot build one. That
+    wants the live suite, and it is a gap in coverage rather than a
+    hole in this gate."""
     from cythonix_bindings import MockDerivedPath, MockLocalStore
 
     mock = MockLocalStore()
@@ -954,6 +962,12 @@ def test_every_wire_value_survives_its_own_round_trip(
     # value libstore will parse - the hash and the content address
     # come from a path this store actually holds - so the only thing
     # made up is which value goes where.
+    #
+    # NO TWO PARTS SHARE A VALUE, and that is load-bearing rather than
+    # tidy. It is what catches a body that SWAPS two fields - writing
+    # `u.narSize = registration_time` drops nothing and survives every
+    # check above, and comes back visibly wrong here. Give two parts
+    # the same value and swaps between those two go dark.
     #
     # `sorted`, because references cross in the order libstore's own
     # std::set keeps them and the binding's `<` is that same
