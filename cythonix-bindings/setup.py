@@ -104,6 +104,7 @@ LIBRARY = {
     "hash": "nix",
     "signature": "nix",
     "content_address": "nix",
+    "derived_path": "nix",
     "realisation": "nix",
     "pathinfo": "nix",
     "store": "nix",

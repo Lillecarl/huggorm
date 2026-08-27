@@ -15,12 +15,15 @@ import pytest
 
 from cythonix_bindings import (
     ContentAddress,
+    DerivedPathBuilt,
     DrvOutput,
     Hash,
     HashAlgorithm,
+    OutputsSpec,
     PathInfo,
     Realisation,
     Signature,
+    SingleDerivedPathBuilt,
     Store,
     StoreLocation,
     StorePath,
@@ -1135,6 +1138,19 @@ def test_every_wire_value_survives_its_own_round_trip(
                      held, []),
             [(DrvOutput(Hash(HashAlgorithm.SHA1, bytes(20)), "dev"),
               other, [Signature("k", bytes(64))])]),
+        # The SUM types. `drv_path` is a union, so the second case
+        # takes the OTHER arm - and for the Single one that arm is
+        # another SingleDerivedPathBuilt, which is the recursion.
+        # Sorted, because names come back in the std::set's order and
+        # `_parts` never produces them any other way.
+        "OutputsSpec": (OutputsSpec(all=True), [(False, ["dev", "out"])]),
+        "SingleDerivedPathBuilt": (
+            SingleDerivedPathBuilt(held, "out"),
+            [(SingleDerivedPathBuilt(other, "dev"), "man")]),
+        "DerivedPathBuilt": (
+            DerivedPathBuilt(held, OutputsSpec(all=True)),
+            [(SingleDerivedPathBuilt(other, "out"),
+              OutputsSpec(all=False, names=["dev"]))]),
         "StorePath": (held, [(other.to_string(),)]),
         "PathInfo": (info, [populated]),
         "StoreLocation": (

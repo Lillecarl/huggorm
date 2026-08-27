@@ -42,6 +42,11 @@ what is left to do; when it is gone, so is the mock.
 """
 
 from .content_address import ContentAddress
+from .derived_path import (
+    DerivedPathBuilt,
+    OutputsSpec,
+    SingleDerivedPathBuilt,
+)
 from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
 from .hash import Hash
 from .mock_store import (
@@ -85,6 +90,7 @@ _async_twins = {"pathlib.Path": "anyio.Path"}
 __all__ = [
     "ContentAddress",
     "ContentAddressMethod",
+    "DerivedPathBuilt",
     "DrvOutput",
     "EvalState",
     "Hash",
@@ -95,9 +101,11 @@ __all__ = [
     "MockRemoteStore",
     "MockStore",
     "MockStorePath",
+    "OutputsSpec",
     "PathInfo",
     "Realisation",
     "Signature",
+    "SingleDerivedPathBuilt",
     "Store",
     "StoreLocation",
     "StorePath",
