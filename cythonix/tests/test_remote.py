@@ -626,6 +626,37 @@ async def test_a_reference_list_crosses_both_ways(
     await store.aclose()
 
 
+async def test_a_NESTED_value_crosses_as_an_argument(
+        client: Any, tmp_path: Any) -> None:
+    """`query_realisation` takes a DrvOutput, which holds a Hash.
+
+    A wire value has crossed as an argument since `is_valid_path` took
+    a StorePath, and bytes have crossed since `add_to_store` took a
+    file's contents. What is new here is a message argument that
+    itself CONTAINS a message: DrvOutput -> Hash -> raw digest bytes.
+    The client encodes that nesting and the server decodes it, which
+    is the direction a returned value never exercises.
+
+    The answer is None, and that is the store's own: `ca-derivations`
+    is off, so libstore consults no mapping.
+
+    WHAT THIS DOES NOT PROVE, said plainly rather than implied: the
+    answer does not depend on the digest, so a client that mangled it
+    would still get None. Nothing bound today echoes a value back, so
+    there is nothing to ask. The round-trip gate in test_store.py is
+    where the codec's fidelity is proven; this proves the RPC layer
+    builds and accepts the nested message at all, which is the part
+    that gate cannot see."""
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    key = cythonix_bindings.DrvOutput(
+        cythonix_bindings.Hash(
+            cythonix_bindings.HashAlgorithm.SHA256, bytes(range(32))),
+        "out")
+
+    assert await store.query_realisation(key) is None
+    await store.aclose()
+
+
 async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
     with pytest.raises(TypeError, match="threading policy"):
         await client.call_function("gc_release_thread")

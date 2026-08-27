@@ -15,9 +15,11 @@ import pytest
 
 from cythonix_bindings import (
     ContentAddress,
+    DrvOutput,
     Hash,
     HashAlgorithm,
     PathInfo,
+    Realisation,
     Signature,
     Store,
     StoreLocation,
@@ -906,6 +908,88 @@ async def test_the_async_wrapper_hands_back_an_anyio_path(
     await store.aclose()
 
 
+# --- realisations ---------------------------------------------------
+
+
+def test_a_store_with_no_ca_derivations_realises_nothing(
+        chroot: Store) -> None:
+    """None, and it is the store's answer rather than a gap.
+
+    `ca-derivations` is an experimental feature and it is off here, so
+    `LocalStore::queryRealisationUncached` hands back nothing for EVERY
+    id without consulting a mapping. That is a real answer - this store
+    cannot tell you - and it is a different fact from "that output was
+    never realised". Nothing in the API separates the two, and this
+    test pins the shape rather than pretending it does.
+
+    Asked with a real key, not a null one: the point is that a
+    well-formed question gets None, not that a malformed one does."""
+    key = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out")
+    assert chroot.query_realisation(key) is None
+
+
+def test_a_realisation_key_is_two_facts_and_a_rendering() -> None:
+    """DrvOutput is the key a caller BUILDS, so it is constructible.
+
+    The hash is a `Hash` rather than a string, which is what lets a
+    caller ask for the algorithm instead of splitting `to_string` on a
+    colon - and `to_string` is upstream's own `<hash>!<output>`, with
+    the hash base16 and prefixed, which is what `DrvOutput::parse`
+    reads back."""
+    key = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(range(32))), "dev")
+
+    assert key.drv_hash().algorithm() == HashAlgorithm.SHA256
+    assert key.output_name() == "dev"
+
+    # Upstream's spelling, and the two halves are visible in it. The
+    # hash carries its algorithm here where `Hash.base16()` does not:
+    # `DrvOutput::to_string` calls `strHash()`, which is base16 WITH
+    # the prefix, because `DrvOutput::parse` reads it back.
+    assert str(key) == f"sha256:{key.drv_hash().base16()}!dev"
+    assert str(key).startswith("sha256:000102")
+    assert str(key).endswith("!dev")
+
+    # It compares as its C++ does, over exactly the two members the
+    # wire carries - so equal keys hash alike and a set of them
+    # deduplicates.
+    same = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(range(32))), "dev")
+    assert key == same and hash(key) == hash(same)
+    assert len({key, same}) == 1
+    assert key != DrvOutput(Hash(HashAlgorithm.SHA256, bytes(range(32))), "out")
+
+
+def test_a_realisation_compares_on_its_signatures_where_nix_does_not(
+        chroot: Store) -> None:
+    """A deliberate divergence, pinned so it cannot drift back.
+
+    `nix::UnkeyedRealisation` compares on `outPath` alone - upstream
+    writes GENERATE_CMP over that one member and comments "TODO
+    sketchy that it avoids signatures" - and nix::Realisation's
+    defaulted operators inherit it. So in C++ two of these differing
+    only in who signed them are EQUAL.
+
+    The binding cannot follow that. `__hash__` is derived from the
+    declared parts and `signatures` is one of them, so two objects
+    that compared equal would hash differently - which breaks the one
+    invariant Python asks of a value. Equality is over the parts here,
+    and this is the case where that shows."""
+    held = chroot.add_to_store("realised", b"x", CA.NAR, HashAlgorithm.SHA256)
+    key = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out")
+
+    bare = _rebuild(Realisation, key, held, [])
+    signed = _rebuild(Realisation, key, held, [Signature("k", bytes(64))])
+
+    # Same id, same path, different signatures. libstore says equal.
+    assert bare.id() == signed.id()
+    assert bare.out_path() == signed.out_path()
+    assert bare != signed, "the binding compares signatures; libstore does not"
+    assert hash(bare) != hash(signed)
+
+    # ...and the invariant that forces it.
+    same = _rebuild(Realisation, key, held, [Signature("k", bytes(64))])
+    assert same == signed and hash(same) == hash(signed)
+
+
 # --- the wire-value round trip --------------------------------------
 
 
@@ -921,6 +1005,17 @@ def _wire_values() -> dict[str, str]:
             for group in ("wrappers", "returned_types")
             for name, entry in manifest[group].items()
             if entry["wire"] == "value"}
+
+
+def _rebuild(kind: Any, *parts: Any) -> Any:
+    """`_from_parts`, reached the one way a typechecker allows.
+
+    The emitter skips every `_`-prefixed name when it writes the
+    stubs, so `Realisation._from_parts` is invisible to mypy and
+    should be: it is not surface. The round trip is exactly the
+    contract it exists for, so one `Any` here buys the test its only
+    way to build a PRODUCED value from parts."""
+    return kind._from_parts(*parts)
 
 
 def test_every_wire_value_survives_its_own_round_trip(
@@ -1027,6 +1122,19 @@ def test_every_wire_value_survives_its_own_round_trip(
             [(CA.FLAT, Hash(HashAlgorithm.SHA1, bytes(range(20))))]),
         "Signature": (Signature("cache.nixos.org-1", bytes(range(64))),
                       [("builder-2", bytes(range(1, 65)))]),
+        # A CA derivation's output, and what it turned out to be. Both
+        # constructed: a hermetic store answers None for every id,
+        # because `ca-derivations` is off and there is no mapping to
+        # consult - so nothing here can produce a real one, and the
+        # live test says so rather than this pretending.
+        "DrvOutput": (DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out"),
+                      [(Hash(HashAlgorithm.SHA1, bytes(20)), "dev")]),
+        "Realisation": (
+            _rebuild(Realisation,
+                     DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out"),
+                     held, []),
+            [(DrvOutput(Hash(HashAlgorithm.SHA1, bytes(20)), "dev"),
+              other, [Signature("k", bytes(64))])]),
         "StorePath": (held, [(other.to_string(),)]),
         "PathInfo": (info, [populated]),
         "StoreLocation": (
