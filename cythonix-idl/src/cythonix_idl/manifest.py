@@ -42,6 +42,7 @@ generator asks this module instead.
 
 import ast
 import inspect
+from collections.abc import Sequence
 from typing import Any
 
 from cythonix_idl.declare import Decl
@@ -232,8 +233,24 @@ def words_entry(cls: Class, package: str, module: str) -> dict[str, Any]:
     }
 
 
+def _ctor_params(cls: Class, functions: Sequence[Method] = ()) -> tuple:
+    """The parameters a caller passes to build one of these.
+
+    Two sources, and only one applies to any class. An ordinary class
+    declares `__init__` and that is the signature. A `@produced(by=X)`
+    class is built by X, so X's parameters are what a caller passes -
+    including X's defaults, which is the part that was being lost."""
+    if cls.decl.built_by:
+        made = next((f for f in functions if f.name == cls.decl.built_by),
+                    None)
+        if made is not None:
+            return tuple(made.params)
+    return tuple(cls.ctor.params) if cls.ctor is not None else ()
+
+
 def entry(cls: Class, package: str, module: str,
-          final: bool = True) -> dict[str, Any]:
+          final: bool = True,
+          functions: Sequence[Method] = ()) -> dict[str, Any]:
     """One wrapper entry, in the manifest's own key order.
 
     Key order matters only for reading a diff, and a diff of this
@@ -302,8 +319,17 @@ def entry(cls: Class, package: str, module: str,
         # whose methods cannot block needs neither.
         "wrapped": threading == "affine" or decl.blocking,
         "dunders": dunders(decl),
-        "ctor": [_param(p) for p in
-                 (cls.ctor.params if cls.ctor is not None else ())],
+        # The FACTORY's parameters for a produced class, not the
+        # `__init__` beside it. A `@produced(by=X)` class is built by
+        # X, so X owns the signature - and reading the constructor
+        # instead lost `open_store`'s `uri="auto"` everywhere at once:
+        # the binding, the stub, the manifest and `AsyncStore`, which
+        # required an argument the declaration said was optional.
+        #
+        # `read.py` refuses parameters on such an `__init__` now, so
+        # the two cannot disagree again. This is the other half: the
+        # one place they are read from.
+        "ctor": [_param(p) for p in _ctor_params(cls, functions)],
         # SURFACE only. A declaration may declare a private method -
         # `Value._identity` is what the RPC tree walk reads to visit a
         # shared value once - and the emitter binds it, because the

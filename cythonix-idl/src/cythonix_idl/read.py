@@ -559,6 +559,26 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             continue
         if item.name == "__init__":
             ctor = _method(item, vocab)
+            if decl.built_by and ctor.params:
+                # A `@produced(by=X)` class is built by X, so X owns
+                # the signature. Declaring it twice is how the
+                # `uri="auto"` default died: `open_store` carried it,
+                # `__init__` did not, and the emitter read the wrong
+                # one - so `Store()` raised, `AsyncStore()` required
+                # an argument, and the stub and the manifest agreed
+                # with each other about the wrong thing.
+                #
+                # The `__init__` is still worth writing: it is where
+                # the PROSE goes, and a caller reading the declaration
+                # looks for it under the name they will call. Only the
+                # parameters are refused.
+                raise DeclarationError(
+                    item,
+                    f"{node.name}.__init__ declares parameters, but "
+                    f"@produced(by={decl.built_by!r}) says "
+                    f"{decl.built_by} builds one - so {decl.built_by} "
+                    f"owns the signature. Move them there and leave "
+                    f"the docstring here.")
         elif not item.name.startswith("__"):
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.

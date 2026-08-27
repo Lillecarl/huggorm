@@ -100,7 +100,8 @@ def declared_entries() -> dict[str, dict]:
         mod = read(str(HERE / name))
         known = mod.known
         for cls in mod.classes:
-            entry = manifest.entry(cls, PACKAGE, mod.name, final=False)
+            entry = manifest.entry(cls, PACKAGE, mod.name, final=False,
+                                   functions=mod.functions)
             # A SUBCLASS carries its base's methods, because that is
             # what deriving means on both sides of the binding: C++
             # inherits them and so does the Python class nanobind

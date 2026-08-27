@@ -152,18 +152,23 @@ class Store:
     `Store("dummy://")` is in-memory. `Store("auto")` is whatever the
     ambient configuration says, which usually means the daemon."""
 
-    def __init__(self, uri: Str) -> None:
+    # PROSE only, and the reader enforces that. `@produced(by=...)`
+    # above names `open_store` as what builds one, so `open_store`
+    # owns the signature - its parameters and its defaults are what a
+    # caller passes to `Store(...)`. Declaring them here too is how
+    # the `uri="auto"` default died: two statements of one signature,
+    # and the emitter read the one without the default.
+    #
+    # Written anyway, because this is where a caller looks: they call
+    # `Store(...)`, not `open_store(...)`, and the docstring belongs
+    # under the name they type.
+    def __init__(self) -> None:
         """Open a store from a URI.
 
         Not a C++ constructor. nix::Store is abstract and its
         implementation is chosen by the URI, so `@produced(by=...)`
         above names the factory that makes one - which is the same
-        fact the binding carries as `_ctor_from`.
-
-        The PARAMETERS are the constructor's, though, and they are
-        what a caller sees: `Store(uri)` is the Python surface either
-        way, so the declaration states it here rather than leaving the
-        signature to be reflected off a compiled class."""
+        fact the binding carries as `_ctor_from`."""
 
     # Reads a string the config already holds. Releasing the GIL
     # around it would cost two thread-state transitions to save
