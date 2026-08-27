@@ -572,8 +572,8 @@ def _signature(cls: Class, m: Method,
 
 
 def _identity_semantics(cls: Class,
-                        known: dict[str, Class] | None = None
-                        ) -> list[str]:
+                        known: dict[str, Class] | None = None,
+                        equality: bool = True) -> list[str]:
     """The repr and the hash every wire value owes a reader.
 
     Both from the declared PARTS, and both through the Python object.
@@ -588,7 +588,13 @@ def _identity_semantics(cls: Class,
 
     The hash agrees with equality because it hashes the same parts in
     the same order, and equality is either those parts or a C++
-    `operator==` over the members they are read from."""
+    `operator==` over the members they are read from.
+
+    `equality=False` for a RECORD, whose `__eq__` came from
+    `_record_semantics` one line earlier. Emitting both put two
+    overloads on one name: nanobind tries them in order, the typed
+    one matches every same-type comparison, and the parts one never
+    ran. They agreed only because the members ARE the parts."""
     fields = wire_fields(cls)
     if not fields and cls.decl.shown:
         # A value that declares no FIELDS and one thing worth showing.
@@ -607,7 +613,7 @@ def _identity_semantics(cls: Class,
         f"{NAMESPACE}::as_tuple({read})" if wire.startswith("list[") else read
         for _, wire, read in fields)
     out = []
-    if cls.decl.compare != "cxx":
+    if equality and cls.decl.compare != "cxx":
         # Equal when the SAME CLASS carries the same declared parts.
         #
         # `b.type().is(a.type())` rather than isinstance: a subclass
@@ -1292,7 +1298,9 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
                  f"{{ return {obj}.{name}; }})"
                  for name, _ in record_fields(cls, known)]
         body += _record_semantics(cls, known)
-        body += _identity_semantics(cls, known)
+        # ...which owns `__eq__` for a record, so this contributes
+        # the repr and the hash alone.
+        body += _identity_semantics(cls, known, equality=False)
         body += _round_trip(cls)
         body += _value_semantics(cls)
         if body:
