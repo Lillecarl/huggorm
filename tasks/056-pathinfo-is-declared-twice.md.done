@@ -120,6 +120,39 @@ case agree with the first fails with
     PathInfo: ['ultimate'] holds one value in every case, so this test
     would pass with it dropped from _from_parts.
 
+## Every new gate was watched to fail
+
+Four were added and all four were perturbed, because a gate nobody has
+seen fail is not known to hold.
+
+`_from_parts` drops a field outright - the BUILD stops:
+
+    PathInfo._from_parts never mentions 'ultimate', which crosses the
+    wire. A body that drops a part compiles and loses it in silence.
+
+`_from_parts` names the field and does not carry it - the round trip
+stops, naming it:
+
+    PathInfo does not survive its own round trip. ['ultimate'] changed
+
+A second case that agrees with the first - the anti-shadow rule stops
+it, naming the part:
+
+    PathInfo: ['ultimate'] holds one value in every case, so this test
+    would pass with it dropped from _from_parts.
+
+An `@reads` accessor given a parameter - refused, because a member is
+read and there is nowhere for an argument to go:
+
+    nar_size: @reads names a data member, so this accessor takes no
+    parameters.
+
+A `fields=` entry naming no accessor - refused rather than emitting a
+binding that reads nothing:
+
+    StorePath: 'no_such_accessor' is declared a wire field and names
+    no accessor of this class that answers anything.
+
 ## What the emitter gained on the way
 
 - `@reads` works on a plain accessor, not only on a `@property`. A
