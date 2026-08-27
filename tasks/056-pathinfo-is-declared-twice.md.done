@@ -1,0 +1,163 @@
+# PathInfo is declared twice, and the two disagree
+
+**DONE.** `PathInfo` binds `nix::ValidPathInfo`, in `decl/pathinfo.py`
+beside the header that type comes from. `decl/store.py` imports it and
+`query_path_info` is one line. There is one declaration of PathInfo,
+and it is the real type.
+
+## Problem
+
+One C++ type, `nix::ValidPathInfo`, had two declarations with
+different surfaces. Only one was built.
+
+    decl/store.py     PathInfo         SHIPPED (in NANOBIND)
+    decl/pathinfo.py  ValidPathInfo    read only by gates/nbcheck.py
+
+| method | store.py | pathinfo.py |
+| --- | --- | --- |
+| `store_path()` | absent | `StorePath` |
+| `path()` | `StorePath` | `str`, store dir joined on |
+| `deriver()` | `StorePath \| None` | `str \| None` |
+
+Three methods differed in TYPE and one existed in only one of them.
+That is the F1 and F7a shape - one fact stated twice, and something
+reading the wrong statement - at the scale of a whole type.
+
+Found by Carl asking why `@cxx_parts` exists at all.
+
+## What was done, in two steps
+
+**First half.** `decl/pathinfo.py` was DELETED. It described a
+`path()` this repo does not ship, and the corpus gate was judging a
+surface nobody got. PathInfo stayed synthetic, in `decl/store.py`,
+beside its producer - a synthetic value binds no Nix class, so "one
+Nix class, one file" did not yet cover it.
+
+**Second half, this file's subject.** The file was EARNED back when
+PathInfo became `nix::ValidPathInfo`, because `path-info.hh` is that
+type's header. Binding the real type, the move, `store_dir` joining
+the wire and the hand-written `_from_parts` are one decision:
+`_from_parts` cannot be written without `store_dir` on the wire, so
+the wire moves with the type whatever the order. Same-version-only
+(055) made that free.
+
+## Why there were two
+
+`decl/store.py` used `@cxx_parts`: a prelude plus one C++ expression
+per declared field, which declared a POD struct `cythonix::PathInfo`
+whose members ARE the wire types. That field map was a second
+description of PathInfo, in a second vocabulary, on the method that
+RETURNS one.
+
+`@cxx_parts` was removed before this task ran, and the map became
+designated initialisers in an ordinary body. That closed the second
+vocabulary and left the second TYPE, which is what this closed.
+
+## What binding the real type cost, and what it bought
+
+`nix::ValidPathInfo` is not an aggregate: it has a virtual base, no
+default constructor, and its only constructor takes an
+`UnkeyedValidPathInfo`, which needs the store directory. Three parts
+cross rendered and are parsed back. So `_from_parts` is eleven lines
+of C++ where the struct's was one.
+
+Against that: the nine-field copy on every `query_path_info` is gone,
+`query_path_info` is `return *s.queryPathInfo(path);`, and there is
+one PathInfo rather than two.
+
+Five of ten accessors are DERIVED - `@reads` names the member and the
+emitter writes the whole binding. The five with bodies are all the
+same kind of thing: a rendering.
+
+## Surface changes, listed rather than silent
+
+- `store_dir` appears. New accessor, new wire field. It is the
+  LOGICAL store directory - `/nix/store` even for a chroot store -
+  and `real_path` still answers where the bytes are.
+- `registration_time` is `int | None` where it was `int` with 0
+  meaning unknown. Upstream keeps a `time_t` and spells "unknown" as
+  0, which is also a real Unix time.
+- The wire ORDER gains `store_dir` in second place. Everything else
+  keeps its position.
+- `PathInfo` moves to `cythonix_bindings.pathinfo`. The package
+  re-exports it, so `from cythonix_bindings import PathInfo` is
+  unchanged.
+
+`path()` did NOT change, and that was a condition. Upstream's
+`ValidPathInfo::path` is a StorePath member called `path`; an earlier
+sketch renamed it to `store_path()` and gave `path()` a rendered
+string, copied from the declaration this repo does not ship - which
+is the mistake having two declarations causes, made while proposing
+to fix it.
+
+## What the perturbation found: the gate was half asleep
+
+The task said to write the bijection with one field dropped and watch
+the round-trip gate fail naming it. Two gates were run.
+
+**The reader gate fired.** Deleting `u.ultimate = ultimate;` outright
+stopped the BUILD:
+
+    PathInfo._from_parts never mentions 'ultimate', which crosses the
+    wire. A body that drops a part compiles and loses it in silence.
+
+**The round-trip gate did NOT.** Keeping the mention and writing
+`u.ultimate = false;` instead passed the whole suite. The gate built
+its only PathInfo from an ADDED path, whose `ultimate` is already
+false - so the dropped field was invisible.
+
+The same shadow covered `deriver`, `registration_time`, `references`
+and `sigs`. Five of ten parts were asleep: any part sitting at its
+C++ default proves nothing, however many times it round-trips.
+
+**The fix is a second case per type, and a rule.** Each wire value now
+lists a case whose every part differs from the producer's, and the
+test refuses to pass while any part holds one value across all of
+them - naming the part. Both halves were perturbation-verified: the
+round trip now fails on the dropped `ultimate`, and making the second
+case agree with the first fails with
+
+    PathInfo: ['ultimate'] holds one value in every case, so this test
+    would pass with it dropped from _from_parts.
+
+## What the emitter gained on the way
+
+- `@reads` works on a plain accessor, not only on a `@property`. A
+  member read cannot be bound by pointer, because `.def` takes a
+  function and `&T::narSize` is not one.
+- A wire value may carry its own `_from_parts` BODY. The emitter still
+  owns the signature - one typed parameter per wire field, in order -
+  so a written body can only consume what `_parts` sent.
+- A wire value that declares no parts crosses as every accessor it
+  has, in declaration order, whether or not the emitter wrote the
+  struct. Listing ten names that are already ten `def`s one screen
+  above is a second declaration of one fact. When an accessor must be
+  kept OFF the wire, the place to say so is that accessor.
+- A quoted annotation means what the same annotation means unquoted.
+  `"I64 | None"` asked the emitter for a class called I64, because a
+  string annotation never resolved the vocabulary.
+- `produced` is its own question. `is_value` stood in for it, and
+  `is_value` means "the emitter wrote the struct" - which stops being
+  the same thing the moment a produced value binds a real type.
+
+## Decided along the way
+
+**One class one file, and the extension grain stays per header.**
+`decl/pathinfo.py` compiles to `cythonix_bindings.pathinfo`, exactly
+as `decl/path.py` compiles to `path`. nanobind keeps one type registry
+per process and a module imports what it names, which `decl/store.py`
+already relies on for StorePath - so a third extension cost nothing
+and needed no new machinery. `generate.py`'s list did NOT become a
+mapping of module to files; there is nothing yet that wants one.
+
+## Not decided
+
+Whether the wire should carry rendered or structured values in
+general. `sigs`, `ca` and `nar_hash` are all rendered today, and each
+is parsed back by hand. `nix::Hash` as its own message is the
+alternative, and it makes the wire describe Nix's types rather than a
+caller's.
+
+`queryPathInfo` returns a cached `ref<const ValidPathInfo>` and the
+binding dereferences into a copy. Holding the share is available and
+is not wanted: a VALUE is what the store said when it was asked.
