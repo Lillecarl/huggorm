@@ -1044,3 +1044,49 @@ def test_every_wire_value_survives_its_own_round_trip(
             f"{name}: {asleep} holds one value in every case, so this "
             f"test would pass with it dropped from _from_parts. Give a "
             f"case where it differs.")
+
+
+@pytest.mark.live
+def test_a_real_store_object_survives_its_own_round_trip(
+        ambient_store: Store) -> None:
+    """The half the hermetic gate cannot reach: a REAL object.
+
+    The gate above builds its second PathInfo from a hand-written
+    parts tuple, so for every state a chroot store cannot produce -
+    a deriver, a registration time, a signature - it proves the PARSE
+    and not the render. Nothing had ever rendered those off an object
+    a store actually made (tasks/056).
+
+    This does. `sys.prefix` is a path something BUILT, so the store's
+    own answer carries what an added path does not, and the round trip
+    runs over that answer rather than over a tuple this file wrote.
+
+    It asserts what it relies on, and only what holds on ANY machine.
+    A deriver and a registration time are there whether the path was
+    built here or substituted; `ultimate` and `sigs` are the opposite
+    pair - built here gives ultimate and no signature, substituted
+    gives signatures and no ultimate - so this exercises one of the
+    two and cannot say which. Both are states a chroot store cannot
+    reach, which is the point.
+
+    It OVERLAPS the hermetic gate by design, and loses the race to it
+    on purpose: drop a field from `_from_parts` and the sandbox gate
+    fails first, because the cheaper gate should. What is left over is
+    the part only this one has - the object is real."""
+    path = ambient_store.parse_store_path(sys.prefix)
+    built: Any = ambient_store.query_path_info(path)
+
+    # The states a hermetic store cannot make. Without these the test
+    # would pass on a value no richer than the one already covered.
+    assert built.deriver() is not None
+    assert built.registration_time() is not None
+
+    parts = built._parts()
+    fields = [f for f, _ in type(built)._wire_fields]
+    back = type(built)._from_parts(*parts)._parts()
+    lost = [f for f, sent, got in zip(fields, parts, back, strict=True)
+            if sent != got]
+    assert not lost, (
+        f"a store's own PathInfo loses {lost} on the round trip:\n"
+        f"  sent:      {parts}\n"
+        f"  came back: {back}")

@@ -153,6 +153,29 @@ binding that reads nothing:
     StorePath: 'no_such_accessor' is declared a wire field and names
     no accessor of this class that answers anything.
 
+## The one gap, and it is closed
+
+The hermetic gate builds its second PathInfo from a hand-written parts
+tuple, so for every state a chroot store cannot produce - a deriver, a
+registration time, a signature - it proves the PARSE and not the
+render. Nothing had ever rendered those off an object a store actually
+made.
+
+`test_a_real_store_object_survives_its_own_round_trip` does, marked
+live. `sys.prefix` is a path something BUILT, and on this machine its
+PathInfo carries a deriver, a registration time, 23 references and
+`ultimate=True`.
+
+It asserts only what holds on any machine. Built-here gives `ultimate`
+and no signature; substituted gives signatures and no `ultimate`, so
+the test exercises one of the two and cannot say which. A deriver and
+a registration time are there either way.
+
+It overlaps the hermetic gate and loses to it on purpose: dropping
+`deriver` from `_from_parts` fails the SANDBOX gate first, verified,
+because the cheaper gate should win. What is left over is the part
+only this one has - the object is real.
+
 ## What the emitter gained on the way
 
 - `@reads` works on a plain accessor, not only on a `@property`. A
