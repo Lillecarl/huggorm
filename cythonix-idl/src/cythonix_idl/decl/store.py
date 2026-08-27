@@ -25,7 +25,6 @@ from cythonix_idl.declare import (
     blocks,
     cxx_body,
     cxx_name,
-    cxx_parts,
     header,
     instant,
     needs,
@@ -430,34 +429,48 @@ class Store:
     # PathInfo's own declaration - so what is left here is the one
     # thing nothing can derive: where libstore keeps each part.
     @needs("nix/store/path-info.hh")
-    @cxx_parts(
-        "auto info = s.queryPathInfo(path);",
-        path="info->path",
-        # Nix32 with the algorithm in front, because that is what
-        # `nix path-info` and a .narinfo print. The algorithm travels
-        # with the digest, so a caller is never told separately which
-        # one it is.
-        nar_hash="info->narHash.to_string(nix::HashFormat::Nix32,"
-                 " /*includeAlgo=*/true)",
-        nar_size="info->narSize",
-        # Straight across. libstore already keeps this as
-        # std::optional<nix::StorePath>, and the record's member has
-        # the same type - so absence stays absence rather than
-        # becoming a sentinel a reader has to know about.
-        deriver="info->deriver",
-        registration_time="static_cast<std::int64_t>("
-                          "info->registrationTime)",
-        ultimate="info->ultimate",
-        # Rendered, because there is no caster for nix::ContentAddress
-        # and `fixed:r:sha256:<hash>` is the spelling `nix path-info
-        # --json` prints.
-        ca="info->ca ? std::optional<std::string>(info->ca->render())"
-           " : std::nullopt",
-        references="as_list(info->references)",
-        # A set of nix::Signature, not of strings. Each one prints
-        # itself, which is what a caller wants to see.
-        sigs="to_strings(info->sigs)",
-    )
+    # An ordinary body, where this was `@cxx_parts`: a prelude plus
+    # one C++ expression per declared field. That map described
+    # PathInfo a second time, on the method that returns one -
+    # PathInfo's own accessors are already where its fields come from.
+    #
+    # DESIGNATED initialisers, and that is not style. `@cxx_parts`
+    # refused a map that missed a field or invented one, and a plain
+    # `{a, b, c}` loses that: `nar_size` and `registration_time` are
+    # different widths that convert to each other, so swapping them
+    # would compile. Naming each member moves the check to the C++
+    # compiler, which is stricter than the emitter was - it also
+    # enforces declaration ORDER.
+    # Each field, and why it is spelled the way it is. HERE rather
+    # than in the emitted C++: nobody edits generated code, so prose
+    # about a declaration belongs in the declaration (053).
+    #
+    # nar_hash  Nix32 with the algorithm in front, because that is
+    #           what `nix path-info` and a .narinfo print. The
+    #           algorithm travels with the digest, so a caller is
+    #           never told separately which one it is.
+    # deriver   Straight across. libstore keeps it as a
+    #           std::optional<nix::StorePath> and so does the struct,
+    #           so absence stays absence.
+    # ca        Rendered, because there is no caster for
+    #           nix::ContentAddress and `fixed:r:sha256:<hash>` is
+    #           what `nix path-info --json` prints.
+    # sigs      A set of nix::Signature, not of strings. Each one
+    #           prints itself, which is what a caller wants to see.
+    @cxx_body("""auto info = s.queryPathInfo(path);
+return cythonix::PathInfo{
+    .path = info->path,
+    .nar_hash = info->narHash.to_string(
+        nix::HashFormat::Nix32, /*includeAlgo=*/true),
+    .nar_size = info->narSize,
+    .deriver = info->deriver,
+    .registration_time = static_cast<std::int64_t>(info->registrationTime),
+    .ultimate = info->ultimate,
+    .ca = info->ca ? std::optional<std::string>(info->ca->render())
+                   : std::nullopt,
+    .references = as_list(info->references),
+    .sigs = to_strings(info->sigs),
+};""")
     def query_path_info(self, path: "StorePath") -> "PathInfo":
         """What this store knows about one path it holds.
 
@@ -472,11 +485,17 @@ class Store:
     # the GIL around it costs two thread-state transitions to
     # save nothing, and these are the calls a caller makes most.
     @instant
-    @cxx_parts(
-        "auto [store_path, sub] = s.config.toStorePath(path);",
-        path="store_path",
-        sub_path="sub.absOrEmpty()",
-    )
+    # An ordinary body. It used to be `@cxx_parts`: a prelude plus one
+    # C++ expression per declared field, which described StoreLocation
+    # a second time, on the method that returns one.
+    #
+    # StoreLocation's own accessors already say what its fields are -
+    # that is where `record_fields` reads them - so all this needs to
+    # say is how to build one. The emitter still declares the struct,
+    # because `toStorePath` answers a std::pair and there is no
+    # upstream type to bind.
+    @cxx_body("""auto [store_path, sub] = s.config.toStorePath(path);
+return cythonix::StoreLocation{store_path, sub.absOrEmpty()};""")
     def to_store_path(self, path: Str) -> "StoreLocation":
         """Which store path CONTAINS this file, and where inside it.
 

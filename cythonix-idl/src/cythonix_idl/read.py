@@ -167,14 +167,6 @@ class Method:
     # Headers this method's BODY needs, beyond its class's, from
     # @needs. Empty when the signature already names everything.
     headers: tuple[str, ...] = ()
-    # The call that produces a POD, from @cxx_parts. One or more C++
-    # statements; the emitter writes the struct and the return around
-    # them.
-    parts_prelude: str = ""
-    # Field name -> the C++ expression that yields it. A tuple rather
-    # than a dict because a Method is frozen and hashable, and a dict
-    # member is neither.
-    parts: tuple[tuple[str, str], ...] = ()
     # A C++ method a Python subclass may override, from @virtual. What
     # makes a trampoline necessary and what says which methods it
     # forwards.
@@ -487,8 +479,6 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         reads=getattr(marked, "_reads", ""),
         cxx_body=getattr(marked, "_cxx_body", ""),
         headers=tuple(getattr(marked, "_needs", ())),
-        parts_prelude=getattr(marked, "_cxx_parts", ("", {}))[0],
-        parts=tuple(getattr(marked, "_cxx_parts", ("", {}))[1].items()),
         virtual=bool(getattr(marked, "_virtual", False)),
         pure=bool(getattr(marked, "_pure", False)),
         startup=bool(getattr(marked, "_startup", False)),

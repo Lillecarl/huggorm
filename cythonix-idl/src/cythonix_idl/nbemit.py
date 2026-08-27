@@ -530,9 +530,6 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
     # A method may return nothing - `force` and the builders' setters
     # do - and a lambda with no return statement is void. Only the
     # branches that SPELL the return type need one.
-    if m.parts:
-        assert m.ret is not None
-        return _parts_method(cls, m, known or {})
     doc = _doc(m.doc)
     tail = f', "{doc}"' if doc else ""
     if m.cxx_body:
@@ -689,46 +686,6 @@ def _identity_semantics(cls: Class,
         f"{INDENT * 3}return nb::hash(nb::make_tuple({hashed}));",
         f"{INDENT * 2}}})",
     ]
-
-
-def _parts_method(cls: Class, m: Method,
-                  known: dict[str, Class]) -> list[str]:
-    """One `.def` that BUILDS a record and hands it back.
-
-    `@cxx_parts` carries the call and one expression per field. The
-    aggregate initialisation around them is derived, in the order the
-    record declares its members - so a field added to the value moves
-    the struct, the constructor, this initialiser and the accessors
-    together.
-
-    It also refuses a field map that misses a field or invents one.
-    Aggregate initialisation is positional, so a map with the right
-    count and the wrong names would compile and put every value in
-    the wrong slot."""
-    assert m.ret is not None
-    target = known[m.ret.python]
-    named = dict(m.parts)
-    want = [name for name, _ in record_fields(target, known)]
-    missing = [n for n in want if n not in named]
-    extra = [n for n in named if n not in want]
-    if missing or extra:
-        raise TypeError(
-            f"{m.name}: @cxx_parts must name every field of "
-            f"{target.name} and no other. Missing: {missing or 'none'}. "
-            f"Not a field: {extra or 'none'}.")
-    obj = _self(cls)
-    args = "".join(f", {_param(pr.type, known)[0]} {pr.name}"
-                   for pr in m.params)
-    body = [f"{INDENT * 4}{ln}".rstrip()
-            for ln in m.parts_prelude.strip().splitlines()]
-    body.append(f"{INDENT * 4}return {_held(target)}{{")
-    body += [f"{INDENT * 5}{named[n]}," for n in want]
-    body.append(f"{INDENT * 4}}};")
-    doc = _doc(m.doc)
-    return [f'{INDENT * 2}.def("{m.name}", '
-            f"[]({_held(cls)} &{obj}{args}) {{",
-            *body, f"{INDENT * 2}}}{_extras(cls, m, known)}"
-            + (f', "{doc}"' if doc else "") + ")"]
 
 
 def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
@@ -1555,8 +1512,8 @@ def bindable(mod: Module) -> tuple[Class, ...]:
 
     A vocabulary has no C++ object, so there is nothing to bind: it
     crosses as the string its member already is. A produced value has
-    no C++ type either - `@cxx_parts` flattens a libstore object into
-    slots - so it has no
+    no C++ type either - the emitter declares its struct from the
+    fields it declares - so it has no
     `nb::class_` to be until the declaration names the type it came
     from.
 
