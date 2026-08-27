@@ -130,11 +130,15 @@ rec {
   # in this file: the modules COMPILE from the declarations, they
   # import, and 158 tests drive them.
   #
-  # This one is left because its reference is not in this repo.
+  # This one is left because what it reads is not in this repo.
   # ~/Code/nanopynix is hand-written, tested nanobind over the same
-  # library, so emitting against it says something the build cannot -
-  # and it is skipped with a reason on a machine that does not have
-  # it.
+  # library, so emitting against it says something the build cannot.
+  #
+  # A corpus, not a reference. It is hand-written and therefore
+  # inconsistent, and the emitter is meant to beat it rather than
+  # match it - so the gate classifies every difference instead of
+  # demanding there be none. Skipped with a reason on a machine that
+  # does not have it.
   spike = pkgs.writeShellApplication {
     name = "spike";
     runtimeInputs = [ ourPython ];

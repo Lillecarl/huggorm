@@ -1,33 +1,45 @@
 """
-The nanobind gate: emitted bindings against nanopynix's hand-written.
+The nanobind gate: emitted bindings against a hand-written corpus.
 
-The repo's own bindings are no reference: they ARE what this emitter
-writes, so diffing a file against itself proves nothing. nanopynix is
-the reference instead - hand-written nanobind over the same library,
-tested and in use - and it is not in this repo, which is the whole
-point. It is skipped with a reason on a machine without it.
+nanopynix is NOT the reference and matching it is NOT the goal. It is
+hand-written, so it is inconsistent in the ordinary way hand-written
+code is: `nb::is_operator()` on some comparisons and not others,
+`__lt__` bound nowhere, a lambda where a method pointer would do. The
+emitter is meant to be BETTER than that, and the only reason to read
+it at all is that it is real: tested nanobind over the same library,
+written by a person solving the same problems, and not in this repo -
+so it can say something the build cannot say about itself.
+
+Treat it as a corpus to mine, not a target to hit. Where the two
+agree there is no question to answer. Where they differ, one of them
+is wrong and the gate exists to make somebody say which.
+
+It is skipped with a reason on a machine without the checkout.
 
 ## Per accessor, not per line
 
 A `.def` chain has no meaningful order - `.def("a", ...).def("b",
 ...)` binds the same class either way - so this compares a DICT of
-accessor name to body. That is the honest unit: "does the emitter
-produce the same binding for `nar_hash`", not "does it produce it in
-the same position".
+accessor name to body. That is the honest unit: "what does each
+project bind for `nar_hash`", not "in what position".
 
-## Three kinds of difference, and only one is a failure
+## A difference is a question, and it must be answered
 
 **COSMETIC** - a lambda parameter named `i` where the emitter derives
 `vpi`. Invisible to Python. Pinned by name and printed.
 
 **BETTER** - the emitter is right and the hand-written file is wrong.
 `nb::is_operator()`, ordering, and binding a view by method pointer.
-Each names the evidence; each was verified, not assumed.
+Each names the evidence; each was verified, not assumed. This is the
+category the corpus exists to grow.
 
 **DIVERGENT** - the two projects disagree about the public API and
 only a person can settle it. `path` vs `base_name` is one.
 
-Anything else fails.
+An unclassified difference FAILS, and the answer is not always "add
+it to BETTER". The hand-written file may be the one that is right, in
+which case the fix belongs in the emitter and the difference should
+disappear rather than be excused.
 """
 
 import pathlib
@@ -241,7 +253,7 @@ def check_functions(decl_path: str) -> list[str]:
         stripped = [nogil(t) for t in theirs]
         bare = nogil(ours)
         if bare in stripped:
-            print(f"  {fn.name}: matches a nanopynix registration")
+            print(f"  {fn.name}: no difference to judge")
             pinned = BETTER.get((fn.name, "*"))
             if pinned:
                 pin, why = pinned
@@ -252,9 +264,11 @@ def check_functions(decl_path: str) -> list[str]:
                 else:
                     print(f"    EMITTER IS RIGHT ({pin}). {why}")
             continue
-        problems.append(f"  {fn.name}:")
-        problems.append(f"    nanopynix: {theirs[0][:150]}")
-        problems.append(f"    emitted:   {ours[:150]}")
+        problems.append(f"  {fn.name}: an unjudged difference. Say which "
+                        f"is right - and if it is theirs, fix the emitter "
+                        f"rather than recording the difference.")
+        problems.append(f"    hand-written: {theirs[0][:150]}")
+        problems.append(f"    emitted:      {ours[:150]}")
     return problems
 
 
@@ -300,13 +314,27 @@ def check(decl_path: str) -> list[str]:
                 print(f"    {name}: THE TWO PROJECTS DISAGREE. "
                       f"{DIVERGENT[(cls.name, name)]}")
             elif a is None:
-                problems.append(f"  {cls.name}.{name}: emitted, not in "
-                                f"nanopynix")
+                # BOUND HERE AND NOT THERE, which is the direction
+                # this gate wants. The corpus is hand-written, so what
+                # it does not bind is usually what nobody got round to
+                # - and an emitter derives the whole surface or none
+                # of it. Not a failure: the compiler proves the line
+                # is valid and the suite proves it works.
+                print(f"    {name}: BEYOND THE CORPUS - emitted here, "
+                      f"absent there.")
             elif b is None:
-                problems.append(f"  {cls.name}.{name}: in nanopynix, not "
-                                f"emitted")
+                # ...and this is the direction worth failing on. The
+                # corpus binds something the declaration cannot say,
+                # which is a gap in the vocabulary rather than a
+                # difference of opinion.
+                problems.append(
+                    f"  {cls.name}.{name}: hand-written there, missing "
+                    f"here. Something a person could express and the "
+                    f"declaration cannot - which is the gap to close.")
             else:
-                problems.append(f"  {cls.name}.{name}:")
+                problems.append(f"  {cls.name}.{name}: an unjudged "
+                                f"difference. Say which is right - and if "
+                                f"it is theirs, fix the emitter.")
                 problems.append(f"    hand-written: {a[:150]}")
                 problems.append(f"    emitted:      {b[:150]}")
     return problems

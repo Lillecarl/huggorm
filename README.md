@@ -104,8 +104,9 @@ once.
 `generate.py` names the declarations that own a module. A declaration
 not in that list emits nothing: `decl/pathinfo.py`, `decl/nixstore.py`
 and `decl/storefns.py` are read only by `gates/nbcheck.py`, which
-emits them against the hand-written nanobind in `~/Code/nanopynix` and
-is skipped on a machine without it.
+compares them against the hand-written nanobind in `~/Code/nanopynix`
+- a corpus to beat rather than a reference to match - and is skipped
+on a machine without it.
 
 ### cythonix-bindings
 

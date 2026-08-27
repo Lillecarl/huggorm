@@ -118,12 +118,28 @@ fails to build.
 
     nix run --file . spike
 
-`gates/nbcheck.py` emits every declaration and diffs the result
-against the hand-written nanobind in `~/Code/nanopynix`, binding by
-binding. Where the two disagree it says which one is right and why -
-`nb::is_operator()` on a comparison, an ordering the declaration asks
-for, a view returned by method pointer. It is skipped with a reason on
-a machine without that checkout.
+`gates/nbcheck.py` emits every declaration and compares the result,
+binding by binding, against the hand-written nanobind in
+`~/Code/nanopynix`.
+
+That corpus is NOT the reference and matching it is NOT the goal.
+It is hand-written, so it is inconsistent the way hand-written code
+is - `nb::is_operator()` on some comparisons and not others, `__lt__`
+bound nowhere, a lambda where a method pointer would do. The emitter
+is meant to be BETTER. The only reason to read it is that it is real:
+tested nanobind over the same library, written by a person solving
+the same problems, and not in this repo - so it says something the
+build cannot say about itself.
+
+Where the two agree there is no question. Where they differ, one of
+them is wrong, and the gate makes somebody say which: COSMETIC,
+BETTER (with the evidence pinned, so the emitter cannot regress into
+agreement), or DIVERGENT. An unjudged difference fails - and the
+answer is not always "we are right". A binding the corpus has and the
+declaration cannot express is a gap in the vocabulary, and that is
+the direction worth mining.
+
+It is skipped with a reason on a machine without that checkout.
 
 `decl/pathinfo.py`, `decl/nixstore.py` and `decl/storefns.py` exist
 only for that gate. The declarations the BUILD reads are listed in
