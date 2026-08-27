@@ -37,11 +37,13 @@ advertised them would be advertising scaffolding. They are still in
 `cythonix_bindings` for the tests that use them.
 """
 
+from cythonix_bindings import ContentAddress as ContentAddress
 from cythonix_bindings import ContentAddressMethod as ContentAddressMethod
 from cythonix_bindings import EvalState as EvalState
 from cythonix_bindings import Hash as Hash
 from cythonix_bindings import HashAlgorithm as HashAlgorithm
 from cythonix_bindings import PathInfo as PathInfo
+from cythonix_bindings import Signature as Signature
 from cythonix_bindings import Store as Store
 from cythonix_bindings import StoreLocation as StoreLocation
 from cythonix_bindings import StorePath as StorePath
@@ -74,6 +76,7 @@ __all__ = [
     "AsyncStore",
     "AsyncValue",
     "ConnectionExpired",
+    "ContentAddress",
     "ContentAddressMethod",
     "EvalState",
     "EvalStateLike",
@@ -84,6 +87,7 @@ __all__ = [
     "RPCEvalState",
     "RPCStore",
     "RPCValue",
+    "Signature",
     "Store",
     "StoreLike",
     "StoreLocation",

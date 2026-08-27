@@ -98,8 +98,18 @@ def nb_runtime() -> str:
 # Which library each nanobind module links. A declaration names the
 # C++ it binds; which package ships that C++ is the build's fact, and
 # this is the one place it is written down.
-LIBRARY = {"path": "nix", "hash": "nix", "pathinfo": "nix", "store": "nix",
-           "eval": "mock", "mock_store": "mock"}
+LIBRARY = {
+    # Real Nix.
+    "path": "nix",
+    "hash": "nix",
+    "signature": "nix",
+    "content_address": "nix",
+    "pathinfo": "nix",
+    "store": "nix",
+    # The mock, on its way out.
+    "eval": "mock",
+    "mock_store": "mock",
+}
 
 
 def nanobind_extension(module: str) -> Extension:

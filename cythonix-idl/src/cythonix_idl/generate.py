@@ -49,6 +49,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 NANOBIND = (
     "decl/path.py",
     "decl/hash.py",
+    "decl/signature.py",
+    "decl/content_address.py",
     "decl/pathinfo.py",
     "decl/store.py",
     "decl/eval.py",

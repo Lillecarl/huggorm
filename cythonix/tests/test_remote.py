@@ -424,8 +424,13 @@ async def test_a_path_info_crosses_as_a_value(
     # An optional SCALAR field, across the wire, on the arm that has
     # a value. proto3 gives it presence through a synthetic oneof, so
     # this is exact rather than a guess from truthiness (tasks/048).
+    # ...and it is a MESSAGE with a message inside it, so this is
+    # also the first nested wire-value to cross: a ContentAddress
+    # holding a Hash holding an algorithm and raw digest bytes.
     ca = info.ca()
-    assert ca is not None and ca.startswith("fixed:")
+    assert ca is not None and str(ca).startswith("fixed:")
+    assert ca.hash().algorithm() == "sha256"
+    assert len(ca.hash().digest()) == 32
 
     assert info.references() == []
     assert isinstance(info.references(), list)

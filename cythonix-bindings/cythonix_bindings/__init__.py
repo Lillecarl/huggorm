@@ -41,6 +41,7 @@ counterpart lands and takes the plain name, so the prefix is a map of
 what is left to do; when it is gone, so is the mock.
 """
 
+from .content_address import ContentAddress
 from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
 from .hash import Hash
 from .mock_store import (
@@ -54,6 +55,7 @@ from .mock_store import (
 )
 from .path import StorePath
 from .pathinfo import PathInfo
+from .signature import Signature
 from .store import Store, StoreLocation
 from .words import ContentAddressMethod, HashAlgorithm
 
@@ -80,6 +82,7 @@ _errors_module = "cythonix_bindings.errors"
 _async_twins = {"pathlib.Path": "anyio.Path"}
 
 __all__ = [
+    "ContentAddress",
     "ContentAddressMethod",
     "EvalState",
     "Hash",
@@ -91,6 +94,7 @@ __all__ = [
     "MockStore",
     "MockStorePath",
     "PathInfo",
+    "Signature",
     "Store",
     "StoreLocation",
     "StorePath",

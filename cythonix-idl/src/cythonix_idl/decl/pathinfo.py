@@ -12,7 +12,10 @@ The C++ lives in bodies. The only strings here are C++.
 # The declaration this one names. A declaration names another
 # declaration's type by importing it, and the reader follows the
 # import.
+from cythonix_idl.decl.content_address import ContentAddress
+from cythonix_idl.decl.hash import Hash
 from cythonix_idl.decl.path import StorePath
+from cythonix_idl.decl.signature import Signature
 from cythonix_idl.declare import (
     I64,
     U64,
@@ -53,10 +56,15 @@ class PathInfo:
     # nothing lists them a second time.
     #
     # `@reads` is a data member the emitter binds whole. A `Cxx` body
-    # is a decision a person made, and every one of them here is the
-    # same decision: a RENDERING. libstore keeps a hash, a content
-    # address and a set of signatures as its own types, and a caller
-    # gets the text `nix path-info` prints.
+    # is a decision a person made.
+    #
+    # There used to be five bodies here and every one was the same
+    # decision: a RENDERING. libstore keeps a hash, a content address
+    # and a set of signatures as its own types, and the wire carried
+    # the text `nix path-info` prints - so a reader who wanted the
+    # algorithm, or which key signed a path, parsed the string back.
+    # Those three are their own messages now, and three of the bodies
+    # went with them.
 
     # UPSTREAM's name and UPSTREAM's type. `ValidPathInfo::path` is a
     # StorePath member called `path`, so this is a member read and
@@ -80,15 +88,14 @@ class PathInfo:
         without it. Upstream supports relocatable store objects, and
         different objects may carry different directories."""
 
-    def nar_hash(self) -> Str:
-        """The hash of the path's NAR serialisation, algorithm first:
-        `sha256:<base32>`, the same spelling `nix path-info` prints.
+    @reads("narHash")
+    def nar_hash(self) -> "Hash":
+        """The hash of the path's NAR serialisation.
 
-        The algorithm travels with the digest, so a caller is never
-        told separately which one it is."""
-        Cxx("""
-return self.narHash.to_string(nix::HashFormat::Nix32, /*includeAlgo=*/true);
-        """)
+        A `Hash`, so the algorithm is a field rather than a prefix:
+        `info.nar_hash().algorithm()` answers without splitting a
+        string, and `str(info.nar_hash())` still prints the
+        `sha256:<base32>` that `nix path-info` does."""
 
     @reads("narSize")
     def nar_size(self) -> U64:
@@ -118,22 +125,17 @@ return static_cast<std::int64_t>(self.registrationTime);
         """Whether this store built it itself, as opposed to receiving
         it from a substituter or an import."""
 
-    def ca(self) -> "Str | None":
+    @reads("ca")
+    def ca(self) -> "ContentAddress | None":
         """How this path's content addresses itself, or None.
 
-        `fixed:r:sha256:<hash>` for a path added to the store, which
-        is the same spelling `nix path-info --json` prints. None for a
-        path that was BUILT: an input-addressed output is named after
-        the derivation that made it, not after its own bytes, so
-        there is nothing to address by.
+        Present for a path ADDED to the store. None for one that was
+        BUILT: an input-addressed output is named after the derivation
+        that made it, not after its own bytes, so there is nothing to
+        address by.
 
-        None rather than "": the two are different answers, and the
-        wire carries them both across (tasks/048)."""
-        Cxx("""
-if (!self.ca)
-    return std::nullopt;
-return self.ca->render();
-        """)
+        None rather than an empty one: the two are different answers,
+        and the wire carries them both across (tasks/048)."""
 
     def references(self) -> "list[StorePath]":
         """The store paths this one points at, its own included when
@@ -148,13 +150,16 @@ return self.ca->render();
         set's."""
         Cxx("return as_list(self.references);")
 
-    def sigs(self) -> "list[Str]":
-        """Who vouched for this path, as `<key-name>:<base64>`.
+    def sigs(self) -> "list[Signature]":
+        """Who vouched for this path.
 
         Empty for a path this store added itself: a signature says a
         path came from somewhere and arrived intact, and a local add
-        travelled nowhere."""
-        Cxx("return to_strings(self.sigs);")
+        travelled nowhere.
+
+        Sorted, because Nix keeps them in a set and the order is that
+        set's."""
+        Cxx("return as_list(self.sigs);")
 
     # --- the wire's other half, where it belongs ---------------------
 
@@ -176,26 +181,26 @@ return self.ca->render();
         that never assigns `ultimate` compiles and zero-initialises it
         (tasks/056).
 
-        Three things make it longer than an aggregate.
+        Two things make it longer than an aggregate.
         nix::ValidPathInfo has a virtual base, so it is not an
-        aggregate at all; its only constructor takes an
-        UnkeyedValidPathInfo, which in turn needs the store directory;
-        and three parts arrive RENDERED and are parsed back.
+        aggregate at all, and its only constructor takes an
+        UnkeyedValidPathInfo - which in turn needs the store
+        directory.
 
-        `Signature::parse` one at a time rather than `parseMany`:
-        upstream instantiates that template for Strings and StringSet
-        only, and the parts arrive as a vector."""
+        There was a third: `nar_hash`, `ca` and `sigs` used to arrive
+        as TEXT and were parsed back here, with `Hash::parseAnyPrefixed`,
+        `ContentAddress::parse` and `Signature::parse`. They arrive as
+        themselves now, so three parses and their failure modes are
+        gone - a rendering that could not be re-read was a bug this
+        body could have; assigning a value it was handed is not."""
         Cxx("""
-nix::UnkeyedValidPathInfo u{
-    store_dir, nix::Hash::parseAnyPrefixed(nar_hash)};
+nix::UnkeyedValidPathInfo u{store_dir, nar_hash};
 u.deriver = deriver;
 u.references = as_set<nix::StorePathSet>(references);
 u.registrationTime = registration_time.value_or(0);
 u.narSize = nar_size;
 u.ultimate = ultimate;
-for (auto & s : sigs)
-    u.sigs.insert(nix::Signature::parse(s));
-if (ca)
-    u.ca = nix::ContentAddress::parse(*ca);
+u.sigs = as_set<std::set<nix::Signature>>(sigs);
+u.ca = ca;
 return nix::ValidPathInfo{path, std::move(u)};
         """)

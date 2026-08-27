@@ -13,15 +13,17 @@ from typing import Any
 
 import pytest
 
-from cythonix_bindings import ContentAddressMethod as CA
 from cythonix_bindings import (
+    ContentAddress,
     Hash,
     HashAlgorithm,
     PathInfo,
+    Signature,
     Store,
     StoreLocation,
     StorePath,
 )
+from cythonix_bindings import ContentAddressMethod as CA
 from cythonix_bindings.errors import (
     BadStorePath,
     InvalidPath,
@@ -246,8 +248,14 @@ def test_a_store_answers_for_a_path_it_holds(
     info = chroot.query_path_info(path)
 
     assert info.path() == path
-    assert info.nar_hash().startswith("sha256:")
     assert info.nar_size() > 0
+
+    # A Hash, not a string that starts with "sha256:". The algorithm
+    # is a FIELD, so a caller asks for it instead of splitting on a
+    # colon - and the rendering is still there for printing.
+    assert info.nar_hash().algorithm() == HashAlgorithm.SHA256
+    assert len(info.nar_hash().digest()) == 32
+    assert str(info.nar_hash()).startswith("sha256:")
 
     # Added, not built, so nothing derived it - and None is the answer
     # rather than a gap.
@@ -276,10 +284,16 @@ def test_a_store_answers_for_a_path_it_holds(
     # Added, so content-addressed: the path is named after its own
     # bytes and says how. The live test below reads the other arm,
     # where a BUILT path has none - and that arm is why the field is
-    # `str?` rather than a string that is sometimes empty.
+    # optional rather than a value that is sometimes empty.
+    #
+    # A ContentAddress, whose hash is itself a Hash: two levels of
+    # nesting where the wire used to carry `fixed:r:sha256:<hash>` and
+    # make every reader take it apart again.
     ca = info.ca()
     assert ca is not None
-    assert ca.startswith("fixed:"), ca
+    assert ca.method() == CA.NAR
+    assert ca.hash().algorithm() == HashAlgorithm.SHA256
+    assert str(ca).startswith("fixed:"), ca
 
     # Both empty, and both for a reason rather than by omission. This
     # add pins references to empty - Nix does not scan an added path
@@ -774,7 +788,7 @@ def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
     info = ambient_store.query_path_info(path)
 
     assert info.nar_size() > 0
-    assert info.nar_hash().startswith("sha256:")
+    assert info.nar_hash().algorithm() == HashAlgorithm.SHA256
     # None, not 0, when the store does not know. Upstream keeps a
     # time_t and spells "unknown" as 0 - which is also a real Unix
     # time - so the binding answers None and the test says which it
@@ -984,7 +998,7 @@ def test_every_wire_value_survives_its_own_round_trip(
         True,                           # ultimate
         other_info.ca(),                # ca
         sorted([held, other]),          # references
-        ["key-1:YWJj"],                 # sigs
+        [Signature("key-1", bytes(64))],  # sigs
     )
 
     # `Any`, because `_parts` and `_from_parts` are private: the
@@ -1004,6 +1018,15 @@ def test_every_wire_value_survives_its_own_round_trip(
         # constructed, and neither is a producer's answer.
         "Hash": (Hash(HashAlgorithm.SHA256, bytes(range(32))),
                  [(HashAlgorithm.SHA1, bytes(range(20)))]),
+        # A value with a value inside it. The second case differs in
+        # BOTH halves, so neither the method nor the nested hash can
+        # be dropped without this saying which.
+        "ContentAddress": (
+            ContentAddress(CA.NAR, Hash(HashAlgorithm.SHA256,
+                                        bytes(range(32)))),
+            [(CA.FLAT, Hash(HashAlgorithm.SHA1, bytes(range(20))))]),
+        "Signature": (Signature("cache.nixos.org-1", bytes(range(64))),
+                      [("builder-2", bytes(range(1, 65)))]),
         "StorePath": (held, [(other.to_string(),)]),
         "PathInfo": (info, [populated]),
         "StoreLocation": (
