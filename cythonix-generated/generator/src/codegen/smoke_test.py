@@ -21,6 +21,7 @@ import importlib
 import inspect
 import json
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -1302,6 +1303,130 @@ def test_annotations_resolve() -> None:
             except Exception as e:
                 failures.append(f"{label}: {type(e).__name__}: {e}")
     assert not failures, "unresolvable annotations:\n" + "\n".join(failures)
+
+
+def _rendered(sig: str) -> str:
+    """One nanobind signature, as (types) -> type.
+
+    Parameter NAMES are dropped and so are defaults. nanobind renders
+    a default as an opaque `\\0` placeholder, and the names are the
+    declaration's own - `"name"_a` comes straight off it, so comparing
+    them would compare the declaration with itself."""
+    body = sig[sig.index("(") + 1:sig.rindex(")")]
+    ret = sig[sig.rindex(")") + 1:].removeprefix(" -> ")
+    parts, depth, cur = [], 0, ""
+    for ch in body:
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    typed = [p.split(":", 1)[1].split("=")[0] if ":" in p else p
+             for p in (q.strip() for q in parts)
+             if p and p.strip() != "self"]
+    return f"({', '.join(_same(x) for x in typed)}) -> {_same(ret)}"
+
+
+def _same(spelling: str) -> str:
+    """One type, in the spelling both sides can be compared in.
+
+    Three differences are real and none of them is a disagreement:
+
+    - nanobind qualifies a bound class by its module, because that is
+      what a caller must import. `StorePath` and
+      `cythonix_bindings.path.StorePath` are one type. `pathlib.Path`
+      keeps its module, because it is not one of ours.
+    - a caster takes a `Sequence` and answers a `list`. The
+      declaration says `list` for both, which is the surface a caller
+      sees.
+    - a VOCABULARY is a StrEnum whose members ARE the strings
+      libstore parses, so it crosses as `str` and nanobind says so.
+      That is the whole point of declaring it as words rather than
+      binding it, and `_vocabularies` is read from the manifest
+      rather than listed here."""
+    out = re.sub(r"cythonix_bindings\.\w+\.", "", spelling)
+    out = out.replace("collections.abc.Sequence[", "list[")
+    for name in _VOCABULARIES:
+        out = re.sub(rf"\b{re.escape(name)}\b", "str", out)
+    return re.sub(r"\s+", " ", out).strip()
+
+
+_VOCABULARIES: set[str] = set()
+
+
+def test_a_declared_type_is_the_type_nanobind_BINDS(
+        out: pathlib.Path) -> None:
+    """The declaration and the real C++ must agree, per method.
+
+    The gate above catches a type nanobind cannot cast at all. This
+    catches the other half: a declaration that says one thing while
+    the C++ says another, where a caster happens to exist so nothing
+    complains.
+
+    The two gates split the space cleanly, and it is worth writing
+    down which half each one holds, because it is not obvious.
+
+    Caster includes are per TRANSLATION UNIT: `includes()` derives
+    them from every declared type in the file, so ONE method declaring
+    `StrView` pulls <nanobind/stl/string_view.h> in for every method
+    beside it. A sibling that says `Str` where the C++ takes
+    `std::string_view` then renders on the back of it - and it renders
+    CORRECTLY, as `str`, because a caster exists and both spellings
+    are `str` to Python. Measured: change one of the two and this gate
+    stays green, rightly. Nothing a caller sees is wrong. Change both
+    and no caster is included at all, which is the `::` gate's half.
+
+    What this half holds is a declared PYTHON type that differs from
+    the real one, and it is not cosmetic, because every surface above
+    believes it. `MockDerivation.queries` answers an `int` and
+    was declared `Bint`: the stub said bool, the message carried
+    `bool result = 1`, and a count of three crossed the wire as True.
+    The C++ compiled, because nanobind casts an int to a Python bool
+    without complaint.
+
+    nanobind renders each signature from the C++ it actually calls, so
+    it is the honest side of this comparison. Where the two disagree,
+    the declaration is the one to fix."""
+    manifest = json.loads((out / "manifest.json").read_text())
+    _VOCABULARIES.clear()
+    _VOCABULARIES.update(manifest.get("enums", {}))
+
+    bad, checked = [], 0
+    for group in ("wrappers", "returned_types"):
+        for name, entry in manifest[group].items():
+            cls = getattr(importlib.import_module(entry["module"]), name)
+            for meth in entry["methods"]:
+                fn = getattr(cls, meth["name"], None)
+                sigs = getattr(fn, "__nb_signature__", None)
+                if not sigs:
+                    continue
+                params = [_same(str(p["type"]))
+                          # A parameter that reads None arrives as a
+                          # std::optional so an explicit None works,
+                          # and nanobind says so. The declaration
+                          # says it with the default.
+                          + (" | None" if p.get("default") == "None"
+                             and not str(p["type"]).endswith("None")
+                             else "")
+                          for p in meth["params"]]
+                want = (f"({', '.join(params)}) -> "
+                        f"{_same(str(meth['return_type']))}")
+                got = _rendered(sigs[0][0])
+                checked += 1
+                if got != want:
+                    bad.append(f"{name}.{meth['name']}\n"
+                               f"      nanobind: {got}\n"
+                               f"      declared: {want}")
+    assert not bad, (
+        "the declaration disagrees with the C++ nanobind binds. nanobind "
+        "reads the real signature, so the declaration is what to fix:\n    "
+        + "\n    ".join(bad))
+    assert checked, "no bound signature was found to check"
 
 
 def test_no_binding_leaks_a_cxx_type(out: pathlib.Path) -> None:
