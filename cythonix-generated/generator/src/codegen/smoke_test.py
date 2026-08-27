@@ -1304,6 +1304,53 @@ def test_annotations_resolve() -> None:
     assert not failures, "unresolvable annotations:\n" + "\n".join(failures)
 
 
+def test_no_binding_leaks_a_cxx_type(out: pathlib.Path) -> None:
+    """Every bound signature must be spelled in PYTHON types.
+
+    nanobind renders each binding's signature from the REAL C++ it
+    calls, and it can only render a type it has a caster for. Where it
+    has none, it prints the C++ spelling instead and refuses the call
+    at run time:
+
+        def parse_store_path(
+            self, path: "std::basic_string_view<char, ...>") -> StorePath
+
+    That is the failure this gate exists for, because nothing else
+    catches it. The C++ compiles - the method pointer is valid. The
+    declaration typechecks. The stub says `str`, the manifest says
+    `str`, and a caller gets TypeError on the first call saying the
+    supported argument type is a C++ type they have never heard of.
+
+    It happened: `parseStorePath` and `followLinksToStorePath` take
+    `std::string_view` (store-dir-config.hh:37, store-api.hh:370)
+    while the declaration said `Str`. `includes()` derives the caster
+    headers from the DECLARED types, so nothing pulled in
+    <nanobind/stl/string_view.h> and both methods were unreachable.
+
+    The check is one character, and that is the point: a `::` in a
+    rendered signature is always a caster the emitter did not include.
+    A test would catch it for a method that has one; this catches it
+    for every method at once."""
+    manifest = json.loads((out / "manifest.json").read_text())
+    bad, seen = [], 0
+    for group in ("wrappers", "returned_types"):
+        for name, entry in manifest[group].items():
+            cls = getattr(importlib.import_module(entry["module"]), name)
+            methods = list(entry["methods"])
+            if entry.get("ctor"):
+                methods += entry["ctor"]
+            for meth in methods:
+                fn = getattr(cls, meth["name"], None)
+                for sig, *_ in getattr(fn, "__nb_signature__", None) or ():
+                    seen += 1
+                    if "::" in sig:
+                        bad.append(f"{name}.{meth['name']}: {sig}")
+    assert not bad, (
+        "a bound signature names a C++ type, so nanobind has no caster "
+        "for it and every call raises TypeError:\n  " + "\n  ".join(bad))
+    assert seen, "no bound signature was found to check"
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
