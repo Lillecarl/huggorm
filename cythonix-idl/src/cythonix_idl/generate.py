@@ -51,6 +51,7 @@ NANOBIND = (
     "decl/hash.py",
     "decl/signature.py",
     "decl/content_address.py",
+    "decl/realisation.py",
     "decl/pathinfo.py",
     "decl/store.py",
     "decl/eval.py",

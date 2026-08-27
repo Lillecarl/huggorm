@@ -39,10 +39,12 @@ advertised them would be advertising scaffolding. They are still in
 
 from cythonix_bindings import ContentAddress as ContentAddress
 from cythonix_bindings import ContentAddressMethod as ContentAddressMethod
+from cythonix_bindings import DrvOutput as DrvOutput
 from cythonix_bindings import EvalState as EvalState
 from cythonix_bindings import Hash as Hash
 from cythonix_bindings import HashAlgorithm as HashAlgorithm
 from cythonix_bindings import PathInfo as PathInfo
+from cythonix_bindings import Realisation as Realisation
 from cythonix_bindings import Signature as Signature
 from cythonix_bindings import Store as Store
 from cythonix_bindings import StoreLocation as StoreLocation
@@ -78,6 +80,7 @@ __all__ = [
     "ConnectionExpired",
     "ContentAddress",
     "ContentAddressMethod",
+    "DrvOutput",
     "EvalState",
     "EvalStateLike",
     "Hash",
@@ -87,6 +90,7 @@ __all__ = [
     "RPCEvalState",
     "RPCStore",
     "RPCValue",
+    "Realisation",
     "Signature",
     "Store",
     "StoreLike",

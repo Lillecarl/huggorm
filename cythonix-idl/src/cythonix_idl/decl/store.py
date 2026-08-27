@@ -12,6 +12,7 @@ what makes this testable in a build sandbox.
 # import - nothing here runs, so this costs a parse.
 from cythonix_idl.decl.path import StorePath
 from cythonix_idl.decl.pathinfo import PathInfo
+from cythonix_idl.decl.realisation import DrvOutput, Realisation
 from cythonix_idl.decl.words import ContentAddressMethod, HashAlgorithm
 from cythonix_idl.declare import (
     Bint,
@@ -428,6 +429,31 @@ return fs->toRealPath(path);
         Cxx("""
 auto [store_path, sub] = self.config.toStorePath(path);
 return cythonix::StoreLocation{store_path, sub.absOrEmpty()};
+        """)
+    # UPSTREAM answers an `UnkeyedRealisation` here, because the key
+    # is the one you passed. `decl/realisation.py` says why the
+    # binding hands back the KEYED type instead, and this is where
+    # the key is put back: it is the caller's own argument.
+    @needs("nix/store/realisation.hh")
+    def query_realisation(self, id: "DrvOutput") -> "Realisation | None":
+        """What a CA derivation's output turned out to be, or None.
+
+        None is a normal answer twice over. The store may simply not
+        have realised that output - and a store with `ca-derivations`
+        turned off answers None for EVERY id, because there is no
+        mapping to consult. libstore decides that, not this binding:
+        `LocalStore::queryRealisationUncached` checks the experimental
+        feature and hands back nothing.
+
+        So a caller who gets None has learnt that this store cannot
+        tell them, which is different from learning the output does
+        not exist. Nothing here can tell the two apart, and pretending
+        otherwise would need a second question."""
+        Cxx("""
+auto found = self.queryRealisation(id);
+if (!found)
+    return std::nullopt;
+return nix::Realisation{*found, id};
         """)
     @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":

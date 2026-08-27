@@ -55,6 +55,7 @@ from .mock_store import (
 )
 from .path import StorePath
 from .pathinfo import PathInfo
+from .realisation import DrvOutput, Realisation
 from .signature import Signature
 from .store import Store, StoreLocation
 from .words import ContentAddressMethod, HashAlgorithm
@@ -84,6 +85,7 @@ _async_twins = {"pathlib.Path": "anyio.Path"}
 __all__ = [
     "ContentAddress",
     "ContentAddressMethod",
+    "DrvOutput",
     "EvalState",
     "Hash",
     "HashAlgorithm",
@@ -94,6 +96,7 @@ __all__ = [
     "MockStore",
     "MockStorePath",
     "PathInfo",
+    "Realisation",
     "Signature",
     "Store",
     "StoreLocation",

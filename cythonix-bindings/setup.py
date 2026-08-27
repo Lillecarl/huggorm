@@ -104,6 +104,7 @@ LIBRARY = {
     "hash": "nix",
     "signature": "nix",
     "content_address": "nix",
+    "realisation": "nix",
     "pathinfo": "nix",
     "store": "nix",
     # The mock, on its way out.
