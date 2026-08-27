@@ -60,6 +60,12 @@ which was superseded rather than fixed.
   surface by kind, the demos moved to examples/, the server reports
   through a logger, and the pool takes a size. A test derives the
   export list from the two packages rather than keeping a second copy.
+- 055 (adjacent Nix versions) is OPEN and undecided on purpose. The
+  C++ answer - preprocessor ladders - does not transfer, because four
+  generated surfaces sit above the bindings and none of them has a
+  preprocessor. Resolving the version at GENERATE time is the
+  recommendation; the sharp open question is whether the wire must
+  stay stable across a version delta.
 - The source-format question is DECIDED. A Python declaration, read
   with `ast.parse` and never run, is the source; `cythonix-idl` is
   the package. Cython is gone with the question: 053 is the spike
