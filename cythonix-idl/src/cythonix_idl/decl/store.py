@@ -468,6 +468,10 @@ class Store:
         The result is a VALUE - what the store said when asked - so it
         crosses the wire as a copy and a caller reads it without
         another round trip."""
+    # Pure string work: no daemon, no lock, no file. Releasing
+    # the GIL around it costs two thread-state transitions to
+    # save nothing, and these are the calls a caller makes most.
+    @instant
     @cxx_parts(
         "auto [store_path, sub] = s.config.toStorePath(path);",
         path="store_path",
@@ -559,6 +563,10 @@ class Store:
         Raises BadStorePath when the links run out somewhere else -
         the narrow type, unlike `to_store_path`, and that asymmetry is
         upstream's."""
+    # Pure string work: no daemon, no lock, no file. Releasing
+    # the GIL around it costs two thread-state transitions to
+    # save nothing, and these are the calls a caller makes most.
+    @instant
     @cxx_name("printStorePath")
     def print_store_path(self, path: "StorePath") -> Str:
         """This path as the store spells it: its directory, then the
@@ -571,6 +579,10 @@ class Store:
     # A bound object crosses back as itself, and the emitter derives
     # the whole binding from the return type alone. All this says is
     # what C++ calls the method.
+    # Pure string work: no daemon, no lock, no file. Releasing
+    # the GIL around it costs two thread-state transitions to
+    # save nothing, and these are the calls a caller makes most.
+    @instant
     @cxx_name("parseStorePath")
     def parse_store_path(self, path: StrView) -> "StorePath":
         """This string as a store path of THIS store.
