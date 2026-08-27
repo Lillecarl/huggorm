@@ -50,6 +50,14 @@ says the same thing and drowns the signature it describes.
 **Decorators carry facts about a METHOD or CLASS.** `@cxx_name`,
 `@header`, `@binding`, `@wire_value`, `@blocks`.
 
+One fact can decide many lines, and that is the test of whether it
+belongs in the vocabulary. `@binding(via="get()")` says the bound C++
+type is a HANDLE - `cythonix::Bridge` roots a GC-resident value and
+hands it over through `get()`. From that one word the emitter derives
+every call through the handle, every return wrapped back into it and
+every parameter unwrapped out of it: twenty verbatim lines before it
+existed, and none after.
+
 The rule between the declaration and the emitter: the declaration
 states what C++ IS, the emitter states what crossing costs. A view
 must not outlive the object it points into - that is a fact about the
@@ -69,15 +77,25 @@ owns. Both are counted, and the build prints the ratio per class:
       PathInfo: 9 derived
       StoreLocation: 2 derived
       Store: 8 derived, 10 hatched (39 lines)
+    decl/eval.py -> .../eval.cpp (...): Value, EvalState
+      Value: 10 derived, 2 hatched (2 lines)
+      EvalState: 12 derived
 
 Same bargain as `_cpp/README`: a hatch nobody measures becomes the
 place the real code lives. A number in a build log is cheaper than a
 review that has to notice.
 
 Zero for `decl/path.py`, which is why that declaration is the one to
-read first. `Store` is the other end, and its own docstring says why:
-rendering a store path against a store directory is a decision, not a
-binding.
+read first. `Store` is the other end: a `dynamic_cast` to reach a
+local store, a source accessor to add a path, a store directory
+joined onto a path - each of those is a decision rather than a
+binding, and each is counted.
+
+The number is a lever, not a score. Every time it dropped, the reason
+was a fact that belonged in the vocabulary: `Value` fell from eleven
+hatched lines to two the moment `via` existed. A count that stays
+high on one class is that class telling you it is doing something
+real.
 
 ## It is text, not `ast.unparse`
 
