@@ -629,6 +629,35 @@ return self.queryMissing(want);
     # Pure string work: no daemon, no lock, no file. Releasing
     # the GIL around it costs two thread-state transitions to
     # save nothing, and these are the calls a caller makes most.
+    # The other half of 040's split, for the other path type. A
+    # DerivedPath cannot print itself - `DerivedPath::to_string` takes
+    # a StoreDirConfig by upstream's own signature - so rendering is a
+    # store's act, exactly as it is for a StorePath.
+    @instant
+    @needs("cythonix_bindings/_cpp/derived_path.hpp")
+    def print_derived_path(self, target: "DerivedPath") -> Str:
+        """This target as the store spells it.
+
+        `<drv>^out,dev` for outputs of a derivation, `^*` for all of
+        them, and a plain store path for the opaque arm. The `^`
+        spelling, not the `!` one: upstream keeps both and `^` is what
+        the command line takes."""
+        Cxx("""
+return cythonix::from_arms(target).to_string(self.config);
+        """)
+    # Pure string work: no daemon, no lock, no file.
+    @instant
+    @needs("cythonix_bindings/_cpp/derived_path.hpp")
+    def parse_derived_path(self, target: StrView) -> "DerivedPath":
+        """Read back what `print_derived_path` wrote.
+
+        Raises when the string is not one, in libstore's own words.
+        The nested arm is behind the `dynamic-derivations`
+        experimental feature, so a `^` inside a `^` says so rather
+        than being read as something else."""
+        Cxx("""
+return cythonix::as_arms(nix::DerivedPath::parse(self.config, target));
+        """)
     @instant
     @cxx_name("parseStorePath")
     def parse_store_path(self, path: StrView) -> "StorePath":

@@ -1043,6 +1043,66 @@ def test_a_blurred_outputs_spec_does_not_get_PAST_the_wire() -> None:
         made._from_parts(False, [])
 
 
+def test_a_derived_path_is_printed_and_parsed_BY_THE_STORE(
+        chroot: Store) -> None:
+    """Rendering needs a store, so it is the store that does it.
+
+    `DerivedPath::to_string` takes a StoreDirConfig by upstream's own
+    signature - the printed form carries the store's directory - so
+    the type cannot print itself and there is no `__str__`. That is
+    040's split, and it is the same one `print_store_path` already
+    makes for a StorePath.
+
+    The `^` spelling, not the `!` one. Upstream keeps both; `^` is
+    what the command line takes."""
+    drv = chroot.add_to_store("drv", b"x", CA.NAR, HashAlgorithm.SHA256)
+    printed = chroot.print_store_path(drv)
+
+    # The opaque arm IS a StorePath, which is why a caller never
+    # learns a wrapper class exists.
+    assert chroot.print_derived_path(drv) == printed
+
+    named = DerivedPathBuilt(drv, OutputsSpec(names=["dev", "out"]))
+    assert chroot.print_derived_path(named) == f"{printed}^dev,out"
+
+    every = DerivedPathBuilt(drv, OutputsSpec(all=True))
+    assert chroot.print_derived_path(every) == f"{printed}^*"
+
+    # ...and back, which is what makes the pair a pair. Each comes
+    # back as the ARM it was, not as a wrapper around one.
+    assert chroot.parse_derived_path(printed) == drv
+    assert isinstance(chroot.parse_derived_path(printed), StorePath)
+    for target in (named, every):
+        back = chroot.parse_derived_path(chroot.print_derived_path(target))
+        assert back == target
+        assert isinstance(back, DerivedPathBuilt)
+
+
+def test_a_store_says_what_building_these_would_have_to_do(
+        chroot: Store) -> None:
+    """query_missing, on a store that holds what is asked for.
+
+    Nothing is built, fetched or locked. A path already valid here is
+    not MISSING, so it appears in none of the three lists - which is
+    what makes an all-empty answer mean "there is nothing to do"
+    rather than "I did not look".
+
+    This is the first method taking a UNION, and it takes a list of
+    them - so the opaque arm crosses as a plain StorePath and the
+    caller writes what they already hold."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+
+    nothing = chroot.query_missing([held])
+    assert nothing.will_build() == []
+    assert nothing.will_substitute() == []
+    assert nothing.unknown() == []
+    assert nothing.download_size() == 0
+    assert nothing.nar_size() == 0
+
+    # An empty ask is a real ask, and answers the same way.
+    assert chroot.query_missing([]).unknown() == []
+
+
 def test_a_union_nested_past_the_limit_is_refused_by_name() -> None:
     """The wire is a trust boundary, and recursion has no natural end.
 
