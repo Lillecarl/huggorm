@@ -1,0 +1,135 @@
+# The wire carries values, not renderings
+
+**DONE.** `nix::Hash`, `nix::ContentAddress` and `nix::Signature` are
+their own messages. `PathInfo` carries them as themselves.
+
+## Problem
+
+056 left one question open, and it was the last one about PathInfo's
+shape: three of its ten fields crossed the wire as TEXT.
+
+    nar_hash   'sha256:1abc...'
+    ca         'fixed:r:sha256:1abc...'
+    sigs       ['cache.nixos.org-1:AbCd...']
+
+Each is a rendering of facts glued together, and each made two
+demands. A reader who wanted one fact - which algorithm, which key
+signed a path, how the bytes were serialised - split a string on
+colons to get it. And `_from_parts` on the far side parsed all three
+back, with `Hash::parseAnyPrefixed`, `ContentAddress::parse` and
+`Signature::parse`, every one of which is a way for a value this repo
+had just rendered to fail to come back.
+
+`ca` was the worst of the three: `fixed:r:sha256:<hash>` is a method
+AND a hash, and the hash is itself an algorithm and a digest. Three
+facts in one string.
+
+## Decided
+
+Carl: *"making them their own messages aligns with my mental model, if
+it's not too cumbersome I'd like to go this way."*
+
+It was not cumbersome, and the reason is worth writing down: every
+mechanism it needed already existed. A vocabulary crosses as `str`
+(047), a wire value nests inside another (`references` is a
+`list[StorePath]`), an optional value has presence, and all three C++
+types are plain structs with defaulted comparisons.
+
+    message HashMsg { string algorithm = 1; bytes digest = 2; }
+    message ContentAddressMsg { string method = 1; HashMsg hash = 2; }
+    message SignatureMsg { string key_name = 1; bytes sig = 2; }
+
+`ContentAddress` is the first wire value to HOLD another. That is the
+whole point of the shape rather than an incidental consequence.
+
+## The digest crosses as bytes
+
+Not base32, not base16, not SRI. Those are the same 32 bytes in three
+alphabets, and choosing one would have put a rendering back on the
+wire under a different name. They stay on the class as `@local`
+accessors - `str(h)`, `h.base16()`, `h.sri()` - which never leave this
+side.
+
+## Hash is constructible, and it is the only one of the three that is
+
+A caller can legitimately HAVE a hash: one read from a flake lock or a
+narinfo is two facts they hold, not something a store handed them. So
+`Hash('sha256', digest)` works, and refuses a digest of the wrong
+length in libstore's own error. `ContentAddress` and `Signature` are
+constructible for the same reason one level up.
+
+## What it cost, and what it removed
+
+`decl/pathinfo.py` loses three hatched bodies: an accessor that
+RENDERS is a decision, and a member read is not. `_from_parts` loses
+three parses and their failure modes.
+
+    before   PathInfo: 7 derived, 5 hatched
+    after    PathInfo: 7 derived, 4 hatched (14 lines)
+
+Three new declarations, at 2, 2 and 5 hatched lines. So the total line
+count went up and every line of it is a rendering or a constructor -
+which is what those files are FOR.
+
+## Surface changes, listed rather than silent
+
+- `info.nar_hash()` is a `Hash`, not a str. `str(...)` still gives
+  `sha256:<base32>`.
+- `info.ca()` is a `ContentAddress | None`. `str(...)` still gives
+  `fixed:r:sha256:...`.
+- `info.sigs()` is a `list[Signature]`.
+- `Hash`, `ContentAddress` and `Signature` are exported from
+  `cythonix` and `cythonix_bindings`.
+
+The typechecker found every caller that had been treating these as
+strings, which is what the generated stubs exist for. Four call sites
+across two test files, each now asking for the fact it wanted.
+
+## What the emitter gained, and why each was forced
+
+**`@local`.** A wire value crosses as every accessor it has, which is
+what keeps anything from listing them twice - and makes this the one
+thing an accessor must be able to say for itself. `Hash` forced it
+immediately: two facts, three ways to print them. The reviewer of 056
+predicted this exactly ("the first non-wire convenience accessor WILL
+arrive") and asked for the word to be named before it was needed; it
+was named one commit before it was needed.
+
+**`_render` through the Python object.** It spelled the C++, which
+held while every accessor bound a member or a no-argument call and
+stopped at the first hatched one: `nix::Hash::to_string` takes a
+format and a flag, so the emitted `self.to_string()` did not compile.
+Going through the object also means `__str__` renders whatever
+`to_string` is BOUND as - one definition rather than two that agree.
+
+**`_from_parts = cls` is checked.** Naming the class claims the
+constructor takes the wire fields in order. Nothing checked it, and it
+is exactly what a forgotten `@local` breaks. It surfaced as
+`__init__(): incompatible function arguments` out of a test; it is a
+sentence out of the build now, naming both counts and both ways out.
+Perturbation-verified.
+
+**A wire field is checked against `SCALAR_NAMES`.** It was
+`_PRIMITIVES.values()`, which maps a C++ spelling onto a Python name
+for a SIGNATURE - so it admitted `float` and `None`, which no field
+can be, and not `bytes`, which one can. Found by Hash's digest.
+
+## Layout
+
+`decl/content_address.py` held two vocabularies, one of them from
+`nix/util/hash.hh`, and said in its own docstring that HashAlgorithm
+"moves when something else needs it". Something did.
+
+The vocabularies collect in `decl/words.py`. The split that matters is
+COMPILES or does not: a vocabulary has no C++ behind it and no
+extension to live in, so one-header-one-file - the rule for bindings -
+was never the rule for these, and a file named after either header is
+the wrong home for the other's words.
+
+## Not decided
+
+Whether `Hash` should carry the FORMAT it was parsed from.
+`Hash::parseAnyReturningFormat` exists, so a caller who read
+`sha256-AbCd` (SRI) and printed it back gets `sha256:1abc` (Nix32)
+instead. Nothing round-trips a rendering today, so nothing has
+noticed.
