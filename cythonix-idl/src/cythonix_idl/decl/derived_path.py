@@ -60,9 +60,14 @@ class OutputsSpec:
     fields and the constructor will not let them blur.
     """
 
-    def __init__(self, all: Bint, names: "list[Str]" = None) -> None:  # noqa: RUF013
-        """`OutputsSpec(all=True)` is every output.
-        `OutputsSpec(all=False, names=["out", "dev"])` names them.
+    def __init__(self, all: Bint = False,
+                 names: "list[Str]" = None) -> None:  # noqa: RUF013
+        """`OutputsSpec(names=["out", "dev"])` names them.
+        `OutputsSpec(all=True)` is every output.
+
+        `all` defaults to False so the common case says one thing
+        rather than two: naming outputs already says the arm it is
+        taking, and `all=False` beside them would restate it.
 
         Raises when the two disagree. Upstream deletes the default
         constructor to force the choice and asserts that `Names` is

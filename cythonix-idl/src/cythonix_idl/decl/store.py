@@ -10,11 +10,13 @@ what makes this testable in a build sandbox.
 # Declarations this one names. A declaration names another
 # declaration's type by importing it, and the reader follows the
 # import - nothing here runs, so this costs a parse.
+from cythonix_idl.decl.derived_path import DerivedPath
 from cythonix_idl.decl.path import StorePath
 from cythonix_idl.decl.pathinfo import PathInfo
 from cythonix_idl.decl.realisation import DrvOutput, Realisation
 from cythonix_idl.decl.words import ContentAddressMethod, HashAlgorithm
 from cythonix_idl.declare import (
+    U64,
     Bint,
     Bytes,
     Cxx,
@@ -29,6 +31,7 @@ from cythonix_idl.declare import (
     instant,
     needs,
     produced,
+    reads,
     startup,
     translator,
     wire_value,
@@ -59,6 +62,74 @@ class StoreLocation:
 
         Empty when the path given WAS the store path. That is a real
         answer rather than a gap - there is nothing below it."""
+
+
+@produced(by="Store.query_missing")
+@header("nix/store/store-api.hh")
+@binding(
+    cxx="nix::MissingPaths",
+    # Five members the object already owns.
+    threading="pool",
+    blocking=False,
+)
+@wire_value()
+class MissingPaths:
+    """What a build would have to do, without doing any of it.
+
+    The answer to "what is missing", which is the question a caller
+    asks before deciding whether to build at all: how much would be
+    fetched, how much would be built here, and how much this store
+    cannot account for.
+
+    A VALUE, and the honest kind: it is a snapshot of what the store
+    believed when it was asked, so nothing about it can go stale in a
+    way a caller could act on without asking again.
+    """
+
+    def will_build(self) -> "list[StorePath]":
+        """The derivations that would be BUILT here.
+
+        Sorted, because Nix keeps them in a set and the order is that
+        set's."""
+        Cxx("return as_list(self.willBuild);")
+
+    def will_substitute(self) -> "list[StorePath]":
+        """The outputs that would be FETCHED from a substituter."""
+        Cxx("return as_list(self.willSubstitute);")
+
+    def unknown(self) -> "list[StorePath]":
+        """The paths this store cannot account for at all.
+
+        Neither buildable nor substitutable from here - usually a
+        derivation this store does not have."""
+        Cxx("return as_list(self.unknown);")
+
+    @reads("downloadSize")
+    def download_size(self) -> U64:
+        """Bytes that would come over the network, compressed.
+
+        What a substituter would send, not what lands on disk."""
+
+    @reads("narSize")
+    def nar_size(self) -> U64:
+        """Bytes the substituted paths take once unpacked."""
+
+    def _from_parts() -> "MissingPaths":
+        """Rebuild one from the parts that crossed.
+
+        An aggregate, so this is one brace - but the three path lists
+        cross as LISTS and libstore keeps them in sets, which is the
+        same conversion every set-valued accessor here makes in the
+        other direction."""
+        Cxx("""
+return nix::MissingPaths{
+    as_set<nix::StorePathSet>(will_build),
+    as_set<nix::StorePathSet>(will_substitute),
+    as_set<nix::StorePathSet>(unknown),
+    download_size,
+    nar_size,
+};
+        """)
 
 
 @produced(by="open_store")
@@ -454,6 +525,31 @@ auto found = self.queryRealisation(id);
 if (!found)
     return std::nullopt;
 return nix::Realisation{*found, id};
+        """)
+    # The first method taking a UNION, and the reason the union
+    # mechanism exists (tasks/059). A target is a path to fetch or
+    # outputs to build, and upstream says so with a std::variant.
+    #
+    # READ-ONLY, which is why this is the first consumer rather than
+    # `build_paths`: it answers against a chroot store with nothing
+    # built, so the hermetic suite can exercise the whole shape.
+    @needs("cythonix_bindings/_cpp/derived_path.hpp")
+    def query_missing(self, targets: "list[DerivedPath]") -> "MissingPaths":
+        """What building these would have to do.
+
+        Nothing is built, fetched or locked. A path already valid here
+        appears in none of the three lists - it is not missing - so an
+        empty answer means there is nothing to do.
+
+        `unknown` is the interesting one: a derivation this store does
+        not hold cannot be planned around, and saying so is different
+        from saying it needs building."""
+        Cxx("""
+std::vector<nix::DerivedPath> want;
+want.reserve(targets.size());
+for (auto & target : targets)
+    want.push_back(cythonix::from_arms(target));
+return self.queryMissing(want);
         """)
     @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":

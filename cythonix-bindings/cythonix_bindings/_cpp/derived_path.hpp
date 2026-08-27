@@ -16,6 +16,12 @@
 ///
 /// nanobind casts a `std::variant` natively, so nothing below is
 /// about crossing the boundary. These only bridge the two spellings.
+///
+/// WHEN THIS MOVES INTO THE EMITTER: the second union whose C++ arm
+/// wraps a declared arm in a one-member struct. One user is a helper;
+/// two is a pattern, and the declaration already knows the arms - so
+/// the emitter should write the visit from a declared fact rather
+/// than a second header saying the same thing by hand.
 
 #include "nix/store/derived-path.hh"
 

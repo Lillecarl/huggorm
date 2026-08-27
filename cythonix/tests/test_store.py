@@ -19,6 +19,7 @@ from cythonix_bindings import (
     DrvOutput,
     Hash,
     HashAlgorithm,
+    MissingPaths,
     OutputsSpec,
     PathInfo,
     Realisation,
@@ -993,6 +994,108 @@ def test_a_realisation_compares_on_its_signatures_where_nix_does_not(
     assert same == signed and hash(same) == hash(signed)
 
 
+# --- sum types ------------------------------------------------------
+
+
+def test_an_outputs_spec_refuses_the_two_states_that_blur_its_arms(
+) -> None:
+    """`all` is a TAG, not "no names", and the pair is checked.
+
+    Upstream is a `variant<All, Names>`, so the two are exclusive by
+    construction. Here they are two fields, because one arm carries
+    nothing and protobuf spells that `bool` - which makes the invalid
+    pairs representable and puts the burden on the constructor.
+
+    Both are refused, in libstore's own error type. Upstream deletes
+    the default constructor to force the choice and asserts `Names` is
+    non-empty; these are the same two states."""
+    with pytest.raises(UsageError, match="names nothing"):
+        OutputsSpec(all=True, names=["out"])
+    with pytest.raises(UsageError, match="at least one"):
+        OutputsSpec(all=False, names=[])
+    with pytest.raises(UsageError, match="at least one"):
+        OutputsSpec()
+
+    # ...and the two valid ones, which say one thing each.
+    assert OutputsSpec(all=True).all() is True
+    assert OutputsSpec(all=True).names() == []
+    assert OutputsSpec(names=["dev", "out"]).all() is False
+    assert OutputsSpec(names=["dev", "out"]).names() == ["dev", "out"]
+
+
+def test_a_blurred_outputs_spec_does_not_get_PAST_the_wire() -> None:
+    """The refusal is on the decode path, not only on the caller's.
+
+    Two fields where upstream has a variant means a MESSAGE can carry
+    `all` and names together - every wire format can spell garbage.
+    What matters is whether garbage gets past the boundary, and the
+    only thing standing there is the constructor.
+
+    So this asks the codec directly, with parts no caller could have
+    made. `_from_parts` IS the constructor for a value the emitter
+    binds one for, which is what makes the refusal cover both
+    directions - and this pins it, because nothing else would notice
+    if a future `_from_parts` stopped going through it."""
+    made: Any = OutputsSpec
+    with pytest.raises(UsageError, match="names nothing"):
+        made._from_parts(True, ["out"])
+    with pytest.raises(UsageError, match="at least one"):
+        made._from_parts(False, [])
+
+
+def test_a_union_nested_past_the_limit_is_refused_by_name() -> None:
+    """The wire is a trust boundary, and recursion has no natural end.
+
+    A SingleDerivedPath's built arm holds another SingleDerivedPath, so
+    a peer can send a chain as long as it likes. Without a cap the
+    answer is Python's own RecursionError, which reaches a caller as an
+    anonymous InternalError - true, and useless.
+
+    The limit is in the CODEC rather than in a declaration, because
+    depth is a fact about crossing rather than about the type. It is
+    generous: anything real is one or two deep, so only a bug or an
+    attack sees this."""
+    import json
+
+    from google.protobuf import message_factory
+
+    import cythonix_generated as flg
+    from cythonix.grpc_pb import load_pool
+    from cythonix.wire import WireCodec
+    from cythonix_generated._wiretypes import MAX_UNION_DEPTH
+
+    manifest = json.loads(
+        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
+    codec = WireCodec(manifest)
+    pool = load_pool()
+
+    def message() -> Any:
+        # protobuf ships no stubs for either call, and both are the
+        # ordinary way to reach a message class from a pool.
+        kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
+            pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+                "cythonix.v1.SingleDerivedPathMsg"))
+        return kls()
+
+    # A chain one deeper than the cap, built from the inside out.
+    deep: Any = StorePath(HELLO)
+    for _ in range(MAX_UNION_DEPTH + 1):
+        deep = SingleDerivedPathBuilt(deep, "out")
+
+    msg = message()
+    with pytest.raises(ValueError, match=str(MAX_UNION_DEPTH)):
+        codec.union_to_msg("SingleDerivedPath", deep, msg)
+
+    # ...and one at the cap crosses, so the limit is a limit rather
+    # than a refusal of the whole shape.
+    fine: Any = StorePath(HELLO)
+    for _ in range(MAX_UNION_DEPTH - 1):
+        fine = SingleDerivedPathBuilt(fine, "out")
+    ok = message()
+    codec.union_to_msg("SingleDerivedPath", fine, ok)
+    assert codec.union_from_msg("SingleDerivedPath", ok) == fine
+
+
 # --- the wire-value round trip --------------------------------------
 
 
@@ -1151,6 +1254,11 @@ def test_every_wire_value_survives_its_own_round_trip(
             DerivedPathBuilt(held, OutputsSpec(all=True)),
             [(SingleDerivedPathBuilt(other, "out"),
               OutputsSpec(all=False, names=["dev"]))]),
+        # Five fields, and the second case differs in every one -
+        # including the two widths, which a swap would otherwise hide.
+        "MissingPaths": (
+            _rebuild(MissingPaths, [held], [], [other], 1, 2),
+            [([], [other], [held, other], 3, 4)]),
         "StorePath": (held, [(other.to_string(),)]),
         "PathInfo": (info, [populated]),
         "StoreLocation": (

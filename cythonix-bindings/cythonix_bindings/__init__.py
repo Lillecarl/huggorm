@@ -62,7 +62,7 @@ from .path import StorePath
 from .pathinfo import PathInfo
 from .realisation import DrvOutput, Realisation
 from .signature import Signature
-from .store import Store, StoreLocation
+from .store import MissingPaths, Store, StoreLocation
 from .words import ContentAddressMethod, HashAlgorithm
 
 # Where the exception hierarchy lives. A declaration, like _binds or
@@ -95,6 +95,7 @@ __all__ = [
     "EvalState",
     "Hash",
     "HashAlgorithm",
+    "MissingPaths",
     "MockDerivation",
     "MockDerivedPath",
     "MockLocalStore",

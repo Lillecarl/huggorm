@@ -44,6 +44,7 @@ from cythonix_bindings import DrvOutput as DrvOutput
 from cythonix_bindings import EvalState as EvalState
 from cythonix_bindings import Hash as Hash
 from cythonix_bindings import HashAlgorithm as HashAlgorithm
+from cythonix_bindings import MissingPaths as MissingPaths
 from cythonix_bindings import OutputsSpec as OutputsSpec
 from cythonix_bindings import PathInfo as PathInfo
 from cythonix_bindings import Realisation as Realisation
@@ -67,6 +68,14 @@ from cythonix_generated import StoreLike as StoreLike
 from cythonix_generated import ValueLike as ValueLike
 from cythonix_generated._runtime import set_pool_size as set_pool_size
 
+# The SUM types, from the generated package rather than from the
+# bindings - a union has no home there, because the alias is Python
+# and the module binding its arms is a compiled extension. Re-exported
+# because a caller annotating their OWN function with DerivedPath is
+# the whole point of the alias having a name.
+from cythonix_generated._unions import DerivedPath as DerivedPath
+from cythonix_generated._unions import SingleDerivedPath as SingleDerivedPath
+
 from . import errors as errors
 from .remote import ConnectionExpired as ConnectionExpired
 from .remote import NixClient as NixClient
@@ -83,12 +92,14 @@ __all__ = [
     "ConnectionExpired",
     "ContentAddress",
     "ContentAddressMethod",
+    "DerivedPath",
     "DerivedPathBuilt",
     "DrvOutput",
     "EvalState",
     "EvalStateLike",
     "Hash",
     "HashAlgorithm",
+    "MissingPaths",
     "NixClient",
     "OutputsSpec",
     "PathInfo",
@@ -97,6 +108,7 @@ __all__ = [
     "RPCValue",
     "Realisation",
     "Signature",
+    "SingleDerivedPath",
     "SingleDerivedPathBuilt",
     "Store",
     "StoreLike",
