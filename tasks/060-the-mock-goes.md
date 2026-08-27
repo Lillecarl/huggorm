@@ -35,7 +35,7 @@ Three other justifications are already dead:
 **1. The lifecycle suite leases a real store.** DONE. Those tests are
 about leases; the object behind the handle was incidental.
 
-**2. Delete the trampoline machinery.** BEFORE the hierarchy, not
+**2. Delete the trampoline machinery.** DONE. BEFORE the hierarchy, not
 after, and this is the one that looks backwards.
 
 The USER - a Python subclass of a store - is dead weight: nothing
@@ -87,26 +87,17 @@ nothing needs a hierarchy to replace it - the mock's hierarchy was
 only ever exercising `@derives`/`@abstract`, and those keep working
 against whatever declares them next.
 
-**3b. The store hierarchy, as it would have been.** `nix::Store` (abstract) ->
-`nix::LocalFSStore` -> `nix::LocalStore`, each declared WHEN it has
-methods of its own. A leaf with none stays undeclared.
+If it is ever wanted, the shape is known: declare the CONCRETE stores
+and accept that an unregistered one degrades to the base. That is a
+decision about how much of Nix's store zoo this repo tracks, and it
+should be made for its own reasons rather than to retire a hatch.
 
-The measurable outcome is a hatch count that goes DOWN, not more
-classes. `real_path` today hatches a `dynamic_cast<LocalFSStore *>`
-and a hand-thrown Unsupported - which IS the missing hierarchy,
-written as a hatch. 040 deferred it "until a second LocalFSStore-only
-method wants it", and real Nix brings `getFSAccessor` and
-`addPermRoot` immediately; LocalStore adds `collectGarbage` and
-`optimiseStore`. The leaves are where the dynamic_casts go to die.
+**4. `decl/mock_store.py` and the store half of fake-library go.**
+Nothing has to replace the hierarchy first: the mock's hierarchy was
+only ever exercising `@derives`/`@abstract`, which now work against
+whatever declares them next.
 
-`open_store` keeps returning the base. nanobind downcasts a
-polymorphic pointer to the most-derived REGISTERED type on its own, so
-`isinstance(store, LocalStore)` starts working the day LocalStore is
-declared, with no change to the factory.
-
-This kills `decl/mock_store.py` and the store half of fake-library.
-
-**4. Real libexpr.** `nix::EvalState` and `nix::Value`, which is where
+**5. Real libexpr.** `nix::EvalState` and `nix::Value`, which is where
 `threading="affine"` and `@tree` get a real user. This kills the rest
 of fake-library, and `_cpp/eval.hpp`'s 108 lines get re-derived under
 the number the census now prints.
