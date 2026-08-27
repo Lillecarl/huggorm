@@ -53,7 +53,8 @@ from .mock_store import (
     describe,
 )
 from .path import StorePath
-from .store import PathInfo, Store, StoreLocation
+from .pathinfo import PathInfo
+from .store import Store, StoreLocation
 
 # Where the exception hierarchy lives. A declaration, like _binds or
 # _wire, and for the same reason: the codegen must not know a module

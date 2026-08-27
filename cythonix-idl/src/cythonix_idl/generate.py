@@ -40,6 +40,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 # nanobind casts all four, so the declaration stopped carrying them.
 NANOBIND = (
     "decl/path.py",
+    "decl/pathinfo.py",
     "decl/store.py",
     "decl/eval.py",
     "decl/mock_store.py",

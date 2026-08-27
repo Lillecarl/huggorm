@@ -233,7 +233,8 @@ def test_a_store_with_no_filesystem_has_no_real_path(store: Store) -> None:
 
 
 def test_a_store_answers_for_a_path_it_holds(
-        chroot: Store, source: pathlib.Path) -> None:
+        chroot: Store, source: pathlib.Path,
+        tmp_path: pathlib.Path) -> None:
     """query_path_info, on a path this store just took.
 
     Every field comes from the store's own database rather than from
@@ -252,10 +253,24 @@ def test_a_store_answers_for_a_path_it_holds(
     assert info.deriver() is None
     assert info.ultimate() is False
 
-    # Zero, and that is Nix's answer rather than a missing field: an
-    # added path gets no registration time stamped on it. The live
-    # test below is where a real one shows up.
-    assert info.registration_time() == 0
+    # None: an added path gets no registration time stamped on it.
+    # Upstream keeps a time_t and spells "unknown" as 0, which is
+    # also a real Unix time - so the binding reads that as None and
+    # the two answers stop sharing a spelling (tasks/056). The live
+    # test below is where a real time shows up.
+    assert info.registration_time() is None
+
+    # The store directory this object belongs to. On the wire because
+    # nix::UnkeyedValidPathInfo cannot be built without one, and a
+    # PathInfo has to rebuild on the far side (tasks/056).
+    #
+    # `/nix/store`, NOT the chroot. A chroot store keeps the LOGICAL
+    # store directory - the prefix baked into every path it holds -
+    # and puts the bytes somewhere else, which is exactly the split
+    # `real_path` answers the other half of. So this is the same
+    # string here and on a machine with a real /nix.
+    assert info.store_dir() == "/nix/store"
+    assert chroot.real_path(path) == tmp_path / "nix/store" / path.to_string()
 
     # Added, so content-addressed: the path is named after its own
     # bytes and says how. The live test below reads the other arm,
@@ -759,7 +774,12 @@ def test_a_built_path_names_what_built_it(ambient_store: Store) -> None:
 
     assert info.nar_size() > 0
     assert info.nar_hash().startswith("sha256:")
-    assert info.registration_time() > 0, "a real store stamps a time"
+    # None, not 0, when the store does not know. Upstream keeps a
+    # time_t and spells "unknown" as 0 - which is also a real Unix
+    # time - so the binding answers None and the test says which it
+    # expects (tasks/056).
+    stamped = info.registration_time()
+    assert stamped is not None and stamped > 0, "a real store stamps a time"
 
     deriver = info.deriver()
     assert deriver is not None, "the interpreter was built, not added"
@@ -907,46 +927,106 @@ def test_every_wire_value_survives_its_own_round_trip(
     So the round trip stops being true by construction and has to be
     proven. This is where (tasks/056).
 
-    BUILDERS is the one hand-written part, one line per type, and the
-    test refuses to pass if it does not cover every wire value the
-    manifest declares. Adding a value without adding a builder fails
-    here rather than shipping unproven."""
+    TWO cases per type, not one, and the second is the one that
+    works. A single sample proves nothing about a part that happens to
+    hold its C++ default: deleting `u.ultimate = ultimate` from
+    PathInfo's body passed this test, because the only PathInfo it
+    built came from an ADDED path, whose `ultimate` is already false.
+    The same shadow covered `deriver`, `registration_time`,
+    `references` and `sigs` - five of ten parts asleep. So each type
+    lists a second case whose every part differs, and the test refuses
+    to pass while any part holds one value across all of them.
+
+    SAMPLES is the one hand-written part, and the test refuses to pass
+    if it does not cover every wire value the manifest declares.
+    Adding a value without adding a sample fails here rather than
+    shipping unproven."""
     from cythonix_bindings import MockDerivedPath, MockLocalStore
 
     mock = MockLocalStore()
     mock_path = mock.add_text_to_store("round-trip", "x")
+    other_mock = mock.add_text_to_store("round-trip-other", "y")
     held = chroot.add_to_store("round-trip", b"x", CA.NAR, HashAlgorithm.SHA256)
+    other = chroot.add_to_store("other", b"yy", CA.NAR, HashAlgorithm.SHA256)
+    info, other_info = (chroot.query_path_info(p) for p in (held, other))
+
+    # A PathInfo with nothing at its default. Every part is a real
+    # value libstore will parse - the hash and the content address
+    # come from a path this store actually holds - so the only thing
+    # made up is which value goes where.
+    #
+    # `sorted`, because references cross in the order libstore's own
+    # std::set keeps them and the binding's `<` is that same
+    # operator<. An unsorted list would come back sorted and the round
+    # trip would read as broken when it is not.
+    populated: tuple[Any, ...] = (
+        other,                          # path
+        "/other/store",                 # store_dir
+        other_info.nar_hash(),          # nar_hash
+        info.nar_size() + 1,            # nar_size
+        held,                           # deriver
+        1_700_000_000,                  # registration_time
+        True,                           # ultimate
+        other_info.ca(),                # ca
+        sorted([held, other]),          # references
+        ["key-1:YWJj"],                 # sigs
+    )
 
     # `Any`, because `_parts` and `_from_parts` are private: the
     # emitter skips every `_`-prefixed name when it writes the stubs,
     # so a typechecker cannot see them and should not. The round trip
     # is exactly the contract those two exist for, so this is the one
     # place that reaches past the public surface on purpose.
-    builders: dict[str, Any] = {
-        "StorePath": lambda: held,
-        "PathInfo": lambda: chroot.query_path_info(held),
-        "StoreLocation": lambda: chroot.to_store_path(
-            chroot.print_store_path(held)),
-        "MockStorePath": lambda: mock_path,
-        "MockDerivedPath": lambda: MockDerivedPath(mock_path, "out"),
+    #
+    # The FIRST entry of each list is a real object, because the round
+    # trip has to start from something a producer actually made. The
+    # rest are parts tuples, which is what lets a case reach a state
+    # no hermetic producer here can reach.
+    samples: dict[str, tuple[Any, list[tuple[Any, ...]]]] = {
+        "StorePath": (held, [(other.to_string(),)]),
+        "PathInfo": (info, [populated]),
+        "StoreLocation": (
+            chroot.to_store_path(chroot.print_store_path(held)),
+            [(other, "/bin/sh")]),
+        "MockStorePath": (mock_path, [(other_mock.to_string(),)]),
+        "MockDerivedPath": (
+            MockDerivedPath(mock_path, "out"),
+            [(other_mock, None)]),
     }
 
     declared = _wire_values()
-    missing = sorted(set(declared) - set(builders))
+    missing = sorted(set(declared) - set(samples))
     assert not missing, (
         f"the manifest declares {missing} as wire values and this test "
-        f"cannot build one. Add a builder - the round trip is not "
+        f"cannot build one. Add a sample - the round trip is not "
         f"optional for a type that crosses as its parts.")
 
     for name in sorted(declared):
-        built: Any = builders[name]()
-        parts = built._parts()
-        rebuilt = type(built)._from_parts(*parts)
-        assert rebuilt._parts() == parts, (
-            f"{name} does not survive its own round trip:\n"
-            f"  sent:     {parts}\n"
-            f"  came back: {rebuilt._parts()}")
+        built, extra = samples[name]
+        fields = [f for f, _ in type(built)._wire_fields]
+        cases = [built._parts(), *extra]
+        for parts in cases:
+            back = type(built)._from_parts(*parts)._parts()
+            lost = [f for f, sent, got in zip(fields, parts, back, strict=True)
+                    if sent != got]
+            assert not lost, (
+                f"{name} does not survive its own round trip. "
+                f"{lost} changed:\n"
+                f"  sent:      {parts}\n"
+                f"  came back: {back}")
         # ...and the rebuilt one must BE equal, not merely carry the
         # same parts. A type whose __eq__ reads something the parts do
         # not would pass the line above and fail a caller.
-        assert rebuilt == built, f"{name} rebuilt unequal to the original"
+        assert type(built)._from_parts(*cases[0]) == built, (
+            f"{name} rebuilt unequal to the original")
+
+        # No part may hold one value across every case. A part that
+        # does is a part this test cannot see, however many times it
+        # round-trips - which is what let a dropped `ultimate` pass.
+        asleep = [fields[i] for i, column in
+                  enumerate(zip(*cases, strict=True))
+                  if len({repr(v) for v in column}) < 2]
+        assert not asleep, (
+            f"{name}: {asleep} holds one value in every case, so this "
+            f"test would pass with it dropped from _from_parts. Give a "
+            f"case where it differs.")

@@ -12,9 +12,8 @@ what makes this testable in a build sandbox.
 # import - nothing here runs, so this costs a parse.
 from cythonix_idl.decl.content_address import ContentAddressMethod, HashAlgorithm
 from cythonix_idl.decl.path import StorePath
+from cythonix_idl.decl.pathinfo import PathInfo
 from cythonix_idl.declare import (
-    I64,
-    U64,
     Bint,
     Bytes,
     Cxx,
@@ -33,77 +32,6 @@ from cythonix_idl.declare import (
     translator,
     wire_value,
 )
-
-
-@produced(by="Store.query_path_info")
-@binding(threading="pool", blocking=False)
-@wire_value()
-class PathInfo:
-    """What a store knows about one path it holds.
-
-    A VALUE, not a handle: it is what the store said at the moment it
-    was asked, so it crosses the wire as a copy and nothing about it
-    can go stale in a way a caller could act on.
-
-    Produced, never constructed. Every field comes from the store's
-    own database, so there is nothing a caller could correctly build
-    one from - which `_produced` says out loud rather than leaving to
-    an inference elsewhere."""
-
-    def path(self) -> "StorePath":
-        """The path this describes."""
-
-    def nar_hash(self) -> str:
-        """The hash of the path's NAR serialisation, algorithm first:
-        `sha256:<base32>`, the same spelling `nix path-info` prints."""
-
-    def nar_size(self) -> U64:
-        """The size of that NAR in bytes. Not the size on disk."""
-
-    def deriver(self) -> "StorePath | None":
-        """The .drv that built this, or None.
-
-        None is a real answer, not a gap: a path added straight to the
-        store was not built by anything."""
-
-    def registration_time(self) -> I64:
-        """When the store learnt about this path, as a Unix time."""
-
-    def ultimate(self) -> bool:
-        """Whether this store built it itself, as opposed to receiving
-        it from a substituter or an import."""
-
-    def ca(self) -> "str | None":
-        """How this path's content addresses itself, or None.
-
-        `fixed:r:sha256:<hash>` for a path added to the store, which
-        is the same spelling `nix path-info --json` prints. None for a
-        path that was BUILT: an input-addressed output is named after
-        the derivation that made it, not after its own bytes, so
-        there is nothing to address by.
-
-        None rather than "": the two are different answers, and this
-        is the first optional SCALAR field the wire can carry them
-        both across (tasks/048)."""
-
-    def references(self) -> "list[StorePath]":
-        """The store paths this one points at, its own included when
-        it does.
-
-        This is what makes a store path a graph rather than a name: a
-        closure is the transitive reading of this field. Nix scans the
-        bytes for them at add time, so a path added from a directory
-        of plain text has none.
-
-        Sorted, because Nix keeps them in a set and the order is that
-        set's."""
-
-    def sigs(self) -> "list[str]":
-        """Who vouched for this path, as `<key-name>:<base64>`.
-
-        Empty for a path this store added itself: a signature says a
-        path came from somewhere and arrived intact, and a local add
-        travelled nowhere."""
 
 
 @produced(by="Store.to_store_path")
@@ -436,39 +364,16 @@ if (fs == nullptr)
         s.config.getHumanReadableURI());
 return fs->toRealPath(path);
         """)
-    # The record crossing. Every member of the C++ struct, its
-    # constructor, and every accessor Python reads come from
-    # PathInfo's own declaration - so what is left here is the one
-    # thing nothing can derive: where libstore keeps each part.
-    @needs("nix/store/path-info.hh")
-    # An ordinary body, where this was `@cxx_parts`: a prelude plus
-    # one C++ expression per declared field. That map described
-    # PathInfo a second time, on the method that returns one -
-    # PathInfo's own accessors are already where its fields come from.
+    # Nothing about PathInfo is here any more, and that is the whole
+    # of tasks/056. It binds nix::ValidPathInfo, in `decl/pathinfo.py`
+    # beside the header it comes from, and this file IMPORTS it. What
+    # is left is the call.
     #
-    # DESIGNATED initialisers, and that is not style. `@cxx_parts`
-    # refused a map that missed a field or invented one, and a plain
-    # `{a, b, c}` loses that: `nar_size` and `registration_time` are
-    # different widths that convert to each other, so swapping them
-    # would compile. Naming each member moves the check to the C++
-    # compiler, which is stricter than the emitter was - it also
-    # enforces declaration ORDER.
-    # Each field, and why it is spelled the way it is. HERE rather
-    # than in the emitted C++: nobody edits generated code, so prose
-    # about a declaration belongs in the declaration (053).
-    #
-    # nar_hash  Nix32 with the algorithm in front, because that is
-    #           what `nix path-info` and a .narinfo print. The
-    #           algorithm travels with the digest, so a caller is
-    #           never told separately which one it is.
-    # deriver   Straight across. libstore keeps it as a
-    #           std::optional<nix::StorePath> and so does the struct,
-    #           so absence stays absence.
-    # ca        Rendered, because there is no caster for
-    #           nix::ContentAddress and `fixed:r:sha256:<hash>` is
-    #           what `nix path-info --json` prints.
-    # sigs      A set of nix::Signature, not of strings. Each one
-    #           prints itself, which is what a caller wants to see.
+    # `queryPathInfo` answers a `ref<const ValidPathInfo>` - a share
+    # of the store's own cached entry - and this dereferences into a
+    # copy. Holding the share instead is available and is not needed
+    # yet: a VALUE is what the store said when it was asked, and a
+    # caller who holds one should not see it change.
     def query_path_info(self, path: "StorePath") -> "PathInfo":
         """What this store knows about one path it holds.
 
@@ -479,22 +384,7 @@ return fs->toRealPath(path);
         The result is a VALUE - what the store said when asked - so it
         crosses the wire as a copy and a caller reads it without
         another round trip."""
-        Cxx("""
-auto info = s.queryPathInfo(path);
-return cythonix::PathInfo{
-    .path = info->path,
-    .nar_hash = info->narHash.to_string(
-        nix::HashFormat::Nix32, /*includeAlgo=*/true),
-    .nar_size = info->narSize,
-    .deriver = info->deriver,
-    .registration_time = static_cast<std::int64_t>(info->registrationTime),
-    .ultimate = info->ultimate,
-    .ca = info->ca ? std::optional<std::string>(info->ca->render())
-                   : std::nullopt,
-    .references = as_list(info->references),
-    .sigs = to_strings(info->sigs),
-};
-        """)
+        Cxx("return *s.queryPathInfo(path);")
     # Pure string work: no daemon, no lock, no file. Releasing
     # the GIL around it costs two thread-state transitions to
     # save nothing, and these are the calls a caller makes most.
