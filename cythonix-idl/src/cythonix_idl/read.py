@@ -624,19 +624,57 @@ def _live(path: str) -> set[int] | None:
     except Exception:
         return None
 
+    # Only what THIS file defines. A declaration imports its
+    # vocabulary - `binding`, `header`, `cxx_body` - and those are
+    # functions too, whose `co_firstlineno` points into declare.py.
+    # Counting them made every one of their lines an orphan, which is
+    # what the reconcile gate said the first time it ran.
+    here = str(pathlib.Path(path).resolve())
     lines: set[int] = set()
-    for obj in vars(mod).values():
+
+    def note(obj: object) -> None:
         code = getattr(obj, "__code__", None)
-        if code is not None:
+        if code is not None and code.co_filename == here:
             lines.add(code.co_firstlineno)
-        elif isinstance(obj, type) and obj.__module__ == name:
+
+    for obj in vars(mod).values():
+        note(obj)
+        if isinstance(obj, type) and obj.__module__ == name:
             lines.add(getattr(obj, "__firstlineno__", 0))
             for member in vars(obj).values():
-                inner = getattr(member, "__code__", None)
-                if inner is not None:
-                    lines.add(inner.co_firstlineno)
+                note(member)
     lines.discard(0)
     return lines
+
+
+def _reconcile(tree: ast.Module, live: set[int] | None, path: str) -> None:
+    """Every definition the import kept must exist in the tree.
+
+    The two readings come from one file in one call, so they cannot
+    drift the way two declarations of one fact drift - that was F1 and
+    F7a. What they CAN do is stop lining up, and the way that happens
+    is a Python release changing what `co_firstlineno` points at.
+
+    Then nothing matches, `_resolve` keeps nothing, and the module
+    emits an empty binding. Silently. This is the check that makes it
+    loud, and it is the only failure mode worth a gate: the other
+    direction cannot happen, because `_resolve` keeps only what `live`
+    already named."""
+    if not live:
+        return
+    nodes = {n.lineno for n in ast.walk(tree)
+             if isinstance(n, ast.ClassDef | ast.FunctionDef)}
+    nodes |= {d.lineno for n in ast.walk(tree)
+              if isinstance(n, ast.ClassDef | ast.FunctionDef)
+              for d in n.decorator_list}
+    orphans = sorted(live - nodes)
+    if orphans:
+        raise DeclarationError(
+            tree,
+            f"{pathlib.Path(path).name}: the import kept definitions at "
+            f"lines {orphans} and the tree has no node there. The two "
+            f"readings have stopped lining up - most likely "
+            f"`co_firstlineno` no longer points where this assumes.")
 
 
 def _resolve(body: list[ast.stmt], live: set[int] | None) -> list[ast.stmt]:
@@ -679,6 +717,7 @@ def read(path: str) -> Module:
     source = pathlib.Path(path).read_text()
     tree = ast.parse(source, filename=path)
     live = _live(path)
+    _reconcile(tree, live, path)
     body = _resolve(tree.body, live)
     vocab = _vocabulary(tree)
     stem = pathlib.Path(path).stem
