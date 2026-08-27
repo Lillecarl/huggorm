@@ -38,6 +38,25 @@ async def wrapper_error(coro: Any) -> dict[str, str]:
 
 
 # -- capability and leases -------------------------------------------------
+#
+# `Store("dummy://")` is the subject, and the URI is load-bearing.
+#
+# These tests are about LEASES - who holds a handle, what pins it, when
+# it is reaped - and the object behind the handle is incidental. It
+# used to be MockLocalStore, which is one of the things the mock was
+# for; a real store is a better subject because a lease over a thing
+# that actually holds resources is the case that matters.
+#
+# But NOT a real LocalStore on one tmp_path. `declare.py` records why
+# nanopynix grew a per-state-directory cache: two LocalStores in one
+# process deadlock on a temp-roots flock. This suite acquires a store
+# many times across many connections, which is exactly that shape.
+# `dummy://` is in-memory and takes no lock, so it is the one real
+# store this suite can hold many of.
+#
+# If a test here ever needs a store with a FILESYSTEM, give it its own
+# tmp_path rather than sharing one. Found in review before it hung
+# anything, not after.
 
 async def test_distinct_clients_get_distinct_tokens(ttl_server: Server) -> None:
     a = await remote.connect(HOST, ttl_server.port)
@@ -51,9 +70,9 @@ async def test_a_handle_is_a_capability(ttl_server: Server) -> None:
     """Anyone holding the id may call. Lifetime is what tokens govern."""
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
-    store = await a.acquire("MockLocalStore")
-    cross = b.proxy("MockLocalStore", store.handle_id)
-    assert await cross.get_uri() == "local"
+    store = await a.acquire("Store", "dummy://")
+    cross = b.proxy("Store", store.handle_id)
+    assert await cross.get_uri() == "dummy://"
     a.stop_pinging()
     b.stop_pinging()
 
@@ -64,10 +83,10 @@ async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     it without the first arranging anything (tasks/031)."""
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
-    shared = await a.acquire("MockLocalStore")
+    shared = await a.acquire("Store", "dummy://")
     hid = shared.handle_id
-    borrowed = b.proxy("MockLocalStore", hid)
-    assert await borrowed.get_uri() == "local"
+    borrowed = b.proxy("Store", hid)
+    assert await borrowed.get_uri() == "dummy://"
 
     # Calling again owes no second release. A lease that counted calls
     # would be one no client could balance: a client releases once per
@@ -75,10 +94,10 @@ async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     await borrowed.get_uri()
     await borrowed.get_uri()
     await a.release(shared)
-    assert await borrowed.get_uri() == "local", "outlives its acquirer"
+    assert await borrowed.get_uri() == "dummy://", "outlives its acquirer"
 
     await b.release(borrowed)
-    gone = await wrapper_error(b.proxy("MockLocalStore", hid).get_uri())
+    gone = await wrapper_error(b.proxy("Store", hid).get_uri())
     assert gone["cause_type"] == "KeyError", gone
     a.stop_pinging()
     b.stop_pinging()
@@ -89,10 +108,10 @@ async def test_double_release_fails_typed(ttl_server: Server) -> None:
     time. Reusing the spent one sent an empty id, so the old test
     asserted that releasing handle "" fails - which proves nothing."""
     a = await remote.connect(HOST, ttl_server.port)
-    store = await a.acquire("MockLocalStore")
+    store = await a.acquire("Store", "dummy://")
     hid = store.handle_id
     await a.release(store)
-    again = a.proxy("MockLocalStore", hid)
+    again = a.proxy("Store", hid)
     threw = await wrapper_error(a.release(again))
     assert threw["cause_type"] == "ValueError", threw
     assert hid[:8] in threw["cause_message"], threw
@@ -108,11 +127,11 @@ async def test_share_copy_survives_the_granter(ttl_server: Server) -> None:
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
     assert b.token is not None  # connect() binds
-    store = await a.acquire("MockLocalStore")
+    store = await a.acquire("Store", "dummy://")
     hid = store.handle_id
     await a.share(store, b.token, mode="copy")
     await a.release(store)
-    assert await b.proxy("MockLocalStore", hid).get_uri() == "local"
+    assert await b.proxy("Store", hid).get_uri() == "dummy://"
     a.stop_pinging()
     b.stop_pinging()
 
@@ -121,12 +140,12 @@ async def test_share_transfer_moves_ownership(ttl_server: Server) -> None:
     a = await remote.connect(HOST, ttl_server.port)
     b = await remote.connect(HOST, ttl_server.port)
     assert b.token is not None
-    store = await a.acquire("MockLocalStore")
+    store = await a.acquire("Store", "dummy://")
     hid = store.handle_id
     await a.share(store, b.token, mode="transfer")
     threw = await wrapper_error(a.release(store))
     assert threw["cause_type"] == "ValueError", threw
-    assert await b.proxy("MockLocalStore", hid).get_uri() == "local"
+    assert await b.proxy("Store", hid).get_uri() == "dummy://"
     a.stop_pinging()
     b.stop_pinging()
 
@@ -204,13 +223,13 @@ async def swept(ttl_server: Server) -> Any:
 
     # 3. a connection abandoned WITHOUT detaching: its handles go.
     d = await remote.connect(HOST, ttl_server.port)
-    doomed = await d.acquire("MockLocalStore")
+    doomed = await d.acquire("Store", "dummy://")
     doomed_id = doomed.handle_id
     d.stop_pinging()
 
     # 4. the control: a client that keeps pinging is immune.
     live = await remote.connect(HOST, ttl_server.port)
-    alive = await live.acquire("MockLocalStore")
+    alive = await live.acquire("Store", "dummy://")
 
     # connect() binds, so both tokens exist from that call onward.
     assert a.token is not None and maker.token is not None
@@ -222,7 +241,7 @@ async def swept(ttl_server: Server) -> Any:
 
 
 async def test_pinging_client_survives_the_sweeper(swept: Swept) -> None:
-    assert await swept.alive.get_uri() == "local"
+    assert await swept.alive.get_uri() == "dummy://"
 
 
 async def test_ping_reports_a_swept_connection(swept: Swept) -> None:
@@ -272,12 +291,12 @@ async def test_a_swept_client_stops_rather_than_rebinding(
     assert c._expired is True
 
     with pytest.raises(remote.ConnectionExpired, match="swept"):
-        await c.acquire("MockLocalStore")
+        await c.acquire("Store", "dummy://")
 
 
 async def test_abandoned_handles_are_reaped(swept: Swept) -> None:
     c = await remote.connect(HOST, swept.port)
-    gone = await wrapper_error(c.proxy("MockLocalStore", swept.doomed_id).get_uri())
+    gone = await wrapper_error(c.proxy("Store", swept.doomed_id).get_uri())
     assert gone["cause_type"] == "KeyError", gone
     c.stop_pinging()
 
