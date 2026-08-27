@@ -427,23 +427,6 @@ def reads[F: Callable[..., Any]](member: str) -> Callable[[F], F]:
     return apply
 
 
-def cxx_body[F: Callable[..., Any]](source: str) -> Callable[[F], F]:
-    """The C++ this accessor cannot be derived into, carried verbatim.
-
-    Per-method, and the body is C++. That is the one thing in a
-    declaration which is not portable, and it says so: a hatch that
-    pretended otherwise would be lying about what it exists to carry.
-
-    Counted and printed, like `@custom`. `nix::ValidPathInfo` renders
-    a store path against its own store directory, and that rendering
-    is real logic rather than a binding - so it comes through here and
-    shows up in the count."""
-    def apply(fn: F) -> F:
-        fn._cxx_body = source  # type: ignore[attr-defined]
-        return fn
-    return apply
-
-
 def needs[F: Callable[..., Any]](*headers: str) -> Callable[[F], F]:
     """C++ headers this method's body needs, beyond its class's.
 

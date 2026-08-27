@@ -481,7 +481,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     """The body of a method the emitter can write itself, or None.
 
     Three mechanical things a HANDLE forces, and each of them was a
-    verbatim `@cxx_body` before this existed:
+    a verbatim body before this existed:
 
     - the CALL goes through the handle - `v.get()->type_name()`;
     - a RETURN of a handle class wraps in it - the C++ hands back
@@ -833,7 +833,7 @@ def _accessor(cls: Class, m: Method) -> list[str]:
     a generated lambda (nb_class.h:784), so this is strictly less code
     for the same result.
 
-    `@cxx_body(...)` is an accessor nothing can derive, and it becomes
+    A `Cxx(...)` body is an accessor nothing can derive, and it becomes
     a `def_prop_ro` lambda carrying that source. `nix::ValidPathInfo`
     renders a store path against its own store directory; that is real
     logic, not a binding, and pretending otherwise would put a
@@ -853,7 +853,7 @@ def _accessor(cls: Class, m: Method) -> list[str]:
                 f"{INDENT * 2}}})"]
     raise TypeError(
         f"{cls.name}.{m.name}: a produced value's accessor must say what it "
-        f"reads. Use @reads(\"member\") for a data member, or @cxx_body(...) "
+        f"reads. Use @reads(\"member\") for a data member, or a Cxx(...) "
         f"when it is computed.")
 
 

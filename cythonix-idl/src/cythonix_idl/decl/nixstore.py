@@ -24,10 +24,10 @@ and says where to look instead.
 
 from cythonix_idl.declare import (
     Bint,
+    Cxx,
     Str,
     binding,
     blocks,
-    cxx_body,
     cxx_name,
     header,
     instant,
@@ -71,26 +71,28 @@ class Store:
     # A guard C++ owes Python and the declaration cannot state: the
     # empty string is not a bad store path to parseStorePath, it
     # ABORTS the process. So the check lives with the call.
-    @cxx_body("""if (path.empty())
-    throw nix::BadStorePath("parse_store_path: store path must not be empty");
-return s.parseStorePath(path);""")
     def parse_store_path(self, path: Str) -> "StorePath":
         """Parse a full store path into a StorePath.
 
         Raises rather than aborting when given an empty string, which
         is the one thing upstream will not do for us."""
+        Cxx("""
+if (path.empty())
+    throw nix::BadStorePath("parse_store_path: store path must not be empty");
+return s.parseStorePath(path);
+        """)
 
     # Reads a string the config already holds.
     @instant
-    @cxx_body("return s.config.storeDir_;")
     def get_store_dir(self) -> Str:
         """The directory this store keeps its objects in."""
+        Cxx("return s.config.storeDir_;")
 
     @instant
-    @cxx_body("return nix::StoreReference::parse(s.config.getReference()"
-              ".render(with_params)).render(with_params);")
     def get_uri(self, with_params: Bint = False) -> Str:
         """The URI this store was opened from.
 
         `with_params=True` includes the query parameters, which carry
         settings a caller may have passed at open time."""
+        Cxx("return nix::StoreReference::parse(s.config.getReference()"
+            ".render(with_params)).render(with_params);")

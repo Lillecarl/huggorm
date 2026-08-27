@@ -426,6 +426,61 @@ def _apply(decorators: list[ast.expr], vocab: dict[str, str],
 
 # -- methods --------------------------------------------------------------
 
+def _body(node: ast.FunctionDef) -> str:
+    """The C++ this method carries, read from its BODY.
+
+    A declaration is Python, so C++ that a person writes goes where a
+    person writes code:
+
+        def get_uri(self) -> Str:
+            # ...docstring here...
+            Cxx("return self.config.getHumanReadableURI();")
+
+    It never runs. `def` defines; it does not call - so `Cxx(...)`
+    here is dead text this lifts out of the tree, exactly as a
+    decorator argument was. That is also why `Cxx` does not have to
+    be constructable: nothing constructs one.
+
+    The grammar is small on purpose, and enforced rather than
+    documented: a docstring, then at most ONE `Cxx(...)`, and nothing
+    else. Anything more is a declaration pretending to be a program,
+    and the emitter has no way to render it.
+
+    An empty body is what says the emitter DERIVES the whole binding,
+    which is fourteen of the thirty-eight. Presence of `Cxx` is the
+    whole distinction, and unlike a decorator it cannot be
+    half-stated - there is no way to write the marker and forget the
+    body, or the body and forget the marker."""
+    seen = ""
+    for i, stmt in enumerate(node.body):
+        if isinstance(stmt, ast.Expr):
+            value = stmt.value
+            if i == 0 and isinstance(value, ast.Constant) and isinstance(
+                    value.value, str):
+                continue                       # the docstring
+            if (isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
+                    and value.func.id == "Cxx"):
+                if seen:
+                    raise DeclarationError(
+                        stmt, f"{node.name}: one Cxx(...) per body. Two "
+                              f"bodies is two bindings.")
+                if len(value.args) != 1 or not isinstance(
+                        value.args[0], ast.Constant):
+                    raise DeclarationError(
+                        stmt, f"{node.name}: Cxx() takes one string "
+                              f"literal. The C++ is carried, not built.")
+                seen = str(value.args[0].value)
+                continue
+            if isinstance(value, ast.Constant) and value.value is Ellipsis:
+                continue                       # `...`, an empty body
+        raise DeclarationError(
+            stmt, f"{node.name}: a declaration body is a docstring, then "
+                  f"at most one Cxx(...). {ast.unparse(stmt)!r} is "
+                  f"neither, and nothing would emit it.")
+    return seen
+
+
 def _method(node: ast.FunctionDef, vocab: dict[str, str],
             bound: bool = True) -> Method:
     """One declared function.
@@ -477,7 +532,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         overload=any(isinstance(d, ast.Name) and d.id == "overload"
                      for d in node.decorator_list),
         reads=getattr(marked, "_reads", ""),
-        cxx_body=getattr(marked, "_cxx_body", ""),
+        cxx_body=_body(node),
         headers=tuple(getattr(marked, "_needs", ())),
         virtual=bool(getattr(marked, "_virtual", False)),
         pure=bool(getattr(marked, "_pure", False)),

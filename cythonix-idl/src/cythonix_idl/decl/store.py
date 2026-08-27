@@ -17,13 +17,13 @@ from cythonix_idl.declare import (
     U64,
     Bint,
     Bytes,
+    Cxx,
     Path,
     Str,
     StrView,
     binding,
     binds,
     blocks,
-    cxx_body,
     cxx_name,
     header,
     instant,
@@ -173,7 +173,6 @@ class Store:
     # around it would cost two thread-state transitions to save
     # nothing.
     @instant
-    @cxx_body("return s.config.getHumanReadableURI();")
     def get_uri(self) -> Str:
         """How this store describes itself.
 
@@ -185,6 +184,7 @@ class Store:
         as getHumanReadableURI, and Store reaches its config by
         reference - so the binding goes through a helper in `_cpp/`
         rather than declaring the whole config type for one string."""
+        Cxx("return s.config.getHumanReadableURI();")
     @cxx_name("isValidPath")
     def is_valid_path(self, path: "StorePath") -> Bint:
         """Whether the store has that path."""
@@ -193,17 +193,6 @@ class Store:
     # here translates - which is why the words are declared rather
     # than bound.
     @needs("nix/util/serialise.hh")
-    @cxx_body("""std::string contents(data.c_str(), data.size());
-        // An lvalue, so the string_view inside cannot dangle - which is
-        // the case StringSource deletes its rvalue constructor to stop.
-        nix::StringSource dump{contents};
-        return s.addToStoreFromDump(
-            dump,
-            name,
-            nix::FileSerialisationMethod::Flat,
-            method,
-            hash_algo,
-            as_set<nix::StorePathSet>(references));""")
     def add_to_store(
         self,
         name: Str,
@@ -250,15 +239,20 @@ class Store:
         the store will happily hold. None and an empty list mean the
         same thing, which is what lets the wire carry absence as a
         repeated field with nothing in it."""
+        Cxx("""
+std::string contents(data.c_str(), data.size());
+// An lvalue, so the string_view inside cannot dangle - which is
+// the case StringSource deletes its rvalue constructor to stop.
+nix::StringSource dump{contents};
+return s.addToStoreFromDump(
+    dump,
+    name,
+    nix::FileSerialisationMethod::Flat,
+    method,
+    hash_algo,
+    as_set<nix::StorePathSet>(references));
+        """)
     @needs("nix/util/posix-source-accessor.hh")
-    @cxx_body("""auto source = nix::PosixSourceAccessor::createAtRoot(
-            std::filesystem::weakly_canonical(std::filesystem::path{path}));
-        return s.addToStore(
-            name,
-            source,
-            method,
-            hash_algo,
-            as_set<nix::StorePathSet>(references));""")
     def add_path_to_store(
         self,
         name: Str,
@@ -302,7 +296,16 @@ class Store:
         the store will happily hold. None and an empty list mean the
         same thing, which is what lets the wire carry absence as a
         repeated field with nothing in it."""
-    @cxx_body("""return as_list(s.queryAllValidPaths());""")
+        Cxx("""
+auto source = nix::PosixSourceAccessor::createAtRoot(
+    std::filesystem::weakly_canonical(std::filesystem::path{path}));
+return s.addToStore(
+    name,
+    source,
+    method,
+    hash_algo,
+    as_set<nix::StorePathSet>(references));
+        """)
     def query_all_valid_paths(self) -> "list[StorePath]":
         """Every path this store holds.
 
@@ -312,7 +315,7 @@ class Store:
         no such list to give.
 
         Sorted, because libstore answers with a set."""
-    @cxx_body("""return as_list(s.queryValidDerivers(path));""")
+        Cxx("return as_list(s.queryAllValidPaths());")
     def query_valid_derivers(
         self,
         path: "StorePath",
@@ -328,8 +331,7 @@ class Store:
         Empty is a normal answer. nix::Store's own implementation
         returns an empty set rather than raising, so a store that does
         not track this says nothing rather than failing."""
-    @cxx_body("""return as_list(
-            s.queryValidPaths(as_set<nix::StorePathSet>(paths)));""")
+        Cxx("return as_list(s.queryValidDerivers(path));")
     def query_valid_paths(
         self,
         paths: "list[StorePath]",
@@ -347,14 +349,13 @@ class Store:
 
         Sorted, and shorter than what went in when the store is
         missing something."""
+        Cxx("""
+return as_list(
+s.queryValidPaths(as_set<nix::StorePathSet>(paths)));
+        """)
     # The first declared method with DEFAULTS. They are libstore's
     # own, not a judgement made here: a caller who omits all three
     # gets what `nix-store -qR` does.
-    @cxx_body("""nix::StorePathSet out;
-        s.computeFSClosure(
-            as_set<nix::StorePathSet>(paths), out, flip_direction,
-            include_outputs, include_derivers);
-        return as_list(out);""")
     def compute_fs_closure(
         self,
         paths: "list[StorePath]",
@@ -381,9 +382,13 @@ class Store:
         Sorted, because libstore answers with a set - so the order is
         NOT topological. A caller who needs build order has to ask for
         it another way."""
-    @cxx_body("""nix::StorePathSet referrers;
-        s.queryReferrers(path, referrers);
-        return as_list(referrers);""")
+        Cxx("""
+nix::StorePathSet out;
+s.computeFSClosure(
+    as_set<nix::StorePathSet>(paths), out, flip_direction,
+    include_outputs, include_derivers);
+return as_list(out);
+        """)
     def query_referrers(
         self,
         path: "StorePath",
@@ -398,17 +403,16 @@ class Store:
         implementation raises "not supported by store", the way
         `query_all_valid_paths` does, because a substituter has no such
         index."""
+        Cxx("""
+nix::StorePathSet referrers;
+s.queryReferrers(path, referrers);
+return as_list(referrers);
+        """)
     # A pathlib.Path, not a str, and the alias says so. The boundary
     # still carries a std::string; what changes above it is that this
     # answer names a file on THIS machine, so it is a path a caller
     # can open.
     @needs("nix/store/local-fs-store.hh")
-    @cxx_body("""auto * fs = dynamic_cast<nix::LocalFSStore *>(&s);
-        if (fs == nullptr)
-            throw nix::Unsupported(
-                "operation 'real_path' is not supported by store '%s'",
-                s.config.getHumanReadableURI());
-        return fs->toRealPath(path);""")
     def real_path(self, path: "StorePath") -> Path:
         """Where this store object's files really are.
 
@@ -424,6 +428,14 @@ class Store:
 
         The answer is for the machine the store runs on. In process
         that is here; over RPC it is the server's (tasks/040)."""
+        Cxx("""
+auto * fs = dynamic_cast<nix::LocalFSStore *>(&s);
+if (fs == nullptr)
+    throw nix::Unsupported(
+        "operation 'real_path' is not supported by store '%s'",
+        s.config.getHumanReadableURI());
+return fs->toRealPath(path);
+        """)
     # The record crossing. Every member of the C++ struct, its
     # constructor, and every accessor Python reads come from
     # PathInfo's own declaration - so what is left here is the one
@@ -457,7 +469,18 @@ class Store:
     #           what `nix path-info --json` prints.
     # sigs      A set of nix::Signature, not of strings. Each one
     #           prints itself, which is what a caller wants to see.
-    @cxx_body("""auto info = s.queryPathInfo(path);
+    def query_path_info(self, path: "StorePath") -> "PathInfo":
+        """What this store knows about one path it holds.
+
+        Raises InvalidPath when it does not hold it, which is a
+        different answer from a malformed name: BadStorePath means the
+        string is not a store path at all.
+
+        The result is a VALUE - what the store said when asked - so it
+        crosses the wire as a copy and a caller reads it without
+        another round trip."""
+        Cxx("""
+auto info = s.queryPathInfo(path);
 return cythonix::PathInfo{
     .path = info->path,
     .nar_hash = info->narHash.to_string(
@@ -470,17 +493,8 @@ return cythonix::PathInfo{
                    : std::nullopt,
     .references = as_list(info->references),
     .sigs = to_strings(info->sigs),
-};""")
-    def query_path_info(self, path: "StorePath") -> "PathInfo":
-        """What this store knows about one path it holds.
-
-        Raises InvalidPath when it does not hold it, which is a
-        different answer from a malformed name: BadStorePath means the
-        string is not a store path at all.
-
-        The result is a VALUE - what the store said when asked - so it
-        crosses the wire as a copy and a caller reads it without
-        another round trip."""
+};
+        """)
     # Pure string work: no daemon, no lock, no file. Releasing
     # the GIL around it costs two thread-state transitions to
     # save nothing, and these are the calls a caller makes most.
@@ -494,8 +508,6 @@ return cythonix::PathInfo{
     # say is how to build one. The emitter still declares the struct,
     # because `toStorePath` answers a std::pair and there is no
     # upstream type to bind.
-    @cxx_body("""auto [store_path, sub] = s.config.toStorePath(path);
-return cythonix::StoreLocation{store_path, sub.absOrEmpty()};""")
     def to_store_path(self, path: Str) -> "StoreLocation":
         """Which store path CONTAINS this file, and where inside it.
 
@@ -523,6 +535,10 @@ return cythonix::StoreLocation{store_path, sub.absOrEmpty()};""")
         disagree with `nix` for the same input - so a caller catching
         the narrow type around both calls must catch the wide one
         here."""
+        Cxx("""
+auto [store_path, sub] = s.config.toStorePath(path);
+return cythonix::StoreLocation{store_path, sub.absOrEmpty()};
+        """)
     @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
         """Which store path has this hash part, or None.
@@ -538,7 +554,6 @@ return cythonix::StoreLocation{store_path, sub.absOrEmpty()};""")
         different answer from `query_path_info`, which raises
         InvalidPath: there the caller named a path and was wrong,
         here the caller asked whether one exists."""
-    @cxx_body("return s.followLinksToStore(path).string();")
     def follow_links_to_store(self, path: Str) -> Str:
         """Follow symlinks until the path lands in the store, and
         stop there.
@@ -562,6 +577,7 @@ return cythonix::StoreLocation{store_path, sub.absOrEmpty()};""")
         same meaning `add_path_to_store` already carries.
 
         Raises BadStorePath when the links run out somewhere else."""
+        Cxx("return s.followLinksToStore(path).string();")
     @cxx_name("followLinksToStorePath")
     def follow_links_to_store_path(self, path: StrView) -> "StorePath":
         """Follow symlinks until the path lands in the store, and say

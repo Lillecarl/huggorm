@@ -19,11 +19,11 @@ binding that a declaration could not have written.
 from cythonix_idl.declare import (
     I64,
     Bint,
+    Cxx,
     Str,
     binding,
     binds,
     blocks,
-    cxx_body,
     header,
     needs,
     produced,
@@ -83,7 +83,6 @@ class Value:
     parsed, evaluated or built - and there is nothing a caller could
     correctly make one from."""
 
-    @cxx_body("return static_cast<std::int64_t>(v.identity());")
     def _identity(self) -> I64:
         """The underlying value's address, as a number.
 
@@ -91,18 +90,19 @@ class Value:
         every generated form. The tree walk uses it to visit a shared
         value once - values are immutable and shared freely, so
         without it a diamond is copied and a cycle never ends."""
+        Cxx("return static_cast<std::int64_t>(v.identity());")
 
     # On the HANDLE, not on the value it points at - so it says so
     # rather than going through `via`. The same is true of
     # `_identity` above, and those two are the only lines in this
     # class that are about the Bridge at all. The census counts them,
     # which is the right answer: they are what a GC root costs.
-    @cxx_body("return v.is_gc_managed();")
     def is_gc_managed(self) -> Bint:
         """True when this value lives inside a GC-allocated block.
 
         Bound straight from gc.h: a no-op integration cannot fake
         it."""
+        Cxx("return v.is_gc_managed();")
 
     def type_name(self) -> Str:
         """"thunk", "int", "string", "bool", "list" or "attrs"."""
@@ -224,35 +224,39 @@ class EvalState:
 
 @needs("cythonix_bindings/_cpp/eval.hpp")
 @threading("pool")
-@cxx_body("""nb::dict out;
-        out["heap_size"] = cythonix::gc_heap_size();
-        out["total_bytes"] = cythonix::gc_total_bytes();
-        out["bytes_since_gc"] = cythonix::gc_bytes_since_gc();
-        out["collections"] = cythonix::gc_collections();
-        out["used_bytes"] = cythonix::gc_heap_size()
-            - cythonix::gc_free_bytes();
-        return out;""")
 def gc_stats() -> "dict[str, int]":
     """Live collector counters, bound straight from gc.h.
 
     These prove the collector is ACTIVE: a no-op integration cannot
     fake them."""
+    Cxx("""
+nb::dict out;
+out["heap_size"] = cythonix::gc_heap_size();
+out["total_bytes"] = cythonix::gc_total_bytes();
+out["bytes_since_gc"] = cythonix::gc_bytes_since_gc();
+out["collections"] = cythonix::gc_collections();
+out["used_bytes"] = cythonix::gc_heap_size()
+    - cythonix::gc_free_bytes();
+return out;
+    """)
 
 
 @needs("cythonix_bindings/_cpp/eval.hpp")
 @threading("pool")
 @blocks
-@cxx_body("""// Boehm stops the world by signalling every registered
-        // thread. A thread it does not know cannot answer, and the
-        // collection aborts the process with "Collecting from
-        // unknown thread".
-        fake_library::gcenv::register_current_thread();
-        fake_library::gcenv::collect();""")
 def collect_garbage() -> None:
     """Run a full stop-the-world collection (twice).
 
     Global process state, mirroring libgc: not a method on EvalState.
     Blocking - dispatch it to a thread from async code."""
+    Cxx("""
+// Boehm stops the world by signalling every registered
+// thread. A thread it does not know cannot answer, and the
+// collection aborts the process with "Collecting from
+// unknown thread".
+fake_library::gcenv::register_current_thread();
+fake_library::gcenv::collect();
+    """)
 
 
 @needs("cythonix_bindings/_cpp/eval.hpp")

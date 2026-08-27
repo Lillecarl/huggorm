@@ -18,12 +18,12 @@ real Nix side has needed any of those yet.
 from cythonix_idl.declare import (
     I64,
     Bint,
+    Cxx,
     Field,
     Str,
     abstract,
     binding,
     binds,
-    cxx_body,
     cxx_name,
     derives,
     header,
@@ -126,16 +126,18 @@ class MockDerivedPath:
     # `mdp` is the storage `__init__` was handed, which is the
     # emitter's own name for the object - initials of the class, the
     # same rule every other body here follows.
-    @cxx_body("""if (output.has_value())
-            new (mdp) fake_library::DerivedPath(path, *output);
-        else
-            new (mdp) fake_library::DerivedPath(path);""")
     def __init__(self, path: "MockStorePath",
                  output: "str | None" = None) -> None:
         """A request for a path, or for one output of a derivation.
 
         Two C++ constructors behind one Python signature: an opaque
         request carries no output name, and a built one does."""
+        Cxx("""
+if (output.has_value())
+    new (mdp) fake_library::DerivedPath(path, *output);
+else
+    new (mdp) fake_library::DerivedPath(path);
+        """)
 
     def describe(self) -> Str:
         """'opaque <path>' or '<path>!<output>'."""
@@ -143,11 +145,13 @@ class MockDerivedPath:
     def path(self) -> "MockStorePath":
         """The store path this request names."""
 
-    @cxx_body("""if (!mdp.is_built())
-            return std::nullopt;
-        return mdp.output_name();""")
     def output_name(self) -> "str | None":
         """The output name, or None for an opaque request."""
+        Cxx("""
+if (!mdp.is_built())
+    return std::nullopt;
+return mdp.output_name();
+        """)
 
 
 @header("fake_library/store.hpp")
