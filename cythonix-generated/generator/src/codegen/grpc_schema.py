@@ -146,6 +146,29 @@ def _scalar_const(name: str) -> int:
 
 # -- naming: the one place the conventions live ---------------------------
 
+def _arm_field(arm: str) -> str:
+    """One arm's field name inside the oneof.
+
+    The arm's own type name, lowercased with underscores - so
+    `DerivedPathBuilt` is `derived_path_built` and a reader of the
+    schema can see which arm they have without a table."""
+    out = []
+    for i, ch in enumerate(arm):
+        if ch.isupper() and i:
+            out.append("_")
+        out.append(ch.lower())
+    return "".join(out)
+
+
+def union_msg_name(alias: str) -> str:
+    """The message one union alias becomes.
+
+    Named after the alias, which is the whole reason a union is
+    written as one: `StorePath | DerivedPathBuilt` has no name and a
+    message needs one."""
+    return f"{alias}Msg"
+
+
 def value_msg_name(cls_name: str) -> str:
     return f"{cls_name}Msg"
 
@@ -328,6 +351,7 @@ def annotate(manifest: Proto) -> Proto:
 # -- schema ---------------------------------------------------------------
 
 ENUM = "enum"
+UNION = "union"
 
 
 def _wire_kinds(manifest: Proto) -> dict[str, str]:
@@ -343,6 +367,7 @@ def _wire_kinds(manifest: Proto) -> dict[str, str]:
         for name, proto in manifest[group].items()
     }
     out.update({name: ENUM for name in manifest.get("enums", {})})
+    out.update({name: UNION for name in manifest.get("unions", {})})
     return out
 
 
@@ -354,6 +379,11 @@ def _msg_arg_type(type_str: str,
     if type_str in SCALARS:
         return _scalar_const(SCALARS[type_str]), None
     kind = kinds.get(type_str)
+    if kind == UNION:
+        # A SUM, as protobuf's own tagged union. One message per
+        # alias, holding one `oneof` - which is why the alias needed a
+        # NAME: the message is called after it.
+        return None, union_msg_name(type_str)
     if kind == ENUM:
         # A StrEnum member IS a str. Nothing about the transport
         # changes; the type exists for the caller, not for the wire.
@@ -424,6 +454,27 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
                 # an empty string as absent (tasks/048).
                 _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
                            optional=ftype.endswith("?"))
+
+    # ...and one message per UNION, holding one oneof.
+    #
+    # This is where gRPC beats both of Nix's own encodings. The daemon
+    # sends a DerivedPath as a string and parses it back; the JSON
+    # form tags the arms by SHAPE - a string means opaque, `["*"]`
+    # means all outputs - and both work only because the alternatives
+    # happen not to collide. A oneof is a real tag, and protobuf lets
+    # a message hold itself, so the recursive arm needs nothing said
+    # about it here (tasks/059).
+    for alias, arms in manifest.get("unions", {}).items():
+        m = file_dp.message_type.add()
+        m.name = union_msg_name(alias)
+        one = m.oneof_decl.add()
+        one.name = "raw"
+        for n, arm in enumerate(arms, start=1):
+            # An arm is never `optional`: the oneof IS the presence,
+            # and marking a member optional would add a second,
+            # disagreeing one.
+            f = _add_field(m, _arm_field(arm), n, arm, kinds)
+            f.oneof_index = 0
 
 
 def _add_service(file_dp: Any, cls_name: str, proto: Proto,

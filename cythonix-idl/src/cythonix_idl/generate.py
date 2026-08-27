@@ -51,6 +51,7 @@ NANOBIND = (
     "decl/hash.py",
     "decl/signature.py",
     "decl/content_address.py",
+    "decl/derived_path.py",
     "decl/realisation.py",
     "decl/pathinfo.py",
     "decl/store.py",
@@ -134,6 +135,25 @@ def declared_entries() -> dict[str, dict]:
                 entry["methods"] = [m for m in inherited
                                     if m["name"] not in mine] + entry["methods"]
             out[cls.name] = entry
+    return out
+
+
+def declared_unions() -> dict[str, list[str]]:
+    """Every declared SUM type, as {alias: [arm, ...]}.
+
+    The companion to `declared_entries`, and it exists for the same
+    reason one step sideways: a union is not a class, so nothing
+    downstream can reflect one off the compiled package. The alias is
+    module-level Python - `DerivedPath = StorePath | DerivedPathBuilt`
+    - and it never reaches an extension at all.
+
+    Arms in DECLARED order, because that is the order the schema
+    numbers a oneof's fields in and a renumbering is a wire change."""
+    out: dict[str, list[str]] = {}
+    for name in NANOBIND:
+        mod = read(str(HERE / name))
+        for union in mod.unions:
+            out[union.name] = list(union.decl.arms)
     return out
 
 

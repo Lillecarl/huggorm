@@ -110,6 +110,10 @@ class Decl:
 
     name: str = ""
     header: str = ""
+    # Headers this class's BODIES need, beyond the one above, from a
+    # class-level `@needs`. A method may say it for itself; a class
+    # says it once when several of its bodies reach the same place.
+    headers: tuple[str, ...] = ()
     cxx: str = ""
     built_by: str = ""
     threading: str = "pool"
@@ -118,6 +122,11 @@ class Decl:
     # Each part either a `Field` or the NAME of the accessor that
     # answers it. See `wire_value`.
     fields: tuple[Field | str, ...] = ()
+    # The arms of a UNION, by declared name. A union is written as a
+    # module-level alias - `DerivedPath = StorePath | DerivedPathBuilt`
+    # - so it has no decorator to carry this and the reader fills it
+    # in. Empty for everything that is not one.
+    arms: tuple[str, ...] = ()
     compare: str = ""
     text: str = ""
     shown: str = ""
@@ -126,7 +135,8 @@ class Decl:
     # What KIND of declaration this is. "class" binds a C++ type or
     # holds a produced value's slots; "words" is a vocabulary - a
     # StrEnum whose members ARE the strings a Nix parser takes, with
-    # no C++ object behind it at all.
+    # no C++ object behind it at all; "union" is a sum of other
+    # declared types, written as an alias and named on the wire.
     kind: str = "class"
     # Where the words come from, for a vocabulary. Prose only: the
     # emitted module names it so a reader can check the list.

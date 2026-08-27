@@ -43,6 +43,7 @@ from cythonix_idl.generate import (
     declared_entries,
     declared_functions,
     declared_returned,
+    declared_unions,
 )
 
 # See model.Proto: one class, method or function as a plain dict.
@@ -413,7 +414,14 @@ def main(argv: list[str] | None = None) -> None:
     # else, so a wire field may declare one. Read here rather than
     # from the manifest, which is not built yet.
     enum_names = {k.__name__ for k in _enum_classes(bindings)}
-    complaints = check_wire_contract(protos + returned_protos, enum_names)
+    # A union is not a class in the manifest's groups either, and for
+    # a sharper reason than an enum: it never reaches an extension at
+    # all. `DerivedPath = StorePath | DerivedPathBuilt` is module-level
+    # Python in the declaration, so the only route here is the
+    # declaration itself.
+    unions = declared_unions()
+    complaints = check_wire_contract(
+        protos + returned_protos, enum_names, set(unions))
     if complaints:
         for c in complaints:
             print(f"wire contract: {c}", file=sys.stderr)
@@ -444,6 +452,9 @@ def main(argv: list[str] | None = None) -> None:
         "free_functions": {p["name"]: p for p in free_protos},
         "errors": errors,
         "enums": enums,
+        # {alias: [arm, ...]}, in DECLARED order - the order a oneof
+        # numbers its fields in, so a reorder is a wire change.
+        "unions": unions,
         # The async spelling of a type, when it has one. Declared by
         # the bindings; the emitter turns it into one annotation and
         # one constructor call.

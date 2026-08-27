@@ -250,6 +250,17 @@ class Class:
         return self.decl.kind == "words"
 
     @property
+    def is_union(self) -> bool:
+        """Whether this is a SUM of other declared types.
+
+        Written as a module-level alias - `DerivedPath = StorePath |
+        DerivedPathBuilt` - so it declares no methods and binds no C++
+        class of its own. It is a Class here anyway, because that is
+        what makes every emitter able to NAME it through `known`
+        without learning a second kind of thing."""
+        return self.decl.kind == "union"
+
+    @property
     def is_value(self) -> bool:
         """Whether this class holds Python slots and no C++ at all.
 
@@ -334,6 +345,10 @@ class Module:
     doc: str
     classes: tuple[Class, ...] = ()
     functions: tuple[Method, ...] = ()
+    # The SUM types this declaration declares, as aliases. Kept apart
+    # from `classes` because nothing binds one: a union names other
+    # types and has no C++ class of its own.
+    unions: tuple[Class, ...] = ()
     # Classes this declaration NAMES but does not declare, from
     # another declaration it imported. A vocabulary lives in its own
     # file and several bindings take one, so the alternative was
@@ -363,8 +378,14 @@ class Module:
 
     @property
     def known(self) -> dict[str, Class]:
-        """Every class this declaration can name, by name."""
-        return {**self.uses, **{c.name: c for c in self.classes}}
+        """Every type this declaration can name, by name.
+
+        Unions among them, because an annotation names one the same
+        way it names a class and every emitter resolves it the same
+        way."""
+        return {**self.uses,
+                **{c.name: c for c in self.classes},
+                **{u.name: u for u in self.unions}}
     # Local name -> name in declare. `from declare import Str as S`
     # is legal Python, so the reader follows the import rather than
     # matching the spelling it expects.
@@ -712,6 +733,11 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}))
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
+    # `@needs` writes onto whatever it decorates, and on a class that
+    # is the stand-in rather than the Decl - so it is read here
+    # instead of being restated in declare.py, which is the same trick
+    # every other decorator gets.
+    decl.headers = tuple(holder.__dict__.get("_needs", ()))
 
     if decl.kind == "words":
         return Class(
@@ -951,14 +977,109 @@ def read(path: str) -> Module:
     # a helper the declaration wrote for itself.
     functions = tuple(_method(n, vocab, bound=False) for n in body
                       if isinstance(n, ast.FunctionDef) and n.decorator_list)
+    unions = _unions(body, stem)
+    uses = _uses(tree, pathlib.Path(path).parent)
+    # ...checked once the arms can be resolved, which needs the
+    # imports this file made and the classes it declares itself.
+    resolvable = {**uses, **{c.name: c for c in classes},
+                  **{u.name: u for u in unions}}
+    for u in unions:
+        _check_arms(u, resolvable, tree)
     return Module(
         name=stem,
         doc=ast.get_docstring(tree, clean=False) or "",
         classes=classes,
         functions=functions,
         vocabulary=vocab,
-        uses=_uses(tree, pathlib.Path(path).parent),
+        unions=unions,
+        uses=uses,
     )
+
+
+def _arms(node: ast.expr) -> tuple[str, ...] | None:
+    """`A | B` as ("A", "B"), or None when this is not a union at all.
+
+    Only a chain of `|` over NAMES. `str | None` is presence and is
+    read by `type_of`, not here; a lowercase name is a scalar, which
+    has no distinguishable arms and is refused where the arms are
+    checked."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left, right = _arms(node.left), _arms(node.right)
+        if left is None or right is None:
+            return None
+        return left + right
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    return None
+
+
+def _unions(body: list[ast.stmt], where: str) -> tuple[Class, ...]:
+    """Every module-level union alias, as a Class the emitters can name.
+
+    A union is written as the alias it is:
+
+        DerivedPath = StorePath | DerivedPathBuilt
+
+    Real Python, so a reader of the file and a type checker both see a
+    union; and the alias NAME is what the wire calls the message, so
+    nothing has to invent one.
+
+    It comes back as a `Class` because that is what lets every emitter
+    resolve it through `known` - the same way a vocabulary does -
+    rather than learning a second kind of thing."""
+    out: list[Class] = []
+    for i, item in enumerate(body):
+        if not isinstance(item, ast.Assign):
+            continue
+        if len(item.targets) != 1 or not isinstance(item.targets[0], ast.Name):
+            continue
+        arms = _arms(item.value)
+        if arms is None or len(arms) < 2:
+            continue
+        name = item.targets[0].id
+        doc = ""
+        nxt = body[i + 1] if i + 1 < len(body) else None
+        if (isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant)
+                and isinstance(nxt.value.value, str)):
+            doc = nxt.value.value
+        out.append(Class(
+            name=name, doc=doc, ctor=None, module=where,
+            decl=Decl(name=name, kind="union", arms=arms, wire="value"),
+        ))
+    return tuple(out)
+
+
+# What a union's ARM may be. Each refusal is its own sentence, because
+# each is a different mistake.
+def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
+    """The widened union rule, enforced where the arms can be resolved.
+
+    `T | None` was the only union an annotation could hold, and it
+    stayed narrow on purpose. This widens it exactly as far as a sum
+    type needs and no further."""
+    for arm in cls.decl.arms:
+        other = known.get(arm)
+        if other is None:
+            raise DeclarationError(
+                node, f"{cls.name}: '{arm}' is not a declared class. A "
+                      f"union names types some declaration declares - a "
+                      f"scalar has no distinguishable arms, so `str | int` "
+                      f"is not a union but a mistake.")
+        if other.is_words:
+            raise DeclarationError(
+                node, f"{cls.name}: '{arm}' is a vocabulary, which crosses "
+                      f"as a plain string - so an arm of it is "
+                      f"indistinguishable from any other string arm.")
+        if other.is_union:
+            raise DeclarationError(
+                node, f"{cls.name}: '{arm}' is itself a union. Flatten it: "
+                      f"a oneof of a oneof is one oneof, and nesting them "
+                      f"hides which arms exist.")
+        if other.decl.wire != "value":
+            raise DeclarationError(
+                node, f"{cls.name}: '{arm}' crosses as a {other.decl.wire or 'proxy'}, "
+                      f"not as a value. An arm that granted a lease would "
+                      f"make every union a bulk-lease problem (tasks/031).")
 
 
 def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
@@ -981,6 +1102,7 @@ def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
             raise DeclarationError(
                 node, f"no declaration at {source}. A declaration may only "
                       f"import another declaration beside it.")
-        for cls in read(str(source)).classes:
+        other = read(str(source))
+        for cls in (*other.classes, *other.unions):
             out[cls.name] = cls
     return out

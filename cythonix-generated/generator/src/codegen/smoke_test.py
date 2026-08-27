@@ -1348,15 +1348,29 @@ def _same(spelling: str) -> str:
       libstore parses, so it crosses as `str` and nanobind says so.
       That is the whole point of declaring it as words rather than
       binding it, and `_vocabularies` is read from the manifest
-      rather than listed here."""
+      rather than listed here.
+    - a UNION is an alias, and nanobind renders the arms it actually
+      binds. `SingleDerivedPath` is `StorePath |
+      SingleDerivedPathBuilt` by declaration, so the alias expands to
+      exactly that and the two sides meet. Expanded REPEATEDLY,
+      because an arm may itself name one - `_UNIONS` is read from the
+      manifest, so nothing here lists an alias by hand."""
     out = re.sub(r"cythonix_bindings\.\w+\.", "", spelling)
     out = out.replace("collections.abc.Sequence[", "list[")
     for name in _VOCABULARIES:
         out = re.sub(rf"\b{re.escape(name)}\b", "str", out)
+    for _ in range(len(_UNIONS) + 1):
+        before = out
+        for alias, arms in _UNIONS.items():
+            out = re.sub(rf"\b{re.escape(alias)}\b", " | ".join(arms), out)
+        if out == before:
+            break
     return re.sub(r"\s+", " ", out).strip()
 
 
 _VOCABULARIES: set[str] = set()
+# {alias: [arm, ...]}, from the manifest. See `_same`.
+_UNIONS: dict[str, list[str]] = {}
 
 
 def test_a_declared_type_is_the_type_nanobind_BINDS(
@@ -1395,6 +1409,7 @@ def test_a_declared_type_is_the_type_nanobind_BINDS(
     manifest = json.loads((out / "manifest.json").read_text())
     _VOCABULARIES.clear()
     _VOCABULARIES.update(manifest.get("enums", {}))
+    _UNIONS.update(manifest.get("unions", {}))
 
     bad, checked = [], 0
     for group in ("wrappers", "returned_types"):

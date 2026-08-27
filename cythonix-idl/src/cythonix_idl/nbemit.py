@@ -177,8 +177,24 @@ def _held(cls: Class) -> str:
     return cls.decl.cxx or f"{NAMESPACE}::{cls.name}"
 
 
-def _bare(cls: Class) -> str:
+def _bare(cls: Class, known: dict[str, Class] | None = None) -> str:
     """The C++ type behind a declared class, or a refusal."""
+    if cls.is_union:
+        # A SUM, and std::variant is what C++ already calls one.
+        # nanobind casts it natively (<nanobind/stl/variant.h>), so a
+        # parameter of a union type needs no dispatch written by hand:
+        # the caster tries each arm and the body receives the one that
+        # matched.
+        #
+        # The ARMS, not the C++ union type upstream declares.
+        # nix::DerivedPath IS a std::variant, but over
+        # DerivedPathOpaque rather than StorePath - and nanobind's
+        # caster is specialised on std::variant exactly, not on
+        # something deriving from one. So the binding takes the arms
+        # the PYTHON side has and a body converts, which is a decision
+        # and belongs in a body.
+        inner = ", ".join(_bare(known[a], known) for a in cls.decl.arms)
+        return f"std::variant<{inner}>"
     if cls.is_words:
         # A vocabulary. The member IS the string a Nix parser takes,
         # so it crosses as one - a fact about the words rather than
@@ -217,7 +233,7 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
                 f"'{inner}' names a class this run has not read. Pass its "
                 f"declaration too, so the C++ spelling can be resolved.")
         other = known[inner]
-        spelled = _bare(other)
+        spelled = _bare(other, known)
         if other.decl.holder:
             # Held through something. `@binding(holder="shared_ptr")`
             # is the declaration saying the factory hands back a
@@ -225,6 +241,11 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
             # or the object closes under the name for it.
             return (f"std::{other.decl.holder}<{spelled}>",
                     other.decl.holder)
+        if other.is_union:
+            # <nanobind/stl/variant.h>, and the ARMS' casters too: a
+            # variant of bound classes needs none of its own, but one
+            # holding a string or a vector does.
+            return spelled, "variant"
         return spelled, "string" if spelled == "std::string" else None
     # Three tables, in the order the declaration meant them. A Python
     # type nanobind casts natively wins outright - `pathlib.Path`
@@ -285,7 +306,7 @@ def _param(t: Type, known: dict[str, Class] | None = None
             # words rather than about the binding, which is why the
             # emitted module is plain Python with no C++ at all.
             return CXX_PARAM["string"]
-        return f"const {_bare(other)} &", None
+        return f"const {_bare(other, known)} &", None
     if t.cxx is None or t.cxx.spelling not in CXX_PARAM:
         raise TypeError(
             f"'{t.python}' has no C++ parameter spelling. A bound class "
@@ -331,23 +352,39 @@ def includes(classes: Sequence[Class],
                       bound=inner[len("list["):-1][:1].isupper()))
         elif inner != t.python:
             note(Type(python=inner, cxx=t.cxx, bound=t.bound))
+        # ...and a UNION's arms, for the same reason: the variant
+        # caster casts each arm with that arm's own.
+        held = (known or {}).get(inner)
+        if held is not None and held.is_union:
+            for arm in held.decl.arms:
+                note(Type(python=arm, bound=True))
+
+    def note_params(fn: Method) -> None:
+        for pr in fn.params:
+            note(pr.type)
+            # A CONTAINER that reads None arrives as a
+            # std::optional, so it needs that caster even though no
+            # declared type here is optional. `_signature` builds the
+            # optional; this is the only place that can know it will.
+            # Missed until a module had one and nothing else optional
+            # in it - `store` had returns to hide it, `derived_path`
+            # had not.
+            if absent(pr, known):
+                casters.add("optional")
 
     for cls in classes:
         for m in cls.methods:
-            for _, t in m.params:
-                note(t)
+            note_params(m)
             note(m.ret)
         if cls.ctor is not None:
-            for _, t in cls.ctor.params:
-                note(t)
+            note_params(cls.ctor)
         if cls.from_parts is not None:
             note(cls.from_parts.ret)
     # A free function belongs to no class, so its types reach this
     # list only from here - and `open_store` is the one that brings
     # <nanobind/stl/shared_ptr.h> in.
     for fn in functions:
-        for _, t in fn.params:
-            note(t)
+        note_params(fn)
         note(fn.ret)
     # A hook has no signature worth casting, and it still names the
     # header its C++ lives in. `wanted` below is where that lands.
@@ -368,6 +405,7 @@ def includes(classes: Sequence[Class],
     # header is normal and the order of a declaration's methods is
     # not an order for includes.
     wanted = {cls.decl.header for cls in classes}
+    wanted |= {h for cls in classes for h in cls.decl.headers}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
     wanted |= {h for cls in classes if cls.from_parts is not None
                for h in cls.from_parts.headers}
@@ -561,11 +599,18 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         # A method the declaration could not derive, carried verbatim.
         obj = _self(cls)
         args, opening = _signature(cls, m, known)
-        # An OPTIONAL return needs its type spelled. A lambda with two
-        # return paths - the value and std::nullopt - cannot deduce
-        # one, and the declaration already said which type it is.
+        # The return type, SPELLED, for every body that declares one.
+        #
+        # It started as an optional-only rule - a lambda with two
+        # return paths, the value and std::nullopt, cannot deduce one
+        # - and the same argument covers more than optionals. A body
+        # ending `return {};` for an empty container cannot deduce
+        # either, and neither can two returns whose types merely
+        # convert. The declaration already said which type it is, so
+        # saying it in the lambda costs nothing and removes the whole
+        # class of "cannot deduce" from bodies a person writes.
         ret = ""
-        if m.ret is not None and m.ret.python.endswith("| None"):
+        if m.ret is not None:
             ret = f" -> {_cxx(m.ret, known)[0]}"
         head = (f'{INDENT * 2}.def("{m.name}", '
                 f"[]({_held(cls)} &{obj}{args}){ret} {{")
@@ -1128,7 +1173,7 @@ def _field_cxx(wire: str, known: dict[str, Class] | None = None) -> str:
     if wire in FIELD_CXX:
         return FIELD_CXX[wire]
     if wire in known:
-        return _bare(known[wire])
+        return _bare(known[wire], known)
     raise TypeError(
         f"'{wire}' has no C++ spelling as a field. Add it to "
         f"nbemit.FIELD_CXX, or declare the class it names.")

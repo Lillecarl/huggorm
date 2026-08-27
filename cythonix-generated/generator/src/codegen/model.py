@@ -210,7 +210,8 @@ def default_source(value: Any, type_str: str, where: str) -> str | None:
 
 
 def check_wire_contract(protos: list[Proto],
-                        enums: set[str] | None = None) -> list[str]:
+                        enums: set[str] | None = None,
+                        unions: set[str] | None = None) -> list[str]:
     """The wire policy and the serialization contract must agree.
 
     A "value" type promises the RPC layer it can be rebuilt from its
@@ -225,7 +226,13 @@ def check_wire_contract(protos: list[Proto],
     # _wire_fields entry of enum type failed as "unknown field type" -
     # refused here while the rpc layer accepted the same declaration
     # anywhere a scalar goes (tasks/047).
-    known = {p["name"] for p in protos} | (enums or set())
+    # A UNION is neither a class in the groups nor an enum, and it is
+    # a legal field type: `DerivedPathBuilt.drv_path` is a
+    # SingleDerivedPath, which is an alias over two arms. The arms
+    # themselves are checked where they are declared - the reader
+    # refuses a scalar, a vocabulary or a proxy arm - so by the time a
+    # name reaches here, being a union is enough.
+    known = {p["name"] for p in protos} | (enums or set()) | (unions or set())
     kinds = {p["name"]: p["wire"] for p in protos}
     bad = []
     for proto in protos:
