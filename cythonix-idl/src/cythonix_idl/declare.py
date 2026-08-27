@@ -434,11 +434,18 @@ def cxx_parts[F: Callable[..., Any]](
     know - which C++ expression yields each part.
 
     `prelude` is the call itself, as one or more statements. Each
-    keyword names a declared field and gives C++ that evaluates to the
-    wire type of that field: a `std::string` for a store path or a
-    string, the width itself for an integer, a `std::vector` for a
-    list. An optional field says the empty string when it is absent,
-    which is the sentinel the emitter reads back.
+    keyword names a declared field and gives C++ that evaluates to
+    that field's own type: a `nix::StorePath` for a store path, a
+    `std::string` for a string, the width itself for an integer, a
+    `std::vector` for a list.
+
+    An optional field is a `std::optional` and NOTHING ELSE. The
+    emitted struct declares one, so `deriver="info->deriver"` hands
+    libstore's own optional straight over. Do not reach for a
+    sentinel: an empty string is a value, it crosses the wire with
+    presence set, and the far side reads Some("") where None was
+    meant. That is tasks/048, and this paragraph used to describe the
+    bug as if it were the contract.
 
     Every field must be named. A missing one is a struct member with
     nothing in it, which C++ would zero-initialise and Python would
