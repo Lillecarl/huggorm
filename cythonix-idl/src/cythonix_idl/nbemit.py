@@ -123,6 +123,21 @@ COMPARISONS = (("__eq__", "==", "value"), ("__lt__", "<", "order"),
                ("__ge__", ">=", "order"))
 
 
+def _doc(text: str) -> str:
+    """One docstring, as the C++ string literal that carries it.
+
+    Flattened to a line, however the declaration wrapped it: a C++
+    literal has no continuation and gluing two is noise. `help()`
+    rewraps anyway.
+
+    Empty for a declaration that wrote none, and the caller emits
+    nothing rather than an empty literal - a `__doc__` of None says
+    "undocumented" where "" says "documented as nothing"."""
+    if not text or not text.strip():
+        return ""
+    return " ".join(text.split()).replace("\\", "\\\\").replace('"', r'\"')
+
+
 def _self(cls: Class) -> str:
     """The lambda's parameter name for the bound object.
 
@@ -518,6 +533,8 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
     if m.parts:
         assert m.ret is not None
         return _parts_method(cls, m, known or {})
+    doc = _doc(m.doc)
+    tail = f', "{doc}"' if doc else ""
     if m.cxx_body:
         # A method the declaration could not derive, carried verbatim.
         obj = _self(cls)
@@ -533,7 +550,7 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in m.cxx_body.strip().splitlines()]
         return [head, *opening, *body,
-                f"{INDENT * 2}}}{_extras(cls, m, known)})"]
+                f"{INDENT * 2}}}{_extras(cls, m, known)}{tail})"]
     derived = _derived(cls, m, known)
     if derived is not None:
         obj = _self(cls)
@@ -541,10 +558,10 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         return [f'{INDENT * 2}.def("{m.name}", '
                 f"[]({_held(cls)} &{obj}{args}) {{",
                 *opening, *derived,
-                f"{INDENT * 2}}}{_extras(cls, m, known)})"]
+                f"{INDENT * 2}}}{_extras(cls, m, known)}{tail})"]
     spelled = m.cxx_name or m.name
     return [f'{INDENT * 2}.def("{m.name}", &{_held(cls)}::{spelled}'
-            f"{_extras(cls, m, known)})"]
+            f"{_extras(cls, m, known)}{tail})"]
 
 
 def absent(pr, known: dict[str, Class] | None = None) -> bool:
@@ -707,9 +724,11 @@ def _parts_method(cls: Class, m: Method,
     body.append(f"{INDENT * 4}return {_held(target)}{{")
     body += [f"{INDENT * 5}{named[n]}," for n in want]
     body.append(f"{INDENT * 4}}};")
+    doc = _doc(m.doc)
     return [f'{INDENT * 2}.def("{m.name}", '
             f"[]({_held(cls)} &{obj}{args}) {{",
-            *body, f"{INDENT * 2}}}{_extras(cls, m, known)})"]
+            *body, f"{INDENT * 2}}}{_extras(cls, m, known)}"
+            + (f', "{doc}"' if doc else "") + ")"]
 
 
 def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
@@ -740,7 +759,7 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
         tail = f"{INDENT * 2}}}{names}"
         if not cls.ctor.doc:
             return [head, *opening, *body, tail + ")"]
-        doc = " ".join(cls.ctor.doc.split()).replace("\\", "\\\\").replace('"', r'\"')
+        doc = _doc(cls.ctor.doc)
         return [head, *opening, *body, tail + ",",
                 f'{INDENT * 3}     "{doc}")']
     types = ", ".join(_param(t, known)[0] for _, t in cls.ctor.params)
@@ -750,7 +769,7 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
         return [line + ")"]
     # One line, however the declaration wrapped it: a C++ string
     # literal has no continuation and gluing two is noise.
-    doc = " ".join(cls.ctor.doc.split()).replace("\\", "\\\\").replace('"', r'\"')
+    doc = _doc(cls.ctor.doc)
     return [line + ",", f'{INDENT * 3}     "{doc}")']
 
 
@@ -1062,7 +1081,7 @@ def _factory(cls: Class, functions: Sequence[Method],
         return [line + ")"]
     # One line, however the declaration wrapped it: a C++ string
     # literal has no continuation and gluing two is noise.
-    doc = " ".join(cls.ctor.doc.split()).replace("\\", "\\\\").replace('"', r'\"')
+    doc = _doc(cls.ctor.doc)
     return [line + ",", f'{INDENT * 3}     "{doc}")']
 
 
@@ -1325,9 +1344,14 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # A PROXY is not final: MockStore exists to be subclassed, which
     # is what its trampoline is for.
     final = ", nb::is_final()" if decl.wire == "value" else ""
+    # The class's own prose, which a declaration always writes and a
+    # caller could not read: `help(StorePath)` answered with nothing
+    # but the signature until this line existed.
+    doc = _doc(cls.doc)
+    shown = f', "{doc}"' if doc else ""
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
              f'{INDENT}auto cls = nb::class_<{", ".join(holds)}>'
-             f'(m, "{cls.name}"{final})']
+             f'(m, "{cls.name}"{shown}{final})']
     if cls.is_value:
         # A RECORD: the emitter declared the struct, so every accessor
         # is a member and the whole binding is derived from the field
@@ -1339,8 +1363,15 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         # `info.path()`. A property would read better and would be a
         # DIFFERENT surface, which is not a choice an emitter makes
         # on its own.
+        # ...each carrying the prose the declaration wrote for it.
+        # The accessor is derived from the field list, but what the
+        # field MEANS is a sentence only a person can write, and the
+        # declaration already has one on every method.
+        described = {m.name: _doc(m.doc) for m in cls.methods}
         body += [f'{INDENT * 2}.def("{name}", [](const {held} &{obj}) '
-                 f"{{ return {obj}.{name}; }})"
+                 f"{{ return {obj}.{name}; }}"
+                 + (f', "{described[name]}"' if described.get(name) else "")
+                 + ")"
                  for name, _ in record_fields(cls, known)]
         body += _record_semantics(cls, known)
         # ...which owns `__eq__` for a record, so this contributes
@@ -1608,6 +1639,10 @@ def extension(mod: Module, dotted: str,
         module(classes, mod.functions, known),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
+        # The declaration file's own docstring, which is the only
+        # description of this module anyone wrote. Without it
+        # `help(cythonix_bindings.path)` answers with nothing.
+        *([f'{INDENT}m.doc() = "{_doc(mod.doc)}";'] if _doc(mod.doc) else []),
         # A startup hook goes ahead of everything, imports included -
         # an import runs another module's initialisation, and a
         # library that demands initialisation is entitled to it
