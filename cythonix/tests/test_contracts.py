@@ -425,3 +425,58 @@ def test_the_stubs_promise_the_same_order_the_manifest_does(
                 f"the manifest says {sorted(declared[node.name])}")
             checked += 1
     assert checked, "no stubbed class was found in the manifest"
+
+
+def test_an_abstract_class_refuses_to_be_built(
+        manifest: dict[str, Any]) -> None:
+    """A class the manifest calls abstract must refuse construction.
+
+    `@abstract` says a caller holds one and never makes one - the
+    implementation is chosen by a factory, or supplied by a Python
+    subclass. Every layer above reads `abstract` and declines to offer
+    a constructor, so the BINDING has to agree or the layers are
+    describing a class that does not behave that way.
+
+    It did not agree. nanobind's `nb::init<>()` is the only way to
+    reach a trampoline, and the held C++ type is abstract too - so
+    `std::is_constructible_v<Type>` is false, nanobind always built
+    the trampoline, and `MockStore()` succeeded. The failure moved to
+    the first call, as "tried to call a pure virtual function", which
+    is a worse place to learn about it.
+
+    This is the test that says the guard holds. It asks the manifest
+    which classes claim to be abstract rather than naming one, so a
+    second abstract binding is covered the day it is declared."""
+    import importlib
+
+    checked = []
+    for name, entry in manifest["wrappers"].items():
+        if not entry.get("abstract"):
+            continue
+        cls = getattr(importlib.import_module(entry["module"]), name)
+        with pytest.raises(TypeError, match="abstract"):
+            cls()
+        checked.append(name)
+    assert checked, "the manifest declares no abstract class"
+
+
+def test_a_python_subclass_of_an_abstract_class_still_builds(
+        manifest: dict[str, Any]) -> None:
+    """...and the refusal must not close the door it exists to keep
+    open.
+
+    The whole reason an abstract binding carries an `__init__` at all
+    is the trampoline: a Python class deriving from it is instantiated
+    THROUGH the base, and nanobind needs a constructor to reach. A
+    guard that refused both would be a simpler binding and a useless
+    one, so this drives the other half - and `describe` proves the
+    override is reached through C++ virtual dispatch rather than by
+    Python attribute lookup."""
+    import cythonix_bindings
+
+    class Custom(cythonix_bindings.MockStore):  # type: ignore[misc]
+        def get_uri(self) -> str:
+            return "python://custom"
+
+    assert Custom().get_uri() == "python://custom"
+    assert cythonix_bindings.describe(Custom()) == "store(python://custom)"

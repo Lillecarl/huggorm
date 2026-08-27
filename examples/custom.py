@@ -75,7 +75,7 @@ def demo() -> None:
     try:
         MockStore()
     except TypeError as e:
-        print(f"\nStore() correctly raises: {e}")
+        print(f"\nMockStore() correctly raises: {e}")
     try:
         MockStorePath()
     except TypeError as e:

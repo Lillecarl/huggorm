@@ -1303,13 +1303,31 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # declaration names one. An ABSTRACT class offers neither: a
     # caller holds one all the time and constructs one never.
     if decl.abstract:
-        # No declared constructor, and still a way in - for a SUBCLASS.
-        # A Python class deriving from this one is instantiated as the
-        # trampoline, and nanobind needs an `__init__` to reach it. A
-        # bare MockStore() builds a trampoline whose get_uri calls a
-        # Python method that does not exist; `_abstract` is what tells
-        # the layers above not to offer it.
-        body = ([f"{INDENT * 2}.def(nb::init<>())"]
+        # No declared constructor, and still a way in - for a SUBCLASS
+        # only. A Python class deriving from this one is instantiated
+        # as the trampoline, and nanobind needs an `__init__` to reach
+        # it; `@abstract` says a caller may not reach it directly.
+        #
+        # `nb::init<>()` alone gives BOTH, because the held type is
+        # abstract in C++ too: `std::is_constructible_v<Type>` is
+        # false, so nanobind's own init always builds the trampoline
+        # and `MockStore()` succeeds. It then raises from the first
+        # call, which is a worse place to learn about it.
+        #
+        # `pointer_and_handle` and `nb_inst_python_derived` are how
+        # nanobind's `init` asks the same question (nb_class.h:393) -
+        # the storage to construct into, and whether the Python type
+        # being built is a subclass of the bound one.
+        body = ([f'{INDENT * 2}.def("__init__", '
+                 f"[](nb::pointer_and_handle<{_held(cls)}> v) {{",
+                 f"{INDENT * 3}if (!nb::detail::nb_inst_python_derived("
+                 f"v.h.ptr()))",
+                 f'{INDENT * 4}throw nb::type_error("{cls.name} is '
+                 f'abstract: derive from it, or open one through a '
+                 f'factory.");',
+                 f"{INDENT * 3}new ((void *) v.p) "
+                 f"{NAMESPACE}::Py{cls.name}();",
+                 f"{INDENT * 2}}})"]
                 if _overridable(cls) else [])
     elif decl.built_by:
         body = _factory(cls, functions, known)

@@ -16,7 +16,7 @@ import pytest
 
 from cythonix import grpc_pb
 from cythonix.wire import WireCodec
-from cythonix_bindings import MockDerivedPath, MockStore, StorePath
+from cythonix_bindings import MockDerivedPath, MockLocalStore, StorePath
 from cythonix_bindings.errors import BadStorePath, NixError
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
@@ -183,7 +183,9 @@ def test_an_empty_optional_field_is_not_an_absent_one() -> None:
     manifest = grpc_pb.load_manifest()
     codec = WireCodec(manifest)
     msg_cls = _message(manifest["wrappers"]["MockDerivedPath"]["message"])
-    store = MockStore()
+    # A CONCRETE store. MockStore is abstract, and a test that
+    # builds one is testing the binding rather than the codec.
+    store = MockLocalStore()
     path = store.add_text_to_store("x", "y")
 
     def roundtrip(built: Any) -> Any:
