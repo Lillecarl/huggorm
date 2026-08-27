@@ -15,6 +15,7 @@ import pytest
 
 from cythonix_bindings import ContentAddressMethod as CA
 from cythonix_bindings import (
+    Hash,
     HashAlgorithm,
     PathInfo,
     Store,
@@ -997,6 +998,12 @@ def test_every_wire_value_survives_its_own_round_trip(
     # rest are parts tuples, which is what lets a case reach a state
     # no hermetic producer here can reach.
     samples: dict[str, tuple[Any, list[tuple[Any, ...]]]] = {
+        # Two algorithms and two digests. A hash is the one wire value
+        # a CALLER builds - it is what you have when you have read one
+        # from somewhere Nix did not print it - so both cases are
+        # constructed, and neither is a producer's answer.
+        "Hash": (Hash(HashAlgorithm.SHA256, bytes(range(32))),
+                 [(HashAlgorithm.SHA1, bytes(range(20)))]),
         "StorePath": (held, [(other.to_string(),)]),
         "PathInfo": (info, [populated]),
         "StoreLocation": (

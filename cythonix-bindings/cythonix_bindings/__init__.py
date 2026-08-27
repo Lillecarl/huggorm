@@ -42,6 +42,7 @@ what is left to do; when it is gone, so is the mock.
 """
 
 from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
+from .hash import Hash
 from .mock_store import (
     MockDerivation,
     MockDerivedPath,
@@ -81,6 +82,7 @@ _async_twins = {"pathlib.Path": "anyio.Path"}
 __all__ = [
     "ContentAddressMethod",
     "EvalState",
+    "Hash",
     "HashAlgorithm",
     "MockDerivation",
     "MockDerivedPath",

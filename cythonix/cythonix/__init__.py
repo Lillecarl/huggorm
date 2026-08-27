@@ -39,6 +39,7 @@ advertised them would be advertising scaffolding. They are still in
 
 from cythonix_bindings import ContentAddressMethod as ContentAddressMethod
 from cythonix_bindings import EvalState as EvalState
+from cythonix_bindings import Hash as Hash
 from cythonix_bindings import HashAlgorithm as HashAlgorithm
 from cythonix_bindings import PathInfo as PathInfo
 from cythonix_bindings import Store as Store
@@ -76,6 +77,7 @@ __all__ = [
     "ContentAddressMethod",
     "EvalState",
     "EvalStateLike",
+    "Hash",
     "HashAlgorithm",
     "NixClient",
     "PathInfo",
