@@ -60,6 +60,10 @@ which was superseded rather than fixed.
   surface by kind, the demos moved to examples/, the server reports
   through a logger, and the pool takes a size. A test derives the
   export list from the two packages rather than keeping a second copy.
+- 056 (PathInfo is declared twice) is OPEN. One C++ type, two
+  declarations, three methods differing in TYPE - and the one the
+  spike gate measures is not the one we ship. The duplicate should go
+  whichever way the bigger question lands.
 - 055 (adjacent Nix versions) is OPEN and undecided on purpose. The
   C++ answer - preprocessor ladders - does not transfer, because four
   generated surfaces sit above the bindings and none of them has a
