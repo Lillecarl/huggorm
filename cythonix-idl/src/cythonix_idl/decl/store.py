@@ -197,8 +197,8 @@ class Store:
             dump,
             name,
             nix::FileSerialisationMethod::Flat,
-            nix::ContentAddressMethod::parse(method),
-            nix::parseHashAlgo(hash_algo),
+            method,
+            hash_algo,
             as_set<nix::StorePathSet>(references));""")
     def add_to_store(
         self,
@@ -252,8 +252,8 @@ class Store:
         return s.addToStore(
             name,
             source,
-            nix::ContentAddressMethod::parse(method),
-            nix::parseHashAlgo(hash_algo),
+            method,
+            hash_algo,
             as_set<nix::StorePathSet>(references));""")
     def add_path_to_store(
         self,

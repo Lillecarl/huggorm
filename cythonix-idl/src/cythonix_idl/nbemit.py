@@ -429,6 +429,24 @@ def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str
     return "".join(f", {x}" for x in out)
 
 
+def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
+    """The C++ that turns this vocabulary's string into its type.
+
+    `@words(parsed_by=...)` names it, and it was prose until this read
+    it: both `add_*` methods hand-wrote
+    `nix::ContentAddressMethod::parse(method)` in their bodies while
+    the declaration two files away already said what the parser is
+    called. Empty for anything that is not a vocabulary, and for a
+    vocabulary that declares no parser - which crosses as its string
+    and is parsed by whatever it is handed to."""
+    if t is None or not known:
+        return ""
+    other = known.get(t.python.removesuffix("| None").strip())
+    if other is None or not other.is_words:
+        return ""
+    return other.decl.parsed_by
+
+
 def _handle(t: Type | None, known: dict[str, Class] | None) -> Class | None:
     """The declared class behind this type, when it binds a HANDLE.
 
@@ -561,6 +579,18 @@ def _signature(cls: Class, m: Method,
     args, opening = "", []
     for pr in m.params:
         spelled, _ = _param(pr.type, known)
+        parser = _parsed_by(pr.type, known)
+        if parser:
+            # A VOCABULARY arrives as the string libstore's parser
+            # takes, and one call turns it into the C++ type. The
+            # spelling of that call is declared once, by `@words`, so
+            # a body writes the parameter name and gets the parsed
+            # value - and a second method taking the same vocabulary
+            # cannot spell the parse differently.
+            args += f", {spelled} {pr.name}_"
+            opening.append(f"{INDENT * 4}const auto {pr.name} = "
+                           f"{parser}({pr.name}_);")
+            continue
         if not absent(pr, known):
             args += f", {spelled} {pr.name}"
             continue
