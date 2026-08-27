@@ -1,0 +1,131 @@
+# Realisation before DerivedPath
+
+**DONE.** `nix::DrvOutput` and `nix::Realisation` are bound, and
+`Store.query_realisation` produces one. `nix::DerivedPath` is not, and
+this file says what it would need.
+
+## The choice
+
+Two real Nix types were next, and only one of them was a binding.
+
+**`nix::Realisation` is composition.** `DrvOutput` is a `Hash` and a
+string; `Realisation` is a `DrvOutput`, a `StorePath` and a set of
+`Signature`. Every one of those is already a wire value (057), so this
+type is the first one that is made ENTIRELY of things this repo
+already carries. Nothing new had to be invented, and the declaration
+is two classes with one hatched body between them.
+
+**`nix::DerivedPath` is three unsolved questions at once.**
+
+    struct DerivedPath : std::variant<DerivedPathOpaque, DerivedPathBuilt>
+    struct DerivedPathBuilt { ref<const SingleDerivedPath> drvPath;
+                              OutputsSpec outputs; };
+    struct SingleDerivedPath : std::variant<Opaque, SingleDerivedPathBuilt>
+    struct SingleDerivedPathBuilt { ref<const SingleDerivedPath> drvPath;
+                                    OutputName output; };
+
+1. A SUM type on the wire. Every wire value so far is a product - a
+   fixed list of fields - and `_wire_fields` cannot say "one of
+   these". `@tree` exists for a recursive value and is what `Value`
+   uses, but a Value is a PROXY walked by the RPC layer, not a value
+   that crosses as its parts.
+2. RECURSION. `SingleDerivedPathBuilt` holds a ref to a
+   `SingleDerivedPath`, which is the variant it lives in. A message
+   can nest itself in protobuf; a `_from_parts` that rebuilds an
+   arbitrary-depth tree is a different kind of body from anything
+   here.
+3. Rendering needs a STORE. `DerivedPath::to_string` takes a
+   `StoreDirConfig &`, so `str(dp)` cannot be an accessor of the
+   value - which contradicts how every other wire value prints
+   itself.
+
+`OutputsSpec` is a fourth variant inside the second question.
+
+So: Realisation now, and DerivedPath when there is a decision about
+sum types on the wire. That decision should be made for its own sake,
+not discovered while binding a type.
+
+## What it looks like
+
+    DrvOutput      drv_hash: Hash, output_name: str        constructible
+    Realisation    id: DrvOutput, out_path: StorePath,
+                   signatures: list[Signature]             produced
+
+    message RealisationMsg {
+      DrvOutputMsg id = 1;          // which holds a HashMsg
+      StorePathMsg out_path = 2;
+      repeated SignatureMsg signatures = 3;
+    }
+
+Three levels of message nesting, which is the deepest the wire has
+carried, and no declaration says a word about protobuf.
+
+## Two decisions worth the ink
+
+**The binding hands back the KEYED type.** Upstream's
+`queryRealisation` answers an `UnkeyedRealisation`, because the key is
+the one you just passed. `nix::Realisation` is that plus the key, and
+the binding builds one - `nix::Realisation{*found, id}` - so a value
+that crosses a wire or sits in a list still knows what it is the
+realisation OF. Re-attaching the key is not an invention: it is the
+caller's own argument.
+
+**Equality diverges from libstore, deliberately.**
+`nix::UnkeyedRealisation` compares on `outPath` ALONE - upstream
+writes `GENERATE_CMP(UnkeyedRealisation, me->outPath)` with the
+comment "TODO sketchy that it avoids signatures" - and
+`nix::Realisation`'s defaulted operators inherit it. So in C++, two of
+these differing only in who signed them are equal.
+
+The binding cannot follow that. `__hash__` is derived from the
+declared parts and `signatures` is one, so two objects that compared
+equal would hash differently - which breaks the one invariant Python
+asks of a value. So `compare="parts"`, and
+`test_a_realisation_compares_on_its_signatures_where_nix_does_not`
+pins it. Perturbation-verified: switching to `compare="cxx"` fails
+that test by name.
+
+`DrvOutput` is the opposite case and shows the rule is not a habit -
+it defaults both operators over exactly the two members that cross,
+so `compare="cxx"` is safe and it uses it.
+
+## None means two things, and nothing separates them
+
+`query_realisation` answers None when the store never realised that
+output, AND when `ca-derivations` is off - which is every store this
+repo tests, because `LocalStore::queryRealisationUncached` checks the
+feature and hands back nothing without consulting a mapping.
+
+A caller who gets None has learnt that this store cannot tell them,
+which is a different fact from the output not existing. Nothing in the
+API separates the two and the declaration says so rather than
+implying otherwise.
+
+## Gates, all watched to fail
+
+- `_from_parts` dropping `signatures` - the round trip fails naming
+  it.
+- `compare="cxx"` on Realisation - the divergence test fails with
+  "the binding compares signatures; libstore does not".
+- `query_realisation` throwing - the None test fails with the thrown
+  error, which proves it exercises the call rather than a default.
+
+## The remote test says what it cannot prove
+
+A wire value has crossed as an ARGUMENT since `is_valid_path` took a
+StorePath, and bytes since `add_to_store` took a file's contents. What
+is new is a message argument that CONTAINS a message.
+
+The test proves the RPC layer builds and accepts that nesting. It does
+NOT prove the digest arrived intact, because the answer does not
+depend on it - a client that mangled the digest would still get None,
+and nothing bound today echoes a value back to ask. The docstring says
+so; the round-trip gate is where fidelity lives.
+
+## Not done
+
+`Store.register_drv_output` takes a `Realisation` and would earn it a
+constructor. Nothing binds it, so `Realisation` stays produced-only
+and its `_from_parts` is the only way to build one - which is why the
+round-trip test needed `_rebuild`, a one-line helper that reaches past
+the public surface where a typechecker cannot follow.

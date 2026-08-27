@@ -63,6 +63,18 @@ A `Hash` is the one of these a caller can build, because it is the one
 a caller can have: `Hash('sha256', digest)` from a lock file or a
 narinfo. It refuses a digest of the wrong length.
 
+## Content-addressed outputs
+
+A derivation whose output is content-addressed does not know its own
+output path until it has been built, so the store keeps a mapping.
+
+    key = DrvOutput(Hash('sha256', drv_hash_bytes), 'out')
+    store.query_realisation(key)   # a Realisation, or None
+
+None means two things and nothing here separates them: the store never
+realised that output, or `ca-derivations` is off - in which case every
+id answers None, because there is no mapping to consult.
+
 ## The graph
 
 One edge is a fact; the closure is what you can copy, sign or delete
