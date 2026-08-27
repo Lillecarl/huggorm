@@ -9,6 +9,7 @@ nothing on disk, which is what makes it testable in a build sandbox.
 import gc
 import pathlib
 import sys
+from typing import Any
 
 import pytest
 
@@ -868,3 +869,84 @@ async def test_the_async_wrapper_hands_back_an_anyio_path(
     assert str(real) == str(Store(str(tmp_path)).real_path(path))
     assert await (real / "a.txt").read_text() == "hello\n"
     await store.aclose()
+
+
+# --- the wire-value round trip --------------------------------------
+
+
+def _wire_values() -> dict[str, str]:
+    """Every type the manifest says crosses as its PARTS."""
+    import json
+
+    import cythonix_generated as flg
+
+    manifest = json.loads(
+        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
+    return {name: entry["module"]
+            for group in ("wrappers", "returned_types")
+            for name, entry in manifest[group].items()
+            if entry["wire"] == "value"}
+
+
+def test_every_wire_value_survives_its_own_round_trip(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    """A wire value must rebuild from the parts it hands over.
+
+    `_parts()` renders one; `_from_parts(*parts)` rebuilds it. The two
+    are inverses or the type does not cross correctly, and nothing
+    else in the build proves that.
+
+    It used to be true BY CONSTRUCTION. A produced value was a struct
+    the emitter declared, whose members were the wire types, so
+    `_from_parts` was aggregate initialisation and could not disagree
+    with `_parts`. Once a value binds a REAL Nix type, the two become
+    a hand-written bijection - an accessor renders a hash, a
+    `_from_parts` parses it back - and a body that forgets a field
+    compiles and zero-initialises it in silence.
+
+    So the round trip stops being true by construction and has to be
+    proven. This is where (tasks/056).
+
+    BUILDERS is the one hand-written part, one line per type, and the
+    test refuses to pass if it does not cover every wire value the
+    manifest declares. Adding a value without adding a builder fails
+    here rather than shipping unproven."""
+    from cythonix_bindings import MockDerivedPath, MockLocalStore
+
+    mock = MockLocalStore()
+    mock_path = mock.add_text_to_store("round-trip", "x")
+    held = chroot.add_to_store("round-trip", b"x", CA.NAR, HashAlgorithm.SHA256)
+
+    # `Any`, because `_parts` and `_from_parts` are private: the
+    # emitter skips every `_`-prefixed name when it writes the stubs,
+    # so a typechecker cannot see them and should not. The round trip
+    # is exactly the contract those two exist for, so this is the one
+    # place that reaches past the public surface on purpose.
+    builders: dict[str, Any] = {
+        "StorePath": lambda: held,
+        "PathInfo": lambda: chroot.query_path_info(held),
+        "StoreLocation": lambda: chroot.to_store_path(
+            chroot.print_store_path(held)),
+        "MockStorePath": lambda: mock_path,
+        "MockDerivedPath": lambda: MockDerivedPath(mock_path, "out"),
+    }
+
+    declared = _wire_values()
+    missing = sorted(set(declared) - set(builders))
+    assert not missing, (
+        f"the manifest declares {missing} as wire values and this test "
+        f"cannot build one. Add a builder - the round trip is not "
+        f"optional for a type that crosses as its parts.")
+
+    for name in sorted(declared):
+        built: Any = builders[name]()
+        parts = built._parts()
+        rebuilt = type(built)._from_parts(*parts)
+        assert rebuilt._parts() == parts, (
+            f"{name} does not survive its own round trip:\n"
+            f"  sent:     {parts}\n"
+            f"  came back: {rebuilt._parts()}")
+        # ...and the rebuilt one must BE equal, not merely carry the
+        # same parts. A type whose __eq__ reads something the parts do
+        # not would pass the line above and fail a caller.
+        assert rebuilt == built, f"{name} rebuilt unequal to the original"
