@@ -16,7 +16,7 @@ import pytest
 
 from cythonix import grpc_pb
 from cythonix.wire import WireCodec
-from cythonix_bindings import MockDerivedPath, MockLocalStore, StorePath
+from cythonix_bindings import StorePath
 from cythonix_bindings.errors import BadStorePath, NixError
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
@@ -166,44 +166,54 @@ def test_every_value_type_has_value_semantics(manifest: dict[str, Any]) -> None:
                 f"{name}.{dunder}")
 
 
-def test_an_empty_optional_field_is_not_an_absent_one() -> None:
-    """"" and None are different answers, and the wire keeps them apart.
+def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
+    """A falsy value that was SET reads back as itself, not as None.
 
-    MockDerivedPath declares `("output", "str?")`, and the mock gives
-    the two states different meanings: no output is an OPAQUE path,
-    an empty output is a BUILT one whose output happens to be unnamed.
-    `describe()` prints them differently, so this is not a distinction
-    invented for the test.
+    This is 048's property. The codec used to read a scalar back as
+    `None if not raw`, so an explicitly-passed 0 or "" arrived as
+    None - and only a SCALAR can be falsy-but-set, because a message
+    field has presence of its own. The schema gives an optional
+    scalar the synthetic oneof proto3 has had since 3.15, and
+    HasField answers exactly.
 
-    The codec used to read a scalar back as `None if not raw`, so an
-    explicitly-passed "" arrived as None and an opaque path came out
-    the far side. The schema now gives the field real presence - the
-    synthetic oneof proto3 has had since 3.15 - and HasField answers
-    exactly (tasks/048)."""
+    Asked of the CODEC rather than of a type, and that is a change
+    forced by the mock going away (tasks/060). It used to drive
+    MockDerivedPath's `output`, which is `str?` and whose "" and None
+    mean different things. Real Nix has no such field: its optional
+    scalars are `PathInfo.registration_time`, where upstream spells
+    unknown as 0 so the accessor COLLAPSES the two on purpose, and
+    two optional MESSAGES, which have presence without any of this.
+
+    So there is no object whose accessors can pose the question, and
+    driving encode/decode directly is the honest way to keep asking
+    it. It is also closer to the bug: 048 was a codec fix."""
     manifest = grpc_pb.load_manifest()
     codec = WireCodec(manifest)
-    msg_cls = _message(manifest["wrappers"]["MockDerivedPath"]["message"])
-    # A CONCRETE store. MockStore is abstract, and a test that
-    # builds one is testing the binding rather than the codec.
-    store = MockLocalStore()
-    path = store.add_text_to_store("x", "y")
+    msg = _message(manifest["returned_types"]["PathInfo"]["message"])()
 
-    def roundtrip(built: Any) -> Any:
-        msg = msg_cls()
-        codec.value_to_msg("MockDerivedPath", built, msg)
-        return codec.value_from_msg("MockDerivedPath", msg), msg
+    # `int | None`, the ANNOTATION spelling. `int?` is how
+    # `_wire_fields` writes it, and `value_to_msg` strips the "?" and
+    # handles absence itself before it ever reaches encode - so the
+    # two entry points take different spellings and this is the one
+    # `encode` is built for.
+    def roundtrip(value: int | None) -> tuple[Any, bool]:
+        codec.encode(msg, "registration_time", "int | None", value,
+                     _no_proxy)
+        return (codec.decode(msg, "registration_time", "int | None",
+                             _no_proxy),
+                msg.HasField("registration_time"))
 
-    empty, empty_msg = roundtrip(MockDerivedPath(path, ""))
-    assert empty_msg.HasField("output"), "an empty string was SET"
-    assert empty._parts()[1] == ""
-    assert empty.describe().endswith("^"), empty.describe()
+    # Nothing written, and nothing read back.
+    assert roundtrip(None) == (None, False)
 
-    absent, absent_msg = roundtrip(MockDerivedPath(path))
-    assert not absent_msg.HasField("output")
-    assert absent._parts()[1] is None
-    assert absent.describe().startswith("opaque"), absent.describe()
+    # ...and the case the bug was: falsy, and SET.
+    assert roundtrip(0) == (0, True)
+    assert roundtrip(1_700_000_000) == (1_700_000_000, True)
 
-    assert empty.describe() != absent.describe()
+
+def _no_proxy(_: Any) -> Any:
+    """A proxy resolver for a field that cannot hold one."""
+    raise AssertionError("an int field asked for a proxy")
 
 
 def _message(name: str) -> Any:
