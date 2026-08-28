@@ -48,9 +48,16 @@ if not fake_lib:
         "FAKE_LIBRARY env var not set - build via Nix, or set "
         "FAKE_LIBRARY=/path/to/fake-library")
 
-# The first REAL Nix type, beside the mock rather than replacing it
-# (tasks/015). Nothing about it goes through FAKE_LIBRARY.
-_nix = pkg_config("nix-store")
+# Real Nix. nix-expr for the evaluator and nix-store for everything
+# else; pkg-config resolves the Requires chain, so nix-util and
+# nlohmann_json arrive without being named (tasks/015). Nothing about
+# it goes through FAKE_LIBRARY.
+#
+# One line for both, not one per module. A module links what its
+# declaration names, and asking pkg-config twice would mean two
+# compile-flag sets that have to agree - which is the class of thing
+# this repo derives rather than restates.
+_nix = pkg_config("nix-store", "nix-expr")
 # ...plus this directory, for the headers in `_cpp/`. They sit beside
 # the sources rather than in the extension because they are C++ a
 # DECLARATION names: `@binds("cythonix::translate_nix_error")` points
