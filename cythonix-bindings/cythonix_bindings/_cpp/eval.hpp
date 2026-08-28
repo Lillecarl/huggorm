@@ -108,6 +108,35 @@ inline bool & gc_asked()
     return flag;
 }
 
+/**
+ * Unregisters a thread we registered, when that thread EXITS.
+ *
+ * Boehm stops the world by signalling every registered thread and
+ * waiting for each to answer. A thread that exits while still
+ * registered never answers, and the next collection aborts the
+ * PROCESS with "Signals delivery fails constantly" - no exception, no
+ * traceback.
+ *
+ * A `thread_local` object's destructor runs at thread exit, so this
+ * is the one place the rule cannot be forgotten. `gc_release_thread`
+ * stays bound for a caller who wants to release early; nobody has to
+ * remember it any more.
+ *
+ * Verified by reproducing the abort first: one pool thread made a
+ * value, the pool shut down, and the next `collect_garbage()` killed
+ * the process.
+ */
+struct ThreadExit
+{
+    ~ThreadExit()
+    {
+        if (gc_owns_registration()) {
+            GC_unregister_my_thread();
+            gc_owns_registration() = false;
+        }
+    }
+};
+
 inline void gc_register_thread()
 {
     if (gc_asked())
@@ -118,8 +147,12 @@ inline void gc_register_thread()
     // GC_SUCCESS means WE registered it, so we are the ones who must
     // unregister. GC_DUPLICATE means the collector already knew, and
     // unregistering such a thread is not ours to do.
-    if (GC_register_my_thread(&sb) == GC_SUCCESS)
+    if (GC_register_my_thread(&sb) == GC_SUCCESS) {
         gc_owns_registration() = true;
+        // Constructed on first registration, destroyed at thread exit.
+        static thread_local ThreadExit at_exit;
+        (void) at_exit;
+    }
 }
 
 /**
