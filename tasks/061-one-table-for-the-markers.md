@@ -40,6 +40,22 @@ carries 28 `DeclarationError` raises.
     binding wire_value custom cxx_name blocks local reads needs
     instant threading binds
 
+**One marker means two things, and the case that separates them is
+real.** `@abstract` says "the C++ type has pure virtuals" in the
+declaration. Three emitters read it as "Python may not construct one":
+`nbemit` skips the constructor, `emitter.py` refuses `Async<X>()` and
+skips the wrapper, and `smoke_test` requires the refusal.
+
+`nix::Store` is both abstract AND opened through `nix::openStore`, so
+declaring the true fact about it breaks all three - verified, 24
+tests. Every store this repo hands back is really a `nix::LocalStore`
+or a `nix::UDSRemoteStore`, and the declaration cannot say so today.
+
+The fix is the shape this task is about: the declaration states the
+FACT, and the manifest carries the DERIVED question each layer asks -
+"is there a door" - computed once instead of re-interpreted three
+times.
+
 Rules that exist and are not data:
 
 - `@reads` with parameters - refused by one hand-written check,
