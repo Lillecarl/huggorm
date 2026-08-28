@@ -41,6 +41,7 @@ from cythonix_idl.declare import (
     names,
     needs,
     produced,
+    produces,
     startup,
     tagged,
     threading,
@@ -242,11 +243,32 @@ class EvalState:
         """The URI this state was opened with."""
 
     def parse_expr(self, expr: Str) -> "Value":
-        """Parse without evaluating: the result is an unforced
-        thunk."""
+        """Parse without evaluating: the result is an unforced thunk.
+
+        Not a `@produces`: that marker is for a value made by ONE
+        initialiser, and this parses first and then builds a thunk
+        over the state's base environment. Stretching the marker to
+        cover it would make it a description of structure."""
+        Cxx("""
+if (expr.empty())
+    throw std::invalid_argument("empty expression");
+auto * e = self.state().parseExprFromString(expr, self.state().rootPath("."));
+auto * made = self.alloc();
+made->mkThunk(&self.state().baseEnv, e);
+return self.wrap(made);
+        """)
 
     def eval_expr(self, expr: Str) -> "Value":
         """Parse and evaluate: slow, fully forced result."""
+        Cxx("""
+if (expr.empty())
+    throw std::invalid_argument("empty expression");
+auto * e = self.state().parseExprFromString(expr, self.state().rootPath("."));
+auto * made = self.alloc();
+self.state().eval(e, *made);
+self.state().forceValue(*made, nix::noPos);
+return self.wrap(made);
+        """)
 
     def force(self, v: "Value") -> None:
         """Force a value in place. Idempotent.
@@ -254,6 +276,7 @@ class EvalState:
         Mutates GC-resident memory, and the async layer routes the
         call to this state's OWN thread - which is why a Value is
         affine and travels as a proxy."""
+        Cxx("return self.state().forceValue(*v.get(), nix::noPos);")
 
     # Builders. A caller builds a list or an attribute set one element
     # at a time, and that shape is the WIRE's, not libexpr's: a Nix
@@ -265,12 +288,23 @@ class EvalState:
     # is not something anything grants in bulk - so it would have no
     # RPC surface at all. One element per call is what crosses.
 
+    @produces("mkInt")
     def make_int(self, value: I64) -> "Value":
         """A forced integer value."""
 
     def make_string(self, value: Str) -> "Value":
-        """A forced string value, with no string context."""
+        """A forced string value, with no string context.
 
+        Not a `@produces`: `mkString` takes the state's allocator as a
+        second argument, so the call is not "the initialiser with the
+        declared arguments"."""
+        Cxx("""
+auto * made = self.alloc();
+made->mkString(value, self.state().mem);
+return self.wrap(made);
+        """)
+
+    @produces("mkBool")
     def make_bool(self, value: Bint) -> "Value":
         """A forced boolean value."""
 

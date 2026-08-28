@@ -190,6 +190,9 @@ class Method:
     # This accessor answers which arm is held, from @names. Emitted
     # from the same table the guards read.
     names: bool = False
+    # The C++ initialiser this method calls to make a value, from
+    # @produces. The emitter owns allocating, rooting and wrapping.
+    produces: str = ""
     # For a caller, not for the wire, from @local. A wire value
     # crosses as every accessor it has, so this is the one thing an
     # accessor has to be able to say for itself.
@@ -732,6 +735,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         cxx_name=getattr(marked, "_cxx_name", ""),
         guard=getattr(marked, "_guard", ""),
         names=bool(getattr(marked, "_names", False)),
+        produces=getattr(marked, "_produces", ""),
         blocks=bool(getattr(marked, "_blocks", False)),
         instant=bool(getattr(marked, "_instant", False)),
         prop=any(isinstance(d, ast.Name) and d.id == "property"

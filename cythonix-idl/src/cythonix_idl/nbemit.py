@@ -549,7 +549,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # through `via`, so the two are read separately and `call` below
     # is rebuilt after the guard picks its reach.
     if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
-            or any(h for _, h in args)):
+            or m.produces or any(h for _, h in args)):
         return None
     obj = _self(cls)
     reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
@@ -561,6 +561,18 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # `_cpp/eval.hpp`, and a thirteenth could have forgotten it -
     # which for a `noexcept` reader on the wrong tag is not an error
     # but a reinterpretation of the payload.
+    # A PRODUCER: allocate on this state, call one initialiser with
+    # the declared arguments, wrap. The declaration names only the
+    # initialiser; the three lines around it are the same for every
+    # producer, which is why they are here and not in twelve bodies.
+    if m.produces:
+        given = ", ".join(pr.name for pr in m.params)
+        return [
+            f"{INDENT * 4}auto * made = {obj}.alloc();",
+            f"{INDENT * 4}made->{m.produces}({given});",
+            f"{INDENT * 4}return {obj}.wrap(made);",
+        ]
+
     head: list[str] = []
     if m.guard or m.names:
         if cls.decl.tagged is None:

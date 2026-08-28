@@ -252,6 +252,7 @@ MARKERS: dict[str, Marker] = {
     "cxx_name": Marker(_t("method"), "once"),
     "guard": Marker(_t("method"), "once"),
     "names": Marker(_t("method"), "flag"),
+    "produces": Marker(_t("method"), "once"),
     "instant": Marker(_t("method"), "flag",
                       excludes=frozenset({"blocks"})),
     "local": Marker(_t("method"), "flag"),
@@ -499,6 +500,29 @@ def tagged(reach: str, ask: str, **names: str) -> Callable[[type], type]:
     def mark(cls: type) -> type:
         _decl(cls).tagged = (reach, ask, dict(names))
         return cls
+    return mark
+
+
+def produces[F: Callable[..., Any]](init: str) -> Callable[[F], F]:
+    """This method makes a new value by calling ONE initialiser.
+
+    `init` is the C++ name of that initialiser, and it is the whole of
+    what this says. The emitter owns the rest - allocating the value
+    on this state, calling the initialiser with the declared
+    arguments, rooting it, and wrapping it in the handle - so a
+    producer is one name here rather than four lines of C++ per
+    producer.
+
+    The `@reads` precedent, pointed the other way: that marker names a
+    C++ member to READ, this one names a C++ initialiser to CALL.
+
+    The moment `init` is not enough - an extra argument, an ordering,
+    a conditional - the method is not in this pattern. Give it a body
+    instead of stretching the marker, because a marker that describes
+    structure is a C++ string with punctuation."""
+    def mark(fn: F) -> F:
+        fn._produces = init  # type: ignore[attr-defined]
+        return fn
     return mark
 
 

@@ -288,30 +288,34 @@ public:
 
     const std::string & get_store_uri() const { return core_->store_uri(); }
 
-    // -- production ------------------------------------------------
+    // -- the two primitives every producer stands on ---------------
     //
-    // Every one of these returns a Bridge, so the declaration binds
-    // them by name and writes no body. A method that handed back a
-    // bare `nix::Value *` would need each call site to root it, which
-    // is the rule this file exists to keep in one place.
+    // `alloc` hands back uninitialised GC memory; `wrap` roots it and
+    // ties it to this state. Between them goes ONE initialiser, which
+    // is the only part that differs per producer and the only part a
+    // declaration names.
+    //
+    // Neither mentions a Python method, and neither dies if a declared
+    // method does - which is what makes them helpers rather than
+    // bindings in a costume.
 
-    Bridge parse_expr(const std::string & expr);
-    Bridge eval_expr(const std::string & expr);
+    nix::Value * alloc() const
+    {
+        gc_register_thread();
+        return state().allocValue();
+    }
 
-    Bridge make_int(std::int64_t value);
-    Bridge make_string(const std::string & value);
-    Bridge make_bool(bool value);
+    Bridge wrap(nix::Value * v) const;
+    Bridge wrap_builder(nix::Value * v) const;
+
     Bridge make_list();
     Bridge make_attrs();
 
-    void force(const Bridge & v);
     void list_append(const Bridge & target, const Bridge & item);
     void attrs_set(const Bridge & target, const std::string & name,
                    const Bridge & item);
 
 private:
-    Bridge wrap(nix::Value * v);
-    Bridge wrap_builder(nix::Value * v);
 
     std::shared_ptr<EvalCore> core_;
 };
@@ -554,65 +558,15 @@ private:
 
 // ---- Evaluator, out of line ---------------------------------------
 
-inline Bridge Evaluator::wrap(nix::Value * v)
+inline Bridge Evaluator::wrap(nix::Value * v) const
 {
     return Bridge(core_, v);
 }
 
 /** As `wrap`, for a value a caller may still fill. */
-inline Bridge Evaluator::wrap_builder(nix::Value * v)
+inline Bridge Evaluator::wrap_builder(nix::Value * v) const
 {
     return Bridge(core_, v, true);
-}
-
-inline Bridge Evaluator::parse_expr(const std::string & expr)
-{
-    gc_register_thread();
-    if (expr.empty())
-        throw std::invalid_argument("empty expression");
-    // A THUNK, which is what "parse without evaluating" means here.
-    // `parseExprFromString` gives an Expr, not a Value, so the value
-    // is one that evaluates that expression when it is forced.
-    auto * e = state().parseExprFromString(expr, state().rootPath("."));
-    auto * v = state().allocValue();
-    v->mkThunk(&state().baseEnv, e);
-    return wrap(v);
-}
-
-inline Bridge Evaluator::eval_expr(const std::string & expr)
-{
-    gc_register_thread();
-    if (expr.empty())
-        throw std::invalid_argument("empty expression");
-    auto * e = state().parseExprFromString(expr, state().rootPath("."));
-    auto * v = state().allocValue();
-    state().eval(e, *v);
-    state().forceValue(*v, nix::noPos);
-    return wrap(v);
-}
-
-inline Bridge Evaluator::make_int(std::int64_t value)
-{
-    gc_register_thread();
-    auto * v = state().allocValue();
-    v->mkInt(value);
-    return wrap(v);
-}
-
-inline Bridge Evaluator::make_string(const std::string & value)
-{
-    gc_register_thread();
-    auto * v = state().allocValue();
-    v->mkString(value, state().mem);
-    return wrap(v);
-}
-
-inline Bridge Evaluator::make_bool(bool value)
-{
-    gc_register_thread();
-    auto * v = state().allocValue();
-    v->mkBool(value);
-    return wrap(v);
 }
 
 inline Bridge Evaluator::make_list()
@@ -630,12 +584,6 @@ inline Bridge Evaluator::make_attrs()
     auto builder = state().buildBindings(0);
     v->mkAttrs(builder);
     return wrap_builder(v);
-}
-
-inline void Evaluator::force(const Bridge & v)
-{
-    gc_register_thread();
-    state().forceValue(*v.get(), nix::noPos);
 }
 
 /**
