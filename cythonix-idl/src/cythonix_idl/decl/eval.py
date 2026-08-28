@@ -31,10 +31,12 @@ from cythonix_idl.declare import (
     Bint,
     Cxx,
     Str,
+    StrView,
     binding,
     binds,
     blocks,
     cxx_name,
+    guard,
     header,
     needs,
     produced,
@@ -56,6 +58,15 @@ from cythonix_idl.declare import (
     # and it says so for itself.
     blocking=False,
     cxx="cythonix::Bridge",
+    # Bridge is a HANDLE over a TAGGED UNION: reach the value with
+    # `get()`, ask which arm it holds with `type<true>()`.
+    #
+    # Said once. Each `@guard`ed accessor below names only the arm it
+    # needs, and the emitter writes the check - so a thirteenth
+    # accessor cannot forget one, which for a `noexcept` reader on the
+    # wrong tag is a reinterpretation of the payload rather than an
+    # error.
+    union=("get()", "type<true>()"),
 )
 # How a value TREE is walked, read by the RPC layer so that no layer
 # above this declaration knows what a Value is or which of its methods
@@ -123,11 +134,18 @@ class Value:
         map above does not name crosses as a proxy, so naming all of
         them here costs nothing and hides nothing."""
 
+    @guard("nix::nInt", "int")
     def integer(self) -> I64:
         """This value as an integer. Raises on a thunk, or on a value
-        of another kind."""
+        of another kind.
 
-    def string_value(self) -> Str:
+        nix::Value::integer answers a NixInt, which is a checked
+        int64 with an explicit conversion - so the cast the emitter
+        already writes for an I64 return is the whole of it."""
+
+    @guard("nix::nString", "string")
+    @cxx_name("string_view")
+    def string_value(self) -> StrView:
         """This value as a string. Raises as `integer` does.
 
         The string CONTEXT is dropped. A Nix string can carry store
@@ -135,6 +153,7 @@ class Value:
         them yet; a declaration that carried them would be inventing
         a surface rather than binding one."""
 
+    @guard("nix::nBool", "bool")
     def boolean(self) -> Bint:
         """This value as a bool. Raises as `integer` does."""
 

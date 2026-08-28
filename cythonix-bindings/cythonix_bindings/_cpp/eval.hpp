@@ -463,9 +463,6 @@ public:
     // a bare pointer-to-member.
 
     std::string type_name() const;
-    std::int64_t integer() const;
-    std::string string_value() const;
-    bool boolean() const;
     std::int64_t size() const;
     Bridge at(std::int64_t index) const;
     std::string name_at(std::int64_t index) const;
@@ -675,36 +672,6 @@ inline std::string Bridge::type_name() const
     case nix::nFailed: return "failed";
     }
     return "unknown";
-}
-
-inline std::int64_t Bridge::integer() const
-{
-    auto * v = get();
-    if (v->type<true>() == nix::nThunk)
-        throw std::runtime_error("value is a thunk");
-    if (v->type() != nix::nInt)
-        throw std::runtime_error("value is not int");
-    return v->integer().value;
-}
-
-inline std::string Bridge::string_value() const
-{
-    auto * v = get();
-    if (v->type<true>() == nix::nThunk)
-        throw std::runtime_error("value is a thunk");
-    if (v->type() != nix::nString)
-        throw std::runtime_error("value is not string");
-    return std::string(v->string_view());
-}
-
-inline bool Bridge::boolean() const
-{
-    auto * v = get();
-    if (v->type<true>() == nix::nThunk)
-        throw std::runtime_error("value is a thunk");
-    if (v->type() != nix::nBool)
-        throw std::runtime_error("value is not bool");
-    return v->boolean();
 }
 
 inline std::int64_t Bridge::size() const

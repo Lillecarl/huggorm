@@ -545,11 +545,37 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     binds it by pointer, which is the shorter and better line."""
     ret_handle = _handle(m.ret, known)
     args = [(pr.name, _handle(pr.type, known)) for pr in m.params]
-    if not (cls.decl.via or ret_handle or m.reads
+    # A guarded accessor reaches through the union pair rather than
+    # through `via`, so the two are read separately and `call` below
+    # is rebuilt after the guard picks its reach.
+    if not (cls.decl.via or ret_handle or m.reads or m.guard
             or any(h for _, h in args)):
         return None
     obj = _self(cls)
     reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
+    # The GUARD, for an accessor on a tagged union.
+    #
+    # Written here, once, from two declared facts: the class says how
+    # to ask which arm is held, and the accessor says which one it
+    # needs. Twelve accessors used to spell this by hand in
+    # `_cpp/eval.hpp`, and a thirteenth could have forgotten it -
+    # which for a `noexcept` reader on the wrong tag is not an error
+    # but a reinterpretation of the payload.
+    head: list[str] = []
+    if m.guard is not None:
+        arm, kind_name = m.guard
+        if cls.decl.union is None:
+            raise ValueError(
+                f"{cls.name}.{m.name}: @guard needs "
+                f"@binding(union=(reach, ask)) to say how to reach the "
+                f"union and how to ask which arm it holds")
+        hold, ask = cls.decl.union
+        reach = f"{obj}.{hold}->"
+        head = [
+            f"{INDENT * 4}if ({reach}{ask} != {arm})",
+            f'{INDENT * 5}throw std::runtime_error('
+            f'"value is not {kind_name}");',
+        ]
     passed = ", ".join(f"{name}.{h.decl.via}" if h else name
                        for name, h in args)
     # A member is reached, not called. The declaration says which by
@@ -558,17 +584,17 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     call = (f"{reach}{m.reads}" if m.reads
             else f"{reach}{m.cxx_name or m.name}({passed})")
     if m.ret is None:
-        return [f"{INDENT * 4}{call};"]
+        return [*head, f"{INDENT * 4}{call};"]
     if ret_handle is not None:
-        return [f"{INDENT * 4}return {_held(ret_handle)}({call});"]
+        return [*head, f"{INDENT * 4}return {_held(ret_handle)}({call});"]
     # A width the DECLARATION spells. `size()` answers a size_t and
     # the declaration says I64, so the cast is what makes the emitted
     # C++ say what the declaration says rather than what this
     # library's version of the call happens to return.
     spelled, _ = _cxx(m.ret, known)
     if spelled in ("std::int64_t", "std::uint64_t"):
-        return [f"{INDENT * 4}return static_cast<{spelled}>({call});"]
-    return [f"{INDENT * 4}return {call};"]
+        return [*head, f"{INDENT * 4}return static_cast<{spelled}>({call});"]
+    return [*head, f"{INDENT * 4}return {call};"]
 
 
 def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
