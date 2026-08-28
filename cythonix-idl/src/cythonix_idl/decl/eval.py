@@ -38,9 +38,11 @@ from cythonix_idl.declare import (
     cxx_name,
     guard,
     header,
+    names,
     needs,
     produced,
     startup,
+    tagged,
     threading,
     tree,
 )
@@ -58,15 +60,29 @@ from cythonix_idl.declare import (
     # and it says so for itself.
     blocking=False,
     cxx="cythonix::Bridge",
-    # Bridge is a HANDLE over a TAGGED UNION: reach the value with
-    # `get()`, ask which arm it holds with `type<true>()`.
-    #
-    # Said once. Each `@guard`ed accessor below names only the arm it
-    # needs, and the emitter writes the check - so a thirteenth
-    # accessor cannot forget one, which for a `noexcept` reader on the
-    # wrong tag is a reinterpretation of the payload rather than an
-    # error.
-    union=("get()", "type<true>()"),
+)
+# Bridge is a HANDLE over a TAGGED UNION. Reach the value with
+# `get()`, ask which arm it holds with `type<true>()`, and here is
+# every arm nix::ValueType has.
+#
+# ONE table, read two ways. `type_name` answers a caller with the
+# name; every `@guard` below checks against the enumerator. Adding an
+# arm is one line here rather than a switch case and a guard that
+# have to agree.
+@tagged(
+    "get()", "type<true>()",
+    thunk="nix::nThunk",
+    int="nix::nInt",
+    float="nix::nFloat",
+    bool="nix::nBool",
+    string="nix::nString",
+    path="nix::nPath",
+    null="nix::nNull",
+    attrs="nix::nAttrs",
+    list="nix::nList",
+    function="nix::nFunction",
+    external="nix::nExternal",
+    failed="nix::nFailed",
 )
 # How a value TREE is walked, read by the RPC layer so that no layer
 # above this declaration knows what a Value is or which of its methods
@@ -125,6 +141,7 @@ class Value:
         Bound straight from gc.h: a no-op integration cannot fake
         it."""
 
+    @names
     def type_name(self) -> Str:
         """What this value is: "thunk", "int", "float", "bool",
         "string", "path", "null", "attrs", "list", "function",
@@ -134,7 +151,7 @@ class Value:
         map above does not name crosses as a proxy, so naming all of
         them here costs nothing and hides nothing."""
 
-    @guard("nix::nInt", "int")
+    @guard("int")
     def integer(self) -> I64:
         """This value as an integer. Raises on a thunk, or on a value
         of another kind.
@@ -143,7 +160,7 @@ class Value:
         int64 with an explicit conversion - so the cast the emitter
         already writes for an I64 return is the whole of it."""
 
-    @guard("nix::nString", "string")
+    @guard("string")
     @cxx_name("string_view")
     def string_value(self) -> StrView:
         """This value as a string. Raises as `integer` does.
@@ -153,7 +170,7 @@ class Value:
         them yet; a declaration that carried them would be inventing
         a surface rather than binding one."""
 
-    @guard("nix::nBool", "bool")
+    @guard("bool")
     def boolean(self) -> Bint:
         """This value as a bool. Raises as `integer` does."""
 

@@ -183,9 +183,13 @@ class Method:
     reads: str = ""
     # Verbatim C++ for an accessor nothing can derive, from @cxx_body.
     cxx_body: str = ""
-    # (arm, name) for an accessor on a tagged union, from @guard. The
-    # emitter writes the check; nothing spells it twelve times.
-    guard: tuple[str, str] | None = None
+    # The arm NAME this accessor needs, from @guard. Resolved to an
+    # enumerator through the class's @arms table, so the C++ fact
+    # lives in one place. The emitter writes the check.
+    guard: str = ""
+    # This accessor answers which arm is held, from @names. Emitted
+    # from the same table the guards read.
+    names: bool = False
     # For a caller, not for the wire, from @local. A wire value
     # crosses as every accessor it has, so this is the one thing an
     # accessor has to be able to say for itself.
@@ -726,7 +730,8 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         params=tuple(params),
         ret=ret,
         cxx_name=getattr(marked, "_cxx_name", ""),
-        guard=getattr(marked, "_guard", None),
+        guard=getattr(marked, "_guard", ""),
+        names=bool(getattr(marked, "_names", False)),
         blocks=bool(getattr(marked, "_blocks", False)),
         instant=bool(getattr(marked, "_instant", False)),
         prop=any(isinstance(d, ast.Name) and d.id == "property"

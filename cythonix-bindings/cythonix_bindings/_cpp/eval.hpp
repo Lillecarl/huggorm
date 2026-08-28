@@ -462,7 +462,6 @@ public:
     // is the one place it was flattering: nothing here may go through
     // a bare pointer-to-member.
 
-    std::string type_name() const;
     std::int64_t size() const;
     Bridge at(std::int64_t index) const;
     std::string name_at(std::int64_t index) const;
@@ -650,29 +649,6 @@ inline void Evaluator::attrs_set(const Bridge & target,
 }
 
 // ---- Bridge, out of line ------------------------------------------
-
-inline std::string Bridge::type_name() const
-{
-    // The names the declaration's `@tree` map keys on. A kind named
-    // nowhere in that map crosses as a proxy, which is what makes
-    // "thunk", "function", "external" and "failed" honest answers
-    // rather than gaps.
-    switch (get()->type<true>()) {
-    case nix::nThunk: return "thunk";
-    case nix::nInt: return "int";
-    case nix::nFloat: return "float";
-    case nix::nBool: return "bool";
-    case nix::nString: return "string";
-    case nix::nPath: return "path";
-    case nix::nNull: return "null";
-    case nix::nAttrs: return "attrs";
-    case nix::nList: return "list";
-    case nix::nFunction: return "function";
-    case nix::nExternal: return "external";
-    case nix::nFailed: return "failed";
-    }
-    return "unknown";
-}
 
 inline std::int64_t Bridge::size() const
 {

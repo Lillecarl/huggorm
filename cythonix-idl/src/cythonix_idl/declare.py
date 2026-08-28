@@ -172,20 +172,20 @@ class Decl:
     # unwraps out of it - which is every mechanical line such a
     # binding used to carry verbatim.
     via: str = ""
-    # This class is a handle over a TAGGED UNION: (reach, ask).
+    # This class is a handle over a TAGGED UNION. See `@tagged`.
+    # Not `arms` above: that is a SUM TYPE's alternatives, which is
+    # a Python-level union. This is one C++ object with a tag.
     #
-    # `reach` hands the union over - `get()`. `ask` says which arm it
-    # holds - `type<true>()`. Both are needed because a union's
-    # readers are `noexcept` and UNDEFINED on the wrong tag: reading
-    # `integer` off a string is a reinterpretation of the payload, not
-    # an error.
+    # (reach, ask, {enumerator: name}). `reach` hands the union over -
+    # `get()`. `ask` says which arm it holds - `type<true>()`. The map
+    # is every arm the union has, and the name each one answers to.
     #
     # Separate from `via`, and deliberately. `via` routes EVERY method
     # through the held object, which is wrong here - most of this
     # handle's methods are its own, because a union accessor needs
     # state the value does not carry. Only a `@guard`ed accessor
-    # reaches through, and this is the pair it reaches with.
-    union: tuple[str, str] | None = None
+    # reaches through.
+    tagged: tuple[str, str, dict[str, str]] | None = None
 
 
 # -- what each marker means, as DATA --------------------------------
@@ -235,6 +235,7 @@ def _t(*targets: str) -> frozenset[str]:
 MARKERS: dict[str, Marker] = {
     # On a class.
     "abstract": Marker(_t("class"), "flag"),
+    "tagged": Marker(_t("class"), "once"),
     "binding": Marker(_t("class"), "once"),
     "custom": Marker(_t("class"), "once"),
     "header": Marker(_t("class"), "once"),
@@ -250,6 +251,7 @@ MARKERS: dict[str, Marker] = {
                      excludes=frozenset({"instant"})),
     "cxx_name": Marker(_t("method"), "once"),
     "guard": Marker(_t("method"), "once"),
+    "names": Marker(_t("method"), "flag"),
     "instant": Marker(_t("method"), "flag",
                       excludes=frozenset({"blocks"})),
     "local": Marker(_t("method"), "flag"),
@@ -377,8 +379,7 @@ def words(parsed_by: str = "") -> Callable[[type], type]:
 
 
 def binding(cxx: str = "", threading: str = "pool", holder: str = "",
-            blocking: bool = True, via: str = "",
-            union: tuple[str, str] | None = None) -> Callable[[type], type]:
+            blocking: bool = True, via: str = "") -> Callable[[type], type]:
     """The C++ class this binds, and how it may be called.
 
     `blocking=False` means no method here can wait: every one is a
@@ -403,7 +404,7 @@ def binding(cxx: str = "", threading: str = "pool", holder: str = "",
     def apply(cls: type) -> type:
         d = _decl(cls)
         d.cxx, d.threading, d.blocking = cxx, threading, blocking
-        d.holder, d.via, d.union = holder, via, union
+        d.holder, d.via = holder, via
         return cls
     return apply
 
@@ -480,25 +481,52 @@ def cxx_name[F: Callable[..., Any]](name: str) -> Callable[[F], F]:
     return apply
 
 
-def guard[F: Callable[..., Any]](arm: str, name: str) -> Callable[[F], F]:
-    """This accessor is valid only when the value holds `arm`.
+def tagged(reach: str, ask: str, **names: str) -> Callable[[type], type]:
+    """This class is a handle over a TAGGED UNION.
 
-    For a TAGGED UNION, and it is not politeness. `nix::Value`'s
-    readers are `noexcept` and undefined on the wrong tag: reading
-    `integer` off a string is not an error, it is a reinterpretation
-    of the payload.
+    `reach` hands the union over. `ask` says which arm it holds. The
+    keyword arguments are the arms: a NAME, and the C++ enumerator it
+    stands for.
 
-    `arm` is the C++ enumerator to test against, and `name` is what a
-    caller is told the value is not. The class says HOW to ask, once,
-    with `@binding(kind=...)`; each accessor says WHICH answer it
-    needs.
+    One table, two derivations. Every `@guard`ed accessor looks its
+    arm up here, and the accessor that ANSWERS the name - `@names` -
+    is the same table read the other way. So adding an arm is one line
+    rather than a switch case and twelve guards to keep in step.
 
-    This is what makes `via` safe here. A handle whose methods bind by
-    pointer cannot check anything first, which is why binding a tagged
-    union that way is wrong. A generated body can check, and this is
-    the fact it checks against."""
+    Written name-first because the name is the Python fact and the
+    enumerator is the C++ one, and a declaration reads better in the
+    direction it is used."""
+    def mark(cls: type) -> type:
+        _decl(cls).tagged = (reach, ask, dict(names))
+        return cls
+    return mark
+
+
+def names[F: Callable[..., Any]](fn: F) -> F:
+    """This accessor answers which arm the union holds, by NAME.
+
+    Emitted from the `@arms` table, so the names a caller sees and
+    the names `@guard` checks against cannot drift apart."""
+    fn._names = True  # type: ignore[attr-defined]
+    return fn
+
+
+def guard[F: Callable[..., Any]](arm: str) -> Callable[[F], F]:
+    """This accessor is valid only when the union holds `arm`.
+
+    Not politeness. `nix::Value`'s readers are `noexcept` and
+    undefined on the wrong tag: reading `integer` off a string is not
+    an error, it is a reinterpretation of the payload.
+
+    `arm` is a NAME from the class's `@arms` table, and the emitter
+    resolves it to the enumerator. Naming the enumerator here instead
+    would put the same C++ fact in thirteen places.
+
+    This is what makes a handle over a union bindable at all. A method
+    bound by pointer cannot check anything first, which is why binding
+    a tagged union that way is wrong. A generated body can check."""
     def mark(fn: F) -> F:
-        fn._guard = (arm, name)  # type: ignore[attr-defined]
+        fn._guard = arm  # type: ignore[attr-defined]
         return fn
     return mark
 

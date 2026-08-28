@@ -548,7 +548,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # A guarded accessor reaches through the union pair rather than
     # through `via`, so the two are read separately and `call` below
     # is rebuilt after the guard picks its reach.
-    if not (cls.decl.via or ret_handle or m.reads or m.guard
+    if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
             or any(h for _, h in args)):
         return None
     obj = _self(cls)
@@ -562,20 +562,37 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # which for a `noexcept` reader on the wrong tag is not an error
     # but a reinterpretation of the payload.
     head: list[str] = []
-    if m.guard is not None:
-        arm, kind_name = m.guard
-        if cls.decl.union is None:
+    if m.guard or m.names:
+        if cls.decl.tagged is None:
             raise ValueError(
-                f"{cls.name}.{m.name}: @guard needs "
-                f"@binding(union=(reach, ask)) to say how to reach the "
-                f"union and how to ask which arm it holds")
-        hold, ask = cls.decl.union
+                f"{cls.name}.{m.name}: needs @tagged(reach, ask, ...) on "
+                f"the class to say how to reach the union, how to ask "
+                f"which arm it holds, and what the arms are called")
+        hold, ask, table = cls.decl.tagged
         reach = f"{obj}.{hold}->"
+    if m.guard:
+        _, _, table = cls.decl.tagged  # type: ignore[misc]
+        if m.guard not in table:
+            raise ValueError(
+                f"{cls.name}.{m.name}: @guard(\"{m.guard}\") names no arm; "
+                f"@tagged offers {sorted(table)}")
         head = [
-            f"{INDENT * 4}if ({reach}{ask} != {arm})",
+            f"{INDENT * 4}if ({reach}{ask} != {table[m.guard]})",
             f'{INDENT * 5}throw std::runtime_error('
-            f'"value is not {kind_name}");',
+            f'"value is not {m.guard}");',
         ]
+    if m.names:
+        # The arm table, read the other way. One switch, so the names
+        # a caller sees and the names @guard checks cannot drift.
+        _, _, table = cls.decl.tagged  # type: ignore[misc]
+        lines = [f"{INDENT * 4}switch ({reach}{ask}) {{"]
+        for name, enum in table.items():
+            lines.append(f'{INDENT * 4}case {enum}: return "{name}";')
+        lines.append(f"{INDENT * 4}}}")
+        # Every enumerator is named above, and a compiler still wants
+        # a return past the switch.
+        lines.append(f'{INDENT * 4}return "unknown";')
+        return lines
     passed = ", ".join(f"{name}.{h.decl.via}" if h else name
                        for name, h in args)
     # A member is reached, not called. The declaration says which by
