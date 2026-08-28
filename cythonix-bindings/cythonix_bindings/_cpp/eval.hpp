@@ -191,24 +191,36 @@ private:
     nix::EvalState state_;
 };
 
+/**
+ * A core whose DELETER registers the calling thread.
+ *
+ * `~EvalState` tears down GC-resident structures, and the last share
+ * can be dropped by any holder on any thread: an event loop, a pool
+ * worker, the server's reaper, a Python finalizer. Putting the
+ * registration in the deleter covers every holder that exists and
+ * every one that has not been written yet, once, instead of asking
+ * each new class to remember.
+ *
+ * `~Bridge` still registers for itself. Its RootValue deallocates
+ * during MEMBER destruction whether or not it holds the last share of
+ * the core, so the deleter would not always run for it.
+ */
+inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri)
+{
+    return {new EvalCore(store_uri), [](EvalCore * core) {
+                gc_register_thread();
+                delete core;
+            }};
+}
+
 class Evaluator
 {
 public:
     explicit Evaluator(const std::string & store_uri)
-        : core_(std::make_shared<EvalCore>(store_uri))
+        : core_(make_core(store_uri))
     {
         gc_register_thread();
     }
-
-    /** As `~Bridge`: the last share of the core tears down an
-     * EvalState, and that must happen on a thread the collector
-     * knows. */
-    ~Evaluator() { gc_register_thread(); }
-
-    Evaluator(const Evaluator &) = default;
-    Evaluator(Evaluator &&) = default;
-    Evaluator & operator=(const Evaluator &) = default;
-    Evaluator & operator=(Evaluator &&) = default;
 
     nix::EvalState & state() const { return core_->state(); }
 
@@ -254,19 +266,18 @@ public:
     }
 
     /**
-     * Registers the thread, then lets the root and the core go.
+     * Registers the thread, then lets the root go.
      *
      * This runs on WHICHEVER thread drops the last Python reference,
      * and that is rarely the thread that produced the value: an event
-     * loop, a pool worker, the server's reaper. Two members below need
-     * that thread to be known to the collector.
+     * loop, a pool worker, the server's reaper. The RootValue is a
+     * `shared_ptr` over traceable-allocator memory, so releasing the
+     * last share deallocates from the GC heap. Reading needs no
+     * registration - a root keeps a value reachable from anywhere -
+     * but freeing does.
      *
-     * The RootValue is a `shared_ptr` over traceable-allocator memory,
-     * so releasing the last share deallocates from the GC heap. And
-     * the last share of the EvalCore takes `~EvalState` with it, which
-     * tears down GC-resident structures. Reading needs no registration
-     * - a root keeps a value reachable from anywhere - but freeing
-     * does.
+     * The core needs no registration here: its deleter carries one,
+     * so every holder is covered rather than each remembering.
      *
      * The body runs BEFORE the members are destroyed, which is what
      * makes registering here the right place rather than a race with
