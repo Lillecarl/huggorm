@@ -320,16 +320,72 @@ public:
     // A copy is a second root over the same value, and it counts as
     // one: the count is of ROOTS, not of distinct values.
     Bridge(const Bridge & other)
-        : core_(other.core_), root_(other.root_), by_name_(other.by_name_)
+        : core_(other.core_), root_(other.root_), by_name_(other.by_name_),
+          staged_(other.staged_)
     {
         live_roots().fetch_add(1, std::memory_order_relaxed);
     }
 
     Bridge & operator=(const Bridge &) = default;
 
-    nix::Value * get() const { return *root_; }
+    /**
+     * The rooted value, with any staged elements folded in first.
+     *
+     * Every read goes through here - our own accessors, and the
+     * Evaluator when it takes a value as an ARGUMENT - so a staged
+     * list can never be observed half-built. Making the fold happen
+     * here rather than in each accessor is what makes that true by
+     * construction instead of by remembering.
+     */
+    nix::Value * get() const
+    {
+        if (!staged_.empty())
+            materialise();
+        return *root_;
+    }
 
     nix::EvalState & state() const { return core_->state(); }
+
+    /**
+     * Adds one element to a list that is still being built.
+     *
+     * A Nix list is IMMUTABLE and sized when it is built, so the
+     * obvious `list_append` rebuilds the whole list per call and
+     * filling one is quadratic. One element per call is what the WIRE
+     * requires - a container of proxies cannot cross - but it does not
+     * require one rebuild per call. This stages, and `get()` builds
+     * once.
+     *
+     * Each element is ROOTED as it arrives. A plain vector of
+     * `nix::Value *` is memory the collector does not scan, so a
+     * staged element with no other reference would be reclaimed
+     * between two appends.
+     */
+    void stage(nix::Value * item) const
+    {
+        gc_register_thread();
+        if (staged_.empty())
+            // Seed from what the list already holds. Empty for a
+            // fresh `make_list()`, and not for a list that came from
+            // anywhere else. Only on the first append of a run: after
+            // it, `staged_` is non-empty and IS the list.
+            for (auto * elem : (*root_)->listView())
+                staged_.push_back(nix::allocRootValue(elem));
+        staged_.push_back(nix::allocRootValue(item));
+    }
+
+    /**
+     * Whether this is a list, WITHOUT folding staged elements in.
+     *
+     * `get()` would materialise, and a caller that materialises before
+     * every append pays the rebuild it was avoiding - which is the
+     * quadratic coming back through the type check. Anything staged is
+     * a list by construction, because only `stage` puts it there.
+     */
+    bool is_list() const
+    {
+        return !staged_.empty() || (*root_)->type<true>() == nix::nList;
+    }
 
     const std::shared_ptr<EvalCore> & core() const { return core_; }
 
@@ -373,6 +429,16 @@ public:
 private:
     const nix::Attr & attr_at(std::int64_t index) const;
 
+    void materialise() const
+    {
+        gc_register_thread();
+        auto builder = state().buildList(staged_.size());
+        for (std::size_t i = 0; i < staged_.size(); ++i)
+            builder[i] = *staged_[i];
+        (*root_)->mkList(builder);
+        staged_.clear();
+    }
+
     std::shared_ptr<EvalCore> core_;
     nix::RootValue root_;
     // Attributes in NAME order, built on first indexed access.
@@ -386,6 +452,8 @@ private:
     // for every i against ONE Bridge, so sorting per access would make
     // a walk quadratic in the number of attributes.
     mutable std::vector<const nix::Attr *> by_name_;
+    // Elements of a list still being built, each rooted. See `stage`.
+    mutable std::vector<nix::RootValue> staged_;
 };
 
 // ---- Evaluator, out of line ---------------------------------------
@@ -481,16 +549,11 @@ inline void Evaluator::force(const Bridge & v)
 inline void Evaluator::list_append(const Bridge & target, const Bridge & item)
 {
     gc_register_thread();
-    auto * v = target.get();
-    if (v->type() != nix::nList)
+    if (!target.is_list())
         throw std::invalid_argument("value is not a list");
-    auto old = v->listView();
-    auto builder = state().buildList(old.size() + 1);
-    std::size_t i = 0;
-    for (auto * elem : old)
-        builder[i++] = elem;
-    builder[i] = item.get();
-    v->mkList(builder);
+    // `item.get()`, not `*item.root_`: an item that is ITSELF a
+    // staged list must be built before its pointer is taken.
+    target.stage(item.get());
 }
 
 /** As `list_append`: an attribute set is immutable, so this rebuilds. */
