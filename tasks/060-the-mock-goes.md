@@ -93,11 +93,44 @@ decision about how much of Nix's store zoo this repo tracks, and it
 should be made for its own reasons rather than to retire a hatch.
 
 **4. `decl/mock_store.py` and the store half of fake-library go.**
-Nothing has to replace the hierarchy first: the mock's hierarchy was
-only ever exercising `@derives`/`@abstract`, which now work against
-whatever declares them next.
+DONE. Nothing had to replace the hierarchy first.
 
-**5. Real libexpr.** `nix::EvalState` and `nix::Value`, which is where
+Carl, while this was running: *"I haven't had any usecase so far for
+downcasting to the store implementation classes... nanopynix has never
+exercised it."* So the hierarchy is not merely blocked, it is not
+wanted. `real_path` keeps its `dynamic_cast` and that is the end of
+it.
+
+**But the question the hierarchy test posed outlives the test.** When
+a method DECLARES a return of `Store` and produces a `LocalStore`,
+what class does the RPC client build - the dynamic type at
+production, or the declared static type? Nothing answers this today
+because nothing registers a second store type. Whoever declares one
+must answer it before the first such method ships.
+
+**Five properties lost their only exercise, and all five are named
+rather than hidden.** Three died with the hierarchy and are wanted
+back only if a real base lands:
+
+- a generated base whose subclasses share one wire service;
+- the pool policy DROPPING an affine-returning method from a pool
+  wrapper while an affine wrapper keeps it;
+- an abstract binding refusing construction. `@abstract` now has no
+  user at all, and cannot get one until it stops meaning two things
+  (tasks/061). The branches stay in `nbemit`, `emitter.py` and
+  `smoke_test` - waiting, not dead.
+
+Two come back one commit later, with the libexpr `EvalState`:
+
+- a FREE FUNCTION taking a bound handle. `describe(obj: MockStore)`
+  was the only one this repo had;
+- an UNTOUCHED AFFINE handle resolved as an argument.
+
+`EvalState(store)` restores both at once: a factory taking a bound
+Store handle, making an affine object.
+
+**5. Real libexpr.** The anchor reads are done, and one reviewer
+premise reversed. See "What the headers actually say" below. `nix::EvalState` and `nix::Value`, which is where
 `threading="affine"` and `@tree` get a real user. This kills the rest
 of fake-library, and `_cpp/eval.hpp`'s 108 lines get re-derived under
 the number the census now prints.
@@ -106,6 +139,65 @@ the number the census now prints.
 mock; what changes is which C++ it names. Every affine test, every
 Realize test and every recursive-handle test rides mock eval until
 step 4.
+
+## What the headers actually say
+
+Read from `nix-2.34.8-dev/include/nix/expr`, before writing a line -
+the repo's anchoring rule, and this was its moment.
+
+**`@tree` survives, and the worry about it was misplaced.** The fear
+was that a walk serializes a WHOLE tree and dies on `import <nixpkgs>
+{}`. It does not. `TreeWalk` (server.py) is bounded by depth AND
+budget - 8 and 1000 by default - dedupes by the DECLARED identity
+accessor, and every stop produces a PROXY: an unnamed kind, past the
+depth, past the budget, or already seen. `import <nixpkgs> {}`
+expands at most 1000 nodes and hands back handles for the rest. It is
+the handle shape already, in one hop rather than one per node, which
+is the thread handover the affine model exists to avoid paying
+repeatedly.
+
+**The walk never forces, and that is deliberate.** `thunk` is named
+nowhere in the scalars/list/attrs table, so it falls through to the
+proxy arm. Forcing is `EvalState.force`, explicit and `@blocks`. Real
+`nix::ValueType` adds `nThunk`, `nFailed`, `nFunction` and
+`nExternal` - four more kinds the walk will not name, which is four
+more proxies and no declaration change. `nFloat`, `nPath` and `nNull`
+are new SCALARS and want three rows in the table.
+
+**`nix::Value` is NOT self-describing, and this is the real finding.**
+An attribute name is a `Symbol`, a `uint32_t` index into the producing
+`EvalState`'s `SymbolTable`. Rendering one needs the state in hand,
+and the tree spec calls accessors on the NODE (`getattr(obj,
+reader)()`).
+
+It costs no emitter change, because the bound class was never the
+value. `via="get()"` says the binding is `cythonix::Bridge`, a handle.
+The Bridge carries a reference to its `EvalState` beside the value
+pointer, and `name_at(i)` is a Bridge method with the state in hand.
+The Bridge holding the state is producer pinning IN C++, matching the
+server's `parents=[self]` exactly.
+
+**The hand-rolled GC root goes.** `nix::allocRootValue(Value *)`
+exists in 2.34 - `value.hh:1444`, returning `RootValue =
+std::shared_ptr<Value *>` built over `traceable_allocator`
+(`eval.cc:105`). That is what `_cpp/eval.hpp`'s
+`GC_malloc_uncollectable` cell hand-rolls. Use upstream's and delete
+ours: a hand root beside an upstream root is a double declaration.
+
+What stays ours is thread registration. Boehm only knows threads it
+created, and pool threads are not among them.
+
+`nix::initGC()` is the `@startup` function, once before the first
+state. `EvalMemory::allocValue()` means the Bridge never MAKES a
+value - it only points at one - so it shrinks rather than grows.
+
+**The factory takes our Store.** `EvalState(const LookupPath &,
+ref<Store>, const fetchers::Settings &, const EvalSettings &,
+std::shared_ptr<Store> buildStore = nullptr)`. Both settings objects
+"must outlive the lifetime of this EvalState" - upstream's own words
+- so one owner cell in `_cpp/eval.hpp` holds settings and state
+together rather than scattering globals. And the store is OUR bound
+handle's `shared_ptr`, not a second store opened inside the factory.
 
 ## The window where something is untested, named rather than hidden
 
@@ -119,9 +211,11 @@ Every real binding to date produces VALUES - PathInfo, Realisation,
 MissingPaths, DerivedPathBuilt - so there is nothing to move it to.
 `nix::EvalState` producing `nix::Value` is the first real pair.
 
-`test_producer_pinning_and_cascade_reap` is **parked, not deleted**.
-The test encodes the contract, and rewriting it from memory at step 4
-would lose whatever detail made it sharp.
+CLOSED. `test_producer_pinning_and_cascade_reap` was re-pointed at
+`EvalState` -> `Value` BEFORE the store mock went, so the window never
+opened. A Value is GC memory the state owns, which makes a state
+reaped under a live value a use-after-free rather than a lost handle -
+a sharper subject than the mock ever was.
 
 ## Two properties that are load-bearing where the mock looked incidental
 
