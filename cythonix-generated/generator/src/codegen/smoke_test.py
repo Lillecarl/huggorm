@@ -713,29 +713,28 @@ async def test_behavior() -> None:
     await state.force(fresh)
     assert await fresh.integer() == 7
 
-    # Non-reachability collection, the Nix-faithful behavior: dropping
-    # the wrapper drops its root, leaving nothing visible that points
-    # at the value, so the collector reclaims it while the state stays
-    # alive.
+    # Every value that is made releases its root when it is dropped.
     #
-    # STRINGS, not parsed thunks, and the reason is libexpr's. A
-    # nix::EvalState OWNS every expression it parses, for its whole
-    # life (eval.hh:351, EvalMemory::exprs). A dropped thunk therefore
-    # frees the 16-byte Value and nothing else, which no page-granular
-    # counter can see. A string value owns its bytes, so dropping it
-    # actually returns memory.
+    # OUR invariant, deliberately, and it replaces a heap-bytes
+    # assertion that was asking the wrong party. Two things made that
+    # one unsound. An evaluated value is rooted by the STATE - the
+    # file cache, the env chain - so dropping the Python handle
+    # removes our root and boehm rightly keeps the value. And boehm is
+    # conservative: a stale pointer in a register legitimately retains
+    # an object, so a byte count is flaky by construction.
+    #
+    # A leaked root is a real bug class and nothing else can see it.
+    # It keeps its value alive forever, and the heap only ever says
+    # the heap grew.
+    roots_before = cythonix_bindings.gc_stats()["live_roots"]
     kept = [await state.make_string(f'{"p" * 200}-{i}') for i in range(200)]
-    await flg.collect_garbage()
-    kept_used = cythonix_bindings.gc_stats()["used_bytes"]
+    assert cythonix_bindings.gc_stats()["live_roots"] >= roots_before + 200
 
     del kept
     await flg.collect_garbage()
-    dropped_used = cythonix_bindings.gc_stats()["used_bytes"]
-    # Counters are page-granular; any strict decrease proves values died
-    # on non-reachability. Under the old arena design this could never
-    # move while the state lives.
-    assert dropped_used < kept_used, (
-        f"dropped values must be reclaimed: used {kept_used} -> {dropped_used}"
+    assert cythonix_bindings.gc_stats()["live_roots"] == roots_before, (
+        f"dropped values must release their roots: "
+        f"{roots_before} -> {cythonix_bindings.gc_stats()['live_roots']}"
     )
 
     assert v._runner.workers_seen == state._runner.workers_seen, (

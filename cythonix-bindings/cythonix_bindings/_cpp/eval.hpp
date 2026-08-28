@@ -36,6 +36,7 @@
  * value carried its own strings and hid this.
  */
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -121,6 +122,25 @@ inline void gc_collect()
 }
 
 class Bridge;
+
+/**
+ * How many roots this process is holding right now.
+ *
+ * OUR bookkeeping, not the collector's, and that is the point. Heap
+ * counters answer a question about boehm - which is conservative, so
+ * a stale pointer in a register legitimately retains an object and a
+ * byte-count assertion is flaky by design. This answers a question
+ * about US: did every Bridge that was made release its root.
+ *
+ * A leak of roots is a real bug class and nothing else can see it: a
+ * root that is never dropped keeps its value alive forever, and the
+ * heap only says the heap grew.
+ */
+inline std::atomic<std::size_t> & live_roots()
+{
+    static std::atomic<std::size_t> count{0};
+    return count;
+}
 
 // ---- one evaluator, and everything it outlives --------------------
 
@@ -230,6 +250,7 @@ public:
         : core_(std::move(core))
         , root_(nix::allocRootValue(value))
     {
+        live_roots().fetch_add(1, std::memory_order_relaxed);
     }
 
     /**
@@ -251,12 +272,21 @@ public:
      * makes registering here the right place rather than a race with
      * itself.
      */
-    ~Bridge() { gc_register_thread(); }
+    ~Bridge()
+    {
+        gc_register_thread();
+        live_roots().fetch_sub(1, std::memory_order_relaxed);
+    }
 
-    Bridge(const Bridge &) = default;
-    Bridge(Bridge &&) = default;
+    // A copy is a second root over the same value, and it counts as
+    // one: the count is of ROOTS, not of distinct values.
+    Bridge(const Bridge & other)
+        : core_(other.core_), root_(other.root_), by_name_(other.by_name_)
+    {
+        live_roots().fetch_add(1, std::memory_order_relaxed);
+    }
+
     Bridge & operator=(const Bridge &) = default;
-    Bridge & operator=(Bridge &&) = default;
 
     nix::Value * get() const { return *root_; }
 
