@@ -1,7 +1,8 @@
 # The mock goes
 
-**IN PROGRESS.** The plan of record for retiring `fake-library/` and
-every `Mock*` binding, in the order the pieces can actually move.
+**DONE.** `fake-library/` is deleted and no binding names a mock.
+This is the record of how it went, and of what the mock was
+flattering us about.
 
 ## Why now
 
@@ -129,8 +130,52 @@ Two come back one commit later, with the libexpr `EvalState`:
 `EvalState(store)` restores both at once: a factory taking a bound
 Store handle, making an affine object.
 
-**5. Real libexpr.** The anchor reads are done, and one reviewer
-premise reversed. See "What the headers actually say" below. `nix::EvalState` and `nix::Value`, which is where
+**5. Real libexpr.** DONE. `decl/eval.py` names `nix::EvalState` and
+`nix::Value`. The anchor reads came first, and one reviewer premise
+reversed - see "What the headers actually say" below.
+
+Four things the mock was flattering us about, each found by breaking
+a gate rather than by reading:
+
+- **`nix::Bindings` is sorted by Symbol ID**, which is INTERNING
+  order - the order a name was first seen anywhere in the process -
+  not alphabetical. `lexicographicOrder` is the accessor that hides
+  it. Caught as `['zebra', 'apple', 'mango']`.
+- **`nix::Value` is a tagged union whose readers are `noexcept` and
+  UNDEFINED on the wrong tag.** Reading `integer()` off a string is a
+  reinterpretation of the payload, not an error. So no accessor can
+  bind a pointer-to-member and every one guards. `via` had its only
+  user here and lost it - refuted rather than merely unused.
+- **A `nix::EvalState` owns every expression it parses for its whole
+  life** (`eval.hh:351`). Dropping a parsed thunk frees the 16-byte
+  Value and nothing else.
+- **Real libexpr is fast.** The affine-serialization gate required
+  two gathered evals to take twice as long as one, which worked
+  because the mock SLEPT. It counts workers now: a thread name is not
+  a stopwatch.
+
+And one thing that was NOT the mock's shape after all. The mutable
+builder - `make_list()` then `list_append` - looked like a toy, and a
+Nix collection really is immutable and sized at build. But
+`make_list(items: list[Value])` needs a container of PROXIES to
+cross, and one lease per element is not something anything grants in
+bulk, so it would have no RPC surface at all. One element per call is
+what the WIRE requires. It stays.
+
+## What is left over
+
+**The builder is quadratic in C++.** One element per call is the wire
+shape; it does not force one Nix-list rebuild per call. The Bridge
+could accumulate in a vector and materialise the immutable list once,
+on first read. The elements would need rooting as they enter, since a
+plain vector is memory boehm does not scan.
+
+**`via` should be deleted.** Its one user proved the mechanism unsafe
+for this library, which is a stronger reason than being unused. A
+vocabulary word that must not be used is worse than one that does not
+exist, and version control is where refuted ideas live. `@abstract`
+is different: it is WAITING on the 061 split, and states something
+true about `nix::Store` that cannot be said today. `nix::EvalState` and `nix::Value`, which is where
 `threading="affine"` and `@tree` get a real user. This kills the rest
 of fake-library, and `_cpp/eval.hpp`'s 108 lines get re-derived under
 the number the census now prints.
