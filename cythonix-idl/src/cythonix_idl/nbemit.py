@@ -573,26 +573,10 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
             f"{INDENT * 4}return {obj}.wrap(made);",
         ]
 
-    head: list[str] = []
+    head = _guard_head(cls, m)
     if m.guard or m.names:
-        if cls.decl.tagged is None:
-            raise ValueError(
-                f"{cls.name}.{m.name}: needs @tagged(reach, ask, ...) on "
-                f"the class to say how to reach the union, how to ask "
-                f"which arm it holds, and what the arms are called")
-        hold, ask, table = cls.decl.tagged
+        hold, ask, table = cls.decl.tagged  # type: ignore[misc]
         reach = f"{obj}.{hold}->"
-    if m.guard:
-        _, _, table = cls.decl.tagged  # type: ignore[misc]
-        if m.guard not in table:
-            raise ValueError(
-                f"{cls.name}.{m.name}: @guard(\"{m.guard}\") names no arm; "
-                f"@tagged offers {sorted(table)}")
-        head = [
-            f"{INDENT * 4}if ({reach}{ask} != {table[m.guard]})",
-            f'{INDENT * 5}throw std::runtime_error('
-            f'"value is not {m.guard}");',
-        ]
     if m.names:
         # The arm table, read the other way. One switch, so the names
         # a caller sees and the names @guard checks cannot drift.
@@ -624,6 +608,35 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     if spelled in ("std::int64_t", "std::uint64_t"):
         return [*head, f"{INDENT * 4}return static_cast<{spelled}>({call});"]
     return [*head, f"{INDENT * 4}return {call};"]
+
+
+def _guard_head(cls: Class, m: Method) -> list[str]:
+    """The tag check an accessor on a tagged union owes its caller.
+
+    Separate from HOW the rest of the body reads, so a method with a
+    declared `Cxx` body gets one too. A body is a decision about what
+    to DO once the arm is known; the check that the arm IS known is
+    the same either way, and writing it inside twelve bodies is what
+    this exists to stop."""
+    if not (m.guard or m.names):
+        return []
+    if cls.decl.tagged is None:
+        raise ValueError(
+            f"{cls.name}.{m.name}: needs @tagged(reach, ask, ...) on the "
+            f"class to say how to reach the union, how to ask which arm "
+            f"it holds, and what the arms are called")
+    hold, ask, table = cls.decl.tagged
+    if not m.guard:
+        return []
+    if m.guard not in table:
+        raise ValueError(
+            f'{cls.name}.{m.name}: @guard("{m.guard}") names no arm; '
+            f"@tagged offers {sorted(table)}")
+    obj = _self(cls)
+    return [
+        f"{INDENT * 4}if ({obj}.{hold}->{ask} != {table[m.guard]})",
+        f'{INDENT * 5}throw std::runtime_error("value is not {m.guard}");',
+    ]
 
 
 def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
@@ -665,7 +678,10 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
                 f"[]({_held(cls)} &{obj}{args}){ret} {{")
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in m.cxx_body.strip().splitlines()]
-        return [head, *opening, *body,
+        # The tag check goes in FRONT of a declared body. A body says
+        # what to do once the arm is known; @guard says the arm is
+        # known, and the two are separate decisions.
+        return [head, *opening, *_guard_head(cls, m), *body,
                 f"{INDENT * 2}}}{_extras(cls, m, known)}{tail})"]
     derived = _derived(cls, m, known)
     if derived is not None:

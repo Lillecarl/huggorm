@@ -191,29 +191,64 @@ class Value:
     # value message (tasks/030), not another loop here.
 
     def size(self) -> I64:
-        """Elements in a list, or attributes in an attribute set."""
+        """Elements in a list, or attributes in an attribute set.
 
+        No `@guard`: it takes ONE arm and this accepts two."""
+        Cxx("""
+if (self.get()->type<true>() == nix::nList)
+    return static_cast<std::int64_t>(self.get()->listSize());
+if (self.get()->type<true>() == nix::nAttrs)
+    return static_cast<std::int64_t>(self.get()->attrs()->size());
+throw std::runtime_error("value is not a list or an attribute set");
+        """)
+
+    @guard("list")
     def at(self, index: I64) -> "Value":
         """One element of a list.
 
         It may still be a thunk: forcing a list forces the list, not
         what is in it."""
+        Cxx("""
+auto items = self.get()->listView();
+if (index < 0 || static_cast<std::size_t>(index) >= items.size())
+    throw std::runtime_error("list index out of range");
+return self.wrap(items[static_cast<std::size_t>(index)]);
+        """)
 
+    @guard("attrs")
     def name_at(self, index: I64) -> Str:
         """One attribute name, in alphabetical order."""
+        Cxx("""
+const auto & by_name = self.sorted();
+if (index < 0 || static_cast<std::size_t>(index) >= by_name.size())
+    throw std::runtime_error("attribute index out of range");
+return self.symbol(by_name[static_cast<std::size_t>(index)]->name);
+        """)
 
+    @guard("attrs")
     def value_at(self, index: I64) -> "Value":
         """One attribute value, in alphabetical order of name."""
+        Cxx("""
+const auto & by_name = self.sorted();
+if (index < 0 || static_cast<std::size_t>(index) >= by_name.size())
+    throw std::runtime_error("attribute index out of range");
+return self.wrap(by_name[static_cast<std::size_t>(index)]->value);
+        """)
 
+    @guard("attrs")
     def has(self, name: Str) -> Bint:
         """Whether this attribute set carries that name."""
+        Cxx("return self.get()->attrs()->get(self.intern(name)) != nullptr;")
 
-    # `get` in Python, `get_attr` in C++. The Bridge already has a
-    # `get()` - it hands back the rooted nix::Value - and that one is
-    # plumbing rather than surface.
-    @cxx_name("get_attr")
+    @guard("attrs")
     def get(self, name: Str) -> "Value":
         """One attribute by name. Raises when it is missing."""
+        Cxx("""
+const auto * attr = self.get()->attrs()->get(self.intern(name));
+if (attr == nullptr)
+    throw std::runtime_error("attribute '" + name + "' is missing");
+return self.wrap(attr->value);
+        """)
 
 
 @header("cythonix_bindings/_cpp/eval.hpp")

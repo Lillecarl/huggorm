@@ -499,15 +499,48 @@ public:
     // is the one place it was flattering: nothing here may go through
     // a bare pointer-to-member.
 
-    std::int64_t size() const;
-    Bridge at(std::int64_t index) const;
-    std::string name_at(std::int64_t index) const;
-    Bridge value_at(std::int64_t index) const;
-    bool has(const std::string & name) const;
-    Bridge get_attr(const std::string & name) const;
+    /**
+     * This value's attributes in NAME order.
+     *
+     * The FACT no declaration can state: `nix::Bindings` is sorted by
+     * Symbol ID, which is INTERNING order - the order a name was
+     * first seen anywhere in the process - not alphabetical.
+     * `lexicographicOrder` is the accessor that hides it, and it
+     * costs a sort.
+     *
+     * Cached, because a walk reads every index against ONE Bridge and
+     * sorting per access would make it quadratic.
+     */
+    const std::vector<const nix::Attr *> & sorted() const
+    {
+        const auto * attrs = get()->attrs();
+        if (by_name_.size() != attrs->size())
+            by_name_ = attrs->lexicographicOrder(state().symbols);
+        return by_name_;
+    }
+
+    /**
+     * One Symbol, rendered.
+     *
+     * The other fact: a Symbol is a `uint32_t` index into the
+     * PRODUCING state's table, so a name cannot be read off the value
+     * alone.
+     */
+    std::string symbol(nix::Symbol s) const
+    {
+        return std::string(state().symbols[s]);
+    }
+
+    /** Interns a name, for a lookup. The state owns the table. */
+    nix::Symbol intern(const std::string & name) const
+    {
+        return state().symbols.create(name);
+    }
+
+    /** A sibling value, sharing this one's root and state. */
+    Bridge wrap(nix::Value * v) const { return Bridge(core_, v); }
 
 private:
-    const nix::Attr & attr_at(std::int64_t index) const;
 
     // Whether this binding made the value for a caller to fill.
     bool built_ = false;
@@ -630,79 +663,5 @@ inline void Evaluator::attrs_set(const Bridge & target,
 }
 
 // ---- Bridge, out of line ------------------------------------------
-
-inline std::int64_t Bridge::size() const
-{
-    auto * v = get();
-    if (v->type<true>() == nix::nThunk)
-        throw std::runtime_error("value is a thunk");
-    if (v->type() == nix::nList)
-        return static_cast<std::int64_t>(v->listSize());
-    if (v->type() == nix::nAttrs)
-        return static_cast<std::int64_t>(v->attrs()->size());
-    throw std::runtime_error("value is not a list or an attribute set");
-}
-
-inline Bridge Bridge::at(std::int64_t index) const
-{
-    auto * v = get();
-    if (v->type<true>() != nix::nList)
-        throw std::runtime_error("value is not a list");
-    auto items = v->listView();
-    if (index < 0 || static_cast<std::size_t>(index) >= items.size())
-        throw std::runtime_error("list index out of range");
-    return Bridge(core_, items[static_cast<std::size_t>(index)]);
-}
-
-/**
- * One attribute, by position in NAME order.
- *
- * `Bindings` keeps its attributes sorted, which is why an index means
- * the same thing on both sides of the wire and why the tree walk can
- * read a name and a value by the same number.
- */
-inline const nix::Attr & Bridge::attr_at(std::int64_t index) const
-{
-    auto * v = get();
-    if (v->type<true>() != nix::nAttrs)
-        throw std::runtime_error("value is not an attribute set");
-    const auto * attrs = v->attrs();
-    if (by_name_.size() != attrs->size())
-        by_name_ = attrs->lexicographicOrder(state().symbols);
-    if (index < 0 || static_cast<std::size_t>(index) >= by_name_.size())
-        throw std::runtime_error("attribute index out of range");
-    return *by_name_[static_cast<std::size_t>(index)];
-}
-
-inline std::string Bridge::name_at(std::int64_t index) const
-{
-    // The Symbol is a uint32 index into the PRODUCING state's table,
-    // which is the whole reason a Bridge carries its Evaluator.
-    return std::string(state().symbols[attr_at(index).name]);
-}
-
-inline Bridge Bridge::value_at(std::int64_t index) const
-{
-    return Bridge(core_, attr_at(index).value);
-}
-
-inline bool Bridge::has(const std::string & name) const
-{
-    auto * v = get();
-    if (v->type<true>() != nix::nAttrs)
-        throw std::runtime_error("value is not an attribute set");
-    return v->attrs()->get(state().symbols.create(name)) != nullptr;
-}
-
-inline Bridge Bridge::get_attr(const std::string & name) const
-{
-    auto * v = get();
-    if (v->type<true>() != nix::nAttrs)
-        throw std::runtime_error("value is not an attribute set");
-    const auto * attr = v->attrs()->get(state().symbols.create(name));
-    if (attr == nullptr)
-        throw std::runtime_error("attribute '" + name + "' is missing");
-    return Bridge(core_, attr->value);
-}
 
 }  // namespace cythonix
