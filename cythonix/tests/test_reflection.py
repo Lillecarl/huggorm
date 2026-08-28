@@ -29,8 +29,8 @@ async def call(grpcurl: str, server: Server, symbol: str,
 
 
 @pytest.mark.parametrize("svc", [
-    "Session", "MockLocalStoreService", "EvalStateService", "ValueService",
-    "MockDerivationService", "FunctionsService", "MockStoreService",
+    "Session", "StoreService", "EvalStateService", "ValueService",
+    "FunctionsService",
 ])
 async def test_reflection_lists_every_service(
         grpcurl: str, server: Server, pkg: str, svc: str) -> None:
@@ -43,8 +43,8 @@ async def test_acquire_is_a_typed_rpc(grpcurl: str, server: Server,
     """Construction lives on the class's own service, so an external
     tool sees the constructor's parameters in reflection instead of a
     free-text class name."""
-    _, out, _ = await call(grpcurl, server, f"{pkg}.MockLocalStoreService/Acquire",
-                           "{}")
+    _, out, _ = await call(grpcurl, server, f"{pkg}.StoreService/Acquire",
+                           '{"uri":"dummy://"}')
     assert len(json.loads(out)["id"]) == 32, out[:200]
 
     _, out, _ = await call(grpcurl, server, f"{pkg}.EvalStateService/Acquire",
@@ -72,25 +72,16 @@ async def test_a_map_return_reads(grpcurl: str, server: Server,
         f"rc={rc} out={out[:200]!r} err={err[:200]!r}"
 
 
-async def test_one_service_serves_both_implementations(
+async def test_a_store_method_reads_through_reflection(
         grpcurl: str, server: Server, pkg: str) -> None:
-    """Shared store methods live on StoreService, the one place they
-    are declared. An external tool calls a store without knowing which
-    implementation is behind the handle."""
-    _, out, _ = await call(grpcurl, server, f"{pkg}.MockLocalStoreService/Acquire", "{}")
-    local = json.loads(out)["id"]
-    _, out, _ = await call(
-        grpcurl, server, f"{pkg}.MockStoreService/add_text_to_store",
-        json.dumps({"self": {"id": local}, "name": "via-grpcurl.txt",
-                    "contents": "external tool"}))
-    base = json.loads(out)["result"]["base_name"]
-    assert base.endswith("via-grpcurl.txt"), base
-
-    _, out, _ = await call(grpcurl, server, f"{pkg}.MockRemoteStoreService/Acquire", "{}")
-    remote_id = json.loads(out)["id"]
-    _, out, _ = await call(grpcurl, server, f"{pkg}.MockStoreService/get_uri",
-                           json.dumps({"self": {"id": remote_id}}))
-    assert json.loads(out).get("result") == "uds://daemon", out[:200]
+    """A store's methods live on its own service, and an external tool
+    calls one knowing nothing but the descriptor."""
+    _, out, _ = await call(grpcurl, server, f"{pkg}.StoreService/Acquire",
+                           '{"uri":"dummy://"}')
+    sid = json.loads(out)["id"]
+    _, out, _ = await call(grpcurl, server, f"{pkg}.StoreService/get_uri",
+                           json.dumps({"self": {"id": sid}}))
+    assert json.loads(out).get("result") == "dummy://", out[:200]
 
 
 async def test_the_recursive_value_message_reads(

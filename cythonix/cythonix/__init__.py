@@ -31,10 +31,10 @@ against `StoreLike` runs either way.
 
 ## What is NOT here
 
-The `Mock*` classes. They bind a C++ stand-in this repo grew before
-real Nix was linked, they are on their way out, and a front door that
-advertised them would be advertising scaffolding. They are still in
-`cythonix_bindings` for the tests that use them.
+Nothing, now. The `Mock*` classes were the last exception and they are
+gone (tasks/060). Every name the two packages behind this one export
+reaches this front door, and a test says so rather than a reader
+having to check.
 """
 
 from cythonix_bindings import ContentAddress as ContentAddress

@@ -148,7 +148,7 @@ class Decl:
     base: str = ""
     # Whether Python may construct one. An abstract base still gets a
     # class, an async wrapper and a wire identity - a caller holds a
-    # MockStore most of the time - but calling it would build an
+    # base most of the time - but calling it would build an
     # object with no implementation behind it.
     abstract: bool = False
     # How a value TREE is walked, for a type that holds others. Read

@@ -142,7 +142,7 @@ def _doc(text: str) -> str:
 # body of every class.
 #
 # It used to be the class's initials - StorePath `sp`, PathInfo `pi`,
-# MockDerivedPath `mdp` - which is consistent and is a second thing to
+# DerivedPathBuilt `dpb` - which is consistent and is a second thing to
 # know per class. One name is charm at four classes and a lookup at
 # forty, and a declaration writes its bodies against it: `self.narHash`
 # reads as the Python the file already is, and compiles as the C++ it
@@ -685,7 +685,7 @@ def _identity_semantics(cls: Class,
     """The repr and the hash every wire value owes a reader.
 
     Both from the declared PARTS, and both through the Python object.
-    `nb::repr(h.attr("path")())` asks MockStorePath for its own repr,
+    `nb::repr(h.attr("path")())` asks StorePath for its own repr,
     so a part of any type renders without this emitter knowing what it
     is - which is what lets one line cover a str, a store path and a
     list of them.
@@ -765,8 +765,8 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
         # than asked for an object. One Python signature over several
         # C++ constructors needs this: nb::init picks by C++ type at
         # compile time, and which constructor to call is a decision
-        # about a VALUE - MockDerivedPath is opaque when it carries no
-        # output name and built when it does.
+        # about a VALUE - an OutputsSpec means all outputs when it says
+        # so and a named set when it carries names.
         obj = _self(cls)
         args, opening = _signature(cls, cls.ctor, known)
         names = "".join(
@@ -1186,9 +1186,9 @@ def _from_parts(cls: Class, known: dict[str, Class] | None = None
     message and the far side has only those. Where a public
     constructor takes exactly the parts, `markers` names the class and
     there is nothing to write. Where there is no public constructor,
-    the C++ one still takes them - MockStorePath refuses
-    `MockStorePath(...)` in Python and fake_library::StorePath parses
-    a base name happily - so this calls it directly, under the private
+    the C++ one still takes them - PathInfo refuses
+    `PathInfo(...)` in Python and nix::ValidPathInfo takes its fields
+    happily - so this calls it directly, under the private
     name the wire layer asks for.
 
     And where neither is true, the DECLARATION carries the body.
@@ -1369,8 +1369,8 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # same-class rule the declaration states was enforced only by a
     # cast that happens to fail. Nothing can derive from it now.
     #
-    # A PROXY is not final: MockStore exists to be subclassed, which
-    # is what its trampoline is for.
+    # A PROXY is not final: a caller may subclass one to add
+    # behaviour, and nothing about a handle breaks when they do.
     final = ", nb::is_final()" if decl.wire == "value" else ""
     # The class's own prose, which a declaration always writes and a
     # caller could not read: `help(StorePath)` answered with nothing

@@ -126,9 +126,9 @@ def test_the_front_door_covers_the_surface() -> None:
     binding that lands without reaching the front door fails here
     rather than being missed by a reader.
 
-    Mock* is the deliberate exception. Those bind a C++ stand-in on
-    its way out, and a front door advertising them would be
-    advertising scaffolding."""
+Everything behind the front door
+    has to reach it, with no exception left: the Mock* classes were the
+    last one, and they are gone (tasks/060)."""
     import cythonix
     import cythonix_bindings
     import cythonix_generated
@@ -137,13 +137,10 @@ def test_the_front_door_covers_the_surface() -> None:
         name
         for pkg in (cythonix_bindings, cythonix_generated)
         for name in pkg.__all__
-        if not name.startswith("Mock")
-        and not name.startswith(("AsyncMock", "RPCMock"))
-        and "Mock" not in name
     }
     # RPC_CLASSES is a registry the client uses to turn a handle into
     # an object; it is plumbing, not surface.
-    behind -= {"RPC_CLASSES", "describe"}
+    behind -= {"RPC_CLASSES"}
 
     missing = sorted(behind - set(cythonix.__all__))
     assert not missing, f"not reachable from `import cythonix`: {missing}"
@@ -170,9 +167,7 @@ def test_every_name_the_manifest_DECLARES_reaches_the_front_door() -> None:
     so it describes one thing rather than naming many), from
     `async_twins` (whose key is `pathlib.Path`, not an identifier) and
     from the two plain settings. The next table is covered by being
-    that shape, which is the shape a table of declared names has.
-
-    Mock* is the same deliberate exception the test above makes."""
+    that shape, which is the shape a table of declared names has."""
     import json
 
     import cythonix
@@ -191,11 +186,9 @@ def test_every_name_the_manifest_DECLARES_reaches_the_front_door() -> None:
         name
         for table in manifest.values() if names_things(table)
         for name in table
-        if "Mock" not in name
     }
     assert "DerivedPath" in declared, (
         "the union table stopped being read, so this gate is asleep")
-    declared -= {"describe"}
 
     missing = sorted(declared - set(cythonix.__all__))
     assert not missing, (
@@ -501,9 +494,10 @@ def test_an_abstract_class_refuses_to_be_built(
     (tasks/060) and the binding simply declares no constructor, but
     the guard this test drives is the same one.
 
-    This is the test that says the guard holds. It asks the manifest
-    which classes claim to be abstract rather than naming one, so a
-    second abstract binding is covered the day it is declared."""
+    NOTHING DECLARES AN ABSTRACT BINDING TODAY. MockStore was the last
+    one. nix::Store is abstract and cannot say so while `@abstract`
+    also means "no door" (tasks/061), so this asks the manifest rather
+    than naming a class and starts working again the day one lands."""
     import importlib
 
     checked = []
@@ -514,7 +508,10 @@ def test_an_abstract_class_refuses_to_be_built(
         with pytest.raises(TypeError, match="abstract"):
             cls()
         checked.append(name)
-    assert checked, "the manifest declares no abstract class"
+    # No `assert checked`: nothing declares one since the mock went
+    # (tasks/060), and an empty list here is the truth rather than a
+    # gate asleep. It is a gate WAITING, and tasks/061 is what wakes
+    # it.
 
 
 def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
@@ -533,8 +530,8 @@ def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
     states was enforced by nothing but a cast that happened to fail on
     uninitialised storage. `nb::is_final()` is the enforcement.
 
-    A PROXY is deliberately not final. MockStore exists to be
-    subclassed, and the test above drives exactly that."""
+    A PROXY is deliberately not final: a caller may subclass one to
+    add behaviour, and nothing about a handle breaks when they do."""
     import importlib
 
     checked = []

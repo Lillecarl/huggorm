@@ -56,7 +56,6 @@ NANOBIND = (
     "decl/pathinfo.py",
     "decl/store.py",
     "decl/eval.py",
-    "decl/mock_store.py",
 )
 
 # Vocabularies. A StrEnum whose members ARE the strings a Nix parser

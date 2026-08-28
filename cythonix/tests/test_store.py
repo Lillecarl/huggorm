@@ -1225,11 +1225,6 @@ def test_every_wire_value_survives_its_own_round_trip(
     actually made, because a hermetic store cannot build one. That
     wants the live suite, and it is a gap in coverage rather than a
     hole in this gate."""
-    from cythonix_bindings import MockDerivedPath, MockLocalStore
-
-    mock = MockLocalStore()
-    mock_path = mock.add_text_to_store("round-trip", "x")
-    other_mock = mock.add_text_to_store("round-trip-other", "y")
     held = chroot.add_to_store("round-trip", b"x", CA.NAR, HashAlgorithm.SHA256)
     other = chroot.add_to_store("other", b"yy", CA.NAR, HashAlgorithm.SHA256)
     info, other_info = (chroot.query_path_info(p) for p in (held, other))
@@ -1324,10 +1319,6 @@ def test_every_wire_value_survives_its_own_round_trip(
         "StoreLocation": (
             chroot.to_store_path(chroot.print_store_path(held)),
             [(other, "/bin/sh")]),
-        "MockStorePath": (mock_path, [(other_mock.to_string(),)]),
-        "MockDerivedPath": (
-            MockDerivedPath(mock_path, "out"),
-            [(other_mock, None)]),
     }
 
     declared = _wire_values()

@@ -10,7 +10,6 @@ inc = include_directories('include')
 gc_dep = dependency('bdw-gc', required: true)
 
 lib = library('fake_library',
-  'src/store.cpp',
   'src/eval.cpp',
   include_directories : inc,
   cpp_args : ['-DFAKE_LIBRARY_USE_BOEHMGC=1'],
@@ -22,7 +21,9 @@ lib = library('fake_library',
 pkg = import('pkgconfig')
 pkg.generate(lib,
   name : 'fake_library',
-  description : 'Mock of the Nix store domain for the binding experiment',
+  # The store half is gone (tasks/060). What is left stands in for
+  # libexpr until nix::EvalState and nix::Value replace it.
+  description : 'Mock of the Nix evaluator for the binding experiment',
 )
 
 install_subdir('include/fake_library', install_dir : get_option('includedir'))

@@ -108,9 +108,10 @@ LIBRARY = {
     "realisation": "nix",
     "pathinfo": "nix",
     "store": "nix",
-    # The mock, on its way out.
+    # The mock, on its way out. Only the evaluator is left: the store
+    # half went with decl/mock_store.py (tasks/060), and nix::EvalState
+    # replaces this one in place.
     "eval": "mock",
-    "mock_store": "mock",
 }
 
 

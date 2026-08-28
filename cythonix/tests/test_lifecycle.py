@@ -43,7 +43,7 @@ async def wrapper_error(coro: Any) -> dict[str, str]:
 #
 # These tests are about LEASES - who holds a handle, what pins it, when
 # it is reaped - and the object behind the handle is incidental. It
-# used to be MockLocalStore, which is one of the things the mock was
+# used to be a mock store, which is one of the things the mock was
 # for; a real store is a better subject because a lease over a thing
 # that actually holds resources is the case that matters.
 #

@@ -178,7 +178,7 @@ def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
 
     Asked of the CODEC rather than of a type, and that is a change
     forced by the mock going away (tasks/060). It used to drive
-    MockDerivedPath's `output`, which is `str?` and whose "" and None
+    SingleDerivedPathBuilt's `output`, which is `str?` and whose "" and None
     mean different things. Real Nix has no such field: its optional
     scalars are `PathInfo.registration_time`, where upstream spells
     unknown as 0 so the accessor COLLAPSES the two on purpose, and

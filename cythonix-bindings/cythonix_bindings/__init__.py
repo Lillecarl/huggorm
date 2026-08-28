@@ -34,11 +34,11 @@ package's own declarations, read by the generator.
 
 ## The mock
 
-`decl/mock_store.py` and `decl/eval.py` bind fake-library, a C++
-stand-in this repo grew before real Nix was linked. It is on its way
-out. Each mock class carries a Mock prefix from the moment its real
-counterpart lands and takes the plain name, so the prefix is a map of
-what is left to do; when it is gone, so is the mock.
+`decl/eval.py` binds fake-library, a C++ stand-in this repo grew
+before real Nix was linked. Only the evaluator is left: the store half
+went when nix::Store took the plain name (tasks/060), and
+nix::EvalState replaces this one in place. The declaration survives
+either way - what changes is which C++ it names.
 """
 
 from .content_address import ContentAddress
@@ -49,15 +49,6 @@ from .derived_path import (
 )
 from .eval import EvalState, Value, collect_garbage, gc_release_thread, gc_stats
 from .hash import Hash
-from .mock_store import (
-    MockDerivation,
-    MockDerivedPath,
-    MockLocalStore,
-    MockRemoteStore,
-    MockStore,
-    MockStorePath,
-    describe,
-)
 from .path import StorePath
 from .pathinfo import PathInfo
 from .realisation import DrvOutput, Realisation
@@ -96,12 +87,6 @@ __all__ = [
     "Hash",
     "HashAlgorithm",
     "MissingPaths",
-    "MockDerivation",
-    "MockDerivedPath",
-    "MockLocalStore",
-    "MockRemoteStore",
-    "MockStore",
-    "MockStorePath",
     "OutputsSpec",
     "PathInfo",
     "Realisation",
@@ -112,7 +97,6 @@ __all__ = [
     "StorePath",
     "Value",
     "collect_garbage",
-    "describe",
     "gc_release_thread",
     "gc_stats",
 ]
