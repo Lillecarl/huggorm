@@ -34,11 +34,9 @@ package's own declarations, read by the generator.
 
 ## The mock
 
-`decl/eval.py` binds fake-library, a C++ stand-in this repo grew
-before real Nix was linked. Only the evaluator is left: the store half
-went when nix::Store took the plain name (tasks/060), and
-nix::EvalState replaces this one in place. The declaration survives
-either way - what changes is which C++ it names.
+There isn't one. `fake-library/` was a C++ stand-in this repo grew
+before real Nix was linked; every module here binds libstore or
+libexpr now, and the stand-in is deleted (tasks/060).
 """
 
 from .content_address import ContentAddress

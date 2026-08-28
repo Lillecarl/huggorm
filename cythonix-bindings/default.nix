@@ -1,7 +1,6 @@
 {
   lib,
   python3Packages,
-  fake-library,
   cythonix-idl,
   boehmgc,
   nix,
@@ -48,27 +47,13 @@ python3Packages.buildPythonPackage {
   # hand-written include path would have to reconstruct (tasks/015).
   nativeBuildInputs = [ pkg-config ];
 
-  # boehmgc headers must be visible when compiling the extension: the
-  # gc-enabled library and every consumer TU must agree on the alias in
-  # gc-env.hpp, or implicit destructors get instantiated twice with two
-  # different allocators (an ODR split that frees GC memory with free()).
-  buildInputs = [
-    fake-library
-    boehmgc
-    # Real Nix, for the first genuine binding. The mock stays until
-    # everything it backs has moved across.
-  ]
-  ++ nixLibs;
+  # boehmgc headers must be visible when compiling the extension.
+  # `_cpp/eval.hpp` calls GC_register_my_thread and GC_gcollect
+  # directly - libexpr exposes no thread-registration API, so that half
+  # of the integration is this repo's.
+  buildInputs = [ boehmgc ] ++ nixLibs;
 
-  # Propagate fake-library so downstream (cythonix, ourPython)
-  # gets the .so at runtime via rpath + propagatedBuildInputs
-  propagatedBuildInputs = [ fake-library ] ++ nixLibs;
-
-  # Tell setup.py where to find headers/libs
-  env.FAKE_LIBRARY = "${fake-library}";
-
-  # Also ensure the compiler can find it via CFLAGS/LDFLAGS if setup.py didn't
-  # (but we already handle it in setup.py)
+  propagatedBuildInputs = nixLibs;
 
   # Don't run `pip check` that might fail
   pythonImportsCheck = [ "cythonix_bindings" ];

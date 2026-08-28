@@ -163,7 +163,7 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
     pinning at all - so this test is the only exercise the pinning,
     the cascade and the adopt path get."""
     a = await remote.connect(HOST, ttl_server.port)
-    state = await a.acquire("EvalState", "local")
+    state = await a.acquire("EvalState", "dummy://")
     hid_state = state.handle_id
     v = await state.make_int(42)
     assert await v.integer() == 42
@@ -209,7 +209,7 @@ async def swept(ttl_server: Server) -> Any:
     it as the control."""
     # 1. detached leases, whose owner then dies.
     a = await remote.connect(HOST, ttl_server.port)
-    state = await a.acquire("EvalState", "local")
+    state = await a.acquire("EvalState", "dummy://")
     thunk = await state.parse_expr("42")
     await state.force(thunk)
     thunk_id = thunk.handle_id
@@ -221,7 +221,7 @@ async def swept(ttl_server: Server) -> Any:
 
     # 2. an evaluation state, with work done, handed to a successor.
     maker = await remote.connect(HOST, ttl_server.port)
-    warm = await maker.acquire("EvalState", "local")
+    warm = await maker.acquire("EvalState", "dummy://")
     bag = await warm.make_attrs()
     await warm.attrs_set(bag, "answer", await warm.eval_expr("42"))
     lazy = await warm.parse_expr("7")
@@ -340,7 +340,7 @@ async def test_the_evaluator_outlives_its_creator(swept: Swept) -> None:
     heir = await remote.connect(HOST, swept.port, claim=swept.maker_token)
     assert heir.token == swept.maker_token, "the successor adopts the identity"
     same = heir.proxy("EvalState", swept.state_id)
-    assert await same.get_store_uri() == "local"
+    assert await same.get_store_uri() == "dummy://"
 
     # Warm, not rebuilt. Forcing is the proof: it mutates a value in
     # place, so a value that reads as an int on the far side of a
@@ -359,7 +359,7 @@ async def test_the_evaluator_outlives_its_creator(swept: Swept) -> None:
 # proxy it was granted stayed alive for the life of the connection.
 
 async def test_dropping_the_last_reference_releases(client: Any) -> None:
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     ids = []
     for i in range(10):
         v = await state.eval_expr(f'"v{i}"')
@@ -377,7 +377,7 @@ async def test_two_objects_one_handle(client: Any) -> None:
     """The first drop must not pull the lease out from under the
     second. Forging a proxy from a raw id is public API, and this file
     does it a dozen times."""
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     v = await state.eval_expr('"shared"')
     shared_id = v.handle_id
     twin = client.proxy("Value", shared_id)
@@ -396,7 +396,7 @@ async def test_two_objects_one_handle(client: Any) -> None:
 async def test_reacquired_before_the_flush_is_not_released(client: Any) -> None:
     """Releasing a queued handle that something started using again
     would take the lease from a live object."""
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     v = await state.eval_expr('"resurrected"')
     res_id = v.handle_id
     del v
@@ -409,7 +409,7 @@ async def test_reacquired_before_the_flush_is_not_released(client: Any) -> None:
 
 
 async def test_explicit_close_does_not_queue_twice(client: Any) -> None:
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     v = await state.eval_expr('"closed"')
     await v.aclose()
     del v

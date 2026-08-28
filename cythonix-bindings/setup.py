@@ -14,11 +14,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def pkg_config(*packages: str) -> dict[str, list[str]]:
     """Compiler and linker flags for a real library, from pkg-config.
 
-    The mock is found through one FAKE_LIBRARY prefix with `include`
-    and `lib` joined onto it. Real Nix is not: it ships nix-store.pc,
-    nix-expr.pc and friends, which carry -std=c++23, a Requires chain
-    into nix-util and nlohmann_json, and a private link line nobody
-    should be reconstructing by hand (tasks/015)."""
+    Nix ships nix-store.pc, nix-expr.pc and friends, which carry
+    -std=c++23, a Requires chain into nix-util and nlohmann_json, and
+    a private link line nobody should be reconstructing by hand
+    (tasks/015)."""
     def run(flag: str) -> list[str]:
         out = subprocess.run(["pkg-config", flag, *packages],
                              capture_output=True, text=True, check=True)
@@ -38,44 +37,21 @@ def pkg_config(*packages: str) -> dict[str, list[str]]:
         + [f"-Wl,-rpath,{d}" for d in library_dirs],
     }
 
-# Nix will set FAKE_LIBRARY env to the fake-library derivation.
-# Fallback to /nix/store lookup is not needed; we error if missing.
-fake_lib = os.environ.get("FAKE_LIBRARY")
-if not fake_lib:
-    # For ad-hoc `pip install -e .` outside Nix, try to find via pkg-config
-    # but we keep it simple and require the env.
-    raise RuntimeError(
-        "FAKE_LIBRARY env var not set - build via Nix, or set "
-        "FAKE_LIBRARY=/path/to/fake-library")
-
-# Real Nix. nix-expr for the evaluator and nix-store for everything
-# else; pkg-config resolves the Requires chain, so nix-util and
-# nlohmann_json arrive without being named (tasks/015). Nothing about
-# it goes through FAKE_LIBRARY.
+# Real Nix, and nothing else. nix-expr for the evaluator and
+# nix-store for everything else; pkg-config resolves the Requires
+# chain, so nix-util and nlohmann_json arrive without being named
+# (tasks/015).
 #
-# One line for both, not one per module. A module links what its
-# declaration names, and asking pkg-config twice would mean two
-# compile-flag sets that have to agree - which is the class of thing
-# this repo derives rather than restates.
+# One line for both, not one per module. There used to be a LIBRARY
+# table saying which of the two libraries each module linked, because
+# some of them linked a mock. There is one library now, so the table
+# said the same word nine times (tasks/060).
 _nix = pkg_config("nix-store", "nix-expr")
 # ...plus this directory, for the headers in `_cpp/`. They sit beside
 # the sources rather than in the extension because they are C++ a
 # DECLARATION names: `@binds("cythonix::translate_nix_error")` points
 # at one.
 _nix["include_dirs"] = [HERE] + _nix["include_dirs"]
-
-# The mock, found through one prefix rather than through pkg-config.
-# `-DFAKE_LIBRARY_USE_BOEHMGC=1` must match the library's own build:
-# the gc-enabled library and every consumer TU have to agree on the
-# alias in gc-env.hpp, or implicit destructors get instantiated twice
-# with two different allocators.
-_mock = {
-    "include_dirs": [HERE, os.path.join(fake_lib, "include")],
-    "library_dirs": [os.path.join(fake_lib, "lib")],
-    "libraries": ["fake_library"],
-    "extra_compile_args": ["-std=c++23", "-DFAKE_LIBRARY_USE_BOEHMGC=1"],
-    "extra_link_args": [f"-Wl,-rpath,{os.path.join(fake_lib, 'lib')}"],
-}
 
 # Every module in the package, through nanobind.
 #
@@ -102,29 +78,9 @@ def nb_runtime() -> str:
     return f"cythonix_bindings/{name}"
 
 
-# Which library each nanobind module links. A declaration names the
-# C++ it binds; which package ships that C++ is the build's fact, and
-# this is the one place it is written down.
-LIBRARY = {
-    # Real Nix.
-    "path": "nix",
-    "hash": "nix",
-    "signature": "nix",
-    "content_address": "nix",
-    "derived_path": "nix",
-    "realisation": "nix",
-    "pathinfo": "nix",
-    "store": "nix",
-    # The mock, on its way out. Only the evaluator is left: the store
-    # half went with decl/mock_store.py (tasks/060), and nix::EvalState
-    # replaces this one in place.
-    "eval": "mock",
-}
-
-
 def nanobind_extension(module: str) -> Extension:
     inc = nanobind.include_dir()
-    flags = dict(_nix if LIBRARY[module] == "nix" else _mock)
+    flags = dict(_nix)
     flags["include_dirs"] = [
         inc,
         os.path.join(inc, "..", "ext", "robin_map", "include"),

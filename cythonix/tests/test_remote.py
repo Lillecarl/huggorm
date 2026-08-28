@@ -70,7 +70,7 @@ async def test_a_value_argument_crosses_as_a_copy(
 
 
 async def test_a_proxy_stays_remote(client: Any) -> None:
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     v = await state.make_int(7)
     assert isinstance(v, RPCValue)
     assert v._wire == "proxy"
@@ -96,7 +96,7 @@ async def test_backfilled_any_params_call_over_the_wire(client: Any) -> None:
     Its second parameter is a Value, so the call carries a HANDLE
     argument as well as a string: the server resolves it back to the
     object before the method runs."""
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     bag = await state.make_attrs()
     before = await bag.size()
     with anyio.fail_after(10):
@@ -107,7 +107,7 @@ async def test_backfilled_any_params_call_over_the_wire(client: Any) -> None:
 
 
 async def test_thunks_force_remotely(client: Any) -> None:
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     thunk = await state.parse_expr("42")
     await typed_failure(thunk.integer())
     await state.force(thunk)
@@ -128,7 +128,7 @@ async def test_a_decoded_cause_survives_the_wire(client: Any) -> None:
     """A C++ failure crosses as a rebuilt InternalError whose cause
     survives: __cause__ must be the original ValueError, not None -
     the regression guard for `raise ... from None`."""
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     with pytest.raises(InternalError) as caught:
         await state.parse_expr("")
     assert type(caught.value.__cause__) is ValueError
@@ -169,7 +169,7 @@ async def test_an_undeclared_cause_still_approximates(client: Any) -> None:
     surfaces as a plain ValueError - not a nix error, so it carries no
     declared parts and comes back the way it always did. Failing to
     rebuild an error must never replace it with a different one."""
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
     with pytest.raises(InternalError) as caught:
         await state.parse_expr("")
     assert type(caught.value.__cause__) is ValueError
@@ -224,8 +224,8 @@ async def test_a_free_function_crosses(client: Any) -> None:
 
 async def test_a_proxy_argument_resolves_against_another_object(
         client: Any) -> None:
-    state = await client.acquire("EvalState", "local")
-    other = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
+    other = await client.acquire("EvalState", "dummy://")
     loose = await state.parse_expr("7")
     await other.force(loose)
     assert await loose.integer() == 7

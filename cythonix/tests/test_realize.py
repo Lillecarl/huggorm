@@ -21,7 +21,7 @@ async def state(server: Server) -> Any:
     """A fresh evaluator per test, on its own connection, so one test's
     handles never outlive it into another's assertions."""
     c = await remote.connect(HOST, server.port)
-    s = await c.acquire("EvalState", "local")
+    s = await c.acquire("EvalState", "dummy://")
     yield s
     await s.aclose()
     c.stop_pinging()

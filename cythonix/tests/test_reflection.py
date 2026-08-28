@@ -48,7 +48,7 @@ async def test_acquire_is_a_typed_rpc(grpcurl: str, server: Server,
     assert len(json.loads(out)["id"]) == 32, out[:200]
 
     _, out, _ = await call(grpcurl, server, f"{pkg}.EvalStateService/Acquire",
-                           '{"store_uri":"local"}')
+                           '{"store_uri":"dummy://"}')
     assert len(json.loads(out).get("id", "")) == 32, out[:200]
 
 
@@ -89,7 +89,7 @@ async def test_the_recursive_value_message_reads(
     """A oneof holding a map of itself is the shape most likely to be
     built wrong, and a wrong one still round-trips inside Python."""
     _, out, _ = await call(grpcurl, server, f"{pkg}.EvalStateService/Acquire",
-                           '{"store_uri":"local"}')
+                           '{"store_uri":"dummy://"}')
     ev = json.loads(out)["id"]
 
     async def ev_call(method: str, **fields: Any) -> Any:

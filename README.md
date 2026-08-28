@@ -71,7 +71,6 @@ comment about an upstream behaviour that was read rather than assumed.
 
 ## Layout
 
-    fake-library/          a C++ stand-in, on its way out (see below)
     cythonix-idl/          the declarations, and the emitters
     cythonix-bindings/     the nanobind extensions - the bottom of the stack
     cythonix-generated/    the generator, and the package it emits
@@ -233,18 +232,24 @@ that imports; it fails to compile.
   rejected.
 - **One concern per commit.** If the subject needs "and", it is two.
 
-## The mock
+## The mock is gone
 
-`fake-library/` and the `Mock*` bindings are a C++ stand-in this repo
-grew before real Nix was linked. It is on its way out. Each mock class
-took a `Mock` prefix the moment its real counterpart landed, so the
-prefix is a map of what is left to do.
+`fake-library/` was a C++ stand-in this repo grew before real Nix was
+linked. It is deleted (tasks/060). Every binding here names libstore
+or libexpr.
 
-Real Nix is `Store`, `StorePath`, `PathInfo` (`nix::ValidPathInfo`)
-and `StoreLocation`. The
-`Mock*` classes still earn their place as the only exercise for
-shapes real Nix has not reached yet - a class hierarchy, a value tree,
-an affine-threaded object.
+libstore is `Store` (`nix::Store`), `StorePath`, `PathInfo`
+(`nix::ValidPathInfo`), `StoreLocation`, `Hash`, `Signature`,
+`ContentAddress`, `DrvOutput`, `Realisation`, `MissingPaths` and the
+`DerivedPath` union. libexpr is `EvalState` and `Value`.
+
+The one piece of C++ this repo writes for itself is
+`_cpp/eval.hpp`. A `nix::Value` lives in the collector's heap and
+Python's heap is not scanned, so a wrapper needs a ROOT; and a value
+is not self-describing, because an attribute name is a `Symbol` only
+the producing state can render. `cythonix::Bridge` holds both. The
+census prints its line count on every build, so the number a
+declaration could not derive is one nobody has to go looking for.
 
 ## Where to start reading
 

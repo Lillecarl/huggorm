@@ -1,7 +1,6 @@
 {
   lib,
   python3Packages,
-  fake-library,
   cythonix-bindings,
   cythonix-generated,
   grpcurl,

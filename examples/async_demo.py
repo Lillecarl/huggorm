@@ -59,7 +59,7 @@ async def main() -> None:
     print(f"nar_size: {info.nar_size()}  hash: {info.nar_hash().to_string()[:24]}...")
 
     print("\n=== evaluation (EvalState, affine service) ===")
-    state = AsyncEvalState("local")
+    state = AsyncEvalState("dummy://")
     print(f"store uri: {await state.get_store_uri()}")
     print(f"born on:   {state._runner.born_thread_name}")
 
@@ -128,10 +128,10 @@ async def main() -> None:
         # Deliberately wrong, and a typechecker says so - which is the
         # point being demonstrated. The ignore is what makes the demo
         # runnable AND checkable.
-        AsyncEvalState("local", "unexpected-arg")  # type: ignore[call-arg]
+        AsyncEvalState("dummy://", "unexpected-arg")  # type: ignore[call-arg]
         print("should not happen")
     except TypeError as e:
-        print(f"AsyncEvalState('local', 'unexpected-arg') -> TypeError: {e}")
+        print(f"AsyncEvalState('dummy://', 'unexpected-arg') -> TypeError: {e}")
     try:
         AsyncEvalState()  # type: ignore[call-arg]
         print("should not happen")

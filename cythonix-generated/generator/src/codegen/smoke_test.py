@@ -439,8 +439,8 @@ async def test_behavior() -> None:
     assert not_wrapped, "expected at least one unwrapped class in the surface"
 
     # Affine service: everything pinned to one dedicated thread.
-    remote = AsyncEvalState("local")
-    assert await remote.get_store_uri() == "local"
+    remote = AsyncEvalState("dummy://")
+    assert await remote.get_store_uri() == "dummy://"
     await remote.make_int(1)
     await remote.eval_expr("2")
     assert len(remote._runner.workers_seen) == 1, "affine calls must share one thread"
@@ -512,8 +512,8 @@ async def test_behavior() -> None:
 
     # Evaluation: EvalState is the affine SERVICE exemplar. Its values
     # attach to its thread, and forcing mutates them in place.
-    state = AsyncEvalState("local")
-    assert await state.get_store_uri() == "local"
+    state = AsyncEvalState("dummy://")
+    assert await state.get_store_uri() == "dummy://"
 
     # Thunk protocol: parse gives an unforced value; accessors throw
     # until it is forced.
@@ -550,7 +550,7 @@ async def test_behavior() -> None:
     # touched yet could not be passed anywhere. Every wrapper above had
     # been called already, which is why this went unseen. The runner
     # now constructs on its own thread before the argument is unwrapped.
-    untouched = AsyncEvalState("local")
+    untouched = AsyncEvalState("dummy://")
     assert untouched._runner._obj is None, "expected an unconstructed wrapper"
     thunk_arg = await state.parse_expr("1")
     await untouched.force(thunk_arg)
@@ -608,7 +608,7 @@ async def test_behavior() -> None:
     # An attribute set is BUILT, not parsed: the expression language
     # stays a toy, and reimplementing Nix's syntax would buy nothing
     # the wire and lifetime paths do not get from a builder.
-    builder = AsyncEvalState("local")
+    builder = AsyncEvalState("dummy://")
     attrs = await builder.make_attrs()
     for name, number in (("zebra", 1), ("apple", 2), ("mango", 3)):
         await builder.attrs_set(attrs, name, await builder.make_int(number))
@@ -714,10 +714,17 @@ async def test_behavior() -> None:
     assert await fresh.integer() == 7
 
     # Non-reachability collection, the Nix-faithful behavior: dropping
-    # the wrapper frees its bridge cell, leaving nothing visible that
-    # points at the value, so the collector reclaims it while the state
-    # stays alive.
-    kept = [await state.parse_expr(f'"{"p" * 200}-{i}"') for i in range(200)]
+    # the wrapper drops its root, leaving nothing visible that points
+    # at the value, so the collector reclaims it while the state stays
+    # alive.
+    #
+    # STRINGS, not parsed thunks, and the reason is libexpr's. A
+    # nix::EvalState OWNS every expression it parses, for its whole
+    # life (eval.hh:351, EvalMemory::exprs). A dropped thunk therefore
+    # frees the 16-byte Value and nothing else, which no page-granular
+    # counter can see. A string value owns its bytes, so dropping it
+    # actually returns memory.
+    kept = [await state.make_string(f'{"p" * 200}-{i}') for i in range(200)]
     await flg.collect_garbage()
     kept_used = cythonix_bindings.gc_stats()["used_bytes"]
 
@@ -735,19 +742,38 @@ async def test_behavior() -> None:
         "value ops must run on the producer's thread"
     )
 
-    # Affine serialization: two gathered evals take ~2x one eval.
-    t0 = asyncio.get_running_loop().time()
+    # Affine serialization, proved by WHERE the calls ran rather than
+    # by how long they took.
+    #
+    # This used to gather two evals and require the elapsed time to be
+    # about twice one eval. That worked because the mock SLEPT: real
+    # libexpr evaluates "1" in microseconds, so a timing test measures
+    # scheduler noise and passes or fails on the machine's mood. A
+    # single worker is the property the policy actually promises, and
+    # a thread name is not a stopwatch.
     await asyncio.gather(state.eval_expr("1"), state.eval_expr("2"))
-    elapsed = asyncio.get_running_loop().time() - t0
-    assert elapsed >= 0.075, f"evals must serialize, took {elapsed * 1000:.0f}ms"
+    assert len(state._runner.workers_seen) == 1, (
+        f"evals must serialize on one thread, saw {state._runner.workers_seen}")
 
-    # Parse errors surface as InternalError with the C++ cause.
+    # Evaluation errors surface with the C++ cause attached, and the
+    # TYPE of the cause is what the declaration says it is.
+    #
+    # Two kinds, and the difference is the point. A nix::Error crosses
+    # as the declared NixError - it carries parts, so the @translator
+    # rebuilds it. Anything else comes back as itself. The mock could
+    # only ever raise the second kind, so this pairing is new.
     try:
         await state.eval_expr("not an expression")
-        raise AssertionError("expected parse error")
+        raise AssertionError("expected an evaluation error")
     except InternalError as e:
         d = e.to_dict()
-        assert d["code"] == "internal" and d["cause_type"] == "ValueError"
+        assert d["code"] == "internal" and d["cause_type"] == "NixError", d
+    try:
+        await state.eval_expr("")
+        raise AssertionError("expected a refusal")
+    except InternalError as e:
+        d = e.to_dict()
+        assert d["code"] == "internal" and d["cause_type"] == "ValueError", d
 
     await v.aclose()
     await thunk.aclose()
@@ -761,7 +787,7 @@ async def test_behavior() -> None:
     # Caching of a GENUINE factory failure is covered directly above,
     # via PoolRunner(bad_factory); that guarantee is unchanged.
     try:
-        AsyncEvalState("local", "unexpected-arg")  # type: ignore[call-arg]
+        AsyncEvalState("dummy://", "unexpected-arg")  # type: ignore[call-arg]
         raise AssertionError("wrong arity must fail at construction")
     except TypeError:
         pass

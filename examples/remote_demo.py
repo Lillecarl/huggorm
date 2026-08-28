@@ -19,7 +19,7 @@ async def main() -> None:
 
     root = tempfile.mkdtemp(prefix="cythonix-demo-")
     store = await client.acquire("Store", root)
-    state = await client.acquire("EvalState", "local")
+    state = await client.acquire("EvalState", "dummy://")
 
     print("=== wire-value returns are real local objects ===")
     from cythonix_bindings import ContentAddressMethod as CA

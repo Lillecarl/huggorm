@@ -4,8 +4,6 @@
 rec {
   inherit pkgs;
   inherit (pkgs) lib;
-  # fake-library should be a C++ project with "complex types", it doesn't have to do anything useful
-  fake-library = pkgs.callPackage ./fake-library { };
   # The declarations, and the emitters that read them.
   #
   # An ordinary Python distribution, and stdlib-only: it parses
@@ -39,12 +37,11 @@ rec {
   # The bindings. Every module is a nanobind extension whose C++ is
   # written from a declaration before this builds.
   cythonix-bindings = pkgs.callPackage ./cythonix-bindings {
-    inherit fake-library cythonix-idl;
+    inherit cythonix-idl;
     src = bindings-src;
   };
   # this is a Python library that uses cythonix-bindings
   cythonix = pkgs.callPackage ./cythonix {
-    inherit fake-library;
     inherit cythonix-bindings;
     inherit cythonix-generated;
   };
@@ -52,7 +49,6 @@ rec {
   # -> async wrappers, protocols, an RPC client, a wire schema and
   # the binding stubs.
   cythonix-generated = pkgs.callPackage ./cythonix-generated {
-    inherit fake-library;
     inherit cythonix-bindings;
     inherit cythonix-idl;
   };

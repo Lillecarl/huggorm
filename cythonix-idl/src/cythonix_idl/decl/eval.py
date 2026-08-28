@@ -1,19 +1,29 @@
 """
 The evaluation binding: EvalState is the affine SERVICE exemplar.
 
-The real EvalState is documented as not thread-safe, one per thread;
+`nix::EvalState` is documented as not thread-safe, one per thread;
 here that fact becomes `threading="affine"`. Values live on the
 state's thread: they are produced by state methods and attach to its
 runner in the async layer. `force` mutates a value in place, which is
 the affine-value-as-parameter case.
 
-The library is a mock of libexpr, and the one thing it mocks
-faithfully is LIFETIME. A value lives in the collector's heap and
-belongs to nobody: it dies when the collector can no longer see a
-pointer to it, even while its EvalState lives on. Python's heap is
-not scanned, so a wrapper holding a bare pointer roots nothing -
-which is what `cythonix::Bridge` is for, and the only C++ in this
-binding that a declaration could not have written.
+Two facts about libexpr shape everything below, and both are LIFETIME.
+
+A value lives in the collector's heap and belongs to nobody: it dies
+when the collector can no longer see a pointer to it, even while its
+EvalState lives on. Python's heap is not scanned, so a wrapper
+holding a bare pointer roots nothing.
+
+And a value is not self-describing. An attribute name is a `Symbol`,
+a `uint32_t` index into the PRODUCING state's symbol table, so
+rendering one needs that state in hand.
+
+`cythonix::Bridge` answers both: it holds an upstream `RootValue` and
+a share of the state that made it, so the state cannot die under a
+value that still points into its memory. That is producer pinning as
+a C++ fact, beside the server's `parents=[self]`. It is the only C++
+in this binding a declaration could not have written, and
+`_cpp/eval.hpp` says why line by line.
 """
 
 from cythonix_idl.declare import (
@@ -24,6 +34,7 @@ from cythonix_idl.declare import (
     binding,
     binds,
     blocks,
+    cxx_name,
     header,
     needs,
     produced,
@@ -36,32 +47,29 @@ from cythonix_idl.declare import (
 @produced(by="EvalState")
 @header("cythonix_bindings/_cpp/eval.hpp")
 @binding(
-    # One state per thread, and its values belong to that thread.
+    # One state per thread, and its values belong to that thread. The
+    # async layer inherits the runner rather than making a new one -
+    # a value operation touches the state's own memory, so running it
+    # anywhere else is a data race.
     threading="affine",
     # Reading a forced value is a memory read. Forcing is what waits,
     # and it says so for itself.
     blocking=False,
     cxx="cythonix::Bridge",
-    # Bridge is a HANDLE, not the value. It roots a GC-resident
-    # fake_library::Value so the collector can see it from Python's
-    # heap, and hands the value over through `get()`. Saying so once
-    # is what lets every method below derive: the call goes through
-    # it, a returned Value comes back wrapped in it, and a Value
-    # passed to EvalState is unwrapped out of it.
-    via="get()",
 )
 # How a value TREE is walked, read by the RPC layer so that no layer
 # above this declaration knows what a Value is or which of its methods
 # do what (tasks/030). `kind` names the accessor that says what this
 # node is; its answer selects one of the branches below. A kind named
-# nowhere here - a thunk - crosses as a proxy, which is exactly the
-# laziness the wire cannot serialize.
+# nowhere here crosses as a proxy - and real Nix has five of those:
+# thunk, function, external, failed and path. Laziness the wire cannot
+# serialize, plus three things that are not data at all.
 @tree(
     kind="type_name",
     # What makes two nodes THE SAME node. A fresh wrapper is built for
     # every access, so Python identity says nothing: two wrappers over
     # one value differ, and a wrapper that dies hands its id() to the
-    # next one. The underlying object is the identity.
+    # next one. The underlying value's address is the identity.
     identity="_identity",
     # kind reported by `kind` -> [wire type, accessor]. The wire type
     # is what picks the arm, so the layer above reads a declared type
@@ -73,7 +81,8 @@ from cythonix_idl.declare import (
     attrs={"size": "size", "name": "name_at", "value": "value_at"},
 )
 class Value:
-    """One GC-resident value, rooted for as long as Python holds it.
+    """One GC-resident nix::Value, rooted for as long as Python holds
+    it.
 
     Wire-proxy despite being "just data": a thunk must force on its
     home thread and forcing mutates in place. A future refinement may
@@ -81,8 +90,16 @@ class Value:
 
     Produced, never constructed. A value comes from an EvalState -
     parsed, evaluated or built - and there is nothing a caller could
-    correctly make one from."""
+    correctly make one from.
 
+    EVERY ACCESSOR GUARDS, and that is not politeness. `nix::Value` is
+    a tagged union whose readers are `noexcept` and undefined on the
+    wrong tag: reading `integer` off a string is not an error, it is a
+    reinterpretation of the payload. So no method here binds a
+    pointer-to-member on `nix::Value`; each one is a Bridge method
+    that checks the tag first."""
+
+    @cxx_name("identity")
     def _identity(self) -> I64:
         """The underlying value's address, as a number.
 
@@ -90,36 +107,47 @@ class Value:
         every generated form. The tree walk uses it to visit a shared
         value once - values are immutable and shared freely, so
         without it a diamond is copied and a cycle never ends."""
-        Cxx("return static_cast<std::int64_t>(self.identity());")
 
-    # On the HANDLE, not on the value it points at - so it says so
-    # rather than going through `via`. The same is true of
-    # `_identity` above, and those two are the only lines in this
-    # class that are about the Bridge at all. The census counts them,
-    # which is the right answer: they are what a GC root costs.
     def is_gc_managed(self) -> Bint:
         """True when this value lives inside a GC-allocated block.
 
         Bound straight from gc.h: a no-op integration cannot fake
         it."""
-        Cxx("return self.is_gc_managed();")
 
     def type_name(self) -> Str:
-        """"thunk", "int", "string", "bool", "list" or "attrs"."""
+        """What this value is: "thunk", "int", "float", "bool",
+        "string", "path", "null", "attrs", "list", "function",
+        "external" or "failed".
+
+        The full `nix::ValueType`, not a subset. A kind the `@tree`
+        map above does not name crosses as a proxy, so naming all of
+        them here costs nothing and hides nothing."""
 
     def integer(self) -> I64:
         """This value as an integer. Raises on a thunk, or on a value
         of another kind."""
 
     def string_value(self) -> Str:
-        """This value as a string. Raises as `integer` does."""
+        """This value as a string. Raises as `integer` does.
+
+        The string CONTEXT is dropped. A Nix string can carry store
+        paths it depends on, and nothing above this layer can act on
+        them yet; a declaration that carried them would be inventing
+        a surface rather than binding one."""
 
     def boolean(self) -> Bint:
         """This value as a bool. Raises as `integer` does."""
 
     # Collections. Reading is by index, which is also how the
-    # alphabetical order of an attribute set reaches Python: the C++
-    # side keeps attributes in name order, like nix::Bindings.
+    # alphabetical order of an attribute set reaches Python.
+    #
+    # That order is not free. nix::Bindings is sorted by Symbol ID,
+    # which is INTERNING order - the order a name was first seen
+    # anywhere in the process - so an attribute set comes back in
+    # whatever order its names happened to be interned.
+    # `lexicographicOrder` is the accessor that hides it, and the
+    # Bridge caches the result because the walk reads every index
+    # against one object.
     #
     # A list[Value] or dict[str, Value] accessor is deliberately
     # absent. It needs a collection of PROXIES, which is the recursive
@@ -143,15 +171,19 @@ class Value:
     def has(self, name: Str) -> Bint:
         """Whether this attribute set carries that name."""
 
+    # `get` in Python, `get_attr` in C++. The Bridge already has a
+    # `get()` - it hands back the rooted nix::Value - and that one is
+    # plumbing rather than surface.
+    @cxx_name("get_attr")
     def get(self, name: Str) -> "Value":
         """One attribute by name. Raises when it is missing."""
 
 
 @header("cythonix_bindings/_cpp/eval.hpp")
 @binding(
-    cxx="fake_library::EvalState",
-    # Not thread-safe, one per thread. The real libexpr says so and
-    # this is where that sentence becomes a policy.
+    cxx="cythonix::Evaluator",
+    # Not thread-safe, one per thread. libexpr says so and this is
+    # where that sentence becomes a policy.
     threading="affine",
     # Parsing and evaluating are slow and pure C++ after the string
     # crosses. The accessors are not, and say so.
@@ -164,13 +196,11 @@ class EvalState:
         """Open a state against a store URI.
 
         REQUIRED, with no default. A state is bound to a store and a
-        thread, and neither is a thing to guess at - the C++
-        constructor takes one and so does this.
+        thread, and neither is a thing to guess at.
 
-        The mock does nothing with the URI beyond remembering it: the
-        point of carrying one is that a real EvalState is built over a
-        store, and the async layer has to route every call that
-        follows onto this state's own thread."""
+        `nix::EvalState` takes a `ref<Store>` and two settings objects
+        that must outlive it, so `cythonix::Evaluator` owns all four
+        and this parameter is the one a caller can answer."""
 
     def get_store_uri(self) -> Str:
         """The URI this state was opened with."""
@@ -185,20 +215,25 @@ class EvalState:
     def force(self, v: "Value") -> None:
         """Force a value in place. Idempotent.
 
-        Mutates GC-resident memory, and the async layer may route the
-        call through any worker of this state's runner - which is why
-        a Value is affine and travels as a proxy."""
+        Mutates GC-resident memory, and the async layer routes the
+        call to this state's OWN thread - which is why a Value is
+        affine and travels as a proxy."""
 
-    # Builders. The expression language is a toy and stays one: an
-    # attribute set is BUILT here rather than parsed, because
-    # reimplementing Nix's syntax would buy nothing the wire and
-    # lifetime paths do not already get from a builder.
+    # Builders. A caller builds a list or an attribute set one element
+    # at a time, and that shape is the WIRE's, not libexpr's: a Nix
+    # collection is immutable and sized when it is built, so each call
+    # here rebuilds it.
+    #
+    # The alternative is worse. `make_list(items: list[Value])` would
+    # need a container of PROXIES to cross, and one lease per element
+    # is not something anything grants in bulk - so it would have no
+    # RPC surface at all. One element per call is what crosses.
 
     def make_int(self, value: I64) -> "Value":
         """A forced integer value."""
 
     def make_string(self, value: Str) -> "Value":
-        """A forced string value."""
+        """A forced string value, with no string context."""
 
     def make_bool(self, value: Bint) -> "Value":
         """A forced boolean value."""
@@ -231,12 +266,11 @@ def gc_stats() -> "dict[str, int]":
     fake them."""
     Cxx("""
 nb::dict out;
-out["heap_size"] = cythonix::gc_heap_size();
-out["total_bytes"] = cythonix::gc_total_bytes();
-out["bytes_since_gc"] = cythonix::gc_bytes_since_gc();
-out["collections"] = cythonix::gc_collections();
-out["used_bytes"] = cythonix::gc_heap_size()
-    - cythonix::gc_free_bytes();
+out["heap_size"] = GC_get_heap_size();
+out["total_bytes"] = GC_get_total_bytes();
+out["bytes_since_gc"] = GC_get_bytes_since_gc();
+out["collections"] = static_cast<std::size_t>(GC_get_gc_no());
+out["used_bytes"] = GC_get_heap_size() - GC_get_free_bytes();
 return out;
     """)
 
@@ -244,23 +278,21 @@ return out;
 @needs("cythonix_bindings/_cpp/eval.hpp")
 @threading("pool")
 @blocks
+@binds("cythonix::gc_collect")
 def collect_garbage() -> None:
     """Run a full stop-the-world collection (twice).
 
     Global process state, mirroring libgc: not a method on EvalState.
-    Blocking - dispatch it to a thread from async code."""
-    Cxx("""
-// Boehm stops the world by signalling every registered
-// thread. A thread it does not know cannot answer, and the
-// collection aborts the process with "Collecting from
-// unknown thread".
-fake_library::gcenv::register_current_thread();
-fake_library::gcenv::collect();
-    """)
+    Blocking - dispatch it to a thread from async code.
+
+    It registers the calling thread first. Boehm stops the world by
+    signalling every registered thread, and a thread it does not know
+    cannot answer - the collection aborts the process with "Collecting
+    from unknown thread"."""
 
 
 @needs("cythonix_bindings/_cpp/eval.hpp")
-@binds("fake_library::gcenv::unregister_current_thread")
+@binds("cythonix::gc_unregister_thread")
 def gc_release_thread() -> None:
     """Take the CURRENT thread off the collector's list.
 
@@ -277,7 +309,11 @@ def gc_release_thread() -> None:
 
 
 @needs("cythonix_bindings/_cpp/eval.hpp")
-@binds("fake_library::gcenv::init")
+@binds("nix::initGC")
 @startup
 def _gc_init() -> None:
-    """Start the collector, once, before any value can exist."""
+    """Start the collector, once, before any value can exist.
+
+    Bound straight from libexpr. It also calls
+    `GC_allow_register_threads`, so the permission is upstream's and
+    only the per-thread registration is ours."""
