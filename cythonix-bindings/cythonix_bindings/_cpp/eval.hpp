@@ -180,6 +180,16 @@ public:
         gc_register_thread();
     }
 
+    /** As `~Bridge`: the last share of the core tears down an
+     * EvalState, and that must happen on a thread the collector
+     * knows. */
+    ~Evaluator() { gc_register_thread(); }
+
+    Evaluator(const Evaluator &) = default;
+    Evaluator(Evaluator &&) = default;
+    Evaluator & operator=(const Evaluator &) = default;
+    Evaluator & operator=(Evaluator &&) = default;
+
     nix::EvalState & state() const { return core_->state(); }
 
     const std::string & get_store_uri() const { return core_->store_uri(); }
@@ -221,6 +231,32 @@ public:
         , root_(nix::allocRootValue(value))
     {
     }
+
+    /**
+     * Registers the thread, then lets the root and the core go.
+     *
+     * This runs on WHICHEVER thread drops the last Python reference,
+     * and that is rarely the thread that produced the value: an event
+     * loop, a pool worker, the server's reaper. Two members below need
+     * that thread to be known to the collector.
+     *
+     * The RootValue is a `shared_ptr` over traceable-allocator memory,
+     * so releasing the last share deallocates from the GC heap. And
+     * the last share of the EvalCore takes `~EvalState` with it, which
+     * tears down GC-resident structures. Reading needs no registration
+     * - a root keeps a value reachable from anywhere - but freeing
+     * does.
+     *
+     * The body runs BEFORE the members are destroyed, which is what
+     * makes registering here the right place rather than a race with
+     * itself.
+     */
+    ~Bridge() { gc_register_thread(); }
+
+    Bridge(const Bridge &) = default;
+    Bridge(Bridge &&) = default;
+    Bridge & operator=(const Bridge &) = default;
+    Bridge & operator=(Bridge &&) = default;
 
     nix::Value * get() const { return *root_; }
 
