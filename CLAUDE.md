@@ -38,6 +38,16 @@ file.
 
 The build prints the `_cpp` line count. It is not a budget to spend.
 
+**ASK BEFORE WRITING ANY C++ THAT THE CODEGEN DID NOT WRITE.** Every
+line of it needs the user's explicit approval, in advance, per
+occasion. Not "I will note it in the commit" and not "I will write a
+task for deriving it later" - those are what happened while
+`_cpp/eval.hpp` grew from 108 lines to 417, and every one of those
+lines looked reasonable on its own.
+
+Show what the line does, say why a declaration cannot carry it, and
+wait. A "no" means the answer is to teach the declaration.
+
 ## 3. Maintainability, which is why 2 exists
 
 One source, many outputs. A fact stated twice will disagree once.
