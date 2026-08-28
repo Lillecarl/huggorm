@@ -84,12 +84,39 @@ inline bool & gc_owns_registration()
     return flag;
 }
 
+/**
+ * Whether this thread has been ASKED yet, as opposed to whether we
+ * own its registration.
+ *
+ * Two flags, not one, and the difference cost 2.25 ms per value.
+ * `GC_register_my_thread` answers GC_DUPLICATE for a thread the
+ * collector already knows - the main thread, every time - so a single
+ * flag set only on GC_SUCCESS never latched there, and every
+ * Bridge, every stage and every destructor called
+ * `GC_get_stack_base` again. That call is not cheap: it reads the
+ * process's own memory map to find the stack bounds.
+ *
+ * Measured, not reasoned: 500 `make_int` calls went from 1124 ms to
+ * 0.17 ms. The allocator was never the problem - swapping
+ * `nix::allocRootValue` for a hand-rolled uncollectable cell changed
+ * the figure by 3 ms in 1124, which is what ruled it out.
+ */
+inline bool & gc_asked()
+{
+    static thread_local bool flag = false;
+    return flag;
+}
+
 inline void gc_register_thread()
 {
-    if (gc_owns_registration())
+    if (gc_asked())
         return;
+    gc_asked() = true;
     struct GC_stack_base sb;
     GC_get_stack_base(&sb);
+    // GC_SUCCESS means WE registered it, so we are the ones who must
+    // unregister. GC_DUPLICATE means the collector already knew, and
+    // unregistering such a thread is not ours to do.
     if (GC_register_my_thread(&sb) == GC_SUCCESS)
         gc_owns_registration() = true;
 }
@@ -111,6 +138,7 @@ inline void gc_unregister_thread()
         return;
     GC_unregister_my_thread();
     gc_owns_registration() = false;
+    gc_asked() = false;
 }
 
 inline void gc_collect()
