@@ -16,7 +16,7 @@ import cythonix_bindings
 import cythonix_generated.async_store
 from cythonix import grpc_pb
 from cythonix_bindings import ContentAddressMethod as CA
-from cythonix_bindings import HashAlgorithm, MockDerivedPath
+from cythonix_bindings import HashAlgorithm
 from cythonix_bindings.errors import BadStorePath
 from cythonix_generated import RPC_CLASSES, RPCMockDerivation
 from cythonix_generated._runtime import InternalError
@@ -36,7 +36,7 @@ async def typed_failure(coro: Any) -> dict[str, str]:
 # -- values and proxies ----------------------------------------------------
 
 async def test_acquire_returns_a_handle(client: Any) -> None:
-    store = await client.acquire("MockLocalStore")
+    store = await client.acquire("Store", "dummy://")
     assert store.handle_id
     await store.aclose()
     # aclose is the shared way to let an object go: locally it shuts the
@@ -45,23 +45,28 @@ async def test_acquire_returns_a_handle(client: Any) -> None:
     assert store.handle_id is None, "aclose releases the lease remotely"
 
 
-async def test_wire_value_arrives_as_a_local_object(client: Any) -> None:
-    store = await client.acquire("MockLocalStore")
+async def test_wire_value_arrives_as_a_local_object(
+        client: Any, tmp_path: Any) -> None:
+    store = await client.acquire("Store", str(tmp_path))
     with anyio.fail_after(10):
-        p = await store.add_text_to_store("hello.txt", "world")
-    assert type(p).__module__ == "cythonix_bindings.mock_store", type(p).__name__
+        p = await store.add_to_store("hello.txt", b"world")
+    # A LOCAL object of the real bound class, not a handle: a wire
+    # value crosses as its parts and is rebuilt on this side.
+    assert type(p).__module__ == "cythonix_bindings.path", type(p).__name__
     assert p.to_string().endswith("hello.txt")
     with anyio.fail_after(10):
         assert await store.is_valid_path(p) is True
     await store.aclose()
 
 
-async def test_a_value_argument_crosses_as_a_copy(client: Any) -> None:
-    store = await client.acquire("MockLocalStore")
-    drv_path = await store.add_text_to_store("mysite.drv", "DrvMine")
-    built = await store.build_derivation(MockDerivedPath(drv_path, "out"))
-    assert built.to_string().endswith("-out")
-    assert await store.is_valid_path(built)
+async def test_a_value_argument_crosses_as_a_copy(
+        client: Any, tmp_path: Any) -> None:
+    store = await client.acquire("Store", str(tmp_path))
+    held = await store.add_to_store("mysite", b"contents")
+    # A wire value going the OTHER way: the StorePath was rebuilt
+    # here, and passing it back encodes it as its parts again.
+    assert await store.is_valid_path(held)
+    assert (await store.query_path_info(held)).path() == held
     await store.aclose()
 
 
@@ -175,16 +180,16 @@ async def test_an_undeclared_cause_still_approximates(client: Any) -> None:
 
 
 async def test_a_released_handle_fails_typed(client: Any) -> None:
-    tmp = await client.acquire("MockLocalStore")
+    tmp = await client.acquire("Store", "dummy://")
     ghost_id = tmp.handle_id
     await client.release(tmp)
-    threw = await typed_failure(client.proxy("MockLocalStore", ghost_id).get_uri())
+    threw = await typed_failure(client.proxy("Store", ghost_id).get_uri())
     assert threw["cause_type"] == "KeyError", threw
 
 
 async def test_an_unknown_handle_fails_typed(client: Any) -> None:
     threw = await typed_failure(
-        client.proxy("MockLocalStore", "0" * 32).get_uri())
+        client.proxy("Store", "0" * 32).get_uri())
     assert threw["cause_type"] == "KeyError", threw
 
 
@@ -278,7 +283,8 @@ async def test_a_dict_return_crosses_as_a_map(client: Any) -> None:
     assert set(stats) == set(cythonix_bindings.gc_stats()), sorted(stats)
 
 
-async def test_a_list_return_crosses_as_a_repeated_field(client: Any) -> None:
+async def test_a_list_return_crosses_as_a_repeated_field(
+        client: Any, tmp_path: Any) -> None:
     """A repeated field, which is the other container proto3 gives.
 
     Every element is a wire VALUE and crosses as its own message: a
@@ -287,32 +293,32 @@ async def test_a_list_return_crosses_as_a_repeated_field(client: Any) -> None:
 
     Order is the difference from a map: a repeated field has one, and
     the client hands back what the server sent. It is the store's
-    order, not a helpful one - the mock keeps base names in a
-    std::set, exactly as nix::StorePathSet does, so the sequence is by
-    HASH and a caller who expects it by name is wrong."""
+    order, not a helpful one - libstore keeps these in a
+    nix::StorePathSet, so the sequence is by HASH and a caller who
+    expects it by name is wrong."""
     names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]
 
     # Ground truth from the binding itself, in this process. Comparing
     # one wire answer against another would prove nothing about order:
     # both would come back through the same decode, sorted or not.
-    direct = cythonix_bindings.MockLocalStore()
+    direct = cythonix_bindings.Store(str(tmp_path / "ground"))
     for name in names:
-        direct.add_text_to_store(name, name)
+        direct.add_to_store(name, name.encode())
     expected = [p.to_string() for p in direct.query_all_valid_paths()]
 
-    store = await client.acquire("MockLocalStore")
+    store = await client.acquire("Store", str(tmp_path / "wire"))
     assert await store.query_all_valid_paths() == []
     for name in names:
-        await store.add_text_to_store(name, name)
+        await store.add_to_store(name, name.encode())
     paths = await store.query_all_valid_paths()
 
     # Real local objects rebuilt from their parts, not handles.
-    assert all(type(p).__module__ == "cythonix_bindings.mock_store"
+    assert all(type(p).__module__ == "cythonix_bindings.path"
                for p in paths), [type(p) for p in paths]
     assert [p.to_string() for p in paths] == expected
     # ...and that order is not the one by NAME, which is what makes a
     # client that imposed its own ordering observable at all.
-    assert [p.name_part() for p in paths] != sorted(names), paths
+    assert [p.name() for p in paths] != sorted(names), paths
     await store.aclose()
 
 
