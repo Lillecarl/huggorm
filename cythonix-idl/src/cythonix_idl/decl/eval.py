@@ -36,6 +36,7 @@ from cythonix_idl.declare import (
     binds,
     blocks,
     cxx_name,
+    fills,
     guard,
     header,
     names,
@@ -345,18 +346,33 @@ return self.wrap(made);
 
     def make_list(self) -> "Value":
         """An empty list. Fill it with `list_append`."""
+        Cxx("""
+auto * made = self.alloc();
+made->mkList(self.state().buildList(0));
+return self.wrap_builder(made);
+        """)
 
+    @fills("make_list", "list")
     def list_append(self, target: "Value", item: "Value") -> None:
         """Add one element to a list, in place."""
+        Cxx("return target.stage(item.get());")
 
     def make_attrs(self) -> "Value":
         """An empty attribute set. Fill it with `attrs_set`."""
+        Cxx("""
+auto * made = self.alloc();
+auto builder = self.state().buildBindings(0);
+made->mkAttrs(builder);
+return self.wrap_builder(made);
+        """)
 
+    @fills("make_attrs", "attrs")
     def attrs_set(self, target: "Value", name: Str, item: "Value") -> None:
         """Set one attribute, in place.
 
         Setting a name twice replaces its value, matching an attribute
         set built by assignment."""
+        Cxx("return target.stage_attr(name, item.get());")
 
 
 # --- free functions ------------------------------------------------

@@ -193,6 +193,9 @@ class Method:
     # The C++ initialiser this method calls to make a value, from
     # @produces. The emitter owns allocating, rooting and wrapping.
     produces: str = ""
+    # This method mutates a value the binding BUILT, from @fills. The
+    # value names the method that makes one, for the refusal.
+    fills: tuple[str, str] | None = None
     # For a caller, not for the wire, from @local. A wire value
     # crosses as every accessor it has, so this is the one thing an
     # accessor has to be able to say for itself.
@@ -736,6 +739,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         guard=getattr(marked, "_guard", ""),
         names=bool(getattr(marked, "_names", False)),
         produces=getattr(marked, "_produces", ""),
+        fills=getattr(marked, "_fills", None),
         blocks=bool(getattr(marked, "_blocks", False)),
         instant=bool(getattr(marked, "_instant", False)),
         prop=any(isinstance(d, ast.Name) and d.id == "property"

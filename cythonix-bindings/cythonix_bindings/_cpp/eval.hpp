@@ -308,12 +308,6 @@ public:
     Bridge wrap(nix::Value * v) const;
     Bridge wrap_builder(nix::Value * v) const;
 
-    Bridge make_list();
-    Bridge make_attrs();
-
-    void list_append(const Bridge & target, const Bridge & item);
-    void attrs_set(const Bridge & target, const std::string & name,
-                   const Bridge & item);
 
 private:
 
@@ -600,66 +594,6 @@ inline Bridge Evaluator::wrap(nix::Value * v) const
 inline Bridge Evaluator::wrap_builder(nix::Value * v) const
 {
     return Bridge(core_, v, true);
-}
-
-inline Bridge Evaluator::make_list()
-{
-    gc_register_thread();
-    auto * v = state().allocValue();
-    v->mkList(state().buildList(0));
-    return wrap_builder(v);
-}
-
-inline Bridge Evaluator::make_attrs()
-{
-    gc_register_thread();
-    auto * v = state().allocValue();
-    auto builder = state().buildBindings(0);
-    v->mkAttrs(builder);
-    return wrap_builder(v);
-}
-
-/**
- * A Nix list is IMMUTABLE and sized when it is built, so appending
- * builds a new one and repoints the value.
- *
- * That makes filling a list quadratic, and the builder exists anyway
- * because the wire cannot carry a container of proxies: one lease per
- * element is not something anything grants in bulk. A
- * `make_list(items)` taking a `list[Value]` would have no RPC surface
- * at all, so the shape that crosses is one element per call.
- */
-inline void Evaluator::list_append(const Bridge & target, const Bridge & item)
-{
-    gc_register_thread();
-    if (!target.is_list())
-        throw std::invalid_argument("value is not a list");
-    if (!target.is_builder())
-        throw std::invalid_argument(
-            "this list did not come from make_list, and a Nix value is "
-            "immutable: appending would rewrite memory the evaluator "
-            "produced");
-    // `item.get()`, not `*item.root_`: an item that is ITSELF a
-    // staged list must be built before its pointer is taken.
-    target.stage(item.get());
-}
-
-/** As `list_append`: an attribute set is immutable, so this rebuilds. */
-inline void Evaluator::attrs_set(const Bridge & target,
-                                 const std::string & name,
-                                 const Bridge & item)
-{
-    gc_register_thread();
-    if (!target.is_attrs())
-        throw std::invalid_argument("value is not an attribute set");
-    if (!target.is_builder())
-        throw std::invalid_argument(
-            "this attribute set did not come from make_attrs, and a Nix "
-            "value is immutable: setting would rewrite memory the "
-            "evaluator produced");
-    // `item.get()`, so an item that is ITSELF staged is built before
-    // its pointer is taken.
-    target.stage_attr(name, item.get());
 }
 
 // ---- Bridge, out of line ------------------------------------------

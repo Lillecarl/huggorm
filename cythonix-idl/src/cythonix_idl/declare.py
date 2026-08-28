@@ -250,6 +250,7 @@ MARKERS: dict[str, Marker] = {
                      # the other says it cannot.
                      excludes=frozenset({"instant"})),
     "cxx_name": Marker(_t("method"), "once"),
+    "fills": Marker(_t("method"), "once"),
     "guard": Marker(_t("method"), "once"),
     "names": Marker(_t("method"), "flag"),
     "produces": Marker(_t("method"), "once"),
@@ -522,6 +523,32 @@ def produces[F: Callable[..., Any]](init: str) -> Callable[[F], F]:
     structure is a C++ string with punctuation."""
     def mark(fn: F) -> F:
         fn._produces = init  # type: ignore[attr-defined]
+        return fn
+    return mark
+
+
+def fills[F: Callable[..., Any]](maker: str, arm: str) -> Callable[[F], F]:
+    """This method mutates a value the binding BUILT, and nothing else.
+
+    `maker` is the method that makes such a value, and it is what the
+    refusal names. `arm` is what the target must BE - a builder of the
+    wrong kind passes the builder test and then reads the wrong union
+    member, which is undefined rather than an error.
+
+    The maker names - a caller who reaches this is told where to get a
+    fillable value, not merely that this one is wrong.
+
+    The rule is the library's, not this repo's. A Nix collection is
+    immutable, so rewriting an evaluated one corrupts memory the state
+    holds in caches and other handles point at. The builders are the
+    one place where rewriting is safe, because nothing else has seen
+    the value yet.
+
+    A marker rather than two hand-written checks, because it repeats:
+    the same decision covers appending to a list and setting an
+    attribute, and a third builder would make it three."""
+    def mark(fn: F) -> F:
+        fn._fills = (maker, arm)  # type: ignore[attr-defined]
         return fn
     return mark
 

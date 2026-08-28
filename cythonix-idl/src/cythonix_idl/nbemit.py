@@ -573,7 +573,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
             f"{INDENT * 4}return {obj}.wrap(made);",
         ]
 
-    head = _guard_head(cls, m)
+    head = _guard_head(cls, m, known)
     if m.guard or m.names:
         hold, ask, table = cls.decl.tagged  # type: ignore[misc]
         reach = f"{obj}.{hold}->"
@@ -610,7 +610,8 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     return [*head, f"{INDENT * 4}return {call};"]
 
 
-def _guard_head(cls: Class, m: Method) -> list[str]:
+def _guard_head(cls: Class, m: Method,
+                known: dict[str, Class] | None = None) -> list[str]:
     """The tag check an accessor on a tagged union owes its caller.
 
     Separate from HOW the rest of the body reads, so a method with a
@@ -618,6 +619,38 @@ def _guard_head(cls: Class, m: Method) -> list[str]:
     to DO once the arm is known; the check that the arm IS known is
     the same either way, and writing it inside twelve bodies is what
     this exists to stop."""
+    if m.fills:
+        # The FIRST parameter is the value being filled. A method that
+        # fills takes its target first, which is what makes this
+        # derivable rather than another thing to name.
+        maker, arm = m.fills
+        if not m.params:
+            raise ValueError(f"{cls.name}.{m.name}: @fills needs a target")
+        target = m.params[0].name
+        # The TARGET's class holds the arm table, not this one:
+        # `list_append` is declared on the evaluator and fills a Value.
+        held = (known or {}).get(m.params[0].type.python.strip('"'))
+        if held is None or held.decl.tagged is None:
+            raise ValueError(
+                f"{cls.name}.{m.name}: @fills needs its target's class to "
+                f"carry @tagged, to check the arm being filled")
+        hold, ask, table = held.decl.tagged
+        if arm not in table:
+            raise ValueError(
+                f'{cls.name}.{m.name}: @fills(..., "{arm}") names no arm; '
+                f"@tagged offers {sorted(table)}")
+        return [
+            # The arm FIRST. A builder of the wrong kind passes the
+            # builder test and then reads the wrong union member,
+            # which is undefined rather than an error.
+            f"{INDENT * 4}if ({target}.{hold}->{ask} != {table[arm]})",
+            f'{INDENT * 5}throw std::runtime_error("value is not {arm}");',
+            f"{INDENT * 4}if (!{target}.is_builder())",
+            f"{INDENT * 5}throw std::invalid_argument(",
+            f'{INDENT * 6}"this value did not come from {maker}, and a "',
+            f'{INDENT * 6}"Nix value is immutable: filling it would "',
+            f'{INDENT * 6}"rewrite memory the evaluator produced");',
+        ]
     if not (m.guard or m.names):
         return []
     if cls.decl.tagged is None:
@@ -681,7 +714,7 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         # The tag check goes in FRONT of a declared body. A body says
         # what to do once the arm is known; @guard says the arm is
         # known, and the two are separate decisions.
-        return [head, *opening, *_guard_head(cls, m), *body,
+        return [head, *opening, *_guard_head(cls, m, known), *body,
                 f"{INDENT * 2}}}{_extras(cls, m, known)}{tail})"]
     derived = _derived(cls, m, known)
     if derived is not None:
