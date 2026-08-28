@@ -39,6 +39,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -321,7 +322,7 @@ public:
     // one: the count is of ROOTS, not of distinct values.
     Bridge(const Bridge & other)
         : core_(other.core_), root_(other.root_), by_name_(other.by_name_),
-          staged_(other.staged_)
+          staged_(other.staged_), staged_attrs_(other.staged_attrs_)
     {
         live_roots().fetch_add(1, std::memory_order_relaxed);
     }
@@ -339,7 +340,7 @@ public:
      */
     nix::Value * get() const
     {
-        if (!staged_.empty())
+        if (!staged_.empty() || !staged_attrs_.empty())
             materialise();
         return *root_;
     }
@@ -387,6 +388,35 @@ public:
         return !staged_.empty() || (*root_)->type<true>() == nix::nList;
     }
 
+    /** As `is_list`, for an attribute set. */
+    bool is_attrs() const
+    {
+        return !staged_attrs_.empty()
+               || (*root_)->type<true>() == nix::nAttrs;
+    }
+
+    /**
+     * Sets one attribute on a set that is still being built.
+     *
+     * An attribute set is immutable too, so the same rebuild-per-call
+     * applies and the same staging answers it. Keyed by NAME rather
+     * than by Symbol: interning is the state's business and there is
+     * no reason to do it before the set is built.
+     *
+     * Setting a name twice replaces its value, which a map gives for
+     * free and matches an attribute set built by assignment.
+     */
+    void stage_attr(const std::string & name, nix::Value * item) const
+    {
+        gc_register_thread();
+        if (staged_attrs_.empty())
+            for (const auto & attr : *(*root_)->attrs())
+                staged_attrs_.insert_or_assign(
+                    std::string(state().symbols[attr.name]),
+                    nix::allocRootValue(attr.value));
+        staged_attrs_.insert_or_assign(name, nix::allocRootValue(item));
+    }
+
     const std::shared_ptr<EvalCore> & core() const { return core_; }
 
     /**
@@ -429,14 +459,29 @@ public:
 private:
     const nix::Attr & attr_at(std::int64_t index) const;
 
+    /**
+     * Folds staged elements into the value.
+     *
+     * The two stages are mutually exclusive by construction: a value
+     * is a list or an attribute set, and only `stage` and
+     * `stage_attr` fill them.
+     */
     void materialise() const
     {
         gc_register_thread();
-        auto builder = state().buildList(staged_.size());
-        for (std::size_t i = 0; i < staged_.size(); ++i)
-            builder[i] = *staged_[i];
-        (*root_)->mkList(builder);
-        staged_.clear();
+        if (!staged_.empty()) {
+            auto builder = state().buildList(staged_.size());
+            for (std::size_t i = 0; i < staged_.size(); ++i)
+                builder[i] = *staged_[i];
+            (*root_)->mkList(builder);
+            staged_.clear();
+            return;
+        }
+        auto builder = state().buildBindings(staged_attrs_.size());
+        for (const auto & [name, value] : staged_attrs_)
+            builder.insert(state().symbols.create(name), *value);
+        (*root_)->mkAttrs(builder);
+        staged_attrs_.clear();
     }
 
     std::shared_ptr<EvalCore> core_;
@@ -454,6 +499,8 @@ private:
     mutable std::vector<const nix::Attr *> by_name_;
     // Elements of a list still being built, each rooted. See `stage`.
     mutable std::vector<nix::RootValue> staged_;
+    // Attributes of a set still being built. See `stage_attr`.
+    mutable std::map<std::string, nix::RootValue> staged_attrs_;
 };
 
 // ---- Evaluator, out of line ---------------------------------------
@@ -562,17 +609,11 @@ inline void Evaluator::attrs_set(const Bridge & target,
                                  const Bridge & item)
 {
     gc_register_thread();
-    auto * v = target.get();
-    if (v->type() != nix::nAttrs)
+    if (!target.is_attrs())
         throw std::invalid_argument("value is not an attribute set");
-    auto sym = state().symbols.create(name);
-    const auto * old = v->attrs();
-    auto builder = state().buildBindings(old->size() + 1);
-    for (const auto & attr : *old)
-        if (attr.name != sym)
-            builder.insert(attr);
-    builder.insert(sym, item.get());
-    v->mkAttrs(builder);
+    // `item.get()`, so an item that is ITSELF staged is built before
+    // its pointer is taken.
+    target.stage_attr(name, item.get());
 }
 
 // ---- Bridge, out of line ------------------------------------------
