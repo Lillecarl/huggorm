@@ -14,11 +14,10 @@ import pytest
 
 import cythonix_bindings
 import cythonix_generated.async_store
-from cythonix import grpc_pb
 from cythonix_bindings import ContentAddressMethod as CA
 from cythonix_bindings import HashAlgorithm
 from cythonix_bindings.errors import BadStorePath
-from cythonix_generated import RPC_CLASSES, RPCMockDerivation
+from cythonix_generated import RPCValue
 from cythonix_generated._runtime import InternalError
 
 
@@ -71,11 +70,10 @@ async def test_a_value_argument_crosses_as_a_copy(
 
 
 async def test_a_proxy_stays_remote(client: Any) -> None:
-    rstore = await client.acquire("MockRemoteStore")
-    drv = await rstore.query_derivation(
-        await rstore.add_text_to_store("demo.drv", "DrvDemo"))
-    assert isinstance(drv, RPCMockDerivation)
-    assert drv._wire == "proxy"
+    state = await client.acquire("EvalState", "local")
+    v = await state.make_int(7)
+    assert isinstance(v, RPCValue)
+    assert v._wire == "proxy"
     # The generated class carries real methods, so a missing one is a
     # plain AttributeError from Python - not a manifest lookup that
     # produced a coroutine either way.
@@ -83,27 +81,29 @@ async def test_a_proxy_stays_remote(client: Any) -> None:
 
 
     assert not hasattr(remote, "RemoteObj")
-    assert type(drv).__module__ == "cythonix_generated.rpc"
-    assert "seen 1x" in await drv.describe(), "runs on the producer's thread"
-    await rstore.aclose()
+    assert type(v).__module__ == "cythonix_generated.rpc"
+    # It answers, which means the call landed on the state's own
+    # thread: a Value is affine and every method on it is routed to
+    # the runner the producing state owns.
+    assert await v.integer() == 7
+    await state.aclose()
 
 
 async def test_backfilled_any_params_call_over_the_wire(client: Any) -> None:
-    """set_env used to ship 'Any' params - alive locally, uncallable
-    over the wire. The env-count delta proves the call landed."""
-    rstore = await client.acquire("MockRemoteStore")
-    drv = await rstore.query_derivation(
-        await rstore.add_text_to_store("env.drv", "DrvEnv"))
+    """attrs_set used to ship 'Any' params - alive locally, uncallable
+    over the wire. The attribute count proves the call landed.
 
-    def env_count(d: str) -> int:
-        return int(d.split("(")[1].split()[0])
-
-    before = await drv.describe()
+    Its second parameter is a Value, so the call carries a HANDLE
+    argument as well as a string: the server resolves it back to the
+    object before the method runs."""
+    state = await client.acquire("EvalState", "local")
+    bag = await state.make_attrs()
+    before = await bag.size()
     with anyio.fail_after(10):
-        await drv.set_env("wire_added", "1")
-    after = await drv.describe()
-    assert env_count(after) == env_count(before) + 1, f"{before!r} -> {after!r}"
-    await rstore.aclose()
+        await state.attrs_set(bag, "wire_added", await state.make_int(1))
+    assert await bag.size() == before + 1
+    assert await (await bag.get("wire_added")).integer() == 1
+    await state.aclose()
 
 
 async def test_thunks_force_remotely(client: Any) -> None:
@@ -128,13 +128,12 @@ async def test_a_decoded_cause_survives_the_wire(client: Any) -> None:
     """A C++ failure crosses as a rebuilt InternalError whose cause
     survives: __cause__ must be the original ValueError, not None -
     the regression guard for `raise ... from None`."""
-    rstore = await client.acquire("MockRemoteStore")
-    bad_path = await rstore.add_text_to_store("plain.txt", "x")
+    state = await client.acquire("EvalState", "local")
     with pytest.raises(InternalError) as caught:
-        await rstore.query_derivation(bad_path)
+        await state.parse_expr("")
     assert type(caught.value.__cause__) is ValueError
     assert caught.value.to_dict()["cause_type"] == "ValueError"
-    await rstore.aclose()
+    await state.aclose()
 
 
 async def test_a_nix_error_keeps_its_type_and_its_colour(client: Any) -> None:
@@ -166,17 +165,16 @@ async def test_a_nix_error_keeps_its_type_and_its_colour(client: Any) -> None:
 async def test_an_undeclared_cause_still_approximates(client: Any) -> None:
     """Rebuilding is for what the manifest DECLARES, and nothing else.
 
-    The mock raises std::invalid_argument, which the binding surfaces
-    as a plain ValueError - not a nix error, so it carries no declared
-    parts and comes back the way it always did. Failing to rebuild an
-    error must never replace it with a different one."""
-    rstore = await client.acquire("MockRemoteStore")
-    bad_path = await rstore.add_text_to_store("plain.txt", "x")
+    The evaluator raises std::invalid_argument, which the binding
+    surfaces as a plain ValueError - not a nix error, so it carries no
+    declared parts and comes back the way it always did. Failing to
+    rebuild an error must never replace it with a different one."""
+    state = await client.acquire("EvalState", "local")
     with pytest.raises(InternalError) as caught:
-        await rstore.query_derivation(bad_path)
+        await state.parse_expr("")
     assert type(caught.value.__cause__) is ValueError
     assert caught.value.to_dict()["cause_type"] == "ValueError"
-    await rstore.aclose()
+    await state.aclose()
 
 
 async def test_a_released_handle_fails_typed(client: Any) -> None:
@@ -193,40 +191,14 @@ async def test_an_unknown_handle_fails_typed(client: Any) -> None:
     assert threw["cause_type"] == "KeyError", threw
 
 
-# -- the abstract base -----------------------------------------------------
+# -- what cannot be acquired -----------------------------------------------
 
-@pytest.mark.parametrize(("kind", "uri"),
-                         [("MockLocalStore", "local"),
-                          ("MockRemoteStore", "uds://daemon")])
-async def test_one_service_serves_either_implementation(
-        client: Any, kind: str, uri: str) -> None:
-    """A handle is a handle: the shared surface resolves through
-    StoreService whichever implementation is behind it, and the Python
-    client walks to the base exactly as Python would."""
-    h = await client.acquire(kind)
-    assert await h.get_uri() == uri
-    path = type(h)._rpc["get_uri"]["rpc"]["path"]
-    assert path == f"/{grpc_pb.PKG}.MockStoreService/get_uri", path
-    assert isinstance(h, RPC_CLASSES["MockStore"]), type(h).__name__
-    await client.release(h)
-
-
-async def test_an_unguaranteed_method_is_absent(client: Any) -> None:
-    """query_derivation is not guaranteed: the pool policy drops it
-    from MockLocalStore, so it lives on MockRemoteStore alone. It is simply not
-    on the class, so Python raises before any call is made."""
-    pool_store = await client.acquire("MockLocalStore")
-    with pytest.raises(AttributeError, match="query_derivation"):
-        _ = pool_store.query_derivation
-    assert hasattr(RPC_CLASSES["MockRemoteStore"], "query_derivation")
-    await client.release(pool_store)
-
-
-async def test_a_wire_value_refuses_remote_construction(client: Any) -> None:
-    """There is no handle to construct into. It is built locally and
-    passed as an argument."""
-    with pytest.raises(ValueError, match="MockDerivedPath"):
-        await client.acquire("MockDerivedPath")
+async def test_a_produced_class_refuses_remote_construction(
+        client: Any) -> None:
+    """A produced class has no constructor to construct with. It comes
+    back from the method that makes it, and nowhere else."""
+    with pytest.raises(ValueError, match="PathInfo"):
+        await client.acquire("PathInfo")
 
 
 # -- free functions --------------------------------------------------------
@@ -236,28 +208,18 @@ async def test_a_free_function_crosses(client: Any) -> None:
     assert await client.call_function("collect_garbage") is None
 
 
-async def test_a_free_function_takes_a_base_handle(client: Any) -> None:
-    """describe takes a MockStore. It had no RPC surface at all until MockStore
-    became a generated base with a wire identity."""
-    store = await client.acquire("MockLocalStore")
-    rstore = await client.acquire("MockRemoteStore")
-    assert await client.call_function("describe", store) == "store(local)"
-    assert await client.call_function("describe", rstore) == "store(uds://daemon)"
-    await store.aclose()
-    await rstore.aclose()
-
-
-async def test_an_untouched_affine_handle_resolves_as_an_argument(
-        client: Any) -> None:
-    """A handle is resolvable from the moment it exists. The server
-    resolves it to a wrapper whose affine target may not be built yet;
-    that used to refuse, so passing an untouched MockRemoteStore anywhere
-    failed. Every other handle here had been called already, which hid
-    it."""
-    untouched = await client.acquire("MockRemoteStore")
-    assert await client.call_function("describe", untouched) \
-        == "store(uds://daemon)"
-    await untouched.aclose()
+# Two properties lost their only exercise when the store mock went,
+# and both come back with the libexpr EvalState (tasks/060):
+#
+# - a FREE FUNCTION taking a bound handle. No real free function this
+#   repo binds takes one. nix::copyPaths is the obvious first;
+# - an UNTOUCHED AFFINE handle resolved as an argument. The server
+#   resolves a handle to a wrapper whose affine target may not be
+#   built yet, and that used to refuse. Every other handle here has
+#   been called already, which is exactly what hid it the first time.
+#
+# `EvalState(store)` restores both at once: it is a factory taking a
+# bound Store handle, and the state it makes is affine.
 
 
 async def test_a_proxy_argument_resolves_against_another_object(
