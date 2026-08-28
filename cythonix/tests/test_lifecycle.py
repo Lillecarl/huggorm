@@ -154,20 +154,30 @@ async def test_share_transfer_moves_ownership(ttl_server: Server) -> None:
 
 async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
     """A child pins the producer that made it, and dropping the child
-    frees both."""
+    frees both.
+
+    EvalState and Value are the pair this is about. A Value is GC
+    memory the state owns, so a state reaped while a value still
+    points into it is a use-after-free, not a lost handle. Every other
+    producer in this repo hands back a wire VALUE, which needs no
+    pinning at all - so this test is the only exercise the pinning,
+    the cascade and the adopt path get."""
     a = await remote.connect(HOST, ttl_server.port)
-    rstore = await a.acquire("MockRemoteStore")
-    drv = await rstore.query_derivation(
-        await rstore.add_text_to_store("life.drv", "DrvLife"))
-    assert "seen 1x" in await drv.describe()
+    state = await a.acquire("EvalState", "local")
+    hid_state = state.handle_id
+    v = await state.make_int(42)
+    assert await v.integer() == 42
 
-    await a.release(rstore)
-    assert "seen 2x" in await drv.describe(), "child keeps the producer alive"
+    await a.release(state)
+    assert await v.integer() == 42, "child keeps the producer alive"
 
-    hid_drv = drv.handle_id
-    await a.release(drv)
-    gone = await wrapper_error(a.proxy("MockDerivation", hid_drv).describe())
-    assert gone["cause_type"] == "KeyError", gone
+    hid_v = v.handle_id
+    await a.release(v)
+    for cls, hid in (("Value", hid_v), ("EvalState", hid_state)):
+        gone = await wrapper_error(a.proxy(cls, hid).is_gc_managed()
+                                   if cls == "Value"
+                                   else a.proxy(cls, hid).get_store_uri())
+        assert gone["cause_type"] == "KeyError", (cls, gone)
     a.stop_pinging()
 
 
