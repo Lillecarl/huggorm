@@ -9,6 +9,7 @@ either an in-process wrapper or one of these.
 """
 
 import asyncio
+import tempfile
 
 from cythonix import remote
 
@@ -16,62 +17,55 @@ from cythonix import remote
 async def main() -> None:
     client = await remote.connect()
 
-    local = await client.acquire("MockLocalStore")
-    remote_store = await client.acquire("MockRemoteStore")
+    root = tempfile.mkdtemp(prefix="cythonix-demo-")
+    store = await client.acquire("Store", root)
     state = await client.acquire("EvalState", "local")
 
     print("=== wire-value returns are real local objects ===")
-    p = await local.add_text_to_store("hello.txt", "world")
+    from cythonix_bindings import ContentAddressMethod as CA
+    from cythonix_bindings import HashAlgorithm
+    p = await store.add_to_store("hello.txt", b"world",
+                                 CA.NAR, HashAlgorithm.SHA256)
     print(f"{type(p).__module__}.{type(p).__name__}: {p.to_string()}")
-    print("valid:", await local.is_valid_path(p))
+    print("valid:", await store.is_valid_path(p))
 
     print("\n=== wire-value args cross as copies ===")
-    from cythonix_bindings import MockDerivedPath
-    drv_path = await local.add_text_to_store("mysite.drv", "DrvMine")
-    req = MockDerivedPath(drv_path, "out")
-    built = await local.build_derivation(req)
-    print(f"built: {built.to_string()} valid: {await local.is_valid_path(built)}")
+    # The StorePath above was rebuilt on this side from its parts.
+    # Passing it back encodes it as its parts again, and the far side
+    # rebuilds a real nix::StorePath before the call runs.
+    info = await store.query_path_info(p)
+    print(f"nar_size: {info.nar_size()} path: {info.path().to_string()}")
 
     print("\n=== proxies stay remote behind handles ===")
-    drv = await remote_store.query_derivation(
-        await remote_store.add_text_to_store("demo.drv", "DrvDemo"))
-    print("drv handle:", drv.handle_id[:12], "| wire:", drv._wire,
-          "| class:", type(drv).__name__)
-    print(await drv.describe())
-    await state.force(await state.parse_expr("42"))  # proxy arg over the wire
-    v = await state.eval_expr('"hello over grpc"')
-    print(f"eval: {await v.string_value()!r}")
-
-    print("\n=== the abstract base over the wire ===")
-    # Shared store methods are declared once, on StoreService, so a
-    # caller works a store without knowing which kind answered.
-    for h in (local, remote_store):
-        print(f"  {type(h).__name__:16} get_uri -> {await h.get_uri()}"
-              f"  (via {type(h)._rpc['get_uri']['rpc']['path']})")
-    print("  describe(store) over the wire:",
-          await client.call_function("describe", local))
+    v = await state.make_int(42)
+    print("value handle:", v.handle_id[:12], "| wire:", v._wire,
+          "| class:", type(v).__name__)
+    print("integer:", await v.integer())
+    await state.force(await state.parse_expr("7"))  # proxy arg over the wire
+    text = await state.eval_expr('"hello over grpc"')
+    print(f"eval: {await text.string_value()!r}")
 
     print("\n=== one function, either location, no branching ===")
     # Typed against the generated protocol. It never asks whether the
     # store answering is in this process or on the far side of the
     # socket - and a typechecker sees the whole surface either way.
-    from cythonix_generated import MockStoreLike
+    from cythonix_generated import StoreLike
 
-    async def report(store: MockStoreLike) -> str:
-        path = await store.add_text_to_store("shared.txt", "either location")
-        return f"{await store.get_uri()}: {path.to_string()}"
+    async def report(s: StoreLike) -> str:
+        path = await s.add_to_store("shared.txt", b"either location",
+                                    CA.NAR, HashAlgorithm.SHA256)
+        return f"{await s.get_uri()}: {path.to_string()}"
 
-    print(" remote:", await report(local))
+    print(" remote:", await report(store))
 
-    from cythonix_generated import AsyncMockLocalStore
-    in_process = AsyncMockLocalStore()
+    from cythonix_generated import AsyncStore
+    in_process = AsyncStore(tempfile.mkdtemp(prefix="cythonix-demo-"))
     print(" local: ", await report(in_process))
     await in_process.aclose()
 
     print("\n=== cleanup ===")
     # aclose() means the same thing on both sides: let the object go.
-    await local.aclose()
-    await remote_store.aclose()
+    await store.aclose()
     await state.aclose()
     print("released")
 

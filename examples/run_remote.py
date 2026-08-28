@@ -5,7 +5,17 @@ import logging
 
 logging.basicConfig(level=logging.ERROR)
 
-from cythonix import remote_demo, server
+# remote_demo sits beside this file rather than in the package, so
+# the path has to say so. It used to be `from cythonix import
+# remote_demo`, which stopped resolving when the demos moved out.
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+import remote_demo  # noqa: E402
+
+from cythonix import server  # noqa: E402
 
 
 async def main() -> None:
