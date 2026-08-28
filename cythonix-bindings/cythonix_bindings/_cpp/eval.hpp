@@ -278,6 +278,7 @@ public:
 
 private:
     Bridge wrap(nix::Value * v);
+    Bridge wrap_builder(nix::Value * v);
 
     std::shared_ptr<EvalCore> core_;
 };
@@ -287,8 +288,20 @@ private:
 class Bridge
 {
 public:
-    Bridge(std::shared_ptr<EvalCore> core, nix::Value * value)
-        : core_(std::move(core))
+    /**
+     * `built` marks a value THIS binding made empty, for a caller to
+     * fill. Only such a value accepts `stage`.
+     *
+     * A Nix value is immutable, and `mkList` on an evaluated one
+     * rewrites memory the state may hold in a cache and other
+     * Bridges may point at - verified: `eval_expr("[1 2 3]")` then an
+     * append answered 4. The builders are the one place where
+     * rewriting is safe, because nothing else has seen the value yet.
+     */
+    Bridge(std::shared_ptr<EvalCore> core, nix::Value * value,
+           bool built = false)
+        : built_(built)
+        , core_(std::move(core))
         , root_(nix::allocRootValue(value))
     {
         live_roots().fetch_add(1, std::memory_order_relaxed);
@@ -321,8 +334,9 @@ public:
     // A copy is a second root over the same value, and it counts as
     // one: the count is of ROOTS, not of distinct values.
     Bridge(const Bridge & other)
-        : core_(other.core_), root_(other.root_), by_name_(other.by_name_),
-          staged_(other.staged_), staged_attrs_(other.staged_attrs_)
+        : built_(other.built_), core_(other.core_), root_(other.root_),
+          by_name_(other.by_name_), staged_(other.staged_),
+          staged_attrs_(other.staged_attrs_)
     {
         live_roots().fetch_add(1, std::memory_order_relaxed);
     }
@@ -387,6 +401,9 @@ public:
     {
         return !staged_.empty() || (*root_)->type<true>() == nix::nList;
     }
+
+    /** Whether a caller may still fill this value. See the ctor. */
+    bool is_builder() const { return built_; }
 
     /** As `is_list`, for an attribute set. */
     bool is_attrs() const
@@ -459,6 +476,9 @@ public:
 private:
     const nix::Attr & attr_at(std::int64_t index) const;
 
+    // Whether this binding made the value for a caller to fill.
+    bool built_ = false;
+
     /**
      * Folds staged elements into the value.
      *
@@ -508,6 +528,12 @@ private:
 inline Bridge Evaluator::wrap(nix::Value * v)
 {
     return Bridge(core_, v);
+}
+
+/** As `wrap`, for a value a caller may still fill. */
+inline Bridge Evaluator::wrap_builder(nix::Value * v)
+{
+    return Bridge(core_, v, true);
 }
 
 inline Bridge Evaluator::parse_expr(const std::string & expr)
@@ -565,7 +591,7 @@ inline Bridge Evaluator::make_list()
     gc_register_thread();
     auto * v = state().allocValue();
     v->mkList(state().buildList(0));
-    return wrap(v);
+    return wrap_builder(v);
 }
 
 inline Bridge Evaluator::make_attrs()
@@ -574,7 +600,7 @@ inline Bridge Evaluator::make_attrs()
     auto * v = state().allocValue();
     auto builder = state().buildBindings(0);
     v->mkAttrs(builder);
-    return wrap(v);
+    return wrap_builder(v);
 }
 
 inline void Evaluator::force(const Bridge & v)
@@ -598,6 +624,11 @@ inline void Evaluator::list_append(const Bridge & target, const Bridge & item)
     gc_register_thread();
     if (!target.is_list())
         throw std::invalid_argument("value is not a list");
+    if (!target.is_builder())
+        throw std::invalid_argument(
+            "this list did not come from make_list, and a Nix value is "
+            "immutable: appending would rewrite memory the evaluator "
+            "produced");
     // `item.get()`, not `*item.root_`: an item that is ITSELF a
     // staged list must be built before its pointer is taken.
     target.stage(item.get());
@@ -611,6 +642,11 @@ inline void Evaluator::attrs_set(const Bridge & target,
     gc_register_thread();
     if (!target.is_attrs())
         throw std::invalid_argument("value is not an attribute set");
+    if (!target.is_builder())
+        throw std::invalid_argument(
+            "this attribute set did not come from make_attrs, and a Nix "
+            "value is immutable: setting would rewrite memory the "
+            "evaluator produced");
     // `item.get()`, so an item that is ITSELF staged is built before
     // its pointer is taken.
     target.stage_attr(name, item.get());
