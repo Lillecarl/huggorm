@@ -1,8 +1,8 @@
-# The hpp files should be smaller
+# The hpp files hold mappings, and must not
 
-**OPEN.** `_cpp/eval.hpp` is 417 lines of hand-written C++ and about
-160 of them are pattern a declaration could carry. This names which,
-and what vocabulary each one needs.
+**OPEN.** `_cpp/eval.hpp` is 417 lines of hand-written C++. About 160
+of them are MAPPINGS, which are not allowed to exist. This names
+which, and what vocabulary each one needs.
 
 ## Where it comes from
 
@@ -15,21 +15,38 @@ mock and it is 417 now, because the libexpr swap wrote a whole
 `Evaluator` and `Bridge` surface by hand rather than growing the
 declaration to reach it.
 
-The census already prints the number on every build, which is what
-made the drift visible instead of comfortable. That is the mechanism
-working; this task is the response to what it said.
+Carl set the rule when he saw the number, and it is sharper than a
+budget: *"We shouldn't have any C++ mapping code at all, if we need
+helpers to make the codegen simpler we can have those but nothing
+hand-written C++ for the actual mappings."*
+
+So this is not a reduction target. A mapping in `_cpp` is in the
+wrong file, and the count is how many are left rather than how many
+are affordable.
+
+**The test is who calls it.** Generated code calls a HELPER. A
+MAPPING *is* the generated code.
+
+I proposed a line-count baseline that would fail the build on growth,
+and Carl rejected it for the right reason: a budget legitimises the
+thing that should not exist. Recorded because it is the tempting
+wrong answer.
 
 ## The measurement
 
     417  code lines in _cpp/eval.hpp   (784 with prose)
+
+    MAPPINGS - must go
      85    guarded accessors
      57    parse_expr / eval_expr / make_int / make_string / make_bool
      18    the type_name switch
+     ~8    list_append / attrs_set bodies
     ---
-    160    about 38%, and derivable
+    ~168
 
-The other 257 are the parts a declaration has no business stating -
-see "What is irreducible" below.
+    HELPERS - stay, and the generated code calls them
+    ~249    the GC root, thread registration, EvalCore, the core's
+            deleter, the staging machinery, the is_* predicates
 
 ## 1. Guarded accessors - 85 lines, and the biggest win
 
@@ -100,9 +117,10 @@ refuted. The outbound half should come back under its own name, and
 `@produced(by=...)` is where it belongs - the class already says who
 makes one; it could say what wraps it.
 
-## What is irreducible, and should stay
+## What is a HELPER, and stays
 
-About 257 lines, and each has a reason a declaration cannot state:
+About 249 lines. Each is infrastructure the generated code calls,
+rather than a statement of what a Python name means:
 
 - **The GC root.** `nix::allocRootValue` and the `RootValue` member.
   A declaration language would need a concept of "reachable from a
@@ -117,11 +135,16 @@ About 257 lines, and each has a reason a declaration cannot state:
   would be restating C++ initialisation rules.
 - **The core's deleter.** Registering before teardown, once, so no
   holder has to remember.
-- **The staging builders.** `stage`, `stage_attr`, `materialise`, and
-  the `built_` flag that refuses to rewrite an evaluated value. This
-  one is arguable: "a collection built one element at a time, sealed
-  on first read" is a PATTERN, and if a second binding ever wants it
-  the declaration should carry it. One user is not a pattern yet.
+- **The staging builders.** `stage`, `stage_attr`, `materialise`, the
+  `is_*` predicates, and the `built_` flag that refuses to rewrite an
+  evaluated value.
+
+  These are helpers and they split cleanly from the mappings that use
+  them. `Evaluator::list_append` is a MAPPING - it says what the
+  Python name `list_append` does - and its body is two lines: check
+  `is_builder`, call `stage`. That body should be emitted, and the
+  two functions it calls should stay here. The same split applies to
+  `attrs_set`.
 
 ## Order
 
