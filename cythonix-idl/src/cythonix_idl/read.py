@@ -53,6 +53,7 @@ binding that compiles and is wrong.
 """
 
 import ast
+import difflib
 import pathlib
 import re
 from dataclasses import dataclass, field
@@ -523,8 +524,57 @@ def _value(node: ast.expr, vocab: dict[str, str]) -> Any:
 
 # -- decorators -----------------------------------------------------------
 
+def _check_markers(decorators: list[ast.expr], kind: str) -> None:
+    """Check every marker against `declare.MARKERS`.
+
+    One loop over a table, rather than a hand-written `if` per rule.
+    The 28 raises this file carries are not all replaced - most are
+    about SHAPE, like "a body is a docstring then at most one Cxx" -
+    but the ones about WHERE a marker is legal collapse into here.
+
+    Unknown markers get a suggestion. `@read` for `@reads` is the
+    mistake this pays for the first time somebody makes it."""
+    seen: dict[str, ast.expr] = {}
+    for node in decorators:
+        if isinstance(node, ast.Call):
+            name = node.func.id if isinstance(node.func, ast.Name) else ""
+            called = True
+        elif isinstance(node, ast.Name):
+            name, called = node.id, False
+        else:
+            continue
+        if not name or name in BUILTIN_DECORATORS:
+            continue
+        rule = declare.MARKERS.get(name)
+        if rule is None:
+            near = difflib.get_close_matches(name, declare.MARKERS, 1, 0.6)
+            hint = f" - did you mean @{near[0]}?" if near else ""
+            raise DeclarationError(node, f"unknown marker @{name}{hint}")
+        if kind not in rule.target:
+            legal = ", ".join(sorted(rule.target))
+            raise DeclarationError(
+                node, f"@{name} is not legal on a {kind} (legal on {legal})")
+        if rule.arity == "flag" and called:
+            raise DeclarationError(node, f"@{name} takes no arguments")
+        if rule.arity != "flag" and not called:
+            raise DeclarationError(node, f"@{name} needs arguments")
+        if rule.arity != "repeatable" and name in seen:
+            raise DeclarationError(node, f"@{name} may appear once")
+        seen[name] = node
+    for name, node in seen.items():
+        rule = declare.MARKERS[name]
+        for other in sorted(rule.excludes & seen.keys()):
+            # Once per pair, not twice: the same conflict read from
+            # both ends is one mistake.
+            if name < other:
+                raise DeclarationError(
+                    node, f"@{name} and @{other} cannot both be set")
+        for other in sorted(rule.requires - seen.keys()):
+            raise DeclarationError(node, f"@{name} needs @{other}")
+
+
 def _apply(decorators: list[ast.expr], vocab: dict[str, str],
-           target: Any) -> Any:
+           target: Any, kind: str) -> Any:
     """Run the file's decorators against a stand-in.
 
     The declaration's own class is never built. What gets decorated is
@@ -534,7 +584,12 @@ def _apply(decorators: list[ast.expr], vocab: dict[str, str],
 
     Bottom-up, like Python: `@header` above `@binding` means binding
     applies first, and a decorator that overwrote a field would win in
-    the same order a reader expects."""
+    the same order a reader expects.
+
+    `kind` is what is being decorated, so the table can say where a
+    marker is legal. Every marker on every target goes through here,
+    which is why the check belongs here and not at each call site."""
+    _check_markers(decorators, kind)
     for node in reversed(decorators):
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
@@ -614,10 +669,13 @@ def _body(node: ast.FunctionDef) -> str:
 
 
 def _method(node: ast.FunctionDef, vocab: dict[str, str],
-            bound: bool = True) -> Method:
+            bound: bool = True, bound_kind: bool = True) -> Method:
     """One declared function.
 
-    `bound=False` for a module-level one, which has no `self` to skip.
+    `bound=False` for a function with no `self` to skip. That is not
+    the same question as WHERE it lives: `_from_parts` is a class
+    member with no self, so `bound_kind` carries the marker-table
+    kind separately.
     Reading a free function as a method silently drops its first
     parameter, which is how `open_store(uri)` first emitted without
     the `"uri"_a` that makes the parameter usable by keyword."""
@@ -649,7 +707,8 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
     # A method decorator writes an attribute on a function, so the
     # same trick works: decorate a stand-in and read what was written.
     def probe() -> None: ...
-    marked = _apply(node.decorator_list, vocab, probe)
+    marked = _apply(node.decorator_list, vocab, probe,
+                    "method" if bound_kind else "free")
     if getattr(marked, "_reads", "") and params:
         # A data member is READ, not called, so there is nowhere for
         # an argument to go. The emitter drops them silently, which
@@ -716,7 +775,8 @@ def targets_name(item: ast.Assign) -> str:
 
 def _class(node: ast.ClassDef, vocab: dict[str, str],
            where: str = "", live: set[int] | None = None) -> Class:
-    holder = _apply(node.decorator_list, vocab, type(node.name, (), {}))
+    holder = _apply(node.decorator_list, vocab, type(node.name, (), {}),
+                    "class")
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
     # The base, said the way Python says it.
@@ -986,7 +1046,8 @@ def read(path: str) -> Module:
     # them, `m.def("open_store", &open_store_uri, "uri"_a)` and its
     # kind. Only decorated ones: an undecorated def at module level is
     # a helper the declaration wrote for itself.
-    functions = tuple(_method(n, vocab, bound=False) for n in body
+    functions = tuple(_method(n, vocab, bound=False, bound_kind=False)
+                      for n in body
                       if isinstance(n, ast.FunctionDef) and n.decorator_list)
     unions = _unions(body, stem)
     uses = _uses(tree, pathlib.Path(path).parent)

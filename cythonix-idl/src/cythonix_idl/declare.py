@@ -174,6 +174,80 @@ class Decl:
     via: str = ""
 
 
+# -- what each marker means, as DATA --------------------------------
+#
+# Where a marker is legal, how many times, and what it conflicts with.
+# One table, read by `read.py` so a rule is CHECKED rather than
+# restated in a docstring and enforced nowhere (tasks/061).
+#
+# Before this, `read.py` carried 28 hand-written raises and the rules
+# below were prose. The ones that were never written stayed unchecked:
+# `@needs` on a class worked by accident before it worked on purpose,
+# and `@local` on a class that is not a wire value is still harmless
+# and silent.
+
+
+@dataclass(frozen=True)
+class Marker:
+    """One decorator's rules.
+
+    `target` is which kinds of thing it may decorate: a class, a
+    method of one, or a module-level function.
+
+    `arity` is "flag" for a bare `@name`, "once" for a `@name(...)`
+    that may appear a single time, and "repeatable" for one that may
+    stack.
+
+    `excludes` names markers it cannot appear beside. `requires` names
+    ones it needs - empty today, and kept because `@pure` needed
+    `@virtual` before both were deleted, so the shape recurs.
+    """
+
+    target: frozenset[str]
+    arity: str
+    excludes: frozenset[str] = frozenset()
+    requires: frozenset[str] = frozenset()
+
+
+def _t(*targets: str) -> frozenset[str]:
+    return frozenset(targets)
+
+
+# The table is SELF-ENFORCING. `_check_markers` rejects any decorator
+# name without a row here, so a marker added below and not added here
+# cannot be used by a declaration at all - it fails on first use, with
+# a "did you mean" suggestion, rather than working silently under no
+# rules.
+MARKERS: dict[str, Marker] = {
+    # On a class.
+    "abstract": Marker(_t("class"), "flag"),
+    "binding": Marker(_t("class"), "once"),
+    "custom": Marker(_t("class"), "once"),
+    "header": Marker(_t("class"), "once"),
+    "produced": Marker(_t("class"), "once"),
+    "tree": Marker(_t("class"), "once"),
+    "wire_value": Marker(_t("class"), "once"),
+    "words": Marker(_t("class"), "once"),
+    # On a method, or on a module-level function.
+    "binds": Marker(_t("method", "free"), "once"),
+    "blocks": Marker(_t("method", "free"), "flag",
+                     # Documented inverses: one says a call can wait,
+                     # the other says it cannot.
+                     excludes=frozenset({"instant"})),
+    "cxx_name": Marker(_t("method"), "once"),
+    "instant": Marker(_t("method"), "flag",
+                      excludes=frozenset({"blocks"})),
+    "local": Marker(_t("method"), "flag"),
+    "reads": Marker(_t("method"), "once"),
+    "threading": Marker(_t("method", "free"), "once"),
+    # On anything that names C++ it needs compiled beside it.
+    "needs": Marker(_t("class", "method", "free"), "repeatable"),
+    # On a module-level function only.
+    "startup": Marker(_t("free"), "flag"),
+    "translator": Marker(_t("free"), "flag"),
+}
+
+
 def abstract(cls: type) -> type:
     """Python may not construct one of these.
 
