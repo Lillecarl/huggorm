@@ -236,6 +236,28 @@ def error_chain() -> list[str]:
     return pyerrors.chain(tree, "cythonix::raise_as")
 
 
+def _code_lines(text: str) -> int:
+    """Lines of C++ that are not blank and not a comment.
+
+    Prose is not the thing being counted. `_cpp/eval.hpp` is 601 lines
+    and 304 of them explain WHY, which is this repo's standard rather
+    than its debt - counting them made the number look three times
+    worse than it is and, more importantly, made it look unfixable."""
+    n, inblock = 0, False
+    for line in text.splitlines():
+        t = line.strip()
+        if not t:
+            continue
+        if t.startswith("/*"):
+            inblock = True
+        if inblock or t.startswith(("//", "*")):
+            if "*/" in t:
+                inblock = False
+            continue
+        n += 1
+    return n
+
+
 def emit_module(decl: str, dotted: str, out: str) -> int:
     """One declaration file, as the one C++ translation unit it owns.
 
@@ -288,10 +310,18 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     # `cythonix_bindings`, and its own installed location is
     # somewhere else entirely.
     helper = pathlib.Path(out).parent / "_cpp" / f"{mod.name}.hpp"
-    if helper.exists():
-        real = [ln for ln in helper.read_text().splitlines()
-                if ln.strip() and not ln.strip().startswith(("//", "///"))]
-        print(f"  _cpp/{helper.name}: {len(real)} lines this repo wrote")
+    hand = _code_lines(helper.read_text()) if helper.exists() else 0
+    # BOTH numbers, and the second is why. A body moved out of _cpp
+    # and into a `Cxx(...)` in the declaration is better - the reader
+    # of the declaration sees the decision - but it is still C++ a
+    # person wrote, and counting only the first would let the second
+    # absorb it silently.
+    bodies = sum(_code_lines(m.cxx_body) for c in mod.classes
+                 for m in c.methods) + sum(
+                     _code_lines(f.cxx_body) for f in mod.functions)
+    if hand or bodies:
+        print(f"  hand-written C++: {hand} in _cpp/{helper.name}, "
+              f"{bodies} in Cxx bodies")
     return 0
 
 
