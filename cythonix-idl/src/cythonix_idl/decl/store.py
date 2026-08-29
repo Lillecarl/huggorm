@@ -63,7 +63,6 @@ class StoreLocation:
         Empty when the path given WAS the store path. That is a real
         answer rather than a gap - there is nothing below it."""
 
-
 @produced(by="Store.query_missing")
 @header("nix/store/store-api.hh")
 @binding(
@@ -86,23 +85,23 @@ class MissingPaths:
     way a caller could act on without asking again.
     """
 
+    @reads("willBuild")
     def will_build(self) -> "list[StorePath]":
         """The derivations that would be BUILT here.
 
         Sorted, because Nix keeps them in a set and the order is that
         set's."""
-        Cxx("return as_list(self.willBuild);")
 
+    @reads("willSubstitute")
     def will_substitute(self) -> "list[StorePath]":
         """The outputs that would be FETCHED from a substituter."""
-        Cxx("return as_list(self.willSubstitute);")
 
+    @reads("unknown")
     def unknown(self) -> "list[StorePath]":
         """The paths this store cannot account for at all.
 
         Neither buildable nor substitutable from here - usually a
         derivation this store does not have."""
-        Cxx("return as_list(self.unknown);")
 
     @reads("downloadSize")
     def download_size(self) -> U64:
@@ -130,7 +129,6 @@ return nix::MissingPaths{
     nar_size,
 };
         """)
-
 
 @produced(by="open_store")
 @header("nix/store/store-api.hh")
@@ -306,6 +304,7 @@ return self.addToStore(
     hash_algo,
     as_set<nix::StorePathSet>(references));
         """)
+    @cxx_name("queryAllValidPaths")
     def query_all_valid_paths(self) -> "list[StorePath]":
         """Every path this store holds.
 
@@ -315,7 +314,8 @@ return self.addToStore(
         no such list to give.
 
         Sorted, because libstore answers with a set."""
-        Cxx("return as_list(self.queryAllValidPaths());")
+
+    @cxx_name("queryValidDerivers")
     def query_valid_derivers(
         self,
         path: "StorePath",
@@ -331,7 +331,7 @@ return self.addToStore(
         Empty is a normal answer. nix::Store's own implementation
         returns an empty set rather than raising, so a store that does
         not track this says nothing rather than failing."""
-        Cxx("return as_list(self.queryValidDerivers(path));")
+
     def query_valid_paths(
         self,
         paths: "list[StorePath]",
@@ -673,7 +673,6 @@ return cythonix::as_arms(nix::DerivedPath::parse(self.config, target));
         different question from whether the name is well formed, and
         the reason this lives on the store rather than on StorePath."""
 
-
 # A FREE binding: it belongs to no class, because it is what makes a
 # class. `nix::openStore` picks an implementation from a URI, so
 # there is no constructor to declare and `@produced(by="open_store")`
@@ -699,14 +698,12 @@ def open_store(uri: Str = "auto") -> "Store":
     store may create its database.
     """
 
-
 # --- what the module does before a caller exists -------------------
 
 # Neither of these is surface. They are declared because this is
 # where a module's C++ facts live, and a module that does not bind
 # libstore needs neither - which is what the emitter used to assume
 # and get wrong.
-
 
 @needs("cythonix_bindings/_cpp/libstore.hpp")
 @binds("cythonix::init_libstore")
@@ -721,7 +718,6 @@ def _init_libstore() -> None:
     the module - including the imports, which run another module's
     initialisation.
     """
-
 
 @needs("cythonix_bindings/_cpp/errors.hpp")
 @binds("cythonix::translate_nix_error")

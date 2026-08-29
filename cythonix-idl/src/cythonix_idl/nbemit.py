@@ -548,8 +548,12 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # A guarded accessor reaches through the union pair rather than
     # through `via`, so the two are read separately and `call` below
     # is rebuilt after the guard picks its reach.
+    # A `list[T]` return needs a body too: the conversion below is
+    # what makes a C++ set answer the list the declaration promised,
+    # and a pointer binding has nowhere to put it.
+    wants_list = m.ret is not None and m.ret.python.strip('"').startswith("list[")
     if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
-            or m.produces or any(h for _, h in args)):
+            or m.produces or wants_list or any(h for _, h in args)):
         return None
     obj = _self(cls)
     reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
@@ -589,6 +593,11 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
         # a return past the switch.
         lines.append(f'{INDENT * 4}return "unknown";')
         return lines
+    # A declared `list[T]` PARAMETER over a C++ set. libstore takes
+    # StorePathSet in a dozen places and the wire carries a list, so
+    # the conversion is a fact about the two type systems rather than
+    # a decision - and `as_set` is emitted beside this, not written by
+    # hand.
     passed = ", ".join(f"{name}.{h.decl.via}" if h else name
                        for name, h in args)
     # A member is reached, not called. The declaration says which by
@@ -600,6 +609,13 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
         return [*head, f"{INDENT * 4}{call};"]
     if ret_handle is not None:
         return [*head, f"{INDENT * 4}return {_held(ret_handle)}({call});"]
+    # A declared `list[T]` RETURN over a C++ collection that is not
+    # a vector. libstore answers with a set almost everywhere, and the
+    # declaration already said `list` - so nothing needs to say it
+    # twice. `as_list` is a template over any range, so wrapping is
+    # right whether the call answered a set or a vector.
+    if m.ret is not None and m.ret.python.strip('"').startswith("list["):
+        return [*head, f"{INDENT * 4}return as_list({call});"]
     # A width the DECLARATION spells. `size()` answers a size_t and
     # the declaration says I64, so the cast is what makes the emitted
     # C++ say what the declaration says rather than what this
