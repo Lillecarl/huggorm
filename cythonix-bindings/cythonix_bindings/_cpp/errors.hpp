@@ -73,50 +73,5 @@ inline void raise_as(const char * name, const std::exception & e)
     Py_DECREF(cls);
 }
 
-inline void translate_nix_error()
-{
-    try {
-        throw;
-    } catch (const nix::BadStorePathName & e) {
-        raise_as("BadStorePathName", e);
-    } catch (const nix::BadStorePath & e) {
-        raise_as("BadStorePath", e);
-    } catch (const nix::UsageError & e) {
-        raise_as("UsageError", e);
-    } catch (const nix::SystemError & e) {
-        // The wider class, so nix::SysError and nix::WinError land
-        // here too rather than falling through to NixError.
-        raise_as("SysError", e);
-    } catch (const nix::InvalidPath & e) {
-        // The store does not hold that path. A fact about the store,
-        // like Unsupported, rather than a malformed argument.
-        raise_as("InvalidPath", e);
-    } catch (const nix::Unsupported & e) {
-        // A statement about the store, not about the call. Straight
-        // off nix::Error, so it sits beside SystemError rather than
-        // under it.
-        raise_as("Unsupported", e);
-    } catch (const nix::Error & e) {
-        raise_as("NixError", e);
-    }
-    // Nothing follows, and the silence is the point.
-    //
-    // Anything else is not Nix's, and this must not claim it.
-    //
-    // A nanobind translator is registered ONCE for the whole process,
-    // not per call, so this one is asked about every C++ exception any
-    // module raises - including the mock's std::invalid_argument.
-    // Rethrowing is how a translator says "not mine": nanobind then
-    // tries the next one, and the last is its own, which maps
-    // invalid_argument to ValueError and bad_alloc to MemoryError.
-    //
-    // Swallowing them here made every one of those a RuntimeError.
-    // A per-method hook could get away with that; a process-wide one
-    // cannot, because it sees every module's exceptions.
-    //
-    // An unmatched exception propagates out of `try { throw; }` on
-    // its own, so there is no `throw;` to write - and writing one
-    // after the chain would rethrow the exceptions this DID handle.
-}
 
 }  // namespace cythonix

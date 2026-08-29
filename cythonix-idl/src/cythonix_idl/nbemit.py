@@ -1776,7 +1776,8 @@ def imports(mod: Module) -> list[str]:
 
 
 def extension(mod: Module, dotted: str,
-              known: dict[str, Class] | None = None) -> str:
+              known: dict[str, Class] | None = None,
+              chain: list[str] | None = None) -> str:
     """One whole extension module: includes, bindings, entry point.
 
     `module` stops at the `bind_<name>` functions because that is the
@@ -1799,7 +1800,7 @@ def extension(mod: Module, dotted: str,
     reached = [f'{INDENT}nb::module_::import_("'
                f'{f"{package}." if package else ""}{stem}");'
                for stem in imports(mod)]
-    translators = [translator(fn) for fn in mod.translators]
+    translators = [translator(fn, chain) for fn in mod.translators]
     return "\n".join([
         module(classes, mod.functions, known),
         *translators,
@@ -1828,7 +1829,7 @@ def extension(mod: Module, dotted: str,
     ])
 
 
-def translator(fn: Method) -> str:
+def translator(fn: Method, chain: list[str] | None = None) -> str:
     """The module's exception translator, registered once.
 
     ONCE for the module, and it runs for any binding in it. The
@@ -1842,7 +1843,15 @@ def translator(fn: Method) -> str:
     Which C++ - or whether there is any - is the declaration's to
     say. A library that throws plain std::exception needs none:
     nanobind already maps that to RuntimeError, which is what the
-    mock relies on."""
+    mock relies on.
+
+    `chain` is the catch chain, emitted from `decl/errors.py`. It
+    replaces a call into hand-written C++, and the ORDER is the part
+    that matters: C++ takes the first catch that matches, so a base
+    listed before its subclass swallows it. Python inheritance
+    already says which is which."""
+    body = (chr(10).join(chain) if chain
+            else f"{INDENT * 4}{fn.binds}();")
     return f"""
 static void register_{fn.name.lstrip("_")}() {{
     nb::register_exception_translator(
@@ -1852,7 +1861,7 @@ static void register_{fn.name.lstrip("_")}() {{
             }} catch (...) {{
                 // Sets the Python error from inside catch(...),
                 // which is where the exception is still live.
-                {fn.binds}();
+{body}
             }}
         }});
 }}

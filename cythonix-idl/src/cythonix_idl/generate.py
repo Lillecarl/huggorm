@@ -23,7 +23,7 @@ import ast
 import pathlib
 import sys
 
-from cythonix_idl import manifest, nbemit, pyenum
+from cythonix_idl import manifest, nbemit, pyenum, pyerrors
 from cythonix_idl.nbemit import bindable, extension
 from cythonix_idl.read import read
 
@@ -219,6 +219,23 @@ def declared_returned() -> list[str]:
     return sorted(out)
 
 
+# The exception hierarchy, declared once. It emits two things that
+# used to be written twice and had to agree: the Python module a
+# caller catches, and the translator's catch chain.
+ERRORS = "decl/errors.py"
+
+
+def error_chain() -> list[str]:
+    """The translator's catch chain, from the declaration.
+
+    `raise_as` stays hand-written: turning a std::exception into a
+    live Python exception is nanobind's protocol, not something a
+    declaration knows. What is derived is WHICH classes and in WHAT
+    ORDER, and the order is the part a person gets wrong."""
+    tree = ast.parse((HERE / ERRORS).read_text())
+    return pyerrors.chain(tree, "cythonix::raise_as")
+
+
 def emit_module(decl: str, dotted: str, out: str) -> int:
     """One declaration file, as the one C++ translation unit it owns.
 
@@ -236,7 +253,8 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     if not bound:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    pathlib.Path(out).write_text(extension(mod, dotted))
+    pathlib.Path(out).write_text(extension(mod, dotted,
+                                           chain=error_chain()))
     names = ", ".join(c.name for c in bound)
     print(f"{decl} -> {out} (module {dotted}): {names}")
     # How much of each class the declaration derived, and how much a
@@ -283,6 +301,11 @@ def main(out_dir: str) -> int:
         mod = read(str(HERE / name))
         target = out / f"{mod.name}.cpp"
         emit_module(name, f"{PACKAGE}.{mod.name}", str(target))
+    src = HERE / ERRORS
+    tree = ast.parse(src.read_text())
+    doc = ast.get_docstring(ast.parse(src.read_text()), clean=False) or ""
+    (out / "errors.py").write_text(pyerrors.module(None, tree, doc) + "\n")
+    print(f"{ERRORS} -> {out / 'errors.py'}")
     for name in VOCABULARIES:
         source = HERE / name
         mod = read(str(source))
