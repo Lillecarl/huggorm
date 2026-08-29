@@ -332,6 +332,7 @@ return self.addToStore(
         returns an empty set rather than raising, so a store that does
         not track this says nothing rather than failing."""
 
+    @cxx_name("queryValidPaths")
     def query_valid_paths(
         self,
         paths: "list[StorePath]",
@@ -349,10 +350,6 @@ return self.addToStore(
 
         Sorted, and shorter than what went in when the store is
         missing something."""
-        Cxx("""
-return as_list(
-self.queryValidPaths(as_set<nix::StorePathSet>(paths)));
-        """)
     # The first declared method with DEFAULTS. They are libstore's
     # own, not a judgement made here: a caller who omits all three
     # gets what `nix-store -qR` does.

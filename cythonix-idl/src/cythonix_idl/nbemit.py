@@ -509,6 +509,20 @@ def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
     return other.decl.parsed_by
 
 
+def _collection(t: Type | None, known: dict[str, Class] | None) -> str:
+    """The C++ collection type for a declared `list[T]`, if T names one.
+
+    Empty for everything else, which is every list whose element type
+    is a primitive or whose class is happy with a vector."""
+    if t is None or known is None:
+        return ""
+    spelled = t.python.strip('"')
+    if not (spelled.startswith("list[") and spelled.endswith("]")):
+        return ""
+    element = known.get(spelled[len("list["):-1].strip())
+    return element.decl.collection if element else ""
+
+
 def _handle(t: Type | None, known: dict[str, Class] | None) -> Class | None:
     """The declared class behind this type, when it binds a HANDLE.
 
@@ -598,8 +612,15 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # the conversion is a fact about the two type systems rather than
     # a decision - and `as_set` is emitted beside this, not written by
     # hand.
-    passed = ", ".join(f"{name}.{h.decl.via}" if h else name
-                       for name, h in args)
+    # A declared `list[T]` PARAMETER, where T's class says libstore
+    # holds a collection of them some other way. The wire carries a
+    # list either way; this is the two type systems disagreeing, not a
+    # decision, so `as_set` is written here rather than at each site.
+    passed = ", ".join(
+        f"as_set<{_collection(pr.type, known)}>({pr.name})"
+        if _collection(pr.type, known) else
+        (f"{pr.name}.{h.decl.via}" if h else pr.name)
+        for pr, (_, h) in zip(m.params, args, strict=True))
     # A member is reached, not called. The declaration says which by
     # writing @reads, and an accessor that reads one takes no
     # parameters - so there is no argument list to spell either.

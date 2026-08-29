@@ -172,6 +172,14 @@ class Decl:
     # unwraps out of it - which is every mechanical line such a
     # binding used to carry verbatim.
     via: str = ""
+    # The C++ type libstore uses for a COLLECTION of these.
+    #
+    # `list[StorePath]` crosses the wire as a list and reaches
+    # libstore as a `nix::StorePathSet`, which is a fact about the
+    # element type rather than about any one method - so it is stated
+    # here once instead of at a dozen call sites. Empty means a plain
+    # vector, which is what a caster already gives.
+    collection: str = ""
     # This class is a handle over a TAGGED UNION. See `@tagged`.
     # Not `arms` above: that is a SUM TYPE's alternatives, which is
     # a Python-level union. This is one C++ object with a tag.
@@ -381,7 +389,8 @@ def words(parsed_by: str = "") -> Callable[[type], type]:
 
 
 def binding(cxx: str = "", threading: str = "pool", holder: str = "",
-            blocking: bool = True, via: str = "") -> Callable[[type], type]:
+            blocking: bool = True, via: str = "",
+            collection: str = "") -> Callable[[type], type]:
     """The C++ class this binds, and how it may be called.
 
     `blocking=False` means no method here can wait: every one is a
@@ -406,7 +415,7 @@ def binding(cxx: str = "", threading: str = "pool", holder: str = "",
     def apply(cls: type) -> type:
         d = _decl(cls)
         d.cxx, d.threading, d.blocking = cxx, threading, blocking
-        d.holder, d.via = holder, via
+        d.holder, d.via, d.collection = holder, via, collection
         return cls
     return apply
 

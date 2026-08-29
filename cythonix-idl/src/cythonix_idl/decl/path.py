@@ -35,6 +35,11 @@ from cythonix_idl.declare import (
     # nothing: the binding reaches it through a pointer that starts
     # NULL and a factory assigns, never by default-constructing.
     cxx="nix::StorePath",
+    # libstore holds a set of these, not a vector - queryValidPaths,
+    # computeFSClosure and addToStore all take StorePathSet. The wire
+    # carries a list, so every `list[StorePath]` parameter converts,
+    # and saying it here is what stops a dozen call sites saying it.
+    collection="nix::StorePathSet",
     # pool: nothing here blocks or touches shared state.
     threading="pool",
     # Every method is a substring of a string already in memory, so
