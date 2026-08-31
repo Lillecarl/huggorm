@@ -31,6 +31,7 @@ from huggorm_dsl.declare import (
     binding,
     header,
     needs,
+    reads,
     wire_value,
 )
 
@@ -134,9 +135,9 @@ new (self) nix::SingleDerivedPathBuilt{
         """The derivation, which may itself be an output."""
         Cxx("return huggorm::as_arms(*self.drvPath);")
 
+    @reads("output")
     def output(self) -> Str:
         """Which output - `out`, `dev`, `man`."""
-        Cxx("return self.output;")
 
 
 SingleDerivedPath = StorePath | SingleDerivedPathBuilt
@@ -177,9 +178,9 @@ new (self) nix::DerivedPathBuilt{huggorm::held(drv_path), outputs};
         """The derivation, which may itself be an output."""
         Cxx("return huggorm::as_arms(*self.drvPath);")
 
+    @reads("outputs")
     def outputs(self) -> OutputsSpec:
         """Which of its outputs are wanted."""
-        Cxx("return self.outputs;")
 
 
 DerivedPath = StorePath | DerivedPathBuilt
