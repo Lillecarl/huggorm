@@ -25,7 +25,7 @@ is a fact about the boundary rather than about nix::StorePath.
 import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any, TypeVar, get_args, get_origin
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -41,6 +41,28 @@ class Cxx:
 
     spelling: str
     copy: str = "value"
+
+
+@dataclass(frozen=True)
+class Async:
+    """How a Python type is spelled on an ASYNC surface.
+
+    `Cxx` says how a word is spelled below the boundary. This says
+    how it is spelled above one: `pathlib.Path` blocks when it
+    touches the disk, and `anyio.Path` is the same value with
+    awaitable methods, so a caller already in an event loop can read
+    the file without stopping it.
+
+    A property of the WORD, beside its C++ spelling, because that is
+    what it is. It used to be `_async_twins = {"pathlib.Path":
+    "anyio.Path"}` in the bindings package, keyed by a type spelling
+    - which put a fact about `Path` in a file that never names it.
+
+    It never reaches the wire. A word with a twin has no protobuf
+    field either way, so this decides one annotation and one
+    constructor call in the async wrapper, and nothing else."""
+
+    spelling: str
 
 
 # The Nix this build links, as a tuple a declaration can compare.
@@ -62,6 +84,32 @@ class Cxx:
 # a reader, an editor, a typechecker - so it must be a real version
 # rather than a sentinel that makes every comparison false.
 NIX_VERSION: tuple[int, ...] = (2, 34)
+
+
+def twins() -> dict[str, str]:
+    """Every vocabulary word that is spelled differently when async.
+
+    {"pathlib.Path": "anyio.Path"}, built from the words below rather
+    than written out. The table used to be a literal in the bindings
+    package, which meant the sync spelling was stated in two files
+    and only one of them defined the word.
+
+    Read from this module's own vocabulary, so a word gains a twin by
+    carrying `Async(...)` and by nothing else."""
+    out: dict[str, str] = {}
+    for value in list(globals().values()):
+        if get_origin(value) is None:
+            continue
+        args = get_args(value)
+        spelled = [m.spelling for m in args[1:] if isinstance(m, Async)]
+        if not spelled:
+            continue
+        inner = args[0]
+        name = inner.__name__
+        if inner.__module__ != "builtins":
+            name = f"{inner.__module__}.{name}"
+        out[name] = spelled[0]
+    return out
 
 
 # The types a Nix binding actually names. Written once, read by name.
@@ -88,7 +136,7 @@ I64 = Annotated[int, Cxx("int64_t")]
 # `print_store_path` answers in the STORE's terms, which may name a
 # directory this machine does not have, and `real_path` answers where
 # the bytes are here. Only the second is a path a caller can open.
-Path = Annotated[pathlib.Path, Cxx("string")]
+Path = Annotated[pathlib.Path, Cxx("string"), Async("anyio.Path")]
 
 
 @dataclass(frozen=True)

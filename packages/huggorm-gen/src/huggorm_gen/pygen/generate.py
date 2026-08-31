@@ -16,6 +16,7 @@ from enum import Enum
 from types import ModuleType
 from typing import Any
 
+from huggorm_dsl import declare
 from huggorm_gen.cppgen.generate import (
     declared_entries,
     declared_functions,
@@ -384,10 +385,15 @@ def main(argv: list[str] | None = None) -> None:
     # the emitter widens their annotations accordingly.
     async_types = {p["name"] for p in returned_protos + protos if p["wrapped"]}
 
-    # The async spelling of a type, when the bindings declare one. Read
+    # The async spelling of a type, when the LANGUAGE gives one. Read
     # here rather than off the manifest because the wrappers are
     # emitted before the manifest is assembled.
-    async_twins: dict[str, str] = dict(getattr(bindings, "_async_twins", {}))
+    #
+    # From the vocabulary, not from a marker on the bindings package.
+    # `Path` is `Annotated[pathlib.Path, Cxx("string"),
+    # Async("anyio.Path")]`, so the two spellings of one word sit
+    # together and neither file repeats the other's half.
+    async_twins: dict[str, str] = declare.twins()
 
     for proto in returned_protos:
         if not proto["wrapped"]:

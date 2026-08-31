@@ -32,10 +32,10 @@ the sharper rule about what does not belong.
 on purpose: a compiled module would need a reason, and a class
 statement is not one.
 
-The marker below - `_async_twins` - is the package's own declaration,
-read by the generator. `_errors_module` stood beside it and is gone:
-the emitter that writes `errors.py` decides where it goes, so it
-derives the name rather than reading it back off this file.
+There are no markers left. `_errors_module` and `_async_twins` stood
+here and both are gone: the emitter that writes `errors.py` decides
+where it goes, and a word's async spelling sits beside its C++ one in
+`declare.py`. Nothing in this file is read by the generator now.
 
 ## The mock
 
@@ -58,21 +58,6 @@ from .realisation import DrvOutput, Realisation
 from .signature import Signature
 from .store import MissingPaths, Store, StoreLocation
 from .words import ContentAddressMethod, HashAlgorithm
-
-# A type whose ASYNC surface is spelled differently. Same value, and a
-# wrapper that gives it awaitable methods: anyio.Path wraps a
-# pathlib.Path so a caller who is already in an event loop can read
-# the file without blocking it.
-#
-# Declared here rather than known by the codegen, like every other
-# marker. A binding returns the sync type and says nothing about
-# threads; this is the one place that says the async wrapper hands
-# back the other spelling, and the generator does the rest.
-#
-# It never reaches the wire. A type with a twin has no protobuf field
-# either way, so this decides one annotation and one constructor call
-# in the in-process wrapper and nothing else.
-_async_twins = {"pathlib.Path": "anyio.Path"}
 
 __all__ = [
     "ContentAddress",

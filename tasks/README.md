@@ -210,13 +210,16 @@ the same knowledge by hand. The generator reads all of them:
     _blocking    False if no method can wait     wrap or not   (025)
     _produced    True if __init__ raises         constructible (041)
 
-The PACKAGE declares one more, in its __init__:
+The PACKAGE declares none. It carried two - `_errors_module` and
+`_async_twins` - and both were facts stated twice (065). Where the
+errors module lands is decided by the emitter that writes it. A
+word's ASYNC spelling sits beside its C++ one, in `declare.py`:
 
-    _async_twins     a type's async spelling, if it has one   (040)
+    Path = Annotated[pathlib.Path, Cxx("string"), Async("anyio.Path")]
 
-`_async_twins` maps pathlib.Path to anyio.Path: the binding returns
-the sync type and the wrapper hands back the other, which is the one
-place the two surfaces should differ. It never reaches the wire.
+`Async` maps pathlib.Path to anyio.Path: the binding returns the sync
+type and the wrapper hands back the other, which is the one place the
+two surfaces should differ. It never reaches the wire.
 
 `_binds` was a tenth. It named the pxd declaration a pyx class bound,
 which is a fact about Cython rather than about the binding, so the
