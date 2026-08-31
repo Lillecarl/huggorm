@@ -281,6 +281,51 @@ This is the largest of the three and the one that needs a marker
 designed rather than a literal moved, so `tasks/061` overlaps it the
 way it overlapped `@guard`.
 
+#### Corrected, after reading derived-path.hh
+
+"a marker per union" was my guess and it is too big. What upstream
+actually holds (nix-store 2.34.8,
+`nix/store/derived-path.hh`):
+
+    DerivedPathOpaque      { StorePath path; }
+
+    SingleDerivedPathBuilt { ref<const SingleDerivedPath> drvPath;
+                             OutputName  output; }
+    DerivedPathBuilt       { ref<const SingleDerivedPath> drvPath;
+                             OutputsSpec outputs; }
+
+    struct SingleDerivedPath : variant<DerivedPathOpaque,
+                                       SingleDerivedPathBuilt>
+    struct DerivedPath       : variant<DerivedPathOpaque,
+                                       DerivedPathBuilt>
+
+There is no inheritance. Each union is a struct that PUBLICLY
+INHERITS its own `std::variant` and re-exposes it through `raw()`,
+which is why the visits say `std::get_if<...>(&p.raw())` rather than
+`&p` - they cast back to the base.
+
+The part that shrinks the marker: `SingleDerivedPath::Opaque` and
+`DerivedPath::Opaque` are BOTH `DerivedPathOpaque`. The same struct,
+the same single member `path`. Only the Built arm differs between the
+two unions, and only in one member - `output`, one string, against
+`outputs`, an OutputsSpec.
+
+So the fact is stated once, not once per union: *the opaque arm's C++
+type is a one-member struct wrapping the declared arm, through the
+member `path`*. Four visits collapse to one declared fact.
+
+`held` stays a helper either way. `ref<const SingleDerivedPath>` is
+non-nullable by construction, so building one from a value allocates,
+and that is upstream's spelling rather than a decision this repo
+makes.
+
+Worth checking separately, and probably NOT the same pattern:
+`OutputsSpec` is a variant too - `variant<All, Names>` where `All` is
+a `std::monostate` and `Names` is a `std::set` with its default
+constructor deleted. A monostate arm is a different shape from a
+wrapped-struct arm, and its two `Cxx` bodies should not be folded
+into this marker just because both are variants.
+
 ### And 61 Cxx bodies
 
 `Cxx(...)` in a declaration is the sanctioned hatch: C++ written
