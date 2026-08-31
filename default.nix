@@ -257,6 +257,30 @@ rec {
     '';
   };
 
+  # nix build --file . bindings-src
+  #
+  # The emitted C++, on its own, for reading.
+  #
+  # There is no other way to see it. The bindings leaf writes its
+  # sources at setup.py import and compiles them in the same build, so
+  # nothing in the tree and nothing installed holds a `.cpp`. A
+  # reviewer of a codegen change wants exactly that file.
+  #
+  # It runs the same emitter the leaf runs, with the same argument, so
+  # this cannot show something the build did not produce.
+  bindings-src = pkgs.runCommand "huggorm-bindings-src" {
+    nativeBuildInputs = [
+      (pkgs.python3.withPackages (_: [
+        huggorm-gen
+        huggorm-decl
+        huggorm-dsl
+      ]))
+    ];
+  } ''
+    mkdir -p "$out"
+    python3 -m huggorm_gen.cppgen.generate "$out"
+  '';
+
   shell = pkgs.mkShell {
     packages = [
       ourPython
