@@ -4,13 +4,13 @@ Client side of the remote layer.
 The client owns the connection, the codec and the lifecycle rpcs.
 Every object it hands back is a GENERATED class from
 huggorm_generated.rpc: real methods, real signatures, one per
-class in the manifest, satisfying the same protocol the in-process
+declared class, satisfying the same protocol the in-process
 wrapper satisfies.
 
 That is the whole of this module's knowledge of the domain: none. It
 looks a class up by name in the generated registry and calls it. What
 used to live here was a RemoteObj that resolved method names against
-the manifest inside __getattr__ - which worked, and which a
+a spec table inside __getattr__ - which worked, and which a
 typechecker could see nothing at all through. It could neither reject
 a call to a method that does not exist nor check the arguments of one
 that does, and it satisfied every Protocol vacuously.
@@ -62,7 +62,6 @@ class ConnectionExpired(RuntimeError):
 class NixClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 50051) -> None:
         self.pool = schema.load_pool()
-        self.manifest = schema.load_manifest()
         self.codec = WireCodec()
         # Rebuilds a declared error from the status details, so a
         # remote failure has the same shape as an in-process one: an
@@ -92,7 +91,7 @@ class NixClient:
     def proxy(self, cls_name: str, handle_id: str) -> Any:
         """A client-side object for one remote handle.
 
-        The class is generated - one per class in the manifest, with
+        The class is generated - one per declared class, with
         the same inheritance - so this is a lookup and a constructor,
         and this module names nothing.
 

@@ -303,6 +303,11 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
                               ast.alias(name="Call"), ast.alias(name="Tree"),
                               ast.alias(name="Walk")], level=0),
     ]
+    # The protobuf package every message and service sits in.
+    # grpc_schema decides it, so a rename reaches every consumer.
+    body.append(ast.AnnAssign(
+        target=ast.Name(id="PKG"), annotation=_ann("str", "PKG"),
+        value=ast.Constant(value=manifest["package"]), simple=1))
     body.append(_table("WIRE_KIND", "dict[str, str]", kinds))
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]", fields))
     body.append(ast.AnnAssign(
