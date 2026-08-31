@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "huggorm-generated"
 version = "0.1.0"
-description = "Generated RPC stubs for fake-library (AST codegen)"
+description = "The emitted API surface: async wrappers, protocols, RPC client"
 requires-python = ">=3.10"
 dependencies = ["huggorm-bindings"]
 
