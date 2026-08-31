@@ -255,7 +255,7 @@ lines and the DECREF the dropped static did not need costs two more.
 A number going up while a mapping goes away is the right trade, and
 it is why this task has no budget.
 
-### libstore.hpp: open_store is a conversion
+### libstore.hpp: open_store is a conversion - DONE
 
 `init_libstore` is a helper and stays - it is idempotent
 initialisation that libstore exposes no other way, and a declaration
@@ -266,6 +266,43 @@ points `@binds` at it.
 lists a conversion as a MAPPING. Whether the declaration can say
 "take this return as a shared_ptr" is the question; if it can, this
 file is 12 lines.
+
+Done, and the question turned out to be the wrong one. The
+declaration never had to say anything about the conversion: `ref`
+defines an implicit `operator std::shared_ptr<T>`, so the call alone
+is enough. What blocked it was the EMITTER - `_factory` wrote
+`nb::new_(&symbol)` and only that, so a factory had to be a named C++
+symbol and every class needing one line of adaptation was pushed into
+`cpp/`.
+
+`_factory` writes a lambda now when the declaration carries a body,
+which is the shape `free_function` already had. `_lambda_head` is
+shared by the two, so a free body and a factory body spell one lambda
+the same way. `decl/store.py` carries
+`Cxx("return nix::openStore(uri);")` and `@needs("store-open.hh")`.
+
+Proved by breaking: with the branch reverted the emitter writes
+`nb::new_(&)` - `made.binds` is empty - and g++ says "missing
+template arguments before '(' token".
+
+A second perturbation refuted a claim I had written into the code.
+The lambda spells its return type, and the comment said `ref<Store>`
+would not deduce without it. Dropping the spelling and rebuilding
+compiled fine: nanobind reaches the holder through the same implicit
+conversion either way. Two emitted lines change - this one and
+`gc_stats` - and both build. The spelling stays as consistency with
+`_method`, and the comment now says it is not a fix.
+
+`libstore.hpp` is 12 code lines and holds only `init_libstore`, which
+is a genuine helper: libstore ABORTS rather than raising when it has
+not been initialised.
+
+    35  derived_path.hpp
+    40  errors.hpp   (+3, the module parameter and its DECREF)
+   238  eval.hpp     all helpers
+    12  libstore.hpp (-8)
+   ---
+   325
 
 ### derived_path.hpp has reached its own trigger
 
