@@ -756,19 +756,25 @@ async def test_behavior() -> None:
     assert len(state._runner.workers_seen) == 1, (
         f"evals must serialize on one thread, saw {state._runner.workers_seen}")
 
-    # Evaluation errors surface with the C++ cause attached, and the
-    # TYPE of the cause is what the declaration says it is.
+    # Evaluation errors, in the two shapes a caller has to tell apart.
     #
-    # Two kinds, and the difference is the point. A nix::Error crosses
-    # as the declared NixError - it carries parts, so the @translator
-    # rebuilds it. Anything else comes back as itself. The mock could
-    # only ever raise the second kind, so this pairing is new.
+    # A nix::Error is DECLARED, so it reaches the caller as itself and
+    # `except NixError` works here exactly as it does against the sync
+    # binding (tasks/066). It describes itself through `to_dict`, which
+    # is what the runtime tests before deciding to wrap anything.
+    #
+    # Anything else is not declared, carries no parts, and arrives as
+    # an InternalError naming it. The mock could only ever raise the
+    # second kind, so this pairing is new.
+    from huggorm_bindings.errors import NixError
+
     try:
         await state.eval_expr("not an expression")
         raise AssertionError("expected an evaluation error")
-    except InternalError as e:
+    except NixError as e:
         d = e.to_dict()
-        assert d["code"] == "internal" and d["cause_type"] == "NixError", d
+        assert d["code"] == "NixError", d
+        assert "undefined variable" in d["message"], d
     try:
         await state.eval_expr("")
         raise AssertionError("expected a refusal")

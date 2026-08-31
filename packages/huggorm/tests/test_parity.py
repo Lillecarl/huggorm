@@ -24,7 +24,6 @@ is the point: parity is the property most worth checking on every
 build, and a check that needs the machine's real store is not.
 """
 
-import contextlib
 import inspect
 from typing import Any
 
@@ -153,68 +152,27 @@ async def test_a_value_that_crossed_still_compares_and_hashes(
 
 
 # -- errors -----------------------------------------------------------
-# The hardest thing to keep identical. Locally a C++ exception is
-# translated into a Python one by the binding; remotely it is encoded
-# into a status detail, sent, and rebuilt from its declared parts.
-
-
-def surface_of(obj: Any) -> str:
-    """Which surface an object came from, by its class name.
-
-    The three surfaces are exactly three shapes - `Store`,
-    `AsyncStore`, `RPCStore` - so this needs no table and cannot fall
-    out of step with one."""
-    name = type(obj).__name__
-    if name.startswith("Async"):
-        return "async"
-    if name.startswith("RPC"):
-        return "rpc"
-    return "sync"
-
-
-@contextlib.contextmanager
-def declared_error(kind: type[BaseException], obj: Any) -> Any:
-    """Assert a DECLARED error reaches the caller as itself.
-
-    It does on the sync surface and does not on the other two, and
-    that is a parity defect rather than a fact of the design.
-    `StoreLike` is what makes an AsyncStore and an RPCStore
-    interchangeable, and an exception type is part of a result - so
-    `except BadStorePath` has to work against the protocol and not
-    only against the compiled binding.
-
-    `_runtime._invoke` wraps anything without a `to_dict` in
-    InternalError and keeps the real error as `__cause__`. A declared
-    Nix error has no `to_dict`, so it arrives as somebody else's
-    cause.
-
-    Written as an assertion of the CURRENT behaviour rather than as
-    an xfail, and deliberately: the wrapped form is checked too, so
-    the day a declared error passes through untouched this fails and
-    says to delete the branch. An xfail would have gone quiet
-    instead - and it cannot be applied per-surface anyway, because
-    one of the three already behaves.
-
-    tasks/066 has the finding and why the fix is not a one-liner."""
-    from huggorm_generated._runtime import InternalError
-
-    if surface_of(obj) == "sync":
-        with pytest.raises(kind):
-            yield
-        return
-    with pytest.raises(InternalError) as caught:
-        yield
-    cause = caught.value.__cause__
-    assert isinstance(cause, kind), (
-        f"{surface_of(obj)}: the declared error should reach the caller "
-        f"as {kind.__name__}; it is wrapped, and the cause is {cause!r}")
+# The hardest thing to keep identical, and the one place the three
+# surfaces used to disagree. Locally a C++ exception is translated
+# into a Python one by the binding; remotely it is encoded into a
+# status detail, sent, and rebuilt from its declared parts.
+#
+# `except BadStorePath` once worked against the compiled binding and
+# against neither generated surface: both wrapped it in an
+# InternalError and kept it as __cause__. This suite found that on its
+# first run and pinned it with a helper that asserted BOTH shapes; the
+# helper is gone because there is now one shape (tasks/066).
+#
+# So these are written the way a CALLER writes them. That is the
+# claim: an exception type is part of a result, and `StoreLike` makes
+# the three interchangeable.
 
 
 async def test_a_bad_path_raises_the_same_class_everywhere(
         store: Any) -> None:
     from huggorm_bindings.errors import BadStorePath
 
-    with declared_error(BadStorePath, store):
+    with pytest.raises(BadStorePath):
         await call(store, "parse_store_path", "/somewhere/else/x")
 
 
@@ -229,7 +187,7 @@ async def test_an_unsupported_operation_raises_the_same_class(
     store and giving up."""
     from huggorm_bindings.errors import Unsupported
 
-    with declared_error(Unsupported, store):
+    with pytest.raises(Unsupported):
         await call(store, "query_all_valid_paths")
 
 
@@ -283,5 +241,5 @@ async def test_a_bad_expression_raises_the_same_class_everywhere(
     from the store's and reaches a caller by the same route."""
     from huggorm_bindings.errors import NixError
 
-    with declared_error(NixError, state):
+    with pytest.raises(NixError):
         await call(state, "eval_expr", "not an expression")

@@ -51,6 +51,45 @@ class NixError(Exception):
         self.message = message
         self.colored = message if colored is None else colored
 
+    @property
+    def code(self) -> str:
+        """The label this error's class travels under.
+
+        The runtime recognises a TYPED error - one it must pass to the
+        caller untouched rather than bury in an InternalError - by
+        `to_dict`, and reads `code` off it. A declared Nix error had
+        neither, so every one of them reached an async or rpc caller
+        as somebody else's cause and `except BadStorePath` worked
+        against the compiled binding alone (tasks/066).
+
+        The class NAME, because that is already the identity the wire
+        uses: an error crosses as a message type named for its class,
+        and a second spelling would be a second name to keep in step.
+        Computed rather than written per class, so a new error class
+        needs no line here.
+
+        A property rather than nine emitted class attributes. The
+        emitter would have derived the same string from the same
+        name, in a file that must then be read to learn what a caller
+        can already ask the class."""
+        return type(self).__name__
+
+    def to_dict(self) -> dict[str, str]:
+        """This error as its declared parts, for a peer to rebuild.
+
+        The duck-type the runtime looks for. It is emitted beside the
+        wrappers and must not know which library it wraps, so it asks
+        an error whether it can describe itself rather than testing
+        it against a class (tasks/036).
+
+        Derived from `_wire_fields` rather than naming `message` and
+        `colored`: a subclass that declares more parts gets them here
+        with no edit, and a method that listed the two would be the
+        same fact stated twice."""
+        parts = {name: str(getattr(self, name))
+                 for name, _ in self._wire_fields}
+        return {"code": self.code, **parts}
+
 
 class UsageError(NixError):
     """nix::UsageError - the caller asked for something incoherent."""
