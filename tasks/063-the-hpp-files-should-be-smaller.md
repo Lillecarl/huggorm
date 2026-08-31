@@ -215,7 +215,7 @@ of a flat number.
 
 Three things are left, smallest first.
 
-### errors.hpp names its Python module in a string literal
+### errors.hpp names its Python module in a string literal - DONE
 
 `error_class` imports `"huggorm_bindings.errors"`. That module's name
 is DERIVED three other ways - `errors_module()` from the declaration's
@@ -230,6 +230,30 @@ error silently loses its type, and no gate says so.
 The generated catch chain already passes the class name. It should
 pass the module too, which makes `raise_as` a helper with no library
 knowledge in it at all.
+
+Done. `chain()` takes the module and writes
+`raise_as("huggorm_bindings.errors", "BadStorePath", e)`, from the
+same `errors_module()` that names the emitted file and fills the
+policy table. The static import cache went with it: it would have
+held whichever module asked first.
+
+Proved by renaming `decl/errors.py` to `decl/nixfaults.py`. The
+bindings and the generated package both build, and the smoke test's
+`except NixError` still catches - which it could only do if the
+emitted C++ had followed the rename. The suites then fail loudly at
+typecheck, naming all seven sites, because a test may name the module
+it tests.
+
+The rename also found a copy an hour old: the smoke test block added
+by 066 wrote `from huggorm_bindings.errors import NixError`. It reads
+`_policy.ERROR_MODULE` now. That is the argument for perturbation in
+one line - the copy was written, reviewed and committed the same day,
+and only breaking the gate found it.
+
+errors.hpp is 41 code lines, up from 37: the parameter costs two
+lines and the DECREF the dropped static did not need costs two more.
+A number going up while a mapping goes away is the right trade, and
+it is why this task has no budget.
 
 ### libstore.hpp: open_store is a conversion
 
