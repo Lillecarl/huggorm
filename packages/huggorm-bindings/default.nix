@@ -47,7 +47,7 @@ python3Packages.buildPythonPackage {
   nativeBuildInputs = [ pkg-config ];
 
   # boehmgc headers must be visible when compiling the extension.
-  # `_cpp/eval.hpp` calls GC_register_my_thread and GC_gcollect
+  # `huggorm_decl/cpp/eval.hpp` calls GC_register_my_thread and GC_gcollect
   # directly - libexpr exposes no thread-registration API, so that half
   # of the integration is this repo's.
   buildInputs = [ boehmgc ] ++ nixLibs;

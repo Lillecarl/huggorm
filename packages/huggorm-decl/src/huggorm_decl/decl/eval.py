@@ -23,7 +23,7 @@ a share of the state that made it, so the state cannot die under a
 value that still points into its memory. That is producer pinning as
 a C++ fact, beside the server's `parents=[self]`. It is the only C++
 in this binding a declaration could not have written, and
-`_cpp/eval.hpp` says why line by line.
+`cpp/eval.hpp` says why line by line.
 """
 
 from huggorm_dsl.declare import (

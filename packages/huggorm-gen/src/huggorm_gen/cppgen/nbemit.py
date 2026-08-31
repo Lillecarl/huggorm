@@ -582,7 +582,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # Written here, once, from two declared facts: the class says how
     # to ask which arm is held, and the accessor says which one it
     # needs. Twelve accessors used to spell this by hand in
-    # `_cpp/eval.hpp`, and a thirteenth could have forgotten it -
+    # `cpp/eval.hpp`, and a thirteenth could have forgotten it -
     # which for a `noexcept` reader on the wrong tag is not an error
     # but a reinterpretation of the payload.
     # A PRODUCER: allocate on this state, call one initialiser with

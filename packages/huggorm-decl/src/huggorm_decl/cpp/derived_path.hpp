@@ -11,7 +11,7 @@
 ///
 /// So the declared arms are `StorePath | ...Built`, which is a
 /// DECISION about the surface rather than a binding of anything - and
-/// a decision is what `_cpp/` is for. It is written once here instead
+/// a decision is what `cpp/` is for. It is written once here instead
 /// of once per body that takes or returns one.
 ///
 /// nanobind casts a `std::variant` natively, so nothing below is

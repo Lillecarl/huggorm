@@ -15,7 +15,7 @@ guess, never trust a memory of it.
 
 ## 2. No hand-written C++ mapping. None.
 
-`huggorm-idl/src/huggorm_idl/decl/` is the source. Everything else
+`packages/huggorm-decl/src/huggorm_decl/decl/` is the source. Everything else
 is emitted from it: the nanobind C++, the manifest, the sync API, the
 async API, the RPC API, the type stubs, the enums.
 
@@ -33,16 +33,16 @@ and they exist to make the codegen simpler rather than to stand in
 for it.
 
 The test is who calls it. Generated code calls a helper. A mapping IS
-the generated code, and if it is in `_cpp/*.hpp` it is in the wrong
+the generated code, and if it is in `huggorm_decl/cpp/*.hpp` it is in the wrong
 file.
 
-The build prints the `_cpp` line count. It is not a budget to spend.
+The build prints the `huggorm_decl/cpp` line count. It is not a budget to spend.
 
 **ASK BEFORE WRITING ANY C++ THAT THE CODEGEN DID NOT WRITE.** Every
 line of it needs the user's explicit approval, in advance, per
 occasion. Not "I will note it in the commit" and not "I will write a
 task for deriving it later" - those are what happened while
-`_cpp/eval.hpp` grew from 108 lines to 417, and every one of those
+`cpp/eval.hpp` grew from 108 lines to 417, and every one of those
 lines looked reasonable on its own.
 
 Show what the line does, say why a declaration cannot carry it, and
@@ -80,4 +80,4 @@ nix build --no-link --print-out-paths  --file . pkgs.$package.src # this can be 
 
 # How the codegen works
 The WHY is under Goals, above. This is the mechanism.
-The declarations are in `huggorm-idl/src/huggorm_idl/decl/`, one file per Nix class, named after that class's header. `read.py` reads each one twice - it IMPORTS it, so Python resolves any `NIX_VERSION` branch, and it parses it with `ast.parse` for everything the import throws away. No body ever runs, so C++ written in a body is dead text the reader lifts out. The emitters then write the nanobind C++, the manifest entry, the type stub and the enum module from what the declaration says.
+The declarations are in `packages/huggorm-decl/src/huggorm_decl/decl/`, one file per Nix class, named after that class's header. `read.py` reads each one twice - it IMPORTS it, so Python resolves any `NIX_VERSION` branch, and it parses it with `ast.parse` for everything the import throws away. No body ever runs, so C++ written in a body is dead text the reader lifts out. The emitters then write the nanobind C++, the manifest entry, the type stub and the enum module from what the declaration says.

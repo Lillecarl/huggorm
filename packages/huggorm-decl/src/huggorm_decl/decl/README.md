@@ -16,7 +16,7 @@ declaration can still name a C++ type this machine has never compiled.
 That is also why they sit in their own directory. A declaration and
 the machinery that reads it are different kinds of file, and a linter
 can only be told so once: `ruff.toml` exempts
-`huggorm-idl/src/huggorm_idl/decl/*.py` from the three rules that
+`packages/huggorm-decl/src/huggorm_decl/decl/*.py` from the three rules that
 fire on the things which make a file a declaration rather than a
 program (`F821`, `UP037`, `PIE790`). The machinery next door is
 exempt from nothing.

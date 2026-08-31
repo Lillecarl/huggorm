@@ -471,7 +471,7 @@ def wire_value(fields: tuple[Field | str, ...] = (), compare: str = "parts",
 def custom(name: str, source: str) -> Callable[[type], type]:
     """Whole-class C++ this emitter cannot derive, carried verbatim.
 
-    The escape hatch, and it is counted. `_cpp/README` makes the same
+    The escape hatch, and it is counted. `cpp/README` makes the same
     bargain: a hatch nobody measures becomes the place the real code
     lives. The emitter reports how many lines went through here, so
     growth is visible rather than gradual.

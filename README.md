@@ -71,27 +71,65 @@ comment about an upstream behaviour that was read rather than assumed.
 
 ## Layout
 
-    huggorm-idl/          the declarations, and the emitters
-    huggorm-bindings/     the nanobind extensions - the bottom of the stack
-    huggorm-generated/    the generator, and the package it emits
-    huggorm/              the hand-written layer: server, client, codec
-    examples/              runnable demos - not shipped in the package
-    docs/                  user-facing; quickstart.md is the front door
-    tasks/                 one file per decision, NNN-name.md[.done]
+    packages/
+      huggorm-dsl/        the LANGUAGE: what a declaration may say
+      huggorm-decl/       the DECLARATIONS, and the C++ helpers they name
+      huggorm-gen/        the EMITTERS: two backends over one reader
+      huggorm-bindings/   LEAF: the nanobind extensions
+      huggorm-generated/  LEAF: the emitted API surface
+      huggorm/            the hand-written layer: server, client, codec
+    examples/             runnable demos - not shipped in the package
+    docs/                 user-facing; quickstart.md is the front door
+    tasks/                one file per decision, NNN-name.md[.done]
 
-### huggorm-idl
+Three things are easy to confuse and are kept apart. The LANGUAGE is
+`declare.py`. A DECLARATION is a document written in it. An EMITTER
+turns one into an output. Neither leaf holds hand-written source:
+each is setuptools running a generator over what the other three say.
 
-    src/huggorm_idl/
-      decl/<name>.py  one Nix class, named after its header
-      decl/README.md  why they sit in their own directory
+### huggorm-dsl
+
+    src/huggorm_dsl/
       declare.py      the vocabulary a declaration is written in
       read.py         ast.parse -> Module, Class, Method
-      nbemit.py       declaration -> nanobind C++
-      manifest.py     declaration -> manifest entry
-      pyi.py          declaration -> type stub, by tree transform
-      pyenum.py       declaration -> a StrEnum module, by tree transform
-      generate.py     the build entry point: which declarations, and where
+
+No declaration and no emitter, which is what lets huggorm-decl and
+huggorm-gen depend on it without depending on each other. `read.py`
+is here rather than with the emitters because parsing is a fact about
+the language: two backends parse the same way or they are not reading
+the same language.
+
+### huggorm-decl
+
+    src/huggorm_decl/
+      __init__.py     which declarations exist, and which own a module
+      decl/<name>.py  one Nix class, named after its header
+      decl/README.md  why they sit in their own directory
+      cpp/<name>.hpp  C++ this repo writes, for what a declaration CALLS
+      cpp/README.md   the rule for what belongs in there
+
+The two things a person maintains: the declarations, and the helpers
+they name. `include_dir()` is how the bindings build compiles against
+`cpp/`, the way nanobind exposes its own headers.
+
+`__init__.py` names the declarations that own a module. That list is
+here rather than with an emitter because which declarations exist is
+a fact about this set of documents, not about a backend reading them.
+
+### huggorm-gen
+
+    src/huggorm_gen/
+      cppgen/         -> huggorm_bindings: C++, stubs, enums, errors
+      pygen/          -> huggorm_generated: async, protocols, RPC, proto
+      payload/        -> neither: hand-written Python that SHIPS
     gates/nbcheck.py  emitted C++ against hand-written nanobind
+
+One package, not two, because both backends read one IR from one
+reader. pygen still reflects on the compiled extension for enums,
+errors and free functions; that seam is being closed, and a package
+boundary would have made it permanent. protobuf is pygen's extra
+rather than a dependency, so compiling the bindings does not drag it
+in.
 
 One Nix header, one declaration, named after it:
 `nix/store/store-api.hh` is `decl/store.py`, and
@@ -111,8 +149,7 @@ and the place to start if `store.py` is too much at once.
 StrEnums whose members ARE the strings a Nix parser takes. Nothing
 about them compiles.
 
-`generate.py` names the declarations that own a module. A declaration
-not in that list emits nothing: `decl/nixstore.py` and
+A declaration not in that list emits nothing: `decl/nixstore.py` and
 `decl/storefns.py` are read only by `gates/nbcheck.py`, which compares
 them against the hand-written nanobind in `~/Code/nanopynix` - a
 corpus to beat rather than a reference to match - and is skipped on a
@@ -121,17 +158,15 @@ machine without it.
 ### huggorm-bindings
 
     huggorm_bindings/
-      _cpp/<name>.hpp C++ this repo writes, for what a declaration CALLS
-      _cpp/README.md  the rule for what belongs in there
-      errors.py       the exception hierarchy, mirroring libnixutil's
       __init__.py     what the package exports, and in which order
-    setup.py          one nanobind Extension per declared module
+    setup.py          runs cppgen, then one Extension per declared module
 
-There is no binding source in here. Every module's C++ is written into
-the build's copy of this directory by `huggorm_idl.generate`, and
-`setup.py` compiles it. `_cpp/` is the exception, and it is C++ the
-declarations NAME rather than C++ a binding needs: `@binds` points at
-a function in there.
+`__init__.py` is the only hand-written file. `setup.py` runs the
+emitter at import - before setuptools is told the sources exist - and
+compiles what it wrote: one `.cpp` per declared module, plus
+`errors.py` and the enum modules. The C++ helpers a declaration NAMES
+are not here either; they are `huggorm_decl/cpp/`, with the
+declarations that name them.
 
 `setup.py`'s `LIBRARY` dict is the one place that says which library
 each module links. A declaration names the C++ it binds; which package
@@ -156,7 +191,7 @@ is a rule the build refuses to break, and each names the failure it
 prevents.
 
 Nothing here reflects a compiled class any more. Every shape comes
-from `huggorm_idl.generate`: `declared_entries`, `declared_functions`
+from `huggorm_gen.cppgen.generate`: `declared_entries`, `declared_functions`
 and `declared_returned`. The compiled package is still imported, and
 for one thing only - to enumerate which classes to generate for.
 
@@ -177,12 +212,12 @@ all. Every type it acts on comes out of the manifest.
 
 Adding a store call is the common case, and it touches two files:
 
-1. `huggorm-idl/src/huggorm_idl/decl/store.py` - the method, with a
+1. `packages/huggorm-decl/src/huggorm_decl/decl/store.py` - the method, with a
    Python-style annotation and a docstring.
 2. a test in `huggorm/tests/test_store.py`, and one in
    `test_remote.py` if it crosses the wire.
 
-`_cpp/store.hpp` is the third file, and only when the declaration
+`huggorm_decl/cpp/store.hpp` is the third file, and only when the declaration
 cannot say it: something a whole module needs, such as a startup hook
 or an exception translator. A DECISION - how to render a hash, which
 of two constructors a value takes - goes in the declaration itself, as
@@ -244,7 +279,7 @@ libstore is `Store` (`nix::Store`), `StorePath`, `PathInfo`
 `DerivedPath` union. libexpr is `EvalState` and `Value`.
 
 The one piece of C++ this repo writes for itself is
-`_cpp/eval.hpp`. A `nix::Value` lives in the collector's heap and
+`huggorm_decl/cpp/eval.hpp`. A `nix::Value` lives in the collector's heap and
 Python's heap is not scanned, so a wrapper needs a ROOT; and a value
 is not self-describing, because an attribute name is a `Symbol` only
 the producing state can render. `huggorm::Bridge` holds both. The
@@ -257,7 +292,7 @@ For the DESIGN: `tasks/README.md`, then the newest `tasks/` files -
 they are the current thinking, and the older ones record how it got
 there.
 
-For the CODE: `huggorm-idl/src/huggorm_idl/decl/path.py`, then
+For the CODE: `packages/huggorm-decl/src/huggorm_decl/decl/path.py`, then
 `nbemit.py` beside it, then `huggorm/huggorm/wire.py`.
 
 For the OUTPUT: `nix run --file . show -- proto`.

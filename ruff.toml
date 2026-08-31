@@ -75,7 +75,6 @@ known-first-party = [
   "huggorm_gen",
   "huggorm_decl",
   "huggorm_dsl",
-  "huggorm_idl",
   "huggorm_bindings",
   "huggorm_generated",
   "huggorm",

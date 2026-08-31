@@ -15,7 +15,7 @@ either.
 There is no `DerivedPathOpaque` on this surface. Upstream's is a
 struct holding one `StorePath` and nothing else, so the opaque arm IS
 a StorePath and a caller never learns a wrapper existed. The
-conversion is a decision and lives in `_cpp/derived_path.hpp`.
+conversion is a decision and lives in `cpp/derived_path.hpp`.
 
 Nothing here prints itself. `DerivedPath::to_string` takes a
 `StoreDirConfig &` by upstream's own signature, so rendering is

@@ -20,14 +20,17 @@ so nobody has to learn a second one.
 
 ## What IS hand-written
 
-`_cpp/` holds C++ this repo writes, plus a shared `errors.hpp`. It is
-what a declaration CALLS rather than what a binding needs: `@binds`
+This module's docstring, and nothing else. Every other file here is
+written by `setup.py` before setuptools is told it exists.
+
+The C++ this repo writes is not here either. It is
+`huggorm_decl/cpp/`, with the declarations that NAME it - `@binds`
 points at a function in there. See its README for the rule, and for
 the sharper rule about what does not belong.
 
-`errors.py` is the exception hierarchy, mirroring libnixutil's own. It
-is pure Python on purpose: a compiled module would need a reason, and
-a class statement is not one.
+`errors.py` is emitted too, from `decl/errors.py`. It is pure Python
+on purpose: a compiled module would need a reason, and a class
+statement is not one.
 
 The two markers below - `_errors_module` and `_async_twins` - are the
 package's own declarations, read by the generator.

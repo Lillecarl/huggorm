@@ -206,7 +206,7 @@ def error_chain() -> list[str]:
 def _code_lines(text: str) -> int:
     """Lines of C++ that are not blank and not a comment.
 
-    Prose is not the thing being counted. `_cpp/eval.hpp` is 601 lines
+    Prose is not the thing being counted. `cpp/eval.hpp` is 601 lines
     and 304 of them explain WHY, which is this repo's standard rather
     than its debt - counting them made the number look three times
     worse than it is and, more importantly, made it look unfixable."""
@@ -265,7 +265,7 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     # per-class census cannot see.
     #
     # A hatch nobody measures becomes the place the real code lives -
-    # that is the bargain `_cpp/README` makes - and `_cpp/` was
+    # that is the bargain `cpp/README` makes - and `cpp/` was
     # exactly such a hatch: `census` counts `Cxx` bodies and `@custom`
     # blocks, both of which live in a declaration, while a helper a
     # declaration NAMES landed in a directory no number ever read.
@@ -278,7 +278,7 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     # with the declarations that name them instead.
     helper = CPP / f"{mod.name}.hpp"
     hand = _code_lines(helper.read_text()) if helper.exists() else 0
-    # BOTH numbers, and the second is why. A body moved out of _cpp
+    # BOTH numbers, and the second is why. A body moved out of cpp/
     # and into a `Cxx(...)` in the declaration is better - the reader
     # of the declaration sees the decision - but it is still C++ a
     # person wrote, and counting only the first would let the second

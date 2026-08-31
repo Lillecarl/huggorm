@@ -1,7 +1,7 @@
 """
 CLI: read the declarations, emit the package.
 
-Glue only — the protocol dict comes from `huggorm_idl`, its rules
+Glue only — the protocol dict comes from `huggorm_gen.cppgen`, its rules
 live in model.py, and emission lives in emitter.py. Installed as the
 `codegen-generate` entry point.
 """
