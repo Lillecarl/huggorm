@@ -218,24 +218,34 @@ class Dispatcher:
 
     # -- handler construction ----------------------------------------------
     def _wrap(self, handler: Handler, label: str) -> Handler:
-        """Every failure crosses the wire as a typed JSON payload in the
-        gRPC status message: WrapperErrors as themselves, everything
+        """Every failure crosses the wire as typed status details:
+        errors that can describe themselves as themselves, everything
         else wrapped in InternalError - so unknown handles and bugs
         arrive debuggable, not anonymous.
 
-        A cause the bindings DECLARE also crosses as its parts, so the
+        An error the bindings DECLARE crosses as its own parts, so the
         far side rebuilds the class rather than approximating it by
         name. That is what makes the remote shape the same as the
-        in-process one: an InternalError whose __cause__ is the real
-        error, colour and all (tasks/036)."""
-        from huggorm_generated._runtime import InternalError, WrapperError
+        in-process one, for a declared Nix error and for the
+        InternalError that carries a genuine bug alike (tasks/036,
+        tasks/066).
+
+        The test is `to_dict`, not `isinstance(e, WrapperError)`. It
+        is the same duck-type the runtime applies one layer down, and
+        for the same reason: a declared Nix error cannot subclass
+        WrapperError, because the bindings are imported BY the
+        generated runtime and cannot import it back. Catching the
+        class here made this layer disagree with the runtime, and the
+        answer a caller got then depended on which of the two saw the
+        error first."""
+        from huggorm_generated._runtime import InternalError
 
         async def guard(stream: Any) -> None:
             try:
                 await handler(stream)
-            except WrapperError as e:
-                raise self._fault(e) from e
             except Exception as e:
+                if hasattr(e, "to_dict"):
+                    raise self._fault(e) from e
                 raise self._fault(
                     InternalError(f"{label} failed", cause=e)) from e
         return guard
