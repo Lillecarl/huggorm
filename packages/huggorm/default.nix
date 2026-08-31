@@ -62,7 +62,7 @@ python3Packages.buildPythonPackage {
     runHook preCheck
     export HOME=$TMPDIR
     echo "--- lint ---"
-    ruff check --no-cache --config ${../ruff.toml} .
+    ruff check --no-cache --config ${../../ruff.toml} .
     echo "--- typecheck ---"
     zuban mypy --strict \
       --python-executable ${python3Packages.python.interpreter} \

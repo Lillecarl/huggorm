@@ -15,7 +15,7 @@ rec {
     pname = "huggorm-idl";
     version = "0.1.0";
     pyproject = true;
-    src = ./huggorm-idl;
+    src = ./packages/huggorm-idl;
     build-system = [ pkgs.python3Packages.setuptools ];
     pythonImportsCheck = [ "huggorm_idl" ];
   };
@@ -28,27 +28,27 @@ rec {
   # gate diffed them - which proves the emitter COULD have written the
   # binding. Here it DOES: there is no binding source in the repo at
   # all, and the only thing standing behind `huggorm_bindings.path`
-  # is `huggorm-idl/src/huggorm_idl/decl/path.py`.
+  # is `packages/huggorm-idl/src/huggorm_idl/decl/path.py`.
   bindings-src = pkgs.runCommand "huggorm-bindings-src" { } ''
-    cp -r ${./huggorm-bindings} $out
+    cp -r ${./packages/huggorm-bindings} $out
     chmod -R u+w $out
     ${lib.getExe idlPython} -m huggorm_idl.generate $out/huggorm_bindings
   '';
   # The bindings. Every module is a nanobind extension whose C++ is
   # written from a declaration before this builds.
-  huggorm-bindings = pkgs.callPackage ./huggorm-bindings {
+  huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
     inherit huggorm-idl;
     src = bindings-src;
   };
   # this is a Python library that uses huggorm-bindings
-  huggorm = pkgs.callPackage ./huggorm {
+  huggorm = pkgs.callPackage ./packages/huggorm {
     inherit huggorm-bindings;
     inherit huggorm-generated;
   };
   # AST codegen layer between bindings and python: the declarations
   # -> async wrappers, protocols, an RPC client, a wire schema and
   # the binding stubs.
-  huggorm-generated = pkgs.callPackage ./huggorm-generated {
+  huggorm-generated = pkgs.callPackage ./packages/huggorm-generated {
     inherit huggorm-bindings;
     inherit huggorm-idl;
   };
@@ -92,14 +92,13 @@ rec {
     text = ''
       cd "''${1:-.}"
       echo "--- lint ---"
-      ruff check --no-cache huggorm huggorm-generated huggorm-bindings \
-        huggorm-idl
+      ruff check --no-cache packages
       echo "--- typecheck: the generator ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         --exclude 'smoke_test\.py$' \
-        huggorm-generated/generator/src/codegen
+        packages/huggorm-generated/generator/src/codegen
       echo "--- typecheck: the hand-written layer and the suites ---"
-      ( cd huggorm \
+      ( cd packages/huggorm \
         && zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
              huggorm tests )
       echo "--- typecheck: the emitted package ---"
@@ -139,7 +138,7 @@ rec {
     name = "spike";
     runtimeInputs = [ ourPython ];
     text = ''
-      cd "''${1:-.}/huggorm-idl/gates"
+      cd "''${1:-.}/packages/huggorm-idl/gates"
       if [ -d "$HOME/Code/nanopynix" ]; then
         echo "--- declaration -> nanobind ---"
         python3 nbcheck.py
@@ -167,7 +166,7 @@ rec {
       ourPython
     ];
     text = ''
-      cd "''${HUGGORM_ROOT:-.}/huggorm"
+      cd "''${HUGGORM_ROOT:-.}/packages/huggorm"
       export PYTHONPATH="$PWD''${PYTHONPATH:+:$PYTHONPATH}"
       exec pytest "$@"
     '';

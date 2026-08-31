@@ -45,7 +45,7 @@ let
     # PRODUCES, so it does not exist yet at this point in the graph.
     checkPhase = ''
       runHook preCheck
-      ruff check --no-cache --config ${../ruff.toml} src
+      ruff check --no-cache --config ${../../ruff.toml} src
       zuban mypy --strict \
         --python-executable ${python3Packages.python.interpreter} \
         --exclude 'smoke_test\.py$' \

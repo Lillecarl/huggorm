@@ -61,7 +61,10 @@ select = [
 # implementation here and never will be.
 #
 # The spike's MACHINERY next door is exempt from nothing.
-"huggorm-idl/src/huggorm_idl/decl/*.py" = ["F821", "UP037", "PIE790"]
+# Position-independent, for the reason given two rules above: this
+# runs from the repo root and from the package root, and an
+# anchored path matches in only one of the two.
+"**/decl/*.py" = ["F821", "UP037", "PIE790"]
 
 [lint.isort]
 # test_remote holds the shared harness the other suites import. Left
