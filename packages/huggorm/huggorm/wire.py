@@ -1,11 +1,15 @@
 """
-Manifest-driven wire codec, shared by the server and the client.
+The wire codec, shared by the server and the client.
 
 This module knows the SHAPE of the problem - scalars go in fields,
 wire-values decompose into their declared parts, proxies travel as
-handles - and nothing about the types. Every type name it acts on comes
-out of the manifest, which got it from a `_wire` / `_wire_fields`
-declaration next to the binding itself.
+handles - and nothing about the types. Every type name it acts on
+comes from `huggorm_generated._policy`, which the build emitted from
+the `_wire` / `_wire_fields` declaration next to the binding itself.
+
+That is a RUNTIME, in this repo's sense: it does the same thing for
+every type, so there is nothing in it a declaration could state. What
+was derivable - which type crosses as what - is the table it reads.
 
 That is the point. Before this existed, the four layers above the
 bindings each carried their own copy of the sentence "StorePath and
@@ -69,7 +73,7 @@ def _no_proxy(type_str: str, fname: str) -> Callable[[Any], Any]:
 
 
 class WireCodec:
-    """Reads the manifest; encodes and decodes rpc fields."""
+    """Reads the emitted wire policy; encodes and decodes rpc fields."""
 
     def __init__(self, bindings: ModuleType | None = None) -> None:
         """No arguments but the bindings, and that is the change.
@@ -140,7 +144,7 @@ class WireCodec:
         except KeyError:
             raise TypeError(
                 f"{type_str!r} has no wire policy: it is neither a scalar nor "
-                f"a class in the manifest") from None
+                f"a declared class") from None
 
     # -- wire-values ------------------------------------------------------
     @staticmethod

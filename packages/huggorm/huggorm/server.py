@@ -137,7 +137,7 @@ class Dispatcher:
         # A failure crosses the same way a value does: as messages, by
         # what the manifest declares, never by a type this file names
         # (tasks/036).
-        self.faults = FaultCodec(manifest, schema.load_pool())
+        self.faults = FaultCodec(schema.load_pool())
         # Which classes are value TREES, and how to walk one. Declared
         # next to the binding; this module names none of them.
         self.trees: dict[str, dict[str, Any]] = {

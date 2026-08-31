@@ -67,7 +67,7 @@ class NixClient:
         # Rebuilds a declared error from the status details, so a
         # remote failure has the same shape as an in-process one: an
         # InternalError whose __cause__ is the real error (tasks/036).
-        self.faults = FaultCodec(self.manifest, self.pool)
+        self.faults = FaultCodec(self.pool)
         self.channel = grpclib.client.Channel(
             host, port, status_details_codec=SchemaStatusDetails(self.pool))
         self.token: str | None = None

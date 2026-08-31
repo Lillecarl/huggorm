@@ -38,6 +38,9 @@ from google.protobuf import message_factory
 from grpclib.const import Status
 from grpclib.encoding.base import StatusDetailsCodecBase
 
+from huggorm_generated._callspec import Arg
+from huggorm_generated._policy import ERROR_FIELDS, ERROR_MODULE
+
 from . import grpc_pb as schema
 
 # The suffix grpc_schema gives an error class's message. One place,
@@ -95,26 +98,30 @@ class SchemaStatusDetails(StatusDetailsCodecBase):
 class FaultCodec:
     """One failure, as the details it travels as and back again.
 
-    Reads the manifest for which exception classes are declared, and
-    the schema pool for the messages they travel as. Names no error
-    type itself, the same way WireCodec names no value type."""
+    Reads the emitted error tables for which exception classes are
+    declared, and the schema pool for the messages they travel as.
+    Names no error type itself, the same way WireCodec names no value
+    type."""
 
-    def __init__(self, manifest: dict[str, Any], pool: Any,
+    def __init__(self, pool: Any,
                  module: ModuleType | None = None) -> None:
-        table: dict[str, Any] = manifest.get("errors") or {}
-        self.module_name: str | None = table.get("module")
-        self.fields: dict[str, list[list[str]]] = {
-            name: proto["wire_fields"]
-            for name, proto in table.get("classes", {}).items()
-        }
+        """No manifest. The two tables it dug out are emitted, in
+        `huggorm_generated._policy`, so a typechecker sees what each
+        holds - it saw a `dict[str, Any]` before.
+
+        An empty ERROR_MODULE is a legitimate answer: a library need
+        not have an error surface, and `module` raises only if
+        something asks for one."""
+        self.module_name: str = ERROR_MODULE
+        self.fields: dict[str, tuple[Arg, ...]] = ERROR_FIELDS
         self.pool = pool
         self._module = module
 
     @property
     def module(self) -> ModuleType:
         if self._module is None:
-            if self.module_name is None:
-                raise TypeError("this manifest declares no error module")
+            if not self.module_name:
+                raise TypeError("the bindings declare no error module")
             self._module = importlib.import_module(self.module_name)
         return self._module
 
@@ -141,8 +148,8 @@ class FaultCodec:
         declared = self._declared(cause)
         if declared is not None:
             msg = self._msg(declared + FAULT_SUFFIX)()
-            for fname, _ in self.fields[declared]:
-                setattr(msg, fname, str(getattr(cause, fname)))
+            for f in self.fields[declared]:
+                setattr(msg, f.name, str(getattr(cause, f.name)))
             out.append(msg)
         return out
 
@@ -189,7 +196,7 @@ class FaultCodec:
                 continue
             kls = getattr(self.module, name, None)
             if isinstance(kls, type) and issubclass(kls, BaseException):
-                return kls(*(getattr(msg, fname) for fname, _ in fields))
+                return kls(*(getattr(msg, f.name) for f in fields))
         return _approximate(fault.cause_type, fault.cause_message)
 
     @staticmethod

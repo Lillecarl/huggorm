@@ -56,7 +56,7 @@ def test_a_declared_error_crosses_as_its_own_message(
     from huggorm_bindings.errors import BadStorePath
     from huggorm_generated._runtime import InternalError
 
-    codec = FaultCodec(manifest, load_pool())
+    codec = FaultCodec(load_pool())
     failed = InternalError("Store.parse_store_path failed",
                            cause=BadStorePath("plain", "coloured"))
     names = [d.DESCRIPTOR.full_name for d in codec.details(failed)]

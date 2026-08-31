@@ -218,7 +218,9 @@ POLICY_DOC = """The wire policy of every declared type.
 
 Four tables the codec needs and no caller does: what KIND each type
 crosses as, what a wire value is made of, which names are string
-vocabularies, and what a sum type's arms are in declared order.
+vocabularies, and what a sum type's arms are in declared order. The
+exception hierarchy is here too, for the same reason and read by the
+same kind of codec.
 
 They came out of `manifest.json`, read at run time by a codec a
 typechecker could tell nothing about - every one of them was a
@@ -283,6 +285,25 @@ def policy_module(manifest: Proto) -> str:
                                            for n in sorted(manifest["enums"])])]
                        if manifest["enums"] else [],
                        keywords=[]),
+        simple=1))
+    # The exception surface. ERROR_MODULE is where the emitted module
+    # lands, which the fault codec imports to construct one; the
+    # fields are what it is rebuilt FROM.
+    body.append(ast.AnnAssign(
+        target=ast.Name(id="ERROR_MODULE"), annotation=_ann("str", "ERROR_MODULE"),
+        value=ast.Constant(value=manifest["errors"]["module"] or ""),
+        simple=1))
+    errs = manifest["errors"]["classes"]
+    body.append(ast.AnnAssign(
+        target=ast.Name(id="ERROR_FIELDS"),
+        annotation=_ann("dict[str, tuple[Arg, ...]]", "ERROR_FIELDS"),
+        value=ast.Dict(
+            keys=[ast.Constant(value=n) for n in errs],
+            values=[ast.Tuple(elts=[
+                ast.Call(func=ast.Name(id="Arg"),
+                         args=[ast.Constant(value=f[0]),
+                               ast.Constant(value=f[1])], keywords=[])
+                for f in e["wire_fields"]]) for e in errs.values()]),
         simple=1))
     body.append(ast.AnnAssign(
         target=ast.Name(id="UNION_ARMS"),
