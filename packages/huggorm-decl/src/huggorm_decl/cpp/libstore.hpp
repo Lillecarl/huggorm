@@ -1,21 +1,23 @@
 #pragma once
 
 /**
- * The two calls every libstore binding needs.
+ * The one call every libstore binding needs.
  *
  * `errors.hpp` is the other file in this directory, and it is here
  * for the same reason: it is C++ a DECLARATION names rather than C++
  * a binding derives. `decl/path.py` points `@binds` at
  * `huggorm::init_libstore`, and the emitter writes the `m.def`.
+ *
+ * `open_store` was the other half and is gone. It wrapped
+ * `nix::openStore` in three lines to take the result as a
+ * shared_ptr, which is a CONVERSION and so a mapping. It was here
+ * only because a factory had to be a named C++ symbol; the emitter
+ * writes the lambda now, and `decl/store.py` carries the one call
+ * (tasks/063).
  */
 
-#include <memory>
-#include <string>
-
-// initLibStore lives in globals.hh, openStore in store-open.hh.
+// initLibStore lives in globals.hh.
 #include "nix/store/globals.hh"
-#include "nix/store/store-api.hh"
-#include "nix/store/store-open.hh"
 
 namespace huggorm {
 
@@ -41,17 +43,6 @@ inline void init_libstore()
         return true;
     }();
     (void) done;
-}
-
-/**
- * nix::openStore returns a ref<Store>, a shared_ptr that cannot be
- * null. Neither backend has a declaration for that type; the implicit
- * conversion to shared_ptr does the work and keeps the store alive
- * for as long as Python holds one.
- */
-inline std::shared_ptr<nix::Store> open_store(const std::string & uri)
-{
-    return nix::openStore(uri);
 }
 
 }  // namespace huggorm

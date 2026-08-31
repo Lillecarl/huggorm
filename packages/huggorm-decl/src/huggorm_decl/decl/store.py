@@ -674,8 +674,7 @@ return huggorm::as_arms(nix::DerivedPath::parse(self.config, target));
 # class. `nix::openStore` picks an implementation from a URI, so
 # there is no constructor to declare and `@produced(by="open_store")`
 # on Store above names this function as the way in.
-@needs("huggorm_decl/cpp/libstore.hpp")
-@binds("huggorm::open_store")
+@needs("nix/store/store-open.hh")
 @blocks
 def open_store(uri: Str = "auto") -> "Store":
     """Open the store this URI names.
@@ -694,6 +693,16 @@ def open_store(uri: Str = "auto") -> "Store":
     Blocks. Opening a daemon store connects to it, and opening a local
     store may create its database.
     """
+    # `nix::openStore` returns a `ref<Store>` - a shared_ptr that
+    # cannot be null - and `ref` defines an implicit conversion to
+    # the `shared_ptr` nanobind holds as this class. So the body is
+    # the call and nothing else has to say anything.
+    #
+    # This was three lines in `cpp/libstore.hpp` because a factory
+    # had to be a NAMED C++ symbol. It does not any more, so the one
+    # call lives beside the declaration that describes it
+    # (tasks/063).
+    Cxx("return nix::openStore(uri);")
 
 # --- what the module does before a caller exists -------------------
 
