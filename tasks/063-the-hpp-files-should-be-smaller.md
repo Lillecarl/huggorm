@@ -186,3 +186,83 @@ declaration emitted beside it, which is why the per-module census
 could not see them and is the first thing to look at: a helper with
 no declaration next to it has nothing pulling it toward being
 derived.
+
+## Remeasured again (after 066)
+
+The three fronts above are CLOSED. Nothing in this section is new
+work; it is a reread, because the file still said OPEN while pointing
+at code that no longer exists.
+
+`cpp/eval.hpp` is 238 lines and every one of them is on the HELPER
+list this task wrote. The guarded accessors are gone, the `type_name`
+switch is gone, and `make_int` / `make_string` / `make_bool` /
+`parse_expr` / `eval_expr` are gone. What is left is the GC root and
+thread registration, `EvalCore` and its deleter, and `Bridge` - the
+staging builders, the `is_*` predicates, `sorted`, `symbol`, `intern`,
+`materialise`, `wrap`. Generated code calls all of it.
+
+So the "Order" section is spent. The directory total has not moved -
+still 330 - because the lines that came out of `eval.hpp` were
+replaced by lines that were never counted. That is the honest reading
+of a flat number.
+
+    35  derived_path.hpp
+    37  errors.hpp
+   238  eval.hpp          all helpers
+    20  libstore.hpp
+   ---
+   330
+
+Three things are left, smallest first.
+
+### errors.hpp names its Python module in a string literal
+
+`error_class` imports `"huggorm_bindings.errors"`. That module's name
+is DERIVED three other ways - `errors_module()` from the declaration's
+stem, `_policy.ERROR_MODULE`, and the emitted file name - and this is
+a fourth copy that no reader of the other three would find.
+
+It is the bug 065 already found one layer up, still here. Renaming
+`decl/errors.py` makes this lookup return null, and `raise_as` then
+falls back to a plain RuntimeError carrying the message. Every nix
+error silently loses its type, and no gate says so.
+
+The generated catch chain already passes the class name. It should
+pass the module too, which makes `raise_as` a helper with no library
+knowledge in it at all.
+
+### libstore.hpp: open_store is a conversion
+
+`init_libstore` is a helper and stays - it is idempotent
+initialisation that libstore exposes no other way, and a declaration
+points `@binds` at it.
+
+`open_store` is one line: `nix::openStore(uri)`, taken as a
+`shared_ptr` rather than the `ref<Store>` upstream returns. CLAUDE.md
+lists a conversion as a MAPPING. Whether the declaration can say
+"take this return as a shared_ptr" is the question; if it can, this
+file is 12 lines.
+
+### derived_path.hpp has reached its own trigger
+
+The file states the condition itself: *"WHEN THIS MOVES INTO THE
+EMITTER: the second union whose C++ arm wraps a declared arm in a
+one-member struct. One user is a helper; two is a pattern."*
+
+There are two - `SingleDerivedPath` and `DerivedPath` - so the
+condition is met. The declaration already knows the arms; the four
+`as_arms` / `from_arms` visits say the same thing by hand.
+
+This is the largest of the three and the one that needs a marker
+designed rather than a literal moved, so `tasks/061` overlaps it the
+way it overlapped `@guard`.
+
+### And 61 Cxx bodies
+
+`Cxx(...)` in a declaration is the sanctioned hatch: C++ written
+where the declaration can see it, lifted out by the reader. 61 uses,
+concentrated in `eval.py` (15), `store.py` (14) and
+`derived_path.py` (9). Not counted in the 330 and not a violation -
+but the hatch is where a mapping goes to hide, and `derived_path.py`
+having nine of them beside a header this task wants derived is worth
+one look.
