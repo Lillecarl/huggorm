@@ -1,9 +1,22 @@
 # The manifest is a runtime interpreter, not an IR
 
-**OPEN.** `manifest.json` is not an intermediate between the two
-codegen stages. It is a table that three hand-written modules read on
-every call, and that makes it the same pathology as hand-written C++
-mapping - in a different language, and better hidden.
+**MOSTLY DONE.** `manifest.json` is not an intermediate between the
+two codegen stages. It was a table that three hand-written modules
+read on every call, and that made it the same pathology as
+hand-written C++ mapping - in a different language, and better
+hidden.
+
+The file is DELETED. `tasks/065` is the fix and all four of its
+phases landed: every reader calls `build_manifest()` instead, and the
+tables the library needs are emitted into
+`huggorm_generated/_policy.py` where a typechecker can see them.
+
+What is left is the last section below, `huggorm/__init__.py` - about
+thirty hand-written re-export lines that track the declarations by
+hand. Smaller than the manifest and independent of it, and it needs a
+decision rather than an implementation: a generated file inside the
+hand-written package would break the trick `nix run test` uses to put
+the tree's `huggorm/` ahead of the store copy.
 
 Deferred on purpose. Carl: *"Let's begin with a conservative
 restructuring and renaming, once we're done with that we'll discuss
