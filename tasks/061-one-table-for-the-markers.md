@@ -1,8 +1,9 @@
 # One table for the markers
 
-**OPEN.** Where each declaration marker is legal, how many times, and
-what it conflicts with - as DATA, driving validation and emission
-instead of being restated in prose and in scattered `if`s.
+**THE TABLE IS BUILT. THE `@abstract` SPLIT IS NOT.** Where each
+declaration marker is legal, how many times, and what it conflicts
+with - as DATA, driving validation and emission instead of being
+restated in prose and in scattered `if`s.
 
 ## Where it comes from
 
@@ -110,3 +111,62 @@ AFTER the store hierarchy (060 step 3). That step adds markers -
 only for the mock - and a schema written against what the markers
 actually need beats one written against a guess. Doing it first would
 mean designing the table for markers that are about to change.
+
+**That precondition is dead, and waiting on it is waiting for
+nothing.** 060 closed by DELETING the mock rather than porting the
+hierarchy. `@derives` is gone from `declare.py` entirely, and
+`@abstract` has no users at all. There is no step coming that adds
+them, so the table was right to be built without it - and the
+`@abstract` split is now blocked on a DECISION rather than on work.
+
+## Done
+
+The table exists. `declare.MARKERS` is 23 entries keyed by decorator
+name, each carrying `target` / `arity` / `excludes` / `requires`, and
+every marker in `declare.py` has one.
+
+`read._check_markers` is the generic loop the task asked for, called
+from `_apply`, so every marker on every target passes through it
+once. It checks the legal target, flag-vs-called arity, "may appear
+once", and both directions of `excludes` / `requires` - reporting a
+conflicting pair once rather than from both ends.
+
+The unknown-marker suggestion is in: `difflib.get_close_matches`, so
+`@read` for `@reads` says which was meant.
+
+The marker set grew while this was open. 19 became 23: `tagged`,
+`produces`, `fills`, `names` and `guard` arrived, `derives`, `pure`
+and `virtual` went with the mock. All 23 are in the table, which is
+what the loop's unknown-marker branch enforces the moment one is
+used.
+
+`census_markers` now prints, beside `census_cpp`, which markers no
+declaration carries. It names two: `@abstract` and `@custom`. That is
+the measurement the rest of this task turns on - `@abstract`'s three
+emitter branches and its smoke-test assertion have never run, and the
+only place that said so was a comment inside the branch that never
+fires.
+
+## Left
+
+**The `@abstract` split**, which is the design question and the
+reason this file stays open. `@abstract` means "the C++ type has pure
+virtuals" in the declaration and "Python may not construct one" in
+three emitters. `nix::Store` is both abstract AND opened through
+`nix::openStore`, so stating the true fact today deletes its factory:
+`nbemit` takes the `if decl.abstract` branch INSTEAD of the
+`elif decl.built_by` one, and `Store("dummy://")` stops existing.
+Verified by reading the branch order, not by running it.
+
+The fix is the shape above: the declaration states the FACT, and each
+layer's DERIVED question - "is there a door" - is computed once. That
+is one new field and a rename, not a redesign.
+
+**`path:line:col` in diagnostics.** `DeclarationError` still carries
+`line N: message` and no path. It matters once a declaration imports
+another and the error is in the imported one - which is now normal,
+because `decl/store.py` imports five others.
+
+**Collected errors, not the first one.** Still raises on the first
+diagnostic. Fine for a build gate, worse for a person fixing three
+mistakes in one declaration.
