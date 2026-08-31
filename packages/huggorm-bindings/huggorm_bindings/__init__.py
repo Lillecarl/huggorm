@@ -32,8 +32,10 @@ the sharper rule about what does not belong.
 on purpose: a compiled module would need a reason, and a class
 statement is not one.
 
-The two markers below - `_errors_module` and `_async_twins` - are the
-package's own declarations, read by the generator.
+The marker below - `_async_twins` - is the package's own declaration,
+read by the generator. `_errors_module` stood beside it and is gone:
+the emitter that writes `errors.py` decides where it goes, so it
+derives the name rather than reading it back off this file.
 
 ## The mock
 
@@ -56,13 +58,6 @@ from .realisation import DrvOutput, Realisation
 from .signature import Signature
 from .store import MissingPaths, Store, StoreLocation
 from .words import ContentAddressMethod, HashAlgorithm
-
-# Where the exception hierarchy lives. A declaration, like _binds or
-# _wire, and for the same reason: the codegen must not know a module
-# name this package could rename. An error crosses the wire as a name,
-# and a name is only safe to construct against a declared set - so the
-# set has to come from here (tasks/036).
-_errors_module = "huggorm_bindings.errors"
 
 # A type whose ASYNC surface is spelled differently. Same value, and a
 # wrapper that gives it awaitable methods: anyio.Path wraps a

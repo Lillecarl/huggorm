@@ -210,9 +210,8 @@ the same knowledge by hand. The generator reads all of them:
     _blocking    False if no method can wait     wrap or not   (025)
     _produced    True if __init__ raises         constructible (041)
 
-The PACKAGE declares two more, in its __init__:
+The PACKAGE declares one more, in its __init__:
 
-    _errors_module   where the exception hierarchy lives      (036)
     _async_twins     a type's async spelling, if it has one   (040)
 
 `_async_twins` maps pathlib.Path to anyio.Path: the binding returns

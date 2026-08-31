@@ -21,6 +21,7 @@ from huggorm_gen.cppgen.generate import (
     declared_functions,
     declared_returned,
     declared_unions,
+    errors_module,
 )
 from huggorm_gen.payload.wiretypes import MANIFEST_SCHEMA, names_in
 from huggorm_gen.pygen.emitter import (
@@ -456,10 +457,10 @@ def main(argv: list[str] | None = None) -> None:
     for proto in protos + returned_protos:
         proto.pop("_helpers", None)
 
-    # The exception hierarchy, read from the module the bindings
-    # declare. An error crosses the wire as a NAME, and this is the set
+    # The exception hierarchy, from the module the C++ emitter writes
+    # it into. An error crosses the wire as a NAME, and this is the set
     # that makes a name safe to construct (tasks/036).
-    errors = extract_errors(bindings)
+    errors = extract_errors(errors_module())
     complaints = check_error_contract(errors)
     if complaints:
         for c in complaints:

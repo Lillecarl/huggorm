@@ -193,6 +193,22 @@ def error_chain() -> list[str]:
     return pyerrors.chain(have.tree(have.errors), "huggorm::raise_as")
 
 
+def errors_module() -> str:
+    """Where the emitted exception module lands, as an import path.
+
+    Derived, not declared. The bindings package used to carry
+    `_errors_module = "huggorm_bindings.errors"` as a marker, and
+    pygen read it off the imported package. Both halves of that
+    string are already known here: `PACKAGE` is where a binding is
+    installed, and the declaration set names the errors document.
+
+    A marker is right when a fact has nowhere else to live. This one
+    had somewhere, so it was a fact stated twice - and the two would
+    have disagreed the first time either half moved."""
+    have = corpus()
+    return f"{PACKAGE}.{pathlib.Path(have.errors).stem}" if have.errors else ""
+
+
 def _code_lines(text: str) -> int:
     """Lines of C++ that are not blank and not a comment.
 
@@ -299,8 +315,13 @@ def main(out_dir: str) -> int:
         emit_module(mod, f"{PACKAGE}.{mod.name}", str(target), chain)
     tree = have.tree(have.errors)
     doc = ast.get_docstring(tree, clean=False) or ""
-    (out / "errors.py").write_text(pyerrors.module(tree, doc) + "\n")
-    print(f"{have.errors} -> {out / 'errors.py'}")
+    # Named after the declaration, not "errors.py". `errors_module()`
+    # derives the import path from the same stem, so a hardcoded file
+    # name here would let the two disagree - and renaming the
+    # declaration proved they did.
+    target = out / f"{pathlib.Path(have.errors).stem}.py"
+    target.write_text(pyerrors.module(tree, doc) + "\n")
+    print(f"{have.errors} -> {target}")
     for name in have.vocabularies:
         mod = have.module(name)
         target = out / f"{mod.name}.py"

@@ -19,7 +19,6 @@ import contextlib
 import importlib
 import inspect
 from enum import Enum
-from types import ModuleType
 from typing import Any, get_args, get_origin
 
 from huggorm_gen.payload.wiretypes import (
@@ -331,22 +330,23 @@ def extract_enum(cls: type) -> Proto:
     }
 
 
-def extract_errors(bindings: ModuleType) -> Proto:
+def extract_errors(module_name: str) -> Proto:
     """The exception hierarchy a binding can raise, as the manifest
     carries it.
 
-    Read from the module the package DECLARES in `_errors_module`, not
-    from a name this file knows. A package with no such declaration has
-    no error surface, which is a legitimate answer: the generator does
-    not require a library to have one.
+    Told which module, rather than reading a `_errors_module` marker
+    off the imported package. The emitter that WRITES that module
+    knows where it puts it, so the name is derived where it is
+    decided. An empty name means no error surface, which is a
+    legitimate answer: the generator does not require a library to
+    have one.
 
     What crosses is the class NAME, and the point of recording the set
     here is that a name is only safe to construct against a declared
     one. Without it the alternative is a status message that says which
     module to import, which lets the far side name any importable
     class."""
-    module_name = getattr(bindings, "_errors_module", None)
-    if module_name is None:
+    if not module_name:
         return {"module": None, "classes": {}}
     module = importlib.import_module(module_name)
     classes: Proto = {}

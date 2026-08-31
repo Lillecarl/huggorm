@@ -19,10 +19,10 @@ Only what a binding can actually raise lives here. A class with no
 `cxx` gets no catch clause, which is how a Python-only exception stays
 in the module without inventing one.
 
-Every class in this module reaches the wire. The codegen reflects the
-module named by `_errors_module` in the package __init__, so an error
-crosses as a NAME checked against a declared set - which is what keeps
-a status message from naming any importable class (tasks/036).
+Every class in this module reaches the wire. An error crosses as a
+NAME checked against a declared set, which is what keeps a status
+message from naming any importable class (tasks/036). The set is
+this file: the emitter writes the module and knows where it put it.
 """
 
 
