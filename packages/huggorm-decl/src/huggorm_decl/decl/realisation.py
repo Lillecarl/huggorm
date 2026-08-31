@@ -81,7 +81,6 @@ class DrvOutput:
 
         The hash is base16 WITH its algorithm, which is what
         `DrvOutput::parse` reads back."""
-        Cxx("return self.to_string();")
 
 
 @produced(by="Store.query_realisation")

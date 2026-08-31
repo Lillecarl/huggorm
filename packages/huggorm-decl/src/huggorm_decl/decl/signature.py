@@ -70,4 +70,3 @@ class Signature:
     def to_string(self) -> Str:
         """`<key-name>:<base64>` - what a .narinfo carries and what
         `nix path-info --sigs` prints."""
-        Cxx("return self.to_string();")

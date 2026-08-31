@@ -78,4 +78,3 @@ class ContentAddress:
 
         What `nix path-info --json` prints, and what a caller compares
         against a string they were given."""
-        Cxx("return self.render();")
