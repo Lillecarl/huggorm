@@ -513,19 +513,17 @@ def test_the_stubs_promise_the_same_order_the_manifest_does(
     assert checked, "no stubbed class was found in the manifest"
 
 
-def test_an_abstract_class_refuses_to_be_built(
+def test_a_class_with_no_door_refuses_to_be_built(
         manifest: dict[str, Any]) -> None:
-    """A class the manifest calls abstract must refuse construction.
+    """A class the manifest says does not construct must refuse.
 
-    `@abstract` says a caller holds one and never makes one - the
-    implementation is chosen by a factory, or supplied by a Python
-    subclass. Every layer above reads `abstract` and declines to offer
-    a constructor, so the BINDING has to agree or the layers are
+    Every layer above reads `constructs` and declines to offer a
+    constructor, so the BINDING has to agree or the layers are
     describing a class that does not behave that way.
 
-    It did not agree, and the reason is worth keeping even though the
-    machinery is gone. `nb::init<>()` was the only way to reach a
-    trampoline, and the held C++ type is abstract too - so
+    The binding did not agree once, and the reason is worth keeping
+    even though the machinery is gone. `nb::init<>()` was the only way
+    to reach a trampoline, and the held C++ type is abstract too - so
     `std::is_constructible_v<Type>` was false, nanobind always built
     the trampoline, and `MockStore()` succeeded. The failure moved to
     the first call, as "tried to call a pure virtual function", which
@@ -533,24 +531,32 @@ def test_an_abstract_class_refuses_to_be_built(
     (tasks/060) and the binding simply declares no constructor, but
     the guard this test drives is the same one.
 
-    NOTHING DECLARES AN ABSTRACT BINDING TODAY. MockStore was the last
-    one. nix::Store is abstract and cannot say so while `@abstract`
-    also means "no door" (tasks/061), so this asks the manifest rather
-    than naming a class and starts working again the day one lands."""
+    This asked `abstract` and slept for it. Nothing had carried
+    `@abstract` since the mock went, so the loop ran zero times and
+    said so in a comment. `constructs` is the question it always
+    meant - "is there a door" - and it separates the two things
+    `@abstract` used to say (tasks/061). nix::Store now states the
+    true C++ fact about itself and still constructs, through its
+    factory, so it is correctly NOT a subject here; the five produced
+    types are.
+
+    No `match=`. Which sentence a refusal carries depends on WHY the
+    door is shut, and there are three - produced by something else,
+    no constructor declared, abstract with no factory. The class name
+    is the part every one of them has."""
     import importlib
 
     checked = []
-    for name, entry in manifest["wrappers"].items():
-        if not entry.get("abstract"):
-            continue
-        cls = getattr(importlib.import_module(entry["module"]), name)
-        with pytest.raises(TypeError, match="abstract"):
-            cls()
-        checked.append(name)
-    # No `assert checked`: nothing declares one since the mock went
-    # (tasks/060), and an empty list here is the truth rather than a
-    # gate asleep. It is a gate WAITING, and tasks/061 is what wakes
-    # it.
+    for group in ("wrappers", "returned_types"):
+        for name, entry in manifest[group].items():
+            if entry["constructs"]:
+                continue
+            cls = getattr(importlib.import_module(entry["module"]), name)
+            with pytest.raises(TypeError) as caught:
+                cls()
+            assert name in str(caught.value), str(caught.value)
+            checked.append(name)
+    assert len(checked) >= 5, checked
 
 
 def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
