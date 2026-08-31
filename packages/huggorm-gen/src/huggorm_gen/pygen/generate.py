@@ -617,7 +617,7 @@ def main(argv: list[str] | None = None) -> None:
     (out / "_unions.py").write_text(unions_module(unions))
     # ...and the wire policy of every declared type, which the codec
     # reads and no caller does.
-    (out / "_policy.py").write_text(policy_module(manifest))
+    (out / "_policy.py").write_text(policy_module(manifest, ordered))
     print(f"generated _unions.py for {len(unions)} sum type(s): "
           f"{', '.join(unions) or 'none'}")
     # The codec reads declared type strings at run time and the schema

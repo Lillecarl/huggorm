@@ -35,7 +35,7 @@ import grpclib.exceptions
 from google.protobuf import message_factory
 
 from huggorm_generated._callspec import Call
-from huggorm_generated.rpc import ACQUIRE, FREE, NO_RPC
+from huggorm_generated._policy import ACQUIRE, FREE, NO_RPC
 
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails

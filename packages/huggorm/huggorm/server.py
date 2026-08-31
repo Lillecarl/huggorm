@@ -1,11 +1,11 @@
 """
-grpclib server: a manifest-driven adapter onto huggorm_generated.
+grpclib server: a spec-driven adapter onto huggorm_generated.
 
 The async wrappers already own threading policy and thread hopping, so
 the server does none of that. It resolves handles to wrapper objects,
 decodes wire-values into sync bindings (copies - matching _wire
 semantics), awaits the method on the wrapper's runner, encodes the
-result. Handlers are generated in a loop from the manifest; nothing is
+result. Handlers are built in a loop from the emitted specs; nothing is
 hand-written per method.
 """
 
@@ -21,6 +21,15 @@ import grpclib.exceptions
 import grpclib.server
 from google.protobuf import message_factory
 from grpclib.reflection.service import ServerReflection
+
+from huggorm_generated._callspec import Acquire, Call, Tree
+from huggorm_generated._policy import (
+    ACQUIRE,
+    ASYNC_CLASS,
+    FREE,
+    METHODS,
+    TREES,
+)
 
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails
@@ -52,7 +61,7 @@ class TreeWalk:
     thread.
 
     Everything it knows about the type comes from `spec`, which the
-    binding declares and the manifest carries: which accessor says what
+    binding declares and the build emits: which accessor says what
     a node is, which accessor reads each scalar kind, and how to reach
     the elements of a list or an attribute set. This class names no
     type and no method.
@@ -74,7 +83,7 @@ class TreeWalk:
     - a node past the depth, or one the budget ran out on.
     """
 
-    def __init__(self, spec: dict[str, Any], depth: int, budget: int) -> None:
+    def __init__(self, spec: Tree, depth: int, budget: int) -> None:
         self.spec = spec
         self.depth = depth
         self.left = budget
@@ -89,7 +98,7 @@ class TreeWalk:
         differ, and a wrapper that dies hands its id() to the next one -
         which reads as "already seen" and truncates a tree that was
         never visited."""
-        how = self.spec.get("identity")
+        how = self.spec.identity
         return getattr(obj, how)() if how else id(obj)
 
     def node(self, obj: Any, depth: int) -> Any:
@@ -103,20 +112,20 @@ class TreeWalk:
             return ("proxy", type(obj).__name__, obj)
         self.left -= 1
         self.seen.add(key)
-        kind = getattr(obj, self.spec["kind"])()
-        scalar = self.spec["scalars"].get(kind)
+        kind = getattr(obj, self.spec.kind)()
+        scalar = self.spec.scalars.get(kind)
         if scalar is not None:
             type_str, reader = scalar
             return ("scalar", type_str, getattr(obj, reader)())
         if kind == "list":
-            how = self.spec["list"]
-            size = getattr(obj, how["size"])()
-            item = getattr(obj, how["item"])
+            how = self.spec.list
+            size = getattr(obj, how.size)()
+            item = getattr(obj, how.value)
             return ("list", [self.node(item(i), depth + 1) for i in range(size)])
         if kind == "attrs":
-            how = self.spec["attrs"]
-            size = getattr(obj, how["size"])()
-            name, value = getattr(obj, how["name"]), getattr(obj, how["value"])
+            how = self.spec.attrs
+            size = getattr(obj, how.size)()
+            name, value = getattr(obj, how.name), getattr(obj, how.value)
             return ("attrs", {name(i): self.node(value(i), depth + 1)
                               for i in range(size)})
         # A kind nothing describes: it stays where it is.
@@ -125,43 +134,31 @@ class TreeWalk:
 
 
 class Dispatcher:
-    def __init__(self, pool: Any, manifest: dict[str, Any],
-                 lease_ttl: float = 120.0) -> None:
+    def __init__(self, pool: Any, lease_ttl: float = 120.0) -> None:
+        """No manifest. Every table it unpacked is emitted, in
+        `huggorm_generated._policy`, so this reads them by name.
+
+        The handlers are still built in a loop and that is right: the
+        body of one is a RULE - decode, call, encode - and it reads
+        the same for every method. What differs is the spec, and the
+        build writes that."""
         self.pool = pool
-        self.manifest = manifest
         self.table = HandleTable(ttl=lease_ttl)
         # Runner-shutdown tasks in flight; see _on_drop.
         self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
         self.codec = WireCodec()
         # A failure crosses the same way a value does: as messages, by
-        # what the manifest declares, never by a type this file names
+        # what the bindings declare, never by a type this file names
         # (tasks/036).
         self.faults = FaultCodec(schema.load_pool())
-        # Which classes are value TREES, and how to walk one. Declared
-        # next to the binding; this module names none of them.
-        self.trees: dict[str, dict[str, Any]] = {
-            name: proto["tree"]
-            for group in ("wrappers", "returned_types")
-            for name, proto in manifest[group].items()
-            if "tree" in proto
-        }
-        self.async_classes: dict[str, str] = {
-            name: proto["async_class"]
-            for group in ("wrappers", "returned_types")
-            for name, proto in manifest[group].items()
-            if "async_class" in proto
-        }
         self.mapping: dict[str, grpclib.const.Handler] = {}
         self._session()
-        for group in ("wrappers", "returned_types"):
-            for cls_name, proto in manifest[group].items():
-                # An unwrapped class has no service: it crosses as a
-                # value, so the caller already holds the object and
-                # calls it locally. The manifest says so by leaving the
-                # rpc names off.
-                if "service" in proto:
-                    self._service(cls_name, proto)
+        # A class with no methods on the wire has no service: it
+        # crosses as a value, so the caller already holds the object
+        # and calls it locally. METHODS says so by leaving it out.
+        for cls_name in METHODS:
+            self._service(cls_name)
         self._free_service()
 
     def _on_drop(self, obj: Any) -> None:
@@ -226,7 +223,7 @@ class Dispatcher:
         else wrapped in InternalError - so unknown handles and bugs
         arrive debuggable, not anonymous.
 
-        A cause the manifest DECLARES also crosses as its parts, so the
+        A cause the bindings DECLARE also crosses as its parts, so the
         far side rebuilds the class rather than approximating it by
         name. That is what makes the remote shape the same as the
         in-process one: an InternalError whose __cause__ is the real
@@ -255,51 +252,58 @@ class Dispatcher:
         import huggorm_generated as flg
 
         name = type(obj).__name__
-        cls = self.async_classes.get(name)
+        cls = ASYNC_CLASS.get(name)
         if cls is None:
             raise TypeError(
                 f"{name} has no async wrapper, so it cannot be handed out "
                 f"as a handle")
         return getattr(flg, cls)(obj, parent._runner)
 
-    def _service(self, cls_name: str, proto: dict[str, Any]) -> None:
-        if "acquire" in proto:
-            self._acquire(cls_name, proto)
+    def _service(self, cls_name: str) -> None:
+        """One handler per declared method, from the emitted specs.
 
-        for m in proto["methods"]:
-            if "rpc" not in m:
-                # No wire representation, so no handler. The generator
-                # names it and why at build time, the same as for a
-                # free function - and the in-process wrapper still has
-                # the method.
-                continue
-            req_cls = self.msg(m["rpc"]["req"])
-            resp_cls = self.msg(m["rpc"]["resp"])
+        A method the wire cannot carry is simply absent from METHODS.
+        The generator names it and why at build time, the same as for
+        a free function, and the in-process wrapper still has it.
 
-            async def handler(stream: Any, m: dict[str, Any] = m,
+        The handler is ONE function, not one per method. Its body is a
+        RULE - decode the arguments, call the method, encode the
+        result - and it reads the same for all sixty of them. Emitting
+        sixty copies would restate that rule sixty times, which is the
+        thing this repo generates code to avoid. What IS per-method is
+        the spec, and that is emitted.
+        """
+        if cls_name in ACQUIRE:
+            self._acquire(cls_name)
+
+        for m in METHODS.get(cls_name, ()):
+            req_cls = self.msg(m.req)
+            resp_cls = self.msg(m.resp)
+
+            async def handler(stream: Any, m: Call = m,
                               resp_cls: Any = resp_cls) -> None:
                 req = await stream.recv_message()
                 token = _tok(stream)
                 target = self.resolve(req.self.id, token)
                 args = [
-                    self.codec.decode(req, p["name"], p["type"],
+                    self.codec.decode(req, a.name, a.type,
                                       lambda hid: self.resolve(hid, token))
-                    for p in m["params"]]
-                result = await getattr(target, m["name"])(*args)
+                    for a in m.args]
+                result = await getattr(target, m.name)(*args)
                 resp = resp_cls()
                 # Proxy returns pin their producer (parents=[self]) and
-                # lease to the CALLER's connection; everything else is
-                # serialized by the manifest-driven codec.
+                # lease to the CALLER's connection; everything else the
+                # codec serializes by declared type.
                 self.codec.encode(
-                    resp, "result", m["return_type"], result,
+                    resp, "result", m.returns, result,
                     lambda obj: self.put(obj, token, parents=[req.self.id]))
                 await stream.send_message(resp)
 
-            self.mapping[m["rpc"]["path"]] = grpclib.const.Handler(
-                self._wrap(handler, f"{cls_name}.{m['name']}"),
+            self.mapping[m.path] = grpclib.const.Handler(
+                self._wrap(handler, f"{cls_name}.{m.name}"),
                 grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
 
-    def _acquire(self, cls_name: str, proto: dict[str, Any]) -> None:
+    def _acquire(self, cls_name: str) -> None:
         """Construct one instance, from typed constructor arguments.
 
         The old Session/Acquire took a class NAME and nothing else, so
@@ -310,24 +314,25 @@ class Dispatcher:
         class's own service with its declared parameters."""
         import huggorm_generated as flg
 
+        spec = ACQUIRE[cls_name]
         wrapper_cls = getattr(flg, "Async" + cls_name)
-        req_cls = self.msg(proto["acquire"]["req"])
+        req_cls = self.msg(spec.req)
         handle_cls = self.msg("Handle")
 
         async def handler(stream: Any, wrapper_cls: Any = wrapper_cls,
-                          proto: dict[str, Any] = proto,
+                          spec: Acquire = spec,
                           handle_cls: Any = handle_cls) -> None:
             req = await stream.recv_message()
             token = _tok(stream)
-            args = [self.codec.decode(req, p["name"], p["type"],
+            args = [self.codec.decode(req, a.name, a.type,
                                       lambda hid: self.resolve(hid, token),
-                                      optional=p["default"] == "None")
-                    for p in proto["ctor"]]
+                                      optional=a.name in spec.optional)
+                    for a in spec.args]
             resp = handle_cls()
             resp.id = self.put(wrapper_cls(*args), token)
             await stream.send_message(resp)
 
-        self.mapping[proto["acquire"]["path"]] = grpclib.const.Handler(
+        self.mapping[spec.path] = grpclib.const.Handler(
             self._wrap(handler, f"{cls_name}.Acquire"),
             grpclib.const.Cardinality.UNARY_UNARY, req_cls, handle_cls)
 
@@ -341,29 +346,27 @@ class Dispatcher:
         time."""
         import huggorm_generated as flg
 
-        for fname, proto in self.manifest.get("free_functions", {}).items():
-            if "rpc" not in proto:
-                continue
+        for fname, spec in FREE.items():
             fn = getattr(flg, fname)
-            req_cls = self.msg(proto["rpc"]["req"])
-            resp_cls = self.msg(proto["rpc"]["resp"])
+            req_cls = self.msg(spec.req)
+            resp_cls = self.msg(spec.resp)
 
             async def handler(stream: Any, fn: Any = fn,
-                              proto: dict[str, Any] = proto,
+                              spec: Call = spec,
                               resp_cls: Any = resp_cls) -> None:
                 req = await stream.recv_message()
                 token = _tok(stream)
                 args = [
-                    self.codec.decode(req, p["name"], p["type"],
+                    self.codec.decode(req, a.name, a.type,
                                       lambda hid: self.resolve(hid, token))
-                    for p in proto["params"]]
+                    for a in spec.args]
                 result = await fn(*args)
                 resp = resp_cls()
-                self.codec.encode(resp, "result", proto["return_type"], result,
+                self.codec.encode(resp, "result", spec.returns, result,
                                   lambda obj: self.put(obj, token))
                 await stream.send_message(resp)
 
-            self.mapping[proto["rpc"]["path"]] = grpclib.const.Handler(
+            self.mapping[spec.path] = grpclib.const.Handler(
                 self._wrap(handler, f"Functions.{fname}"),
                 grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
 
@@ -471,7 +474,7 @@ class Dispatcher:
             req = await stream.recv_message()
             token = _tok(stream)
             target = self.resolve(req.handle.id, token)
-            spec = self.trees.get(type(target).__name__.removeprefix("Async"))
+            spec = TREES.get(type(target).__name__.removeprefix("Async"))
             if spec is None:
                 raise TypeError(
                     f"{req.handle.id[:8]} is not a value tree: its type "
@@ -512,7 +515,7 @@ class Dispatcher:
 async def serve(host: str = "127.0.0.1", port: int = 50051,
                 lease_ttl: float = 120.0) -> None:
     pool = schema.load_pool()
-    dispatcher = Dispatcher(pool, schema.load_manifest(), lease_ttl=lease_ttl)
+    dispatcher = Dispatcher(pool, lease_ttl=lease_ttl)
 
     # Connection liveness: transports never report death; the sweeper
     # notices silence past the TTL and releases what the dead
@@ -533,7 +536,7 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     sweep_task = asyncio.create_task(sweeper()) if lease_ttl else None
 
     # Reflection serves descriptors out of the same pool the handlers
-    # use, so external tools see exactly the manifest-built schema.
+    # use, so external tools see exactly the generated schema.
     # One servable PER SERVICE: reflection's list_services reports one
     # name per handler object.
     services = []

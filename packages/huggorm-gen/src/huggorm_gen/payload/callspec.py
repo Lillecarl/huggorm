@@ -58,14 +58,22 @@ class Arg:
 class Call:
     """One remote method, decided at build time.
 
-    `path` is the gRPC route, `req` and `resp` name the two messages
-    in the descriptor pool, `args` is the declared parameter list in
-    order, and `returns` is the declared return type.
+    `name` is the declared method, `path` is the gRPC route, `req` and
+    `resp` name the two messages in the descriptor pool, `args` is the
+    declared parameter list in order, and `returns` is the declared
+    return type.
 
     Everything here is a constant. The client resolves nothing: it
     fills `req` from `args`, sends it to `path`, and reads `result`
-    out of `resp` as `returns`."""
+    out of `resp` as `returns`. The server reads the same value the
+    other way round, and `name` is the one field only it needs - the
+    method to call on the object the handle resolved to.
 
+    One dataclass for both sides, not two that agree. The two ends of
+    one call cannot disagree about its shape if there is only one
+    statement of it, and the build emits that statement once."""
+
+    name: str
     path: str
     req: str
     resp: str
@@ -99,3 +107,57 @@ class Acquire:
     # be a second place for it to be wrong, and nothing on this side
     # would ever apply it.
     required: int
+    # The parameters whose declared default is the None LITERAL, by
+    # name. A different fact from `required`, and conflating them
+    # decoded `Store(uri="auto")` as an optional field and hit
+    # "Field Store_AcquireReq.uri does not have presence".
+    #
+    # `required` is about ARITY: how many arguments a caller must
+    # pass. This is about PRESENCE: whether the proto field can tell
+    # unset from the zero value. A parameter with no default at all is
+    # required and has no presence; one defaulting to "auto" is
+    # optional to the caller and still has no presence; only one
+    # defaulting to None has it.
+    optional: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Walk:
+    """How to read one CONTAINER of a value tree.
+
+    A size accessor and the accessors that read a position. A list
+    answers one value per index; an attribute set answers a name and a
+    value, so `name` is empty for a list.
+
+    Accessor NAMES, not bound methods. The walker holds the spec and
+    the object separately - it is handed a fresh object per node -
+    so it looks each one up on the node it is walking."""
+
+    size: str
+    value: str
+    name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Tree:
+    """How a value that HOLDS other values is walked.
+
+    Declared next to the binding, because only the declaration knows
+    which of a type's methods answers its kind and which reads a
+    child. The server walks a whole tree in one hop, so it needs all
+    of this before it starts.
+
+    `identity` is what makes two nodes the same node, and it is
+    declared rather than assumed: Python identity is not it wherever a
+    binding builds a fresh wrapper per access. Empty falls back to
+    `id()`.
+
+    `scalars` maps a declared kind name to the pair (declared type,
+    accessor). A kind absent from it is a thunk or something else the
+    declaration does not name, and it crosses as a proxy."""
+
+    kind: str
+    identity: str
+    scalars: dict[str, tuple[str, str]]
+    list: Walk
+    attrs: Walk

@@ -6,6 +6,7 @@ emitter needs arrives in the protocol dict a declaration produced.
 """
 
 import ast
+from collections.abc import Sequence
 from typing import Any
 
 from huggorm_gen.payload.wiretypes import dotted_heads, names_in
@@ -234,7 +235,37 @@ the oneof's fields in and a renumbering is a wire change. Tuples
 rather than lists, so nothing downstream reorders one in place."""
 
 
-def policy_module(manifest: Proto) -> str:
+def _table(var: str, ann: str,
+           rows: Sequence[tuple[str, ast.expr]]) -> ast.stmt:
+    """One emitted lookup table, named and annotated.
+
+    Five of them are written this way, and each was three lines of the
+    same ast.Dict construction. The annotation is the point of the
+    helper as much as the brevity: an inline loop over tables whose
+    values are different expression kinds infers the first branch it
+    sees and then rejects the second."""
+    return ast.AnnAssign(
+        target=ast.Name(id=var), annotation=_ann(ann, var),
+        value=ast.Dict(keys=[ast.Constant(value=n) for n, _ in rows],
+                       values=[v for _, v in rows]),
+        simple=1)
+
+
+def _walk(how: Proto) -> ast.expr:
+    """One container's accessors, as a `Walk`.
+
+    A list has `item` and an attribute set has `name` and `value`.
+    Spelled the same way here - `value` is what reads the child in
+    both - so the walker has one shape rather than two."""
+    return ast.Call(func=ast.Name(id="Walk"),
+                    args=[ast.Constant(value=how["size"]),
+                          ast.Constant(value=how.get("value")
+                                       or how["item"]),
+                          ast.Constant(value=how.get("name", ""))],
+                    keywords=[])
+
+
+def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
     """`_policy.py`: the wire policy of every declared type.
 
     Four tables the codec needs and no caller does: what KIND each
@@ -267,17 +298,13 @@ def policy_module(manifest: Proto) -> str:
                 for f in proto["wire_fields"]])))
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
-        ast.ImportFrom(module="._callspec", names=[ast.alias(name="Arg")],
-                       level=0),
+        ast.ImportFrom(module="._callspec",
+                       names=[ast.alias(name="Acquire"), ast.alias(name="Arg"),
+                              ast.alias(name="Call"), ast.alias(name="Tree"),
+                              ast.alias(name="Walk")], level=0),
     ]
-    for var, ann, rows in (("WIRE_KIND", "dict[str, str]", kinds),
-                           ("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
-                            fields)):
-        body.append(ast.AnnAssign(
-            target=ast.Name(id=var), annotation=_ann(ann, var),
-            value=ast.Dict(keys=[ast.Constant(value=n) for n, _ in rows],
-                           values=[v for _, v in rows]),
-            simple=1))
+    body.append(_table("WIRE_KIND", "dict[str, str]", kinds))
+    body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]", fields))
     body.append(ast.AnnAssign(
         target=ast.Name(id="ENUMS"), annotation=_ann("frozenset[str]", "ENUMS"),
         value=ast.Call(func=ast.Name(id="frozenset"),
@@ -294,26 +321,66 @@ def policy_module(manifest: Proto) -> str:
         value=ast.Constant(value=manifest["errors"]["module"] or ""),
         simple=1))
     errs = manifest["errors"]["classes"]
-    body.append(ast.AnnAssign(
-        target=ast.Name(id="ERROR_FIELDS"),
-        annotation=_ann("dict[str, tuple[Arg, ...]]", "ERROR_FIELDS"),
-        value=ast.Dict(
-            keys=[ast.Constant(value=n) for n in errs],
-            values=[ast.Tuple(elts=[
-                ast.Call(func=ast.Name(id="Arg"),
-                         args=[ast.Constant(value=f[0]),
-                               ast.Constant(value=f[1])], keywords=[])
-                for f in e["wire_fields"]]) for e in errs.values()]),
-        simple=1))
-    body.append(ast.AnnAssign(
-        target=ast.Name(id="UNION_ARMS"),
-        annotation=_ann("dict[str, tuple[str, ...]]", "UNION_ARMS"),
-        value=ast.Dict(
-            keys=[ast.Constant(value=n) for n in manifest["unions"]],
-            values=[ast.Tuple(elts=[ast.Constant(value=a) for a in arms])
-                    for arms in manifest["unions"].values()]),
-        simple=1))
-    return ast.unparse(ast.Module(body=body, type_ignores=[])) + "\n"
+    body.append(_table("ERROR_FIELDS", "dict[str, tuple[Arg, ...]]", [
+        (n, ast.Tuple(elts=[
+            ast.Call(func=ast.Name(id="Arg"),
+                     args=[ast.Constant(value=f[0]),
+                           ast.Constant(value=f[1])], keywords=[])
+            for f in e["wire_fields"]]))
+        for n, e in errs.items()]))
+    body.append(_table("UNION_ARMS", "dict[str, tuple[str, ...]]", [
+        (n, ast.Tuple(elts=[ast.Constant(value=a) for a in arms]))
+        for n, arms in manifest["unions"].items()]))
+    # Every method's call spec, ONCE. The client reads these through
+    # `rpc.py` and the server reads them through METHODS below, so the
+    # two ends of a call cannot disagree about its shape: there is one
+    # statement of it and both import that.
+    #
+    # They lived in `rpc.py`, which made them the client's. The server
+    # then built the same specs a second time out of the manifest, and
+    # two derivations of one fact is the thing this repo exists to
+    # stop.
+    methods = []
+    for proto in ordered:
+        names = []
+        for m in (m for m in proto["methods"] if "rpc" in m):
+            var = _spec_name(proto["name"], m["name"])
+            body.append(ast.Assign(targets=[ast.Name(id=var)], value=_spec(m)))
+            names.append(var)
+        methods.append((proto["name"], ast.Tuple(
+            elts=[ast.Name(id=n) for n in names])))
+    body.append(_table("METHODS", "dict[str, tuple[Call, ...]]", methods))
+    # The value TREES, and the async class each proxy is adopted into.
+    # Both were dug out of the manifest by the server's constructor.
+    # Annotated, because the two lists hold different expression
+    # types and an inferred one takes the first branch it sees.
+    trees: list[tuple[str, ast.expr]] = []
+    async_of: list[tuple[str, ast.expr]] = []
+
+    for group in ("wrappers", "returned_types"):
+        for name, proto in manifest[group].items():
+            if "async_class" in proto:
+                async_of.append((name,
+                                 ast.Constant(value=proto["async_class"])))
+            tree = proto.get("tree")
+            if tree is None:
+                continue
+            trees.append((name, ast.Call(
+                func=ast.Name(id="Tree"),
+                args=[ast.Constant(value=tree["kind"]),
+                      ast.Constant(value=tree.get("identity", "")),
+                      ast.Dict(keys=[ast.Constant(value=k)
+                                     for k in tree["scalars"]],
+                               values=[ast.Tuple(elts=[ast.Constant(value=x)
+                                                       for x in v])
+                                       for v in tree["scalars"].values()]),
+                      _walk(tree["list"]), _walk(tree["attrs"])],
+                keywords=[])))
+    body.append(_table("TREES", "dict[str, Tree]", trees))
+    body.append(_table("ASYNC_CLASS", "dict[str, str]", async_of))
+    body.extend(_directory(manifest, ordered))
+    return ast.unparse(ast.fix_missing_locations(
+        ast.Module(body=body, type_ignores=[]))) + "\n"
 
 
 def unions_module(unions: dict[str, list[str]]) -> str:
@@ -988,7 +1055,8 @@ def _spec(m: Proto) -> ast.expr:
     rpc = m["rpc"]
     return ast.Call(
         func=ast.Name(id="Call"),
-        args=[ast.Constant(value=rpc["path"]),
+        args=[ast.Constant(value=m["name"]),
+              ast.Constant(value=rpc["path"]),
               ast.Constant(value=rpc["req"]),
               ast.Constant(value=rpc["resp"]),
               _args(m["params"]),
@@ -997,7 +1065,7 @@ def _spec(m: Proto) -> ast.expr:
 
 
 def _directory(manifest: Proto, ordered: list[Proto]) -> list[ast.stmt]:
-    """The two tables a caller reaches BY NAME.
+    """The three tables a caller reaches BY NAME.
 
     `NixClient.acquire("Store", "auto")` and
     `NixClient.call_function("gc_stats")` take a string, so neither
@@ -1030,7 +1098,9 @@ def _directory(manifest: Proto, ordered: list[Proto]) -> list[ast.stmt]:
                   ast.Constant(value=acq["req"]),
                   _args(ctor),
                   ast.Constant(value=sum(1 for p in ctor
-                                         if p["default"] is None))],
+                                         if p["default"] is None)),
+                  ast.Tuple(elts=[ast.Constant(value=p["name"]) for p in ctor
+                                  if p["default"] == "None"])],
             keywords=[])))
     free = [(name, _spec(fn))
             for name, fn in sorted(manifest["free_functions"].items())
@@ -1045,17 +1115,9 @@ def _directory(manifest: Proto, ordered: list[Proto]) -> list[ast.stmt]:
     blocked = [(name, ast.Constant(value="; ".join(fn["wire_blockers"])))
                for name, fn in sorted(manifest["free_functions"].items())
                if "rpc" not in fn]
-    out: list[ast.stmt] = []
-    for var, kind, rows in (("ACQUIRE", "Acquire", acquires),
-                            ("FREE", "Call", free),
-                            ("NO_RPC", "str", blocked)):
-        out.append(ast.AnnAssign(
-            target=ast.Name(id=var),
-            annotation=_ann(f"dict[str, {kind}]", var),
-            value=ast.Dict(keys=[ast.Constant(value=n) for n, _ in rows],
-                           values=[v for _, v in rows]),
-            simple=1))
-    return out
+    return [_table("ACQUIRE", "dict[str, Acquire]", acquires),
+            _table("FREE", "dict[str, Call]", free),
+            _table("NO_RPC", "dict[str, str]", blocked)]
 
 
 def _spec_name(cls: str, method: str) -> str:
@@ -1120,12 +1182,18 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         module="typing",
         names=[ast.alias(name="Any"), ast.alias(name="Protocol"),
                ast.alias(name="cast")], level=0))
-    # The call spec's own types. Copied into this package rather than
-    # imported from the generator, which does not ship.
+    # The call specs, from where the build wrote them. Emitted in
+    # `_policy` rather than here, because the SERVER reads the same
+    # ones - and two derivations of one call's shape is exactly the
+    # disagreement this repo generates code to prevent.
+    specs = sorted(_spec_name(p["name"], m["name"]) for p in ordered
+                   for m in p["methods"] if "rpc" in m)
     mod.body.append(ast.ImportFrom(
-        module="._callspec",
-        names=[ast.alias(name="Acquire"), ast.alias(name="Arg"),
-               ast.alias(name="Call")], level=0))
+        module="._callspec", names=[ast.alias(name="Call")], level=0))
+    if specs:
+        mod.body.append(ast.ImportFrom(
+            module="._policy",
+            names=[ast.alias(name=s) for s in specs], level=0))
     mod.body.extend(_foreign_imports(annotations))
     sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL},
                          defaults)
@@ -1163,22 +1231,10 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
             decorator_list=[],
             returns=_ann(ret, f"{CLIENT_PROTOCOL}.{name}"), type_params=[]))
     mod.body.append(client_p)
-    mod.body.extend(_directory(manifest, ordered))
 
     for proto in ordered:
         name = proto["name"]
         base = proto.get("async_base")
-        # This class's call specs, at MODULE level and before it.
-        #
-        # They were `_rpc`, one dict per class. A subclass that added a
-        # method had to restate its base's whole table, because an
-        # attribute shadows rather than merges and an inherited body
-        # read `self._rpc`. A constant per method has no such rule, and
-        # a checker reads every field of one.
-        for m in (m for m in proto["methods"] if "rpc" in m):
-            mod.body.append(ast.Assign(
-                targets=[ast.Name(id=_spec_name(name, m["name"]))],
-                value=_spec(m)))
         cls = ast.ClassDef(
             name=rpc_class_name(name),
             bases=[ast.Name(id=rpc_class_name(base))] if base else [],
