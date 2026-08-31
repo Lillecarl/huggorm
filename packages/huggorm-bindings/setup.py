@@ -7,9 +7,24 @@ import nanobind
 from setuptools import Extension, setup
 
 import huggorm_decl
+from huggorm_gen.cppgen.generate import main as emit
 from huggorm_gen.cppgen.generate import nanobind_modules
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The sources, written before setuptools is told about them.
+#
+# This used to be a Nix `runCommand` that copied the tree, ran the
+# emitter over the copy and handed the result in as `src`. That
+# worked, and it put the one step that makes a declaration
+# load-bearing outside the package that needs it - so `pip install .`
+# in this directory built nothing at all.
+#
+# It happens here now, at import, for the same reason huggorm-generated
+# does it here: setuptools resolves its package list while it builds
+# metadata, which is before any command runs. A file that does not
+# exist then is a file it will not ship.
+emit(os.path.join(HERE, "huggorm_bindings"))
 
 
 def pkg_config(*packages: str) -> dict[str, list[str]]:

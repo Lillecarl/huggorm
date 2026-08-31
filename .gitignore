@@ -17,6 +17,18 @@ dist/
 venv/
 *.so
 
+# What the two leaves emit into themselves.
+#
+# Both setup.py files run a generator before setuptools is told the
+# sources exist, so a local `pip install .` leaves its output in the
+# tree. Everything below is written, never hand-edited - and an
+# untracked generated file that the build quietly depends on is a bug
+# this repo has already had once.
+packages/huggorm-bindings/huggorm_bindings/*
+!packages/huggorm-bindings/huggorm_bindings/__init__.py
+packages/huggorm-generated/huggorm_generated/
+packages/huggorm-generated/huggorm_bindings-stubs/
+
 # generated C++
 *.c
 

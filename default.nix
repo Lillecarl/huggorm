@@ -48,25 +48,11 @@ rec {
     pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
   # The interpreter the emitters run under, with them on its path.
-  genPython = pkgs.python3.withPackages (_: [ huggorm-gen huggorm-decl huggorm-dsl ]);
-  # The binding source that actually gets compiled.
-  #
-  # This is the step that makes the declaration load-bearing. Before
-  # it, the emitter wrote its files beside the hand-written ones and a
-  # gate diffed them - which proves the emitter COULD have written the
-  # binding. Here it DOES: there is no binding source in the repo at
-  # all, and the only thing standing behind `huggorm_bindings.path`
-  # is `packages/huggorm-decl/src/huggorm_decl/decl/path.py`.
-  bindings-src = pkgs.runCommand "huggorm-bindings-src" { } ''
-    cp -r ${./packages/huggorm-bindings} $out
-    chmod -R u+w $out
-    ${lib.getExe genPython} -m huggorm_gen.cppgen.generate $out/huggorm_bindings
-  '';
-  # The bindings. Every module is a nanobind extension whose C++ is
-  # written from a declaration before this builds.
+  # The bindings. Every module is a nanobind extension whose C++ its
+  # own setup.py writes from a declaration, before setuptools is told
+  # the sources exist.
   huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
     inherit huggorm-gen huggorm-decl huggorm-dsl;
-    src = bindings-src;
   };
   # this is a Python library that uses huggorm-bindings
   huggorm = pkgs.callPackage ./packages/huggorm {

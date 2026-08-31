@@ -7,11 +7,6 @@
   boehmgc,
   nix,
   pkg-config,
-  # The source tree to compile. NOT ./. any more: no module in here
-  # has hand-written source, and every one of them is C++ emitted
-  # from a declaration before the build starts. The root default.nix
-  # builds that tree and passes it in.
-  src,
   ...
 }:
 let
@@ -32,7 +27,7 @@ python3Packages.buildPythonPackage {
   pname = "huggorm-bindings";
   version = "0.1.0";
   pyproject = true;
-  inherit src;
+  src = ./.;
 
   build-system = with python3Packages; [
     setuptools
