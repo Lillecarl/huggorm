@@ -543,7 +543,7 @@ def _check_markers(decorators: list[ast.expr], kind: str) -> None:
     """Check every marker against `declare.MARKERS`.
 
     One loop over a table, rather than a hand-written `if` per rule.
-    The 28 raises this file carries are not all replaced - most are
+    The raises this file carries are not all replaced - most are
     about SHAPE, like "a body is a docstring then at most one Cxx" -
     but the ones about WHERE a marker is legal collapse into here.
 
