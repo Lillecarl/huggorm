@@ -58,6 +58,7 @@ rec {
   huggorm = pkgs.callPackage ./packages/huggorm {
     inherit huggorm-bindings;
     inherit huggorm-generated;
+    inherit huggorm-gen huggorm-decl huggorm-dsl;
   };
   # AST codegen layer between bindings and python: the declarations
   # -> async wrappers, protocols, an RPC client, a wire schema and
@@ -219,7 +220,16 @@ rec {
           ls -1 "$pkg/huggorm_bindings-stubs"
           ;;
         manifest)
-          jq . "$gen/manifest.json"
+          # Derived, not read: there is no manifest.json any more
+          # (065). This calls the same function the emitters do.
+          #
+          # stdout is captured because the derivation narrates its
+          # progress there - useful in a build log, and not JSON.
+          python3 -c 'import contextlib, io, json
+from huggorm_gen.pygen.generate import build_manifest
+with contextlib.redirect_stdout(io.StringIO()):
+    m = build_manifest()
+print(json.dumps(m, indent=2))' | jq .
           ;;
         proto)
           # Every service and every message, as .proto text. The names

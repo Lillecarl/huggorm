@@ -22,9 +22,7 @@ expensive or slow to set up:
 """
 
 import glob
-import json
 import os
-import pathlib
 import shutil
 import socket
 import sys
@@ -179,24 +177,29 @@ def grpcurl() -> str:
 
 
 def load_manifest() -> dict[str, Any]:
-    """The build's own report of what it decided.
+    """What the build decided, derived rather than read.
 
-    Not an IR, and no longer a dispatch table. Every table the server,
-    the client, the codec and the fault codec used to read out of it
-    at run time is emitted Python now, in `huggorm_generated._policy`
-    (065). What is left is an enumeration, and the suite is its only
-    reader: several tests hold ANOTHER artifact - the protobuf
-    descriptor set, the front door's `__all__`, the type stubs - up
-    against what the build says it emitted.
+    This opened `manifest.json`. The file is gone (065): it was a
+    serialisation of a value, and every reader of it now calls the
+    function that produces the value.
 
-    It lives here rather than in the library because that is who
-    reads it. `huggorm/grpc_pb.py` had it, which made a test-only
-    reader look like part of the surface."""
-    import huggorm_generated
+    That is the whole point of the change and it is worth being
+    precise about. Reading the JSON meant the suite checked the
+    emitted code against a SECOND artifact of the same build - which
+    looks like a cross-check and is not, because one emitter wrote
+    both. Calling the derivation means these tests hold the emitted
+    code against the DECLARATIONS, through the same reader the
+    emitters use.
 
-    manifest: dict[str, Any] = json.loads(
-        (pathlib.Path(huggorm_generated.__file__).parent
-         / "manifest.json").read_text())
+    The tests that matter here compare it to something genuinely
+    independent: the protobuf descriptor set, the front door's
+    `__all__`, the type stubs, the compiled bindings.
+
+    Slower than a JSON load, and not by enough to matter: it reads
+    nine declarations, which `Corpus` caches for the process."""
+    from huggorm_gen.pygen.generate import build_manifest
+
+    manifest: dict[str, Any] = build_manifest()
     return manifest
 
 

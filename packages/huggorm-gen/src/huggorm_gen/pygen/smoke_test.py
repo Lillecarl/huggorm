@@ -19,7 +19,6 @@ import asyncio
 import gc
 import importlib
 import inspect
-import json
 import pathlib
 import re
 import sys
@@ -271,10 +270,13 @@ async def test_behavior() -> None:
     def added(name: str, body: bytes) -> tuple[str, bytes]:
         return name, body
 
+    from huggorm_gen.pygen.generate import build_manifest
+
+    manifest = build_manifest()
+    # The emitted package, for the wrapper sources this reads back.
     pkg_file = importlib.import_module("huggorm_generated").__file__
     assert pkg_file is not None
     pkg_dir = pathlib.Path(pkg_file).parent
-    manifest = json.loads((pkg_dir / "manifest.json").read_text())
 
     # Pool store: concurrent adds genuinely overlap. A chroot store
     # rather than dummy://, because this adds paths and dummy:// holds
@@ -909,10 +911,9 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
     The in-process wrapper is the surface picked, because it is the
     one that carries every method: the protocol drops what it cannot
     promise and the rpc client drops what cannot cross."""
-    import huggorm_generated as flg
+    from huggorm_gen.pygen.generate import build_manifest
 
-    manifest = json.loads(
-        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
+    manifest = build_manifest()
     wrapped = {
         name: proto
         for group in ("wrappers", "returned_types")
@@ -1031,10 +1032,9 @@ def test_conformance(out: pathlib.Path) -> None:
       - a return is identical in all three, unless the protocol names
         another protocol - then each implementation must return ITS
         form of that same class."""
-    import huggorm_generated as flg
+    from huggorm_gen.pygen.generate import build_manifest
 
-    manifest = json.loads(
-        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
+    manifest = build_manifest()
     wrapped = {
         name: proto
         for group in ("wrappers", "returned_types")
@@ -1399,7 +1399,9 @@ def test_a_declared_type_is_the_type_nanobind_BINDS(
     nanobind renders each signature from the C++ it actually calls, so
     it is the honest side of this comparison. Where the two disagree,
     the declaration is the one to fix."""
-    manifest = json.loads((out / "manifest.json").read_text())
+    from huggorm_gen.pygen.generate import build_manifest
+
+    manifest = build_manifest()
     _VOCABULARIES.clear()
     _VOCABULARIES.update(manifest.get("enums", {}))
     _UNIONS.update(manifest.get("unions", {}))
@@ -1464,7 +1466,9 @@ def test_no_binding_leaks_a_cxx_type(out: pathlib.Path) -> None:
     rendered signature is always a caster the emitter did not include.
     A test would catch it for a method that has one; this catches it
     for every method at once."""
-    manifest = json.loads((out / "manifest.json").read_text())
+    from huggorm_gen.pygen.generate import build_manifest
+
+    manifest = build_manifest()
     bad, seen = [], 0
     for group in ("wrappers", "returned_types"):
         for name, entry in manifest[group].items():

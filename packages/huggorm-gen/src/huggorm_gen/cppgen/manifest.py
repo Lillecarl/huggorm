@@ -248,7 +248,7 @@ def entry(cls: Class, package: str, module: str,
     against the real manifest is the whole point of the exercise.
 
     `final` picks WHICH manifest. There are two, a stage apart. The
-    one in `manifest.json` is finished: `message` names the proto
+    one `build_manifest` returns is finished: `message` names the proto
     message and `async_base` names the async twin's base, both filled
     in by a later pass. The one the generator's own extraction hands
     back has neither yet, and `_helpers` beside them - the round-trip

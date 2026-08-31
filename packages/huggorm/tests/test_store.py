@@ -1155,13 +1155,10 @@ def test_a_union_nested_past_the_limit_is_refused_by_name() -> None:
 
 
 def _wire_values() -> dict[str, str]:
-    """Every type the manifest says crosses as its PARTS."""
-    import json
+    """Every type the build says crosses as its PARTS."""
+    from huggorm_gen.pygen.generate import build_manifest
 
-    import huggorm_generated as flg
-
-    manifest = json.loads(
-        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
+    manifest = build_manifest()
     return {name: entry["module"]
             for group in ("wrappers", "returned_types")
             for name, entry in manifest[group].items()

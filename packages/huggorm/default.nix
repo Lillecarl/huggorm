@@ -3,6 +3,9 @@
   python3Packages,
   huggorm-bindings,
   huggorm-generated,
+  huggorm-gen,
+  huggorm-decl,
+  huggorm-dsl,
   grpcurl,
   ruff,
   zuban,
@@ -56,6 +59,15 @@ python3Packages.buildPythonPackage {
     python3Packages.pytest
     python3Packages.anyio
     python3Packages.pytest-timeout
+    # The generator, for the suite alone. Several tests hold an
+    # artifact - the descriptor set, the front door's __all__, the
+    # stubs - against what the build decided, and they get that by
+    # calling `build_manifest()` rather than by reading a JSON dump of
+    # it (065). Not a runtime dependency: nothing in `huggorm/`
+    # imports it.
+    huggorm-gen
+    huggorm-decl
+    huggorm-dsl
   ];
 
   checkPhase = ''

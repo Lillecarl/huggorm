@@ -208,14 +208,10 @@ def test_every_name_the_manifest_DECLARES_reaches_the_front_door() -> None:
     `async_twins` (whose key is `pathlib.Path`, not an identifier) and
     from the two plain settings. The next table is covered by being
     that shape, which is the shape a table of declared names has."""
-    import json
-
     import huggorm
-    import huggorm_generated
+    from huggorm_gen.pygen.generate import build_manifest
 
-    manifest = json.loads(
-        (pathlib.Path(huggorm_generated.__file__).parent
-         / "manifest.json").read_text())
+    manifest = build_manifest()
 
     def names_things(table: object) -> bool:
         return (isinstance(table, dict) and bool(table)

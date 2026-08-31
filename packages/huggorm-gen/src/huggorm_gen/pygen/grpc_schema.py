@@ -2,7 +2,7 @@
 Manifest -> protobuf schema, and the single source of RPC naming.
 
 Builds a FileDescriptorSet from the protocol dicts in the manifest.
-Emitted at build time as grpc_schema.pb next to manifest.json - one
+Emitted at build time as grpc_schema.pb beside the generated Python - one
 artifact, four uses: grpclib dispatch, dynamic message classes on any
 client, reflection bytes later, and protoc input for other languages
 via a print step.
