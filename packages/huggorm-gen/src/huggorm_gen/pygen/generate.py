@@ -620,6 +620,9 @@ def main(argv: list[str] | None = None) -> None:
     # builder reads them at build time. One definition, copied, rather
     # than two that agree until one of them changes.
     _vendor(here / "wiretypes.py", out / "_wiretypes.py")
+    # ...and the call spec's types, which the emitted RPC classes
+    # build and the hand-written client reads.
+    _vendor(here / "callspec.py", out / "_callspec.py")
     print(f"copied runtime into {out}")
 
     # PEP 561: without this marker a typechecker skips an INSTALLED

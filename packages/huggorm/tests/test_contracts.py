@@ -351,7 +351,7 @@ def test_a_method_with_no_wire_form_is_absent_everywhere(
     What it does NOT lose is the in-process wrapper. That is the whole
     distinction: local and remote are different surfaces, and this is
     the machinery that lets them differ without either one lying."""
-    from huggorm_generated import AsyncStore
+    from huggorm_generated import AsyncStore, rpc
     from huggorm_generated.rpc import RPCStore
 
     store = manifest["wrappers"]["Store"]
@@ -365,7 +365,10 @@ def test_a_method_with_no_wire_form_is_absent_everywhere(
         assert m["protocol_blockers"], name
         assert hasattr(AsyncStore, name), f"{name} lost its wrapper too"
         assert not hasattr(RPCStore, name), f"{name} is on the rpc client"
-        assert name not in RPCStore._rpc, f"{name} has a call spec"
+        # ...and no call spec was emitted for it either. The specs are
+        # module-level constants now rather than an `_rpc` dict, so
+        # this asks the module instead of the class.
+        assert not hasattr(rpc, f"_Store_{name}"), f"{name} has a call spec"
 
 
 def test_an_untyped_cause_rebuilds_from_builtins_only() -> None:

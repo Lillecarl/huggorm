@@ -856,19 +856,52 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
     return mod
 
 
-def _spec(m: Proto) -> ast.expr:
-    """One method's call spec as a literal, straight out of the
-    manifest. The docstring is dropped: it is already on the method.
+def _args(params: list[Proto]) -> ast.expr:
+    """A declared parameter list, as a tuple of `Arg`."""
+    return ast.Tuple(elts=[
+        ast.Call(func=ast.Name(id="Arg"),
+                 args=[ast.Constant(value=p["name"]),
+                       ast.Constant(value=p["type"])],
+                 keywords=[])
+        for p in params])
 
-    So are the parameter defaults. The method signature above resolved
-    them before the call reached the runtime, so every argument the
-    spec describes is present - carrying a default here would suggest
-    the runtime fills one in, and it never does."""
-    spec = {k: v for k, v in m.items()
-            if k not in ("doc", "protocol_blockers", "wire_blockers")}
-    spec["params"] = [{k: v for k, v in p.items() if k != "default"}
-                      for p in m["params"]]
-    return ast.parse(repr(spec), mode="eval").body
+
+def _spec(m: Proto) -> ast.expr:
+    """One method's call spec, as a `Call`.
+
+    A typed value, not a dict literal. The dict came straight out of
+    the manifest and carried its whole entry; a checker could see
+    nothing in it, which made the one part of the generated client a
+    caller cannot read also the one part nothing verified.
+
+    The docstring is dropped: it is already on the method. So are the
+    parameter defaults - the method signature resolved them before the
+    call reached the runtime, so every argument a spec describes is
+    present, and carrying a default here would suggest the runtime
+    fills one in."""
+    rpc = m["rpc"]
+    return ast.Call(
+        func=ast.Name(id="Call"),
+        args=[ast.Constant(value=rpc["path"]),
+              ast.Constant(value=rpc["req"]),
+              ast.Constant(value=rpc["resp"]),
+              _args(m["params"]),
+              ast.Constant(value=m["return_type"])],
+        keywords=[])
+
+
+def _spec_name(cls: str, method: str) -> str:
+    """What one method's spec constant is called.
+
+    Module level, not a class attribute. A class attribute had to be
+    RESTATED by any subclass that adds a method - an attribute shadows
+    rather than merges, and an inherited body reads `self._rpc` - so
+    the base's whole table was copied into the subclass. A constant per
+    method has no such rule.
+
+    Leading underscore, because it is not surface: a caller reads the
+    method, not what the build decided the method does."""
+    return f"_{cls}_{method}"
 
 
 def rpc_module(manifest: Proto, ordered: list[Proto],
@@ -919,6 +952,11 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         module="typing",
         names=[ast.alias(name="Any"), ast.alias(name="Protocol"),
                ast.alias(name="cast")], level=0))
+    # The call spec's own types. Copied into this package rather than
+    # imported from the generator, which does not ship.
+    mod.body.append(ast.ImportFrom(
+        module="._callspec",
+        names=[ast.alias(name="Arg"), ast.alias(name="Call")], level=0))
     mod.body.extend(_foreign_imports(annotations))
     sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL},
                          defaults)
@@ -939,7 +977,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         # handle_id is Optional because release() blanks it. Passing a
         # blanked one is a real mistake, and the client answers it with
         # a message instead of a protobuf failure.
-        ("invoke", [("spec", "dict[str, Any]"), ("handle_id", "str | None"),
+        ("invoke", [("spec", "Call"), ("handle_id", "str | None"),
                     ("args", "list[Any]")], "Any"),
         ("release", [("obj", "Any")], "None"),
     ):
@@ -960,6 +998,17 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     for proto in ordered:
         name = proto["name"]
         base = proto.get("async_base")
+        # This class's call specs, at MODULE level and before it.
+        #
+        # They were `_rpc`, one dict per class. A subclass that added a
+        # method had to restate its base's whole table, because an
+        # attribute shadows rather than merges and an inherited body
+        # read `self._rpc`. A constant per method has no such rule, and
+        # a checker reads every field of one.
+        for m in (m for m in proto["methods"] if "rpc" in m):
+            mod.body.append(ast.Assign(
+                targets=[ast.Name(id=_spec_name(name, m["name"]))],
+                value=_spec(m)))
         cls = ast.ClassDef(
             name=rpc_class_name(name),
             bases=[ast.Name(id=rpc_class_name(base))] if base else [],
@@ -980,29 +1029,10 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
                     annotation=_ann(kind, f"{name}.{attr}"),
                     value=None, simple=1))
 
-        # The call specs. A subclass that adds methods must restate the
-        # base's too: an attribute shadows rather than merges, and an
-        # inherited method's body reads self._rpc. One that adds none
-        # inherits the whole map untouched.
         # Only the methods that HAVE an rpc. A method the wire cannot
         # carry keeps its in-process wrapper and is simply absent here;
         # the manifest says why, and the protocol drops it too.
         callable_ = [m for m in proto["methods"] if "rpc" in m]
-        if callable_ or base is None:
-            specs = ast.Dict(
-                keys=[ast.Constant(value=m["name"]) for m in callable_],
-                values=[_spec(m) for m in callable_])
-            if base:
-                specs = ast.Dict(
-                    keys=[None, *specs.keys],
-                    values=[
-                        ast.Attribute(value=ast.Name(id=rpc_class_name(base)),
-                                      attr="_rpc"),
-                        *specs.values])
-            cls.body.append(ast.AnnAssign(
-                target=ast.Name(id="_rpc"),
-                annotation=_ann("dict[str, dict[str, Any]]", f"{name}._rpc"),
-                value=specs, simple=1))
 
         if base is None:
             cls.body.append(ast.FunctionDef(
@@ -1040,10 +1070,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
                                         attr="_client"),
                     attr="invoke"),
                 args=[
-                    ast.Subscript(
-                        value=ast.Attribute(value=ast.Name(id="self"),
-                                            attr="_rpc"),
-                        slice=ast.Constant(value=m["name"])),
+                    ast.Name(id=_spec_name(name, m["name"])),
                     ast.Attribute(value=ast.Name(id="self"), attr="handle_id"),
                     ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]]),
                 ],

@@ -34,6 +34,8 @@ import grpclib.const
 import grpclib.exceptions
 from google.protobuf import message_factory
 
+from huggorm_generated._callspec import Call
+
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails
 from .lifecycle import TOKEN_HEADER
@@ -356,36 +358,41 @@ class NixClient:
             resp, "result", proto["return_type"],
             lambda hid: self.proxy(proto["return_type"], hid))
 
-    async def invoke(self, m: dict[str, Any], handle_id: str | None,
+    async def invoke(self, m: Call, handle_id: str | None,
                      args: list[Any]) -> Any:
-        """Make one call. `m` is the call spec a generated method
-        carries: the manifest's own entry for that method, minus the
-        docstring. Nothing is resolved here - the build already did
-        it."""
+        """Make one call.
+
+        `m` is the spec the generated method carries - a `Call`, built
+        at import from constants the emitter wrote. Nothing is
+        resolved here: the build already did it.
+
+        `-> Any` and it cannot be otherwise: the return type differs
+        per call. The generated method casts it, which is where a
+        caller's type comes from and where a typechecker checks it."""
         if handle_id is None:
             # release() blanks the id, so a call through a spent proxy
             # arrives here as None. Protobuf would refuse it with a
             # message about a str field; this says what happened.
             raise ValueError(
-                f"{m['name']}: this handle was already released")
-        req = self.msg(m["rpc"]["req"])()
+                f"{m.path}: this handle was already released")
+        req = self.msg(m.req)()
         req.self.id = handle_id
 
         # Wire names and wire policies both come out of the manifest, so
         # this method mentions no concrete type: a proxy arg contributes
         # its handle id, a wire-value serializes through its declared
         # parts, a scalar goes in as itself.
-        for p, val in zip(m["params"], args, strict=True):
-            self.codec.encode(req, p["name"], p["type"], val,
+        for p, val in zip(m.args, args, strict=True):
+            self.codec.encode(req, p.name, p.type, val,
                               lambda obj: obj.handle_id)
 
-        resp = await self._rpc(m["rpc"]["path"], req, m["rpc"]["resp"])
+        resp = await self._rpc(m.path, req, m.resp)
 
         # Proxies stay remote behind a handle; values come back as real
         # local objects.
         return self.codec.decode(
-            resp, "result", m["return_type"],
-            lambda hid: self.proxy(m["return_type"], hid))
+            resp, "result", m.returns,
+            lambda hid: self.proxy(m.returns, hid))
 
 
 async def connect(host: str = "127.0.0.1", port: int = 50051,
