@@ -180,8 +180,8 @@ class Store:
 
         There is no getUri() any more. 2.34 moved it onto the config
         as getHumanReadableURI, and Store reaches its config by
-        reference - so the binding goes through a helper in `cpp/`
-        rather than declaring the whole config type for one string."""
+        reference - so this reads through the member rather than
+        declaring the whole config type for one string."""
         Cxx("return self.config.getHumanReadableURI();")
     @cxx_name("isValidPath")
     def is_valid_path(self, path: "StorePath") -> Bint:
