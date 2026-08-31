@@ -13,7 +13,7 @@ hash and no repr. The effects reach users immediately:
 - A `set[StorePath]` or a dict keyed by path deduplicates nothing.
   Upstream `nix::StorePath` has `operator==` and is used as a set
   element everywhere; the binding drops that.
-- `repr(sp)` prints `<cythonix_bindings.path.StorePath object at
+- `repr(sp)` prints `<huggorm_bindings.path.StorePath object at
   0x...>`, which hides the one string the object IS.
 
 This is a DX cost that grows with every method that returns paths -

@@ -61,7 +61,7 @@ select = [
 # implementation here and never will be.
 #
 # The spike's MACHINERY next door is exempt from nothing.
-"cythonix-idl/src/cythonix_idl/decl/*.py" = ["F821", "UP037", "PIE790"]
+"huggorm-idl/src/huggorm_idl/decl/*.py" = ["F821", "UP037", "PIE790"]
 
 [lint.isort]
 # test_remote holds the shared harness the other suites import. Left
@@ -70,9 +70,9 @@ select = [
 # file and one of them always fails.
 known-first-party = [
   "codegen",
-  "cythonix_idl",
-  "cythonix_bindings",
-  "cythonix_generated",
-  "cythonix",
+  "huggorm_idl",
+  "huggorm_bindings",
+  "huggorm_generated",
+  "huggorm",
   "test_remote",
 ]

@@ -216,7 +216,7 @@ and the tree spec calls accessors on the NODE (`getattr(obj,
 reader)()`).
 
 It costs no emitter change, because the bound class was never the
-value. `via="get()"` says the binding is `cythonix::Bridge`, a handle.
+value. `via="get()"` says the binding is `huggorm::Bridge`, a handle.
 The Bridge carries a reference to its `EvalState` beside the value
 pointer, and `name_at(i)` is a Bridge method with the state in hand.
 The Bridge holding the state is producer pinning IN C++, matching the

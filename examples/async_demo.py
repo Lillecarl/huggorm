@@ -5,14 +5,14 @@
 import asyncio
 import tempfile
 
-from cythonix_bindings import ContentAddressMethod as CA
-from cythonix_bindings import HashAlgorithm
-from cythonix_generated import (
+from huggorm_bindings import ContentAddressMethod as CA
+from huggorm_bindings import HashAlgorithm
+from huggorm_generated import (
     AsyncEvalState,
     AsyncStore,
     StoreLike,
 )
-from cythonix_generated._runtime import InternalError
+from huggorm_generated._runtime import InternalError
 
 
 def _add(store: AsyncStore, name: str, body: bytes) -> object:
@@ -20,7 +20,7 @@ def _add(store: AsyncStore, name: str, body: bytes) -> object:
 
 
 async def main() -> None:
-    root = tempfile.mkdtemp(prefix="cythonix-demo-")
+    root = tempfile.mkdtemp(prefix="huggorm-demo-")
     local = AsyncStore(root)
 
     print("=== sequential awaits ===")
@@ -83,7 +83,7 @@ async def main() -> None:
 
     # Module-level binding functions get generated wrappers too, so the
     # hand-written asyncio.to_thread hop is gone.
-    from cythonix_generated import collect_garbage, gc_stats
+    from huggorm_generated import collect_garbage, gc_stats
 
     await collect_garbage()
     stats = await gc_stats()

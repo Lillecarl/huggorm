@@ -5,7 +5,7 @@ replace: every binding is nanobind C++, emitted from a declaration.
 The answer below is kept because it is the reasoning that chose
 "emit, do not execute", which the design still rests on.
 
-**The probe is gone.** `cythonix-idl/probe/` held the compiled
+**The probe is gone.** `huggorm-idl/probe/` held the compiled
 evidence - `ann.py`, `cyshims.py`, `c_thing.pxd` and a canary
 asserting Cython had not moved. It was the last Cython source in the
 repo, kept to answer this question. `jj` has it if it is ever needed

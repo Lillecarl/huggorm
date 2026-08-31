@@ -56,7 +56,7 @@ connection it was meant to be checking - and being swept is a fact
 about the connection rather than a failure of this call, so a
 liveness probe answering a boolean is the honest shape.
 
-The token moved to the `x-cythonix-conn` metadata, like every other
+The token moved to the `x-huggorm-conn` metadata, like every other
 rpc's. `PingReq` now carries no fields at all, which is the right
 shape for a probe whose only question is "am I still bound".
 

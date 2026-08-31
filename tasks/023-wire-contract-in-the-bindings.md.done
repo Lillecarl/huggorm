@@ -39,7 +39,7 @@ places.
 
 - grpc_schema builds every value message from the declared fields. No
   type name appears in the module.
-- ONE WireCodec, in cythonix/wire.py, serves both sides. It
+- ONE WireCodec, in huggorm/wire.py, serves both sides. It
   reads the manifest and nothing else. The two sides differ in exactly
   one respect - what a proxy handle means - so that is the one thing
   each passes in as a callback.

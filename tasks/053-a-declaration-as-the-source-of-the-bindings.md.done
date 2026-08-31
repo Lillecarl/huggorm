@@ -1,9 +1,9 @@
 # A declaration as the source of the binding layer
 
 **DONE, and it went further than this file measured.** Every binding
-in `cythonix_bindings` is now emitted from a declaration, through
+in `huggorm_bindings` is now emitted from a declaration, through
 nanobind rather than Cython, and no surface above the bindings waits
-on a C++ compiler. `cythonix-idl/README.md` describes what exists.
+on a C++ compiler. `huggorm-idl/README.md` describes what exists.
 
 **This file is the spike report, kept as written.** It measures the
 Cython emitter, which is gone, and it names files that are gone with
@@ -31,7 +31,7 @@ repo already has - two artefacts, produced two different ways.
 ### 1. The Cython comes from the declaration
 
 `path.pyx`, `path.pxd` and `c_path.pxd`, generated and swapped in
-place of the hand-written ones. `nix build --file . cythonix` passed,
+place of the hand-written ones. `nix build --file . huggorm` passed,
 159 tests passed, `nix run --file . check` clean. Swapped back;
 nothing in the three packages changed.
 
@@ -44,7 +44,7 @@ the whole diff, and it compiles.
 
 This is the one that decides whether the idea is worth adopting.
 
-`model.py` builds the manifest by IMPORTING `cythonix_bindings` and
+`model.py` builds the manifest by IMPORTING `huggorm_bindings` and
 reflecting on compiled extension types: `getattr(cls, "_threading")`,
 `cls.__dict__["_binds"]`, `getattr(cls, d) is not getattr(object, d)`
 for each of the nine value dunders. So the build has one possible
@@ -76,7 +76,7 @@ and `__ge__`. Neither supports any of them:
 
     >>> a < b
     TypeError: '<' not supported between instances of
-    'cythonix_bindings.store.PathInfo' and ...
+    'huggorm_bindings.store.PathInfo' and ...
 
 `model.py` asks `getattr(cls, "__lt__") is not object.__lt__`, and a
 cdef class defining ANY rich comparison gets all six slots filled by

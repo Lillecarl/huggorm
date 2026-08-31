@@ -50,7 +50,7 @@ to, and a decoded value can come back TYPED rather than as a bare str.
 
 Discovery needs no new declaration, unlike `_errors_module`. The
 classes live in the bindings package and are found the way wrapper
-classes are - walk `dir(cythonix_bindings)` for `type` objects that
+classes are - walk `dir(huggorm_bindings)` for `type` objects that
 subclass both `str` and `Enum`. So adding a vocabulary means adding it
 to the bindings and nothing else.
 
@@ -61,8 +61,8 @@ From there it is one table in the manifest and four readers:
 - `wire.py`'s `kind()`: scalar. Its converter should be the enum CLASS
   rather than `str`, so a value decoded from the wire arrives typed.
   `str(member)` is the value on the way out, so encoding needs nothing.
-- the emitter: already works. `_cythonix_bindings_import` emits
-  `from cythonix_bindings import X` for any annotated name that is not
+- the emitter: already works. `_huggorm_bindings_import` emits
+  `from huggorm_bindings import X` for any annotated name that is not
   a builtin, so exporting the enum from `__init__` is enough.
 - `stub_module`: I called this the obstacle and overstated it. `home`
   is a plain dict mapping type name to module, so adding the enums to

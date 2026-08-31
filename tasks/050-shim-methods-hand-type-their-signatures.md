@@ -94,7 +94,7 @@ the IDL idea arrives at, faster.
 
 ## What the spike found, 2026-08-26
 
-`cythonix-idl/` grew out of the investigation. Two things came out of
+`huggorm-idl/` grew out of the investigation. Two things came out of
 it, and the second replaced the first.
 
 **A Python IDL works.** `path.pyx`, `path.pxd` and `c_path.pxd` were

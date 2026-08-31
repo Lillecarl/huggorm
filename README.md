@@ -1,4 +1,4 @@
-# cythonix
+# huggorm
 
 Nix, bound to Python through nanobind, with the bindings THEMSELVES
 generated from a declaration, and everything above them generated from
@@ -24,7 +24,7 @@ the library. `tasks/README.md` is what the design is and why, and each
 Everything runs through `nix`, from the repo root. No devshell needed,
 though `nix develop --file . shell` gives one.
 
-    nix build --file . cythonix --no-link     # THE gate: builds all four
+    nix build --file . huggorm --no-link     # THE gate: builds all four
                                               # layers, lints, typechecks,
                                               # runs the hermetic suite
     nix run  --file . check                   # lint + typecheck the whole
@@ -39,9 +39,9 @@ The build gate is the one that matters. It runs `pytest -m "not live"`
 inside the sandbox, so a test that touches the machine's real store
 must carry `@pytest.mark.live` or it fails there loudly.
 
-`nix run --file . test` puts the working tree's `cythonix/` ahead of
+`nix run --file . test` puts the working tree's `huggorm/` ahead of
 the installed copy, so an edit to the hand-written layer is testable
-without a rebuild. `cythonix_bindings` and `cythonix_generated` always
+without a rebuild. `huggorm_bindings` and `huggorm_generated` always
 come from the store: one is compiled and the other is generated, so
 neither exists in the tree.
 
@@ -57,7 +57,7 @@ FileDescriptorSet that no editor renders, and it is generated - so the
 only honest way to review the wire is to read what actually came out.
 
 The emitted C++ is not in the tree either. It is written into the
-build's copy of `cythonix-bindings`, so to read it:
+build's copy of `huggorm-bindings`, so to read it:
 
     nix build --no-link --print-out-paths --file . bindings-src
 
@@ -71,17 +71,17 @@ comment about an upstream behaviour that was read rather than assumed.
 
 ## Layout
 
-    cythonix-idl/          the declarations, and the emitters
-    cythonix-bindings/     the nanobind extensions - the bottom of the stack
-    cythonix-generated/    the generator, and the package it emits
-    cythonix/              the hand-written layer: server, client, codec
+    huggorm-idl/          the declarations, and the emitters
+    huggorm-bindings/     the nanobind extensions - the bottom of the stack
+    huggorm-generated/    the generator, and the package it emits
+    huggorm/              the hand-written layer: server, client, codec
     examples/              runnable demos - not shipped in the package
     docs/                  user-facing; quickstart.md is the front door
     tasks/                 one file per decision, NNN-name.md[.done]
 
-### cythonix-idl
+### huggorm-idl
 
-    src/cythonix_idl/
+    src/huggorm_idl/
       decl/<name>.py  one Nix class, named after its header
       decl/README.md  why they sit in their own directory
       declare.py      the vocabulary a declaration is written in
@@ -118,9 +118,9 @@ them against the hand-written nanobind in `~/Code/nanopynix` - a
 corpus to beat rather than a reference to match - and is skipped on a
 machine without it.
 
-### cythonix-bindings
+### huggorm-bindings
 
-    cythonix_bindings/
+    huggorm_bindings/
       _cpp/<name>.hpp C++ this repo writes, for what a declaration CALLS
       _cpp/README.md  the rule for what belongs in there
       errors.py       the exception hierarchy, mirroring libnixutil's
@@ -128,7 +128,7 @@ machine without it.
     setup.py          one nanobind Extension per declared module
 
 There is no binding source in here. Every module's C++ is written into
-the build's copy of this directory by `cythonix_idl.generate`, and
+the build's copy of this directory by `huggorm_idl.generate`, and
 `setup.py` compiles it. `_cpp/` is the exception, and it is C++ the
 declarations NAME rather than C++ a binding needs: `@binds` points at
 a function in there.
@@ -137,7 +137,7 @@ a function in there.
 each module links. A declaration names the C++ it binds; which package
 ships that C++ is the build's fact.
 
-### cythonix-generated
+### huggorm-generated
 
     generator/src/codegen/
       model.py        declaration entries into protocol dicts
@@ -156,13 +156,13 @@ is a rule the build refuses to break, and each names the failure it
 prevents.
 
 Nothing here reflects a compiled class any more. Every shape comes
-from `cythonix_idl.generate`: `declared_entries`, `declared_functions`
+from `huggorm_idl.generate`: `declared_entries`, `declared_functions`
 and `declared_returned`. The compiled package is still imported, and
 for one thing only - to enumerate which classes to generate for.
 
-### cythonix
+### huggorm
 
-    cythonix/
+    huggorm/
       wire.py       the codec both sides share. Knows shapes, no types.
       server.py     manifest -> gRPC service, dispatch, handles
       remote.py     the client
@@ -177,9 +177,9 @@ all. Every type it acts on comes out of the manifest.
 
 Adding a store call is the common case, and it touches two files:
 
-1. `cythonix-idl/src/cythonix_idl/decl/store.py` - the method, with a
+1. `huggorm-idl/src/huggorm_idl/decl/store.py` - the method, with a
    Python-style annotation and a docstring.
-2. a test in `cythonix/tests/test_store.py`, and one in
+2. a test in `huggorm/tests/test_store.py`, and one in
    `test_remote.py` if it crosses the wire.
 
 `_cpp/store.hpp` is the third file, and only when the declaration
@@ -247,7 +247,7 @@ The one piece of C++ this repo writes for itself is
 `_cpp/eval.hpp`. A `nix::Value` lives in the collector's heap and
 Python's heap is not scanned, so a wrapper needs a ROOT; and a value
 is not self-describing, because an attribute name is a `Symbol` only
-the producing state can render. `cythonix::Bridge` holds both. The
+the producing state can render. `huggorm::Bridge` holds both. The
 census prints its line count on every build, so the number a
 declaration could not derive is one nobody has to go looking for.
 
@@ -257,7 +257,7 @@ For the DESIGN: `tasks/README.md`, then the newest `tasks/` files -
 they are the current thinking, and the older ones record how it got
 there.
 
-For the CODE: `cythonix-idl/src/cythonix_idl/decl/path.py`, then
-`nbemit.py` beside it, then `cythonix/cythonix/wire.py`.
+For the CODE: `huggorm-idl/src/huggorm_idl/decl/path.py`, then
+`nbemit.py` beside it, then `huggorm/huggorm/wire.py`.
 
 For the OUTPUT: `nix run --file . show -- proto`.

@@ -6,8 +6,8 @@ Found 2026-08-25 while verifying 017 with mypy --strict.
 
 The bindings ship as compiled extension modules with no stubs:
 
-    cythonix_bindings/store.cpython-314-x86_64-linux-gnu.so
-    cythonix_bindings/eval.cpython-314-x86_64-linux-gnu.so
+    huggorm_bindings/store.cpython-314-x86_64-linux-gnu.so
+    huggorm_bindings/eval.cpython-314-x86_64-linux-gnu.so
 
 mypy cannot read a .so, so every binding type is `Any`:
 
@@ -67,7 +67,7 @@ Compiler.Options), so the emitter is ours. That is the better answer
 anyway - Cython does not know the pxd-derived constructor signatures,
 and those are the ones reflection cannot see either.
 
-`cythonix_bindings-stubs/` is emitted next to the generated package, as a
+`huggorm_bindings-stubs/` is emitted next to the generated package, as a
 PEP 561 stub-only package. The generated package also gains py.typed.
 
 ### Result, measured
@@ -96,7 +96,7 @@ after the stubs resolved.
 
 mypy does NOT honour a `<pkg>-stubs` directory on MYPYPATH - only in a
 real site-packages. Verified: the same directory renamed to
-`cythonix_bindings` resolved immediately. So checking a consumer means
+`huggorm_bindings` resolved immediately. So checking a consumer means
 pointing mypy at an environment (`--python-executable`), which is what
 013 should wire up.
 

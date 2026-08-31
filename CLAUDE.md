@@ -15,7 +15,7 @@ guess, never trust a memory of it.
 
 ## 2. No hand-written C++ mapping. None.
 
-`cythonix-idl/src/cythonix_idl/decl/` is the source. Everything else
+`huggorm-idl/src/huggorm_idl/decl/` is the source. Everything else
 is emitted from it: the nanobind C++, the manifest, the sync API, the
 async API, the RPC API, the type stubs, the enums.
 
@@ -80,4 +80,4 @@ nix build --no-link --print-out-paths  --file . pkgs.$package.src # this can be 
 
 # How the codegen works
 The WHY is under Goals, above. This is the mechanism.
-The declarations are in `cythonix-idl/src/cythonix_idl/decl/`, one file per Nix class, named after that class's header. `read.py` reads each one twice - it IMPORTS it, so Python resolves any `NIX_VERSION` branch, and it parses it with `ast.parse` for everything the import throws away. No body ever runs, so C++ written in a body is dead text the reader lifts out. The emitters then write the nanobind C++, the manifest entry, the type stub and the enum module from what the declaration says.
+The declarations are in `huggorm-idl/src/huggorm_idl/decl/`, one file per Nix class, named after that class's header. `read.py` reads each one twice - it IMPORTS it, so Python resolves any `NIX_VERSION` branch, and it parses it with `ast.parse` for everything the import throws away. No body ever runs, so C++ written in a body is dead text the reader lifts out. The emitters then write the nanobind C++, the manifest entry, the type stub and the enum module from what the declaration says.

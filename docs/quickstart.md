@@ -2,9 +2,9 @@
 
 Nix, from Python. One import.
 
-    import cythonix
+    import huggorm
 
-    store = cythonix.Store("auto")
+    store = huggorm.Store("auto")
 
 `"auto"` is whatever the ambient configuration says, usually the
 daemon. `"dummy://"` is in-memory and needs nothing on disk.
@@ -97,10 +97,10 @@ The same calls, awaited, with the blocking part moved onto a thread so
 your event loop keeps running.
 
     import anyio
-    import cythonix
+    import huggorm
 
     async def main():
-        store = cythonix.AsyncStore("auto")
+        store = huggorm.AsyncStore("auto")
         path = await store.add_to_store("hello", b"hello\n")
         print(await store.print_store_path(path))
         await store.aclose()
@@ -112,23 +112,23 @@ your event loop keeps running.
 Four blocking calls run at once by default. If your application wants
 more, say so before the first call:
 
-    cythonix.set_pool_size(16)
+    huggorm.set_pool_size(16)
 
 ## Remote
 
 The same protocol, on someone else's store.
 
-    server:  await cythonix.serve(host="127.0.0.1", port=50051)
+    server:  await huggorm.serve(host="127.0.0.1", port=50051)
 
-    client:  client = await cythonix.connect("127.0.0.1", 50051)
+    client:  client = await huggorm.connect("127.0.0.1", 50051)
              store = await client.acquire("Store", "auto")
              path = await store.add_to_store("hello", b"hello\n")
 
 `store` here is an `RPCStore`, and the in-process one is an
-`AsyncStore`. Both satisfy `cythonix.StoreLike`, so code written
+`AsyncStore`. Both satisfy `huggorm.StoreLike`, so code written
 against the protocol runs either way:
 
-    async def total_size(store: cythonix.StoreLike, path) -> int:
+    async def total_size(store: huggorm.StoreLike, path) -> int:
         info = await store.query_path_info(path)
         return info.nar_size()
 
@@ -138,15 +138,15 @@ round trip. A `Store` is a proxy: it is a connection, and identity
 matters.
 
 If the server sweeps your connection for being silent, the next call
-raises `cythonix.ConnectionExpired` rather than failing later as an
+raises `huggorm.ConnectionExpired` rather than failing later as an
 unknown handle. Recovery is a fresh `connect()` and re-acquiring what
 you held.
 
 ## Errors
 
     try:
-        store.query_path_info(cythonix.StorePath("0" * 32 + "-nope"))
-    except cythonix.errors.InvalidPath:
+        store.query_path_info(huggorm.StorePath("0" * 32 + "-nope"))
+    except huggorm.errors.InvalidPath:
         ...
 
 They are libstore's own, with libstore's own messages, and they keep

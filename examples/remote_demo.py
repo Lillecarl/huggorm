@@ -11,19 +11,19 @@ either an in-process wrapper or one of these.
 import asyncio
 import tempfile
 
-from cythonix import remote
+from huggorm import remote
 
 
 async def main() -> None:
     client = await remote.connect()
 
-    root = tempfile.mkdtemp(prefix="cythonix-demo-")
+    root = tempfile.mkdtemp(prefix="huggorm-demo-")
     store = await client.acquire("Store", root)
     state = await client.acquire("EvalState", "dummy://")
 
     print("=== wire-value returns are real local objects ===")
-    from cythonix_bindings import ContentAddressMethod as CA
-    from cythonix_bindings import HashAlgorithm
+    from huggorm_bindings import ContentAddressMethod as CA
+    from huggorm_bindings import HashAlgorithm
     p = await store.add_to_store("hello.txt", b"world",
                                  CA.NAR, HashAlgorithm.SHA256)
     print(f"{type(p).__module__}.{type(p).__name__}: {p.to_string()}")
@@ -49,7 +49,7 @@ async def main() -> None:
     # Typed against the generated protocol. It never asks whether the
     # store answering is in this process or on the far side of the
     # socket - and a typechecker sees the whole surface either way.
-    from cythonix_generated import StoreLike
+    from huggorm_generated import StoreLike
 
     async def report(s: StoreLike) -> str:
         path = await s.add_to_store("shared.txt", b"either location",
@@ -58,8 +58,8 @@ async def main() -> None:
 
     print(" remote:", await report(store))
 
-    from cythonix_generated import AsyncStore
-    in_process = AsyncStore(tempfile.mkdtemp(prefix="cythonix-demo-"))
+    from huggorm_generated import AsyncStore
+    in_process = AsyncStore(tempfile.mkdtemp(prefix="huggorm-demo-"))
     print(" local: ", await report(in_process))
     await in_process.aclose()
 

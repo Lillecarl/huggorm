@@ -34,13 +34,13 @@ server whose clients were built last week.
 
 ## Fix sketch
 
-- Pick the real package name once (`cythonix.v1` is the obvious
+- Pick the real package name once (`huggorm.v1` is the obvious
   candidate) and change `PKG`, `FILE` and `TOKEN_HEADER` in the
   same commit. The naming already lives in one module each
   (grpc_schema.py, lifecycle.py), so the edit is small - which is
   the design working as intended.
 - Make `req_name` and `resp_name` agree on one casing.
-- Rename the `flg-` thread prefixes to `cythonix-`. Tests that
+- Rename the `flg-` thread prefixes to `huggorm-`. Tests that
   match thread names by prefix must move with them.
 
 Alternative rejected: leave it until 022 lands. The lock would then
@@ -48,8 +48,8 @@ record the wrong names, and the migration doubles.
 
 ## Done
 
-`cythonix.v1`, in `cythonix/v1/api.proto`. `x-cythonix-conn` for the
-connection token. `cythonix-pool` and `cythonix-affine-<class>` for
+`huggorm.v1`, in `huggorm/v1/api.proto`. `x-huggorm-conn` for the
+connection token. `huggorm-pool` and `huggorm-affine-<class>` for
 the thread prefixes.
 
 `req_name` and `resp_name` share one `_camel` helper, so a method has

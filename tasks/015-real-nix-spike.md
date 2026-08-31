@@ -63,7 +63,7 @@ fidelity stopped paying.
 
 Two things landed first, both because they make this step safer rather
 than because they are part of it: the Python layers are now
-cythonix-bindings / cythonix-generated / cythonix, and the suites are
+huggorm-bindings / huggorm-generated / huggorm, and the suites are
 73 pytest tests under anyio instead of three scripts with one main().
 Against real Nix a failure can be a native crash, and a subprocess
 server plus per-test isolation is what keeps one from taking the run.
@@ -181,7 +181,7 @@ inherits whatever this boundary does.
 `except +translate_nix_error` names a C++ function Cython calls from
 inside `catch(...)`, and whatever Python error it sets is what the
 caller sees. `nix_error.hpp` catches most-derived first and raises out
-of `cythonix_bindings.errors`, whose hierarchy mirrors libnixutil's
+of `huggorm_bindings.errors`, whose hierarchy mirrors libnixutil's
 own: `BadStorePathName` under `BadStorePath` under `NixError`, so
 catching the middle one still catches the leaf. The classes are
 imported lazily, on the first failure, so nothing runs while the
@@ -255,7 +255,7 @@ Carl: "There's going to be a lot of dependent bindings all of the time
 respect as well [...] Put thought into where to put all code to keep
 the structure easy to understand and maintainable."
 
-So the layout is written down in `cythonix_bindings/__init__.py` rather
+So the layout is written down in `huggorm_bindings/__init__.py` rather
 than left to accrete:
 
 - one Nix header, one binding module, named after it. Nix's own layout

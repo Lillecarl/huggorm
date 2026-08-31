@@ -44,7 +44,7 @@ the wire moves with the type whatever the order. Same-version-only
 ## Why there were two
 
 `decl/store.py` used `@cxx_parts`: a prelude plus one C++ expression
-per declared field, which declared a POD struct `cythonix::PathInfo`
+per declared field, which declared a POD struct `huggorm::PathInfo`
 whose members ARE the wire types. That field map was a second
 description of PathInfo, in a second vocabulary, on the method that
 RETURNS one.
@@ -79,8 +79,8 @@ same kind of thing: a rendering.
   0, which is also a real Unix time.
 - The wire ORDER gains `store_dir` in second place. Everything else
   keeps its position.
-- `PathInfo` moves to `cythonix_bindings.pathinfo`. The package
-  re-exports it, so `from cythonix_bindings import PathInfo` is
+- `PathInfo` moves to `huggorm_bindings.pathinfo`. The package
+  re-exports it, so `from huggorm_bindings import PathInfo` is
   unchanged.
 
 `path()` did NOT change, and that was a condition. Upstream's
@@ -199,7 +199,7 @@ only this one has - the object is real.
 ## Decided along the way
 
 **One class one file, and the extension grain stays per header.**
-`decl/pathinfo.py` compiles to `cythonix_bindings.pathinfo`, exactly
+`decl/pathinfo.py` compiles to `huggorm_bindings.pathinfo`, exactly
 as `decl/path.py` compiles to `path`. nanobind keeps one type registry
 per process and a module imports what it names, which `decl/store.py`
 already relies on for StorePath - so a third extension cost nothing

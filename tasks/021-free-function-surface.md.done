@@ -42,7 +42,7 @@ which is exactly what this design exists to avoid.
   anything. Its threading policy is "pool", and the async wrapper
   should be a module-level coroutine, not a class.
 - gRPC has no free functions: they need a service to live on. A
-  per-module service (`cythonix_bindingsService`) is the obvious shape.
+  per-module service (`huggorm_bindingsService`) is the obvious shape.
 - describe(obj) takes a proxy argument and returns a scalar. The
   existing WireCodec handles that unchanged.
 
@@ -69,7 +69,7 @@ Claiming a name the pxd does not declare fails the build.
 
 Emitted as module-level coroutines in free_functions.py, hopping
 through the shared pool via a new runtime helper. The hand-written
-`asyncio.to_thread(cythonix_bindings.collect_garbage)` in the smoke test and
+`asyncio.to_thread(huggorm_bindings.collect_garbage)` in the smoke test and
 the demo is gone.
 
 RPC: one shared FunctionsService, since a free function has no

@@ -7,12 +7,12 @@ Found by the Claude Fable review agent (2026-08-26 review).
 The stated goal is a Python library people want to use. Today a
 user faces three packages and no guidance on which to import:
 
-- `import cythonix` exports exactly `LoudLocal` and `MyCache` -
+- `import huggorm` exports exactly `LoudLocal` and `MyCache` -
   two mock DEMO classes from custom.py. That is the current front
   door.
-- The sync surface lives in `cythonix_bindings`, the async and RPC
-  surfaces in `cythonix_generated`, the client and server in
-  `cythonix.remote` / `cythonix.server`. A user must learn the
+- The sync surface lives in `huggorm_bindings`, the async and RPC
+  surfaces in `huggorm_generated`, the client and server in
+  `huggorm.remote` / `huggorm.server`. A user must learn the
   build topology before the first import.
 - Demo modules (`custom.py`, `async_demo.py`, `remote_demo.py`,
   `run_remote.py`) ship inside the installable package.
@@ -31,7 +31,7 @@ hardest thing to change after there are users.
 ## Fix sketch
 
 - Decide the public import story once. The obvious shape:
-  `cythonix` re-exports the surface by kind - `Store`, `StorePath`,
+  `huggorm` re-exports the surface by kind - `Store`, `StorePath`,
   `PathInfo` (sync), `AsyncStore` and friends, `connect`, `serve` -
   so one import works and the three-package build stays an
   implementation detail. The generated `__init__` already computes
@@ -51,7 +51,7 @@ hardest thing to change after there are users.
 
 ## Done
 
-`import cythonix` is the front door. It re-exports the real surface by
+`import huggorm` is the front door. It re-exports the real surface by
 kind - sync bindings, async wrappers, RPC classes, the protocols both
 async surfaces satisfy, `connect`, `serve`, `errors`, `set_pool_size`
 - so the three-package build stays an implementation detail.
@@ -66,7 +66,7 @@ front door fails the build.
 bind a C++ stand-in on its way out; a front door advertising them
 would be advertising scaffolding.
 
-`cythonix.errors` re-exports the hierarchy that the BINDINGS declare -
+`huggorm.errors` re-exports the hierarchy that the BINDINGS declare -
 they own it, because libstore raises it and the class names cross the
 wire against that declared set (036) - so a caller never has to learn
 which package holds it.

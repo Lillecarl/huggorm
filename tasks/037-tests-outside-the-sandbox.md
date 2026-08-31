@@ -8,7 +8,7 @@ local-overlay-store but we're not really there yet)."
 
 ## Where it stands
 
-Every test runs in one place: `nix build --file . cythonix` runs the
+Every test runs in one place: `nix build --file . huggorm` runs the
 91 pytest tests inside the build sandbox. That was free while the mock
 library backed everything, because a mock needs nothing from the
 system.
@@ -76,9 +76,9 @@ The build is the one that restricts, with `-m "not live"`. So the
 narrower run is the one that has to ask.
 
 **`nix run --file . test`** beside `check`, taking pytest arguments.
-It puts the working tree's `cythonix` ahead of the installed copy, so
-an edit is testable without a rebuild - `cythonix_bindings` and
-`cythonix_generated` still come from the store, one being compiled and
+It puts the working tree's `huggorm` ahead of the installed copy, so
+an edit is testable without a rebuild - `huggorm_bindings` and
+`huggorm_generated` still come from the store, one being compiled and
 the other generated.
 
 The live suite has one inhabitant, and it is the test this whole

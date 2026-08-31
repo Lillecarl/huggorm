@@ -56,7 +56,7 @@ Findings reference three architectural reviews: 2026-08-23,
 All seven findings of the 2026-08-26 review are resolved except 050,
 which was superseded rather than fixed.
 
-- 051 (the front door) is done. `import cythonix` re-exports the real
+- 051 (the front door) is done. `import huggorm` re-exports the real
   surface by kind, the demos moved to examples/, the server reports
   through a logger, and the pool takes a size. A test derives the
   export list from the two packages rather than keeping a second copy.
@@ -71,7 +71,7 @@ which was superseded rather than fixed.
   recommendation; the sharp open question is whether the wire must
   stay stable across a version delta.
 - The source-format question is DECIDED. A Python declaration, read
-  with `ast.parse` and never run, is the source; `cythonix-idl` is
+  with `ast.parse` and never run, is the source; `huggorm-idl` is
   the package. Cython is gone with the question: 053 is the spike
   report that argued the direction, 054 is why pure mode lost, and
   050 records what was learned on the way.
@@ -92,8 +92,8 @@ which was superseded rather than fixed.
 - 046 (value types need dunders) is done for the dunders; the
   property question is deferred to the source-format spike, where its
   one real cost disappears.
-- 045 (wire names before they freeze) is done. cythonix.v1,
-  x-cythonix-conn, cythonix-* threads, and one casing for a method's
+- 045 (wire names before they freeze) is done. huggorm.v1,
+  x-huggorm-conn, huggorm-* threads, and one casing for a method's
   two message names.
 - 044 (the store as a graph) is done. references had one edge, one
   way, one path at a time; query_referrers is its inverse and
@@ -188,7 +188,7 @@ Per wrapped class, three forms plus the wire:
     <X>Service   gRPC service, and <X>Msg for a wire-value    (grpc_schema.pb)
 
 Plus one stub package describing the BINDINGS, so the types all of the
-above name are not Any to a typechecker (cythonix_bindings-stubs/, 027).
+above name are not Any to a typechecker (huggorm_bindings-stubs/, 027).
 That one is built from the unfiltered surface: the policy drops and the
 hierarchy split are rules about the wrappers, not about the bindings.
 

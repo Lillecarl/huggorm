@@ -18,10 +18,10 @@ typecheck and a TypeError:
 
     >>> sorted(store.query_path_info(p) for p in paths)
     TypeError: '<' not supported between instances of
-    'cythonix_bindings.store.PathInfo' and
-    'cythonix_bindings.store.PathInfo'
+    'huggorm_bindings.store.PathInfo' and
+    'huggorm_bindings.store.PathInfo'
 
-`cythonix_bindings-stubs/store.pyi` declares all four, because
+`huggorm_bindings-stubs/store.pyi` declares all four, because
 `manifest.json` lists them in `dunders`.
 
 ## Cause

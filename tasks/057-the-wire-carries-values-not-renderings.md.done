@@ -79,7 +79,7 @@ which is what those files are FOR.
   `fixed:r:sha256:...`.
 - `info.sigs()` is a `list[Signature]`.
 - `Hash`, `ContentAddress` and `Signature` are exported from
-  `cythonix` and `cythonix_bindings`.
+  `huggorm` and `huggorm_bindings`.
 
 The typechecker found every caller that had been treating these as
 strings, which is what the generated stubs exist for. Four call sites

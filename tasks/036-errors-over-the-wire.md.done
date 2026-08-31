@@ -27,7 +27,7 @@ catches nothing. `e.colored` is gone entirely.
 
 Both halves changed, because the first one made the second obvious.
 
-**The hierarchy is declared, not listed.** `cythonix_bindings/__init__.py`
+**The hierarchy is declared, not listed.** `huggorm_bindings/__init__.py`
 declares `_errors_module`; the codegen reflects it and writes the class
 names, their bases and their `_wire_fields` into the manifest. Adding a
 Nix error means adding it to `errors.py` and nothing else. A build-time
