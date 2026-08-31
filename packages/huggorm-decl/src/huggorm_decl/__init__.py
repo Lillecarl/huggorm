@@ -17,7 +17,10 @@ everything the import throws away, such as a docstring's position or
 a C++ body written as a string. No body ever runs.
 """
 
+import functools
 import pathlib
+
+from huggorm_dsl.corpus import Corpus
 
 # Where the documents are. Every reader opens them through this or
 # through `declaration()`, so none of them reconstructs the path.
@@ -63,6 +66,30 @@ VOCABULARIES = (
 # The exception hierarchy. One declaration, two outputs: the Python
 # module a caller catches, and the C++ catch chain that raises it.
 ERRORS = "errors.py"
+
+
+@functools.cache
+def corpus() -> Corpus:
+    """This declaration set, ready to be read.
+
+    The one object an emitter is handed. It carries the three lists
+    above and reads each document at most once, so no emitter loops
+    over `NANOBIND` itself and no two emitters can disagree about
+    what the set contains.
+
+    CACHED, so every emitter in one process shares the reads. A
+    `Corpus` caches within itself, which alone bought nothing: the
+    six functions in `cppgen/generate.py` are called once each by
+    `pygen`, so six fresh instances read the same nine declarations
+    six times over.
+
+    Cached for the life of the process, and that is safe because
+    these documents are inputs to a build rather than state it
+    changes. A caller that wants a fresh read builds its own
+    `Corpus` - `gates/nbcheck.py` already reads declarations that
+    are not in this set at all."""
+    return Corpus(DECLARATIONS, nanobind=NANOBIND,
+                  vocabularies=VOCABULARIES, errors=ERRORS)
 
 
 def declaration(name: str) -> str:

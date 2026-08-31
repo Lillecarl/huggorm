@@ -24,14 +24,8 @@ import pathlib
 import sys
 from typing import Any
 
-from huggorm_decl import (
-    CPP,
-    DECLARATIONS,
-    ERRORS,
-    NANOBIND,
-    VOCABULARIES,
-)
-from huggorm_dsl.read import read
+from huggorm_decl import CPP, corpus
+from huggorm_dsl.read import Module
 from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors
 from huggorm_gen.cppgen.nbemit import bindable, extension
 
@@ -47,7 +41,7 @@ def nanobind_modules() -> tuple[str, ...]:
     The build loops over these to know what to emit and what to
     compile, and `setup.py` reads the same list. One place names
     them, so a module cannot be emitted and then not compiled."""
-    return tuple(pathlib.Path(name).stem for name in NANOBIND)
+    return corpus().module_names
 
 
 def declared_entries() -> dict[str, dict[str, Any]]:
@@ -77,8 +71,7 @@ def declared_entries() -> dict[str, dict[str, Any]]:
     construction, and an INCLUDES declaration is complete for the
     values it emits, which is what `is_value` already says."""
     out = {}
-    for name in NANOBIND:
-        mod = read(str(DECLARATIONS / name))
+    for mod in corpus().modules:
         known = mod.known
         for cls in mod.classes:
             entry = manifest.entry(cls, PACKAGE, mod.name, final=False,
@@ -117,8 +110,7 @@ def declared_unions() -> dict[str, list[str]]:
     Arms in DECLARED order, because that is the order the schema
     numbers a oneof's fields in and a renumbering is a wire change."""
     out: dict[str, list[str]] = {}
-    for name in NANOBIND:
-        mod = read(str(DECLARATIONS / name))
+    for mod in corpus().modules:
         for union in mod.unions:
             out[union.name] = list(union.decl.arms)
     return out
@@ -139,8 +131,7 @@ def declared_functions() -> dict[str, dict[str, Any]]:
     instead. `nbemit.public` is where that last rule lives, and this
     reads it rather than repeating it."""
     out = {}
-    for name in NANOBIND:
-        mod = read(str(DECLARATIONS / name))
+    for mod in corpus().modules:
         for fn in nbemit.public(mod.exported, mod.classes):
             out[fn.name] = manifest.function_entry(fn, PACKAGE, mod.name)
     return out
@@ -169,8 +160,7 @@ def declared_returned() -> list[str]:
     so it is an entry point that happens to be returned. Value cannot
     be built at all, and neither can PathInfo."""
     out: set[str] = set()
-    for name in NANOBIND:
-        mod = read(str(DECLARATIONS / name))
+    for mod in corpus().modules:
         known = mod.known
         for cls in mod.classes:
             for m in cls.methods:
@@ -199,8 +189,8 @@ def error_chain() -> list[str]:
     live Python exception is nanobind's protocol, not something a
     declaration knows. What is derived is WHICH classes and in WHAT
     ORDER, and the order is the part a person gets wrong."""
-    tree = ast.parse((DECLARATIONS / ERRORS).read_text())
-    return pyerrors.chain(tree, "huggorm::raise_as")
+    have = corpus()
+    return pyerrors.chain(have.tree(have.errors), "huggorm::raise_as")
 
 
 def _code_lines(text: str) -> int:
@@ -225,25 +215,33 @@ def _code_lines(text: str) -> int:
     return n
 
 
-def emit_module(decl: str, dotted: str, out: str) -> int:
-    """One declaration file, as the one C++ translation unit it owns.
+def emit_module(mod: Module, dotted: str, out: str,
+                chain: list[str]) -> int:
+    """One declaration, as the one C++ translation unit it owns.
 
     A file, not a class: a nanobind extension is one translation unit,
     and a declaration file may declare several classes, so all of them
     land in the one unit.
 
+    Takes the `Module` rather than a file name. It used to take the
+    name and read the file itself, which read every declaration a
+    second time - `main` had already read it to learn where the
+    output goes.
+
+    `chain` for the same reason. The catch chain is one fact about
+    the whole set, and building it here meant parsing `errors.py`
+    once per module.
+
     `dotted` is where the module goes. `path` on its own is the
     standalone shape a spike builds; `huggorm_bindings.path` is the
     shape inside a package, and it is also what lets a module import
     the sibling whose types it names."""
-    mod = read(str(DECLARATIONS / decl) if not pathlib.Path(decl).is_absolute()
-               else decl)
+    decl = f"{mod.name}.py"
     bound = bindable(mod)
     if not bound:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    pathlib.Path(out).write_text(extension(mod, dotted,
-                                           chain=error_chain()))
+    pathlib.Path(out).write_text(extension(mod, dotted, chain=chain))
     names = ", ".join(c.name for c in bound)
     print(f"{decl} -> {out} (module {dotted}): {names}")
     # How much of each class the declaration derived, and how much a
@@ -294,21 +292,20 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
 
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
-    for name in NANOBIND:
-        mod = read(str(DECLARATIONS / name))
+    have = corpus()
+    chain = error_chain()
+    for mod in have.modules:
         target = out / f"{mod.name}.cpp"
-        emit_module(name, f"{PACKAGE}.{mod.name}", str(target))
-    src = DECLARATIONS / ERRORS
-    tree = ast.parse(src.read_text())
-    doc = ast.get_docstring(ast.parse(src.read_text()), clean=False) or ""
+        emit_module(mod, f"{PACKAGE}.{mod.name}", str(target), chain)
+    tree = have.tree(have.errors)
+    doc = ast.get_docstring(tree, clean=False) or ""
     (out / "errors.py").write_text(pyerrors.module(tree, doc) + "\n")
-    print(f"{ERRORS} -> {out / 'errors.py'}")
-    for name in VOCABULARIES:
-        source = DECLARATIONS / name
-        mod = read(str(source))
+    print(f"{have.errors} -> {out / 'errors.py'}")
+    for name in have.vocabularies:
+        mod = have.module(name)
         target = out / f"{mod.name}.py"
-        tree = ast.parse(source.read_text())
-        target.write_text(pyenum.module(mod, tree, mod.doc) + "\n")
+        target.write_text(
+            pyenum.module(mod, have.tree(name), mod.doc) + "\n")
         words = [c.name for c in mod.classes if c.is_words]
         print(f"{name} -> {target}: {', '.join(words)}")
     return 0
