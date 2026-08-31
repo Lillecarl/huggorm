@@ -9,7 +9,6 @@ live in model.py, and emission lives in emitter.py. Installed as the
 import argparse
 import ast
 import copy
-import json
 import pathlib
 import sys
 from typing import Any
@@ -25,6 +24,7 @@ from huggorm_gen.cppgen.generate import (
     declared_unions,
 )
 from huggorm_gen.payload.wiretypes import names_in
+from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
     STUB_PACKAGE,
@@ -40,6 +40,7 @@ from huggorm_gen.pygen.emitter import (
     unions_module,
     wrapper_module,
 )
+from huggorm_gen.pygen.grpc_schema import annotate, build_fdset
 from huggorm_gen.pygen.model import (
     check_collection_contract,
     check_optional_contract,
@@ -166,11 +167,24 @@ def _vendor(src: pathlib.Path, dst: pathlib.Path) -> None:
     dst.write_bytes(src.read_bytes())
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--out", required=True, help="output directory for huggorm_generated")
-    args = parser.parse_args(argv)
+def build_manifest() -> Proto:
+    """Everything the build decides, as a value.
 
+    This used to be the first three hundred lines of `main`, ending
+    in a `manifest.json` that other things read back. The
+    serialisation bought nothing and cost the usual: a second shape to
+    keep in step, a version stamp to check, and a `dict[str, Any]` at
+    every boundary that touched it.
+
+    A function instead. The emitters below take the value; so does
+    the suite, which held the emitted code against the JSON and can
+    now hold it against the same derivation the emitters use.
+
+    Nothing here writes a file, and that is the point of the split:
+    the three async-wrapper emissions used to happen in the middle of
+    this, so there was no moment at which the build's decisions were
+    complete and nothing had been written yet.
+    """
     # Which annotation names are ALIASES, told before anything is
     # emitted. The emitter distinguishes a union from a bound class
     # when it writes an import - one comes from huggorm_bindings and
@@ -184,9 +198,6 @@ def main(argv: list[str] | None = None) -> None:
     # declared class has one, and the two sets matched exactly.
     declared: dict[str, Proto] = declared_entries()
     wrapper_names = sorted(declared)
-
-    out = pathlib.Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
 
     # Which classes are HANDED BACK rather than constructed. The
     # declaration says, and it is the only thing that could: this was
@@ -316,39 +327,13 @@ def main(argv: list[str] | None = None) -> None:
             proto["methods"] = [m for m in proto["methods"]
                                 if m["name"] not in inherited]
 
-    # Every name that gets an Async wrapper. Parameters typed with one of
-    # these accept the wrapper as well as the sync binding object, and
-    # the emitter widens their annotations accordingly.
-    async_types = {p["name"] for p in returned_protos + protos if p["wrapped"]}
-
-    # The async spelling of a type, when the LANGUAGE gives one. Read
-    # here rather than off the manifest because the wrappers are
-    # emitted before the manifest is assembled.
+    # The async spelling of a type, when the LANGUAGE gives one.
     #
     # From the vocabulary, not from a marker on the bindings package.
     # `Path` is `Annotated[pathlib.Path, Cxx("string"),
     # Async("anyio.Path")]`, so the two spellings of one word sit
     # together and neither file repeats the other's half.
     async_twins: dict[str, str] = declare.twins()
-
-    for proto in returned_protos:
-        if not proto["wrapped"]:
-            continue
-        fname = f"async_{proto['name'].lower()}.py"
-        code = ast.unparse(returned_module(proto, async_types, returned_policies,
-                                           async_twins))
-        (out / fname).write_text(code + "\n")
-        print(f"generated {fname} for returned type {proto['name']} ({proto['threading']})")
-
-    for proto in protos:
-        if not proto["wrapped"]:
-            continue
-        fname = f"async_{proto['name'].lower()}.py"
-        code = ast.unparse(wrapper_module(proto, returned_policies,
-                                          async_twins, async_types))
-        (out / fname).write_text(code + "\n")
-        print(f"generated {fname} for {proto['name']} "
-              f"({proto['threading']}, {len(proto['methods'])} methods)")
 
     # A free function comes from the declaration where there is one,
     # and from reflection where there is not - the same rule the
@@ -361,18 +346,10 @@ def main(argv: list[str] | None = None) -> None:
     if from_decl:
         print(f"free functions from the declaration: "
               f"{', '.join(from_decl)}")
-    wrapped_free = [p for p in free_protos if p["wrapped"]]
     unwrapped_free = [p["name"] for p in free_protos if not p["wrapped"]]
     if unwrapped_free:
         print(f"free functions with no threading policy, so no wrapper: "
               f"{', '.join(unwrapped_free)}")
-    free_names = [p["name"] for p in wrapped_free]
-    if wrapped_free:
-        code = ast.unparse(free_function_module(wrapped_free, async_types))
-        (out / f"{FREE_MODULE}.py").write_text(code + "\n")
-        print(f"generated {FREE_MODULE}.py for {len(wrapped_free)} free "
-              f"function(s): {', '.join(free_names)}")
-
     # The wire policy and the serialization contract must agree before
     # anything downstream trusts either. Loud, at build time.
     #
@@ -454,8 +431,6 @@ def main(argv: list[str] | None = None) -> None:
     # grpc_schema owns wire naming; stamping it into the manifest is what
     # lets the server and the client read the names instead of each
     # rebuilding the same convention from scratch.
-    from huggorm_gen.pygen import surface
-    from huggorm_gen.pygen.grpc_schema import annotate, build_fdset
     annotate(manifest)
     surface.annotate(manifest)
 
@@ -467,6 +442,60 @@ def main(argv: list[str] | None = None) -> None:
         for c in complaints:
             print(f"adoptable: {c}", file=sys.stderr)
         sys.exit(1)
+
+    return manifest
+
+
+def main(argv: list[str] | None = None) -> None:
+    """The build: derive once, then emit."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", required=True,
+                        help="output directory for huggorm_generated")
+    args = parser.parse_args(argv)
+    out = pathlib.Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    manifest = build_manifest()
+    protos = list(manifest["wrappers"].values())
+    returned_protos = list(manifest["returned_types"].values())
+    free_protos = list(manifest["free_functions"].values())
+    # Read back off the manifest rather than threaded out of the
+    # derivation. Every one of these WAS a local up there, and passing
+    # six of them across the split would have made the boundary a
+    # tuple nobody could read.
+    returned_policies = {p["name"]: p["threading"] for p in returned_protos
+                         if p["wrapped"]}
+    async_types = {p["name"] for p in returned_protos + protos
+                   if p["wrapped"]}
+    async_twins = manifest["async_twins"]
+    unions = manifest["unions"]
+
+    # The in-process wrappers. Emitted here rather than mid-derivation:
+    # a contract that fails now fails before any file is written.
+    for proto in returned_protos:
+        if not proto["wrapped"]:
+            continue
+        fname = f"async_{proto['name'].lower()}.py"
+        (out / fname).write_text(ast.unparse(returned_module(
+            proto, async_types, returned_policies, async_twins)) + "\n")
+        print(f"generated {fname} for returned type {proto['name']} "
+              f"({proto['threading']})")
+    for proto in protos:
+        if not proto["wrapped"]:
+            continue
+        fname = f"async_{proto['name'].lower()}.py"
+        (out / fname).write_text(ast.unparse(wrapper_module(
+            proto, returned_policies, async_twins, async_types)) + "\n")
+        print(f"generated {fname} for {proto['name']} "
+              f"({proto['threading']}, {len(proto['methods'])} methods)")
+
+    wrapped_free = [p for p in free_protos if p["wrapped"]]
+    free_names = [p["name"] for p in wrapped_free]
+    if wrapped_free:
+        (out / f"{FREE_MODULE}.py").write_text(ast.unparse(
+            free_function_module(wrapped_free, async_types)) + "\n")
+        print(f"generated {FREE_MODULE}.py for {len(wrapped_free)} free "
+              f"function(s): {', '.join(free_names)}")
 
     ordered = surface.order(manifest)
     adoptable = set(returned_policies)
@@ -512,8 +541,16 @@ def main(argv: list[str] | None = None) -> None:
     # to it: reflecting here directly made `manifest.json` stop
     # claiming PathInfo has an ordering while `store.pyi` went on
     # claiming it, because the stubs never saw the declaration.
-    all_protos = ([_proto(n) for n in returned_names]
-                  + [_proto(n) for n in wrapper_names])
+    # Read from `declared_entries` again, NOT off the manifest: the
+    # protos in there have been through the affine-return drop and
+    # 018's hierarchy split, which are rules about the async wrappers.
+    # The bindings themselves have neither.
+    #
+    # In the manifest's order, so the stubs come out the same way
+    # twice.
+    declared = declared_entries()
+    all_protos = [copy.deepcopy(declared[n])
+                  for n in [*manifest["returned_types"], *manifest["wrappers"]]]
     # Bases before subclasses: a stub may forward-reference, but there
     # is no reason to make a reader do it.
     order_of = {p["name"]: i for i, p in enumerate(all_protos)}
@@ -530,7 +567,8 @@ def main(argv: list[str] | None = None) -> None:
     # the stub for the module that names it needs the import. `home`
     # is where a stub learns that, and it held only wrapper and
     # returned-type modules until now.
-    home.update({name: proto["module"] for name, proto in enums.items()})
+    home.update({name: proto["module"]
+                 for name, proto in manifest["enums"].items()})
     modules = sorted({p["module"] for p in all_protos}
                      | {p["module"] for p in free_protos})
     exported: dict[str, list[str]] = {}
@@ -567,7 +605,7 @@ def main(argv: list[str] | None = None) -> None:
     # in py.typed is exactly the instruction to read the real module
     # for anything these stubs do not cover. Only __init__.pyi has to
     # mention them, because it must re-export what the package does.
-    for name, proto in sorted(enums.items()):
+    for name, proto in sorted(manifest["enums"].items()):
         exported.setdefault(proto["module"], []).append(name)
     (stub_dir / "__init__.pyi").write_text(
         ast.unparse(stub_init_module(
@@ -583,11 +621,12 @@ def main(argv: list[str] | None = None) -> None:
     print(f"generated {STUB_PACKAGE}/ for {len(modules)} binding module(s): "
           + ", ".join(sorted(m.rsplit('.', 1)[-1] for m in modules)))
 
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(
-        f"wrote manifest ({len(protos)} wrappers, {len(returned_protos)} returned types) "
-        f"to {out / 'manifest.json'}"
-    )
+    # No manifest.json. It was a serialisation of `build_manifest()`,
+    # and every reader calls the function instead - the emitters here,
+    # and the suite, which used to hold the emitted code against a
+    # second artifact of the same build (065).
+    print(f"derived {len(protos)} wrapper(s) and {len(returned_protos)} "
+          f"returned type(s)")
 
     for fname, proto in manifest["free_functions"].items():
         for why in proto["wire_blockers"]:
