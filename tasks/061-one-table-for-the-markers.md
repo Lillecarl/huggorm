@@ -1,9 +1,9 @@
 # One table for the markers
 
-**THE TABLE IS BUILT. THE `@abstract` SPLIT IS NOT.** Where each
-declaration marker is legal, how many times, and what it conflicts
-with - as DATA, driving validation and emission instead of being
-restated in prose and in scattered `if`s.
+**DONE, except two diagnostics niceties.** Where each declaration
+marker is legal, how many times, and what it conflicts with - as
+DATA, driving validation and emission instead of being restated in
+prose and in scattered `if`s.
 
 ## Where it comes from
 
@@ -149,18 +149,34 @@ fires.
 
 ## Left
 
-**The `@abstract` split**, which is the design question and the
-reason this file stays open. `@abstract` means "the C++ type has pure
-virtuals" in the declaration and "Python may not construct one" in
-three emitters. `nix::Store` is both abstract AND opened through
-`nix::openStore`, so stating the true fact today deletes its factory:
-`nbemit` takes the `if decl.abstract` branch INSTEAD of the
-`elif decl.built_by` one, and `Store("dummy://")` stops existing.
-Verified by reading the branch order, not by running it.
+**The `@abstract` split - DONE.** It was the design question and the
+reason this file stayed open.
 
-The fix is the shape above: the declaration states the FACT, and each
-layer's DERIVED question - "is there a door" - is computed once. That
-is one new field and a rename, not a redesign.
+`Class.constructs` is the derived question, computed once beside
+`is_produced`: a declared `__init__`, and either a factory or a
+concrete type. A FACTORY answers abstractness, which is the case the
+old reading had no room for. Six readers switched to it - the
+manifest carries `constructs` beside `abstract`, `nbemit` picks the
+constructor shape by it, `emitter.py` reads it in four places - and
+`abstract` keeps its one honest reader, the `_abstract` marker.
+
+`decl/store.py` now says `@abstract`, and `Store("dummy://")` still
+works.
+
+The breakage this file predicted is now demonstrated rather than
+reasoned about. Reverting `nbemit` to key on the fact removes
+`nb::new_` from `store.cpp` entirely and gives Store a refusing
+`__init__`.
+
+Two things fell out. `@abstract` left the unused-marker census, which
+it had been in since the mock went. And
+`test_an_abstract_class_refuses_to_be_built` stopped sleeping: it
+looped over zero classes and said so in a comment, and now covers the
+five produced types - Realisation, PathInfo, StoreLocation,
+MissingPaths and Value - with Store correctly excluded.
+
+The refusal sentence is derived too. There are three ways to have no
+door and it used to say "is abstract" for all of them.
 
 **`path:line:col` in diagnostics.** `DeclarationError` still carries
 `line N: message` and no path. It matters once a declaration imports
