@@ -87,6 +87,46 @@ def test_every_declared_error_has_a_message(manifest: dict[str, Any]) -> None:
             fname for fname, _ in proto["wire_fields"]], name
 
 
+def test_every_declared_error_rebuilds_from_its_parts(
+        manifest: dict[str, Any]) -> None:
+    """An error must survive its own round trip.
+
+    An error crosses as its declared parts and comes back as
+    `cls(*parts)`, so the parts have to reach the attributes they are
+    named after. A class whose __init__ reorders, renames or drops a
+    part fails HERE rather than at the first remote failure, which is
+    the one moment nobody is watching for a bug.
+
+    A test rather than a build check, and it used to be
+    `model.check_error_contract`. Nothing static proves this - it
+    builds one of each and reads it back - so it needed the compiled
+    package, and the generator imported that package to run it. That
+    import is what kept every Python surface behind a C++ compiler.
+    The build sandbox runs this suite, so it is still a build gate;
+    it is just no longer a reason for the generator to reflect.
+    """
+    import importlib
+
+    errors: dict[str, Any] = manifest.get("errors") or {}
+    module_name = errors["module"]
+    assert module_name, "the bindings declare no error module"
+    module = importlib.import_module(module_name)
+    for name, proto in errors["classes"].items():
+        fields = proto["wire_fields"]
+        assert fields, (
+            f"{name}: no wire_fields, so nothing says how to rebuild it "
+            f"on the far side")
+        # Distinct values, so a swap is visible. A reordering that kept
+        # the same string in both slots would otherwise pass.
+        probe = [f"<{fname}>" for fname, _ in fields]
+        built = getattr(module, name)(*probe)
+        for (fname, _), sent in zip(fields, probe, strict=True):
+            got = getattr(built, fname, None)
+            assert got == sent, (
+                f"{name}.wire_fields names {fname!r}, but building it from "
+                f"its parts leaves {fname} = {got!r}, not {sent!r}")
+
+
 def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
     """A value read off the wire comes back typed.
 
