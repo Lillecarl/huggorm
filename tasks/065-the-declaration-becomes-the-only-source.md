@@ -1,6 +1,6 @@
 # The declaration becomes the only source
 
-**PHASES 0-2 DONE. PHASE 3 OPEN.** The plan for `tasks/064`. Carl: *"ditch the IR in favor of
+**ALL FOUR PHASES DONE.** The plan for `tasks/064`. Carl: *"ditch the IR in favor of
 using the Python DSL decl as the source of truth always, this will
 need us to make helpful functions for both analyzing the AST and
 importing to get full type information."*
@@ -129,7 +129,7 @@ reflection is right for.
 `huggorm_bindings` **not installed**. An `ImportError` cannot be
 faked. If it builds, the reflection is gone.
 
-### 3. The manifest dies, because nothing needs a courier - OPEN
+### 3. The manifest dies, because nothing needs a courier - DONE (3b)
 
 **This phase is much smaller than 064 and this file first claimed,
 and the correction is measured rather than argued.** Carl asked the
@@ -216,8 +216,59 @@ into a dict.
 `grpc_schema.pb` STAYS either way. It is the descriptor set, for
 reflection and for building messages. It is not a mapping table.
 
-*Proof:* delete `manifest.json` after a build. The suite still
-passes.
+*Proof:* `manifest.json` deleted from an installed
+`huggorm_generated`, and the library run against it. `PKG` resolves,
+the codec builds its 15 kinds, 2 enums and 2 unions, and the
+dispatcher builds all 53 rpc handlers.
+
+## What 3b turned out to be
+
+Carl chose 3b: *"emit real Python. The emitted code should be correct
+Python that passes static type checking and provides autocompletion
+for people who consume the project as a library."*
+
+**The consumer surface already met that.** The protocols, the async
+wrappers and the RPC classes carried real signatures, real return
+types and the declaration's own docstrings before any of this. What
+was untyped was everything a caller never sees.
+
+**Where the `Any` actually was.** Six tables, all `dict[str, Any]`
+off a JSON load: the client's `_rpc` specs, the server's six, the
+codec's four, the fault codec's two. Emitting them as frozen
+dataclasses is what a checker can read - proved by emitting
+`Arg(1, "int")` and watching `zuban --strict` answer *"Argument 1 to
+Arg has incompatible type int; expected str"*. A dict could not
+produce that error.
+
+**Emitting the call BODY would have been wrong, and this is the one
+place the plan was.** 3b was written as *"one real `async def` per
+RPC"* on the server. The server's handler body is a RULE - decode the
+arguments, call the method, encode the result - and it reads the same
+for all fifty-three. Emitting fifty-three copies restates that rule
+fifty-three times, which is what goal 3 in CLAUDE.md forbids. What is
+per-method is the SPEC, and that is what the build emits.
+
+The client is the opposite case and that is why it emits methods: a
+method's SIGNATURE differs per method, and the signature is the
+autocompletion surface.
+
+**One statement per call.** The specs first landed in `rpc.py`, which
+made them the client's; the server then built the same specs a second
+time. They live in `_policy.py` now and both ends import them, so the
+two halves of one call cannot disagree about its shape.
+
+**Two facts that looked like one.** `Acquire.required` is ARITY and
+`Acquire.optional` is proto PRESENCE. Conflating them broke
+`Store("auto")` - caught by the suite as *"Field
+Store_AcquireReq.uri does not have presence"*.
+
+**The manifest survives as the build's report.** It is not an IR and
+not a dispatch table; the suite reads it to hold OTHER artifacts up
+against - the descriptor set, the front door's `__all__`, the stubs.
+`load_manifest` moved into `conftest.py`, so the library ships no
+reader at all. `check_manifest` is deleted: it defended against a
+file from another generator, which mattered only while something
+dispatched on one.
 
 ## Why the order cannot change
 
