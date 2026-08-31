@@ -104,7 +104,7 @@ def test_a_real_path_crosses_the_wire() -> None:
     assert proto["binds"] == "CStorePath"
     assert proto["wire"] == "value"
 
-    codec = WireCodec(manifest)
+    codec = WireCodec()
     msg = _message(proto["message"])()
     codec.value_to_msg("StorePath", StorePath(HELLO), msg)
     assert msg.base_name == HELLO
@@ -188,7 +188,7 @@ def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
     driving encode/decode directly is the honest way to keep asking
     it. It is also closer to the bug: 048 was a codec fix."""
     manifest = grpc_pb.load_manifest()
-    codec = WireCodec(manifest)
+    codec = WireCodec()
     msg = _message(manifest["returned_types"]["PathInfo"]["message"])()
 
     # `int | None`, the ANNOTATION spelling. `int?` is how

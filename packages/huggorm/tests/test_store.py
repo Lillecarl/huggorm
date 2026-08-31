@@ -1115,18 +1115,13 @@ def test_a_union_nested_past_the_limit_is_refused_by_name() -> None:
     depth is a fact about crossing rather than about the type. It is
     generous: anything real is one or two deep, so only a bug or an
     attack sees this."""
-    import json
-
     from google.protobuf import message_factory
 
-    import huggorm_generated as flg
     from huggorm.grpc_pb import load_pool
     from huggorm.wire import WireCodec
     from huggorm_generated._wiretypes import MAX_UNION_DEPTH
 
-    manifest = json.loads(
-        (pathlib.Path(flg.__file__).parent / "manifest.json").read_text())
-    codec = WireCodec(manifest)
+    codec = WireCodec()
     pool = load_pool()
 
     def message() -> Any:

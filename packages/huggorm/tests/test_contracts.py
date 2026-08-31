@@ -141,7 +141,7 @@ def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
     from huggorm.wire import WireCodec
     from huggorm_bindings import ContentAddressMethod
 
-    codec = WireCodec(manifest)
+    codec = WireCodec()
     assert manifest["enums"], "the bindings declare no vocabularies"
     assert codec.kind("ContentAddressMethod") == "scalar"
 
@@ -310,7 +310,7 @@ def test_an_enum_survives_a_container(manifest: dict[str, Any]) -> None:
     from huggorm_bindings import ContentAddressMethod as CA
     from huggorm_bindings import HashAlgorithm
 
-    codec = WireCodec(manifest)
+    codec = WireCodec()
     probe = _probe_message()
 
     codec.list_to_msg("list[HashAlgorithm]",

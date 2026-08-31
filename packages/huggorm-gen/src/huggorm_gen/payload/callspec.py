@@ -37,7 +37,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Arg:
-    """One declared parameter of a remote call.
+    """A declared name and its declared type.
+
+    Used for both things that shape is: a parameter of a remote call,
+    and one part of a wire value. They are not two ideas that happen
+    to look alike - both say "this name carries a value of this
+    declared type", and the codec treats them identically. Two
+    dataclasses would be one fact stated twice.
 
     No default. The generated method resolved defaults before the call
     reached the runtime, so every argument a spec describes is

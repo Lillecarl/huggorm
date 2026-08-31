@@ -133,7 +133,7 @@ class Dispatcher:
         # Runner-shutdown tasks in flight; see _on_drop.
         self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
-        self.codec = WireCodec(manifest)
+        self.codec = WireCodec()
         # A failure crosses the same way a value does: as messages, by
         # what the manifest declares, never by a type this file names
         # (tasks/036).

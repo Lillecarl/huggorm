@@ -25,6 +25,13 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any, ClassVar
 
+from huggorm_generated._callspec import Arg
+from huggorm_generated._policy import (
+    ENUMS,
+    UNION_ARMS,
+    WIRE_FIELDS,
+    WIRE_KIND,
+)
 from huggorm_generated._wiretypes import (
     MAX_UNION_DEPTH,
     SCALAR_NAMES,
@@ -64,23 +71,26 @@ def _no_proxy(type_str: str, fname: str) -> Callable[[Any], Any]:
 class WireCodec:
     """Reads the manifest; encodes and decodes rpc fields."""
 
-    def __init__(self, manifest: dict[str, Any],
-                 bindings: ModuleType | None = None) -> None:
-        self.manifest = manifest
+    def __init__(self, bindings: ModuleType | None = None) -> None:
+        """No arguments but the bindings, and that is the change.
+
+        It took the manifest and unpacked four tables out of it. They
+        are emitted now, in `huggorm_generated._policy`, so this reads
+        them by name instead of digging them out of a JSON load - and
+        a typechecker can see what each one holds.
+
+        Read at import rather than copied per instance. They are
+        constants; a copy would only be a chance for one to differ."""
         self._bindings: ModuleType | None = bindings
         # String vocabularies. A member is a str, so these cross as
         # scalars - the only thing this table changes is that a
         # decoded value comes back TYPED rather than as a bare str.
-        self.enums: set[str] = set(manifest.get("enums", {}))
-        # SUM types, {alias: [arm, ...]} in declared order - which is
+        self.enums: frozenset[str] = ENUMS
+        # SUM types, {alias: (arm, ...)} in declared order - which is
         # the order the schema numbered the oneof's fields in.
-        self.unions: dict[str, list[str]] = dict(manifest.get("unions", {}))
-        self.kinds: dict[str, str] = {}
-        self.fields: dict[str, list[list[str]]] = {}
-        for group in ("wrappers", "returned_types"):
-            for name, proto in manifest[group].items():
-                self.kinds[name] = proto["wire"]
-                self.fields[name] = proto["wire_fields"]
+        self.unions: dict[str, tuple[str, ...]] = UNION_ARMS
+        self.kinds: dict[str, str] = WIRE_KIND
+        self.fields: dict[str, tuple[Arg, ...]] = WIRE_FIELDS
 
     @property
     def bindings(self) -> ModuleType:
@@ -161,15 +171,15 @@ class WireCodec:
             raise TypeError(
                 f"{type_str}._parts() returned {len(parts)} value(s) for "
                 f"{len(declared)} declared _wire_fields")
-        for (fname, ftype), val in zip(declared, parts, strict=True):
-            optional = ftype.endswith("?")
-            ftype = ftype.removesuffix("?")
+        for field, val in zip(declared, parts, strict=True):
+            optional = field.type.endswith("?")
+            ftype = field.type.removesuffix("?")
             if val is None:
                 if not optional:
-                    raise TypeError(f"{type_str}.{fname} is not optional")
+                    raise TypeError(f"{type_str}.{field.name} is not optional")
                 continue  # proto3 default stands in for "unset"
-            self.encode(msg, fname, ftype, val, _no_proxy(type_str, fname),
-                        depth)
+            self.encode(msg, field.name, ftype, val,
+                        _no_proxy(type_str, field.name), depth)
 
     # -- maps -------------------------------------------------------------
     # An attribute set has string keys, always, so `map<string, V>`
@@ -328,10 +338,10 @@ class WireCodec:
         rather than as a StorePath rebuilt from an empty base name -
         and that a repeated field is read, not fetched."""
         args = [
-            self.decode(msg, fname, ftype.removesuffix("?"),
-                        _no_proxy(type_str, fname),
-                        optional=ftype.endswith("?"), depth=depth)
-            for fname, ftype in self.fields[type_str]
+            self.decode(msg, f.name, f.type.removesuffix("?"),
+                        _no_proxy(type_str, f.name),
+                        optional=f.type.endswith("?"), depth=depth)
+            for f in self.fields[type_str]
         ]
         return getattr(self.bindings, type_str)._from_parts(*args)
 

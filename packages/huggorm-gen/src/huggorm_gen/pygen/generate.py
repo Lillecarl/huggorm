@@ -31,6 +31,7 @@ from huggorm_gen.pygen.emitter import (
     emitter_union_names,
     free_function_module,
     init_module,
+    policy_module,
     protocol_module,
     returned_module,
     rpc_module,
@@ -614,6 +615,9 @@ def main(argv: list[str] | None = None) -> None:
     # extension. Written from the manifest, so the declaration states
     # `DerivedPath = StorePath | DerivedPathBuilt` once.
     (out / "_unions.py").write_text(unions_module(unions))
+    # ...and the wire policy of every declared type, which the codec
+    # reads and no caller does.
+    (out / "_policy.py").write_text(policy_module(manifest))
     print(f"generated _unions.py for {len(unions)} sum type(s): "
           f"{', '.join(unions) or 'none'}")
     # The codec reads declared type strings at run time and the schema

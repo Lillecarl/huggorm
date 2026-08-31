@@ -210,6 +210,91 @@ def _huggorm_bindings_import(names: set[str]) -> list[ast.ImportFrom]:
     return out
 
 
+# The emitted `_policy.py`'s own docstring. Out here rather than
+# inline, because it is prose a reader of the OUTPUT sees and an
+# 800-column string literal in an emitter argument list is neither
+# readable nor lintable.
+POLICY_DOC = """The wire policy of every declared type.
+
+Four tables the codec needs and no caller does: what KIND each type
+crosses as, what a wire value is made of, which names are string
+vocabularies, and what a sum type's arms are in declared order.
+
+They came out of `manifest.json`, read at run time by a codec a
+typechecker could tell nothing about - every one of them was a
+`dict[str, Any]` off a JSON load. `check_manifest` existed for
+exactly that reason: a manifest from another generator "would answer
+wrong, one lookup at a time". An emitted module ships with the code
+that reads it, so there is no other generator to defend against.
+
+Arms in DECLARED order, because that is the order the schema numbered
+the oneof's fields in and a renumbering is a wire change. Tuples
+rather than lists, so nothing downstream reorders one in place."""
+
+
+def policy_module(manifest: Proto) -> str:
+    """`_policy.py`: the wire policy of every declared type.
+
+    Four tables the codec needs and no caller does: what KIND each
+    type crosses as, what a wire value is made of, which names are
+    string vocabularies, and what a sum type's arms are in declared
+    order.
+
+    They came out of `manifest.json`, read at run time by a codec that
+    a typechecker could tell nothing about - every one of them was a
+    `dict[str, Any]` off a JSON load. `check_manifest` existed for
+    exactly that reason: its own comment says a manifest from another
+    generator *"would answer wrong, one lookup at a time"*. An emitted
+    module ships with the code that reads it, so there is no other
+    generator to defend against.
+
+    Arms in DECLARED order, because that is the order the schema
+    numbered the oneof's fields in and a renumbering is a wire change.
+    A tuple rather than a list, so nothing downstream can reorder them
+    in place.
+    """
+    kinds, fields = [], []
+    for group in ("wrappers", "returned_types"):
+        for name, proto in manifest[group].items():
+            kinds.append((name, ast.Constant(value=proto["wire"])))
+            fields.append((name, ast.Tuple(elts=[
+                ast.Call(func=ast.Name(id="Arg"),
+                         args=[ast.Constant(value=f[0]),
+                               ast.Constant(value=f[1])],
+                         keywords=[])
+                for f in proto["wire_fields"]])))
+    body: list[ast.stmt] = [
+        ast.Expr(value=ast.Constant(value=POLICY_DOC)),
+        ast.ImportFrom(module="._callspec", names=[ast.alias(name="Arg")],
+                       level=0),
+    ]
+    for var, ann, rows in (("WIRE_KIND", "dict[str, str]", kinds),
+                           ("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
+                            fields)):
+        body.append(ast.AnnAssign(
+            target=ast.Name(id=var), annotation=_ann(ann, var),
+            value=ast.Dict(keys=[ast.Constant(value=n) for n, _ in rows],
+                           values=[v for _, v in rows]),
+            simple=1))
+    body.append(ast.AnnAssign(
+        target=ast.Name(id="ENUMS"), annotation=_ann("frozenset[str]", "ENUMS"),
+        value=ast.Call(func=ast.Name(id="frozenset"),
+                       args=[ast.Set(elts=[ast.Constant(value=n)
+                                           for n in sorted(manifest["enums"])])]
+                       if manifest["enums"] else [],
+                       keywords=[]),
+        simple=1))
+    body.append(ast.AnnAssign(
+        target=ast.Name(id="UNION_ARMS"),
+        annotation=_ann("dict[str, tuple[str, ...]]", "UNION_ARMS"),
+        value=ast.Dict(
+            keys=[ast.Constant(value=n) for n in manifest["unions"]],
+            values=[ast.Tuple(elts=[ast.Constant(value=a) for a in arms])
+                    for arms in manifest["unions"].values()]),
+        simple=1))
+    return ast.unparse(ast.Module(body=body, type_ignores=[])) + "\n"
+
+
 def unions_module(unions: dict[str, list[str]]) -> str:
     """`_unions.py`: one alias per declared sum type.
 

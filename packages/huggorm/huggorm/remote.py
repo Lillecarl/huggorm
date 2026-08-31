@@ -63,7 +63,7 @@ class NixClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 50051) -> None:
         self.pool = schema.load_pool()
         self.manifest = schema.load_manifest()
-        self.codec = WireCodec(self.manifest)
+        self.codec = WireCodec()
         # Rebuilds a declared error from the status details, so a
         # remote failure has the same shape as an in-process one: an
         # InternalError whose __cause__ is the real error (tasks/036).
