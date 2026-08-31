@@ -19,9 +19,10 @@ maintained.
 """
 
 import ast
+from types import ModuleType
 from typing import Any
 
-from huggorm_dsl.read import Module
+from huggorm_dsl.read import DeclarationError, Module
 
 # The attribute a declared exception uses to name its C++ class. Not a
 # decorator: an exception declaration has no behaviour to mark, and a
@@ -65,57 +66,51 @@ def _depth(name: str, bases: dict[str, str]) -> int:
 WIRE_FIELDS = "_wire_fields"
 
 
-def _wire_fields_of(node: ast.ClassDef) -> list[list[str]] | None:
-    """This class's OWN `_wire_fields`, or None if it states none."""
-    for item in node.body:
-        if not (isinstance(item, ast.Assign)
-                and len(item.targets) == 1
-                and isinstance(item.targets[0], ast.Name)
-                and item.targets[0].id == WIRE_FIELDS):
-            continue
-        return [[str(e.value) for e in pair.elts]  # type: ignore[attr-defined]
-                for pair in item.value.elts]  # type: ignore[attr-defined]
-    return None
-
-
-def entries(tree: ast.Module) -> dict[str, dict[str, Any]]:
+def entries(tree: ast.Module,
+            mod: ModuleType | None) -> dict[str, dict[str, Any]]:
     """Every declared exception, as the manifest carries it.
 
-    The same shape `model.extract_errors` reflected off the imported
-    module, read from the declaration instead. It reached that module
-    by importing the compiled bindings package, so describing the
-    error surface waited on a C++ compiler for facts written here.
+    Two readings of one file, each answering what it is good for. The
+    TREE says which classes this document declares and in what order.
+    The IMPORT says what each one INHERITS, and that is the half a
+    tree cannot give.
 
-    Bases INSIDE this file only, which is what the reflected version
-    meant by `b.__module__ == module_name`: `Exception` is Python's
-    and says nothing about the hierarchy a caller catches by.
+    `_wire_fields` is declared once, on NixError, and eight classes
+    below it carry the same two strings. An earlier version of this
+    walked the declared base chain to find them, which recomputed
+    what Python had already computed while executing the file - and
+    would have got it wrong the first time a hierarchy branched,
+    because a tree walk follows the first base and an MRO does not.
 
-    `_wire_fields` is INHERITED. NixError declares the two strings and
-    every class below it carries them, so a reader that took only a
-    class's own assignment would find one error with parts and eight
-    without. Python's attribute lookup did this for free; here it is
-    the walk up the declared bases.
+    Bases INSIDE this file only. `Exception` is Python's and says
+    nothing about the hierarchy a caller catches by; the reflected
+    version this replaced meant the same thing by
+    `b.__module__ == module_name`.
 
-    Sorted by name, because the reflected version walked `vars()`
-    sorted and the two answers have to be comparable."""
-    bases = _bases(tree)
-    own = {n.name: _wire_fields_of(n) for n in tree.body
-           if isinstance(n, ast.ClassDef)}
-
-    def inherited(name: str) -> list[list[str]]:
-        seen: set[str] = set()
-        while name and name not in seen:
-            seen.add(name)
-            if own.get(name) is not None:
-                fields = own[name]
-                assert fields is not None
-                return fields
-            name = bases.get(name, "")
-        return []
-
-    return {name: {"bases": [bases[name]] if bases[name] in own else [],
-                   "wire_fields": inherited(name)}
-            for name in sorted(own)}
+    Without the module there is nothing to fall back on, and this
+    says so rather than guessing: a declaration that will not import
+    has no inheritance to read, and inventing one would put a wrong
+    answer in four generated files at once.
+    """
+    declared = [n.name for n in tree.body if isinstance(n, ast.ClassDef)]
+    if mod is None:
+        raise DeclarationError(
+            tree, "the exception declaration does not import, so nothing "
+                  "says what each class inherits. Fix the import: the "
+                  "hierarchy is the point of the file.")
+    here = mod.__name__
+    out = {}
+    for name in sorted(declared):
+        kls = getattr(mod, name)
+        out[name] = {
+            "bases": [b.__name__ for b in kls.__bases__
+                      if b.__module__ == here],
+            # Through the MRO, so a class states its parts once and
+            # every class below it carries them.
+            "wire_fields": [list(f) for f in
+                            getattr(kls, WIRE_FIELDS, ())],
+        }
+    return out
 
 
 def chain(tree: ast.Module, raise_as: str) -> list[str]:

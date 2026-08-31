@@ -208,7 +208,8 @@ def declared_errors() -> dict[str, Any]:
     if not have.errors:
         return {"module": None, "classes": {}}
     return {"module": errors_module(),
-            "classes": pyerrors.entries(have.tree(have.errors))}
+            "classes": pyerrors.entries(have.tree(have.errors),
+                                        have.imported(have.errors))}
 
 
 def declared_enums() -> dict[str, dict[str, Any]]:

@@ -54,9 +54,11 @@ binding that compiles and is wrong.
 
 import ast
 import difflib
+import functools
 import pathlib
 import re
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import Any, get_args, get_origin
 
 from huggorm_dsl import declare
@@ -930,6 +932,42 @@ def _mentions(cls: Class, node: ast.AST) -> None:
                 f"send.")
 
 
+@functools.cache
+def load(path: str) -> ModuleType | None:
+    """One declaration, IMPORTED.
+
+    A declaration is read twice, and this is the second reading. The
+    tree says how to render a definition; the import says which
+    definitions exist, because a declaration may branch on
+    `NIX_VERSION` and Python is what resolves that.
+
+    The module is handed back rather than consumed. `_live` wanted
+    only a set of line numbers and threw the rest away, which threw
+    away the thing an import is uniquely good for: INHERITANCE.
+    Python computed every base chain and every inherited attribute
+    while executing the file, and a reader that keeps the module gets
+    all of it for free instead of walking the tree again.
+
+    `None` when the file will not import. That is not a failure: a
+    declaration is a document first, and one that cannot be imported
+    still parses - so a caller falls back to the tree alone.
+
+    CACHED by path, because two readers now want the same module and
+    executing a declaration twice would run its decorators twice."""
+    import importlib.util
+
+    name = f"_huggorm_decl_{pathlib.Path(path).stem}"
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:
+        return None
+    return mod
+
+
 def _live(path: str) -> set[int] | None:
     """The first line of every class and function the IMPORT kept.
 
@@ -948,17 +986,10 @@ def _live(path: str) -> set[int] | None:
     imported still parses - so the reader falls back to the tree
     alone and every `if` arm is read. `_resolve` says what that
     costs."""
-    import importlib.util
-
-    name = f"_huggorm_decl_{pathlib.Path(path).stem}"
-    try:
-        spec = importlib.util.spec_from_file_location(name, path)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-    except Exception:
+    mod = load(path)
+    if mod is None:
         return None
+    name = mod.__name__
 
     # Only what THIS file defines. A declaration imports its
     # vocabulary - `binding`, `header`, `cxx_body` - and those are

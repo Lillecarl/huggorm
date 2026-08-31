@@ -40,8 +40,9 @@ lists.
 
 import ast
 import pathlib
+from types import ModuleType
 
-from huggorm_dsl.read import Class, Method, Module, read
+from huggorm_dsl.read import Class, Method, Module, load, read
 
 
 class Corpus:
@@ -97,6 +98,25 @@ class Corpus:
         if name not in self._parsed:
             self._parsed[name] = ast.parse(self.path(name).read_text())
         return self._parsed[name]
+
+    def imported(self, name: str) -> ModuleType | None:
+        """One declaration, as the module Python built from it.
+
+        The reading a tree cannot give: Python resolved every base
+        chain and every inherited attribute while executing the file.
+        A reader that walks the tree for those recomputes what the
+        interpreter already knows, and gets it subtly wrong the first
+        time a hierarchy is three deep.
+
+        `read()` imports the same file for the same reason - to learn
+        which definitions a `NIX_VERSION` branch kept - and `load` is
+        cached by path, so this shares that one execution rather than
+        running the decorators a second time.
+
+        `None` when the file will not import, which is a legitimate
+        answer: `read()` falls back to the tree alone and so must a
+        caller here."""
+        return load(str(self.path(name)))
 
     # -- the three groups ------------------------------------------
 
