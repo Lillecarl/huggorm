@@ -17,16 +17,20 @@ python3Packages.buildPythonPackage {
   pyproject = true;
   src = ./.;
 
-  # setup.py imports huggorm_gen.pygen to run it, and the generated
-  # package imports huggorm_bindings - both are standard build
-  # requirements. protobuf is here rather than in huggorm-gen's own
-  # dependencies: it is pygen's extra, and this is the build that
-  # uses pygen.
+  # setup.py imports huggorm_gen.pygen to run it. protobuf is here
+  # rather than in huggorm-gen's own dependencies: it is pygen's
+  # extra, and this is the build that uses pygen.
+  #
+  # huggorm-bindings is NOT a build requirement any more. The
+  # generator derives every surface from the declarations, so nothing
+  # here needs the compiled package to be built first (065). It is
+  # still propagated below, because the wrappers this build WRITES
+  # import it at run time - and setup.py asserts that generation
+  # never touched it.
   build-system = [
     python3Packages.setuptools
     python3Packages.protobuf
     huggorm-gen
-    huggorm-bindings
     huggorm-decl
     huggorm-dsl
     python3Packages.anyio

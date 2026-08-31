@@ -316,95 +316,20 @@ def check_wire_contract(protos: list[Proto],
     return bad
 
 
-def extract_enum(cls: type) -> Proto:
-    """One string vocabulary, as the manifest carries it.
-
-    The values, so a reader can see what the surface accepts, and the
-    module, so a stub that NAMES the type can import it. Nothing about
-    how it crosses: a member is a str, and that is the whole answer."""
-    return {
-        "name": cls.__name__,
-        "module": cls.__module__,
-        "values": [str(m.value) for m in cls],  # type: ignore[var-annotated]
-        "doc": inspect.getdoc(cls) or "",
-    }
-
-
-def extract_errors(module_name: str) -> Proto:
-    """The exception hierarchy a binding can raise, as the manifest
-    carries it.
-
-    Told which module, rather than reading a `_errors_module` marker
-    off the imported package. The emitter that WRITES that module
-    knows where it puts it, so the name is derived where it is
-    decided. An empty name means no error surface, which is a
-    legitimate answer: the generator does not require a library to
-    have one.
-
-    What crosses is the class NAME, and the point of recording the set
-    here is that a name is only safe to construct against a declared
-    one. Without it the alternative is a status message that says which
-    module to import, which lets the far side name any importable
-    class."""
-    if not module_name:
-        return {"module": None, "classes": {}}
-    module = importlib.import_module(module_name)
-    classes: Proto = {}
-    for name, kls in sorted(vars(module).items()):
-        if not (isinstance(kls, type) and issubclass(kls, BaseException)):
-            continue
-        if kls.__module__ != module_name:
-            continue  # imported, not declared here
-        classes[name] = {
-            # Bases INSIDE this module, so a reader can see the
-            # hierarchy without importing anything. Python gives the
-            # real one on import; this is for describing the surface.
-            "bases": [b.__name__ for b in kls.__bases__
-                      if b.__module__ == module_name],
-            "wire_fields": [list(f) for f in getattr(kls, "_wire_fields", ())],
-        }
-    return {"module": module_name, "classes": classes}
-
-
-def check_error_contract(errors: Proto) -> list[str]:
-    """Every declared error must survive its own round trip.
-
-    An error crosses as its declared parts and comes back as
-    `cls(*parts)`, so the parts have to reach the attributes they are
-    named after. Nothing static proves that - so this builds one of
-    each and reads it back. A class whose __init__ reorders, renames or
-    drops a part fails the BUILD rather than the first remote failure,
-    which is the one moment nobody is watching for a bug.
-
-    Returns a list of complaints; empty means the contract holds."""
-    module_name = errors["module"]
-    if module_name is None:
-        return []
-    module = importlib.import_module(module_name)
-    bad = []
-    for name, proto in errors["classes"].items():
-        fields = proto["wire_fields"]
-        if not fields:
-            bad.append(
-                f"{name}: no _wire_fields, so nothing says how to rebuild it "
-                f"on the far side")
-            continue
-        kls = getattr(module, name)
-        # Distinct values, so a swap is visible. A reordering that kept
-        # the same string in both slots would otherwise pass.
-        probe = [f"<{fname}>" for fname, _ in fields]
-        try:
-            built = kls(*probe)
-        except Exception as e:
-            bad.append(f"{name}: cannot be rebuilt as cls(*parts): {e}")
-            continue
-        for (fname, _), sent in zip(fields, probe, strict=True):
-            got = getattr(built, fname, None)
-            if got != sent:
-                bad.append(
-                    f"{name}._wire_fields names {fname!r}, but building it "
-                    f"from its parts leaves {fname} = {got!r}, not {sent!r}")
-    return bad
+# Three functions stood here and all three reflected: `extract_enum`
+# read a live StrEnum's members, `extract_errors` imported the emitted
+# exception module and walked it, and `check_error_contract` built one
+# of each error to prove `cls(*parts)` round-trips.
+#
+# The first two are derived now - `cppgen.declared_enums` and
+# `cppgen.declared_errors` answer from the declaration, and both were
+# checked against these before they went.
+#
+# The third could not be derived and was not meant to be: it runs
+# code, which is the one thing a declaration cannot do for you. It is
+# a test now, in `huggorm/tests/test_contracts.py`, where importing
+# the compiled package is honest. The build sandbox runs that suite,
+# so it is still a build gate.
 
 
 def check_wrap_contract(protos: list[Proto]) -> list[str]:

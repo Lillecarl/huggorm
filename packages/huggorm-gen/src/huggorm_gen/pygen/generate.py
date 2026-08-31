@@ -12,17 +12,17 @@ import copy
 import json
 import pathlib
 import sys
-from enum import Enum
-from types import ModuleType
 from typing import Any
 
 from huggorm_dsl import declare
 from huggorm_gen.cppgen.generate import (
+    declared_bases,
     declared_entries,
+    declared_enums,
+    declared_errors,
     declared_functions,
     declared_returned,
     declared_unions,
-    errors_module,
 )
 from huggorm_gen.payload.wiretypes import MANIFEST_SCHEMA, names_in
 from huggorm_gen.pygen.emitter import (
@@ -41,97 +41,32 @@ from huggorm_gen.pygen.emitter import (
 )
 from huggorm_gen.pygen.model import (
     check_collection_contract,
-    check_error_contract,
     check_optional_contract,
     check_wire_contract,
     check_wrap_contract,
-    extract_enum,
-    extract_errors,
 )
 
 # See model.Proto: one class, method or function as a plain dict.
 Proto = dict[str, Any]
 
 
-def _load_bindings_module() -> ModuleType:
-    import huggorm_bindings
-
-    return huggorm_bindings
-
-
-def _wrapper_classes(bindings_module: ModuleType) -> list[type]:
-    """
-    Every public wrapper class that declares a threading policy, except
-    those excluded from generation (_async = False, e.g. the abstract
-    base). Sorted for deterministic output.
-    """
-    out = []
-    pkg = bindings_module.__name__
-    for name in dir(bindings_module):
-        obj = getattr(bindings_module, name)
-        if not isinstance(obj, type):
-            continue
-        mod = getattr(obj, "__module__", "")
-        if mod != pkg and not mod.startswith(pkg + "."):
-            continue
-        if name.startswith("_"):
-            continue
-        # Own-class lookup only: plain getattr would inherit Animal's
-        # _async = False through the MRO and exclude every subclass.
-        if obj.__dict__.get("_async", True) is False:
-            continue
-        if not hasattr(obj, "_threading"):
-            continue
-        out.append(obj)
-    return sorted(out, key=lambda c: c.__name__)
-
-
-def _enum_classes(bindings_module: ModuleType) -> list[type]:
-    """Every public string enum the bindings export.
-
-    Found by reflection, with no declaration of its own: a class that
-    subclasses both str and Enum IS a string vocabulary, and there is
-    nothing else it could be. That is the difference from the error
-    hierarchy, which needed `_errors_module` because an exception
-    class looks like any other class.
-
-    They are not wrappers - _wrapper_classes wants a _threading policy
-    and an enum has none - so nothing generates an async form for one.
-    A member is a str, so it crosses the wire as a str and the schema
-    needs no new field type."""
-    pkg = bindings_module.__name__
-    out = []
-    for name in dir(bindings_module):
-        obj = getattr(bindings_module, name)
-        if not isinstance(obj, type) or name.startswith("_"):
-            continue
-        mod = getattr(obj, "__module__", "")
-        if mod != pkg and not mod.startswith(pkg + "."):
-            continue
-        if issubclass(obj, str) and issubclass(obj, Enum):
-            out.append(obj)
-    return sorted(out, key=lambda c: c.__name__)
-
-
-def _free_functions(bindings_module: ModuleType) -> list[Any]:
-    """Every public module-level function in the bindings, sorted.
-
-    All of them, not only the ones declaring _threading. The policy
-    decides whether a function gets an async wrapper and an rpc; it
-    does not decide whether the function EXISTS. A stub package that
-    described only the opted-in ones would hide the rest from a
-    typechecker while the module still exports them."""
-    pkg = bindings_module.__name__
-    out = []
-    for name in sorted(dir(bindings_module)):
-        obj = getattr(bindings_module, name)
-        if name.startswith("_") or isinstance(obj, type) or not callable(obj):
-            continue
-        mod = getattr(obj, "__module__", "")
-        if mod != pkg and not mod.startswith(pkg + "."):
-            continue
-        out.append(obj)
-    return out
+# Nothing here imports huggorm_bindings.
+#
+# Four functions stood in this space: `_load_bindings_module`,
+# `_wrapper_classes`, `_enum_classes` and `_free_functions`. Each
+# asked the compiled package a question the declaration answers -
+# which classes carry a threading policy, which are string
+# vocabularies, which module-level names are functions - so every
+# Python surface waited on a C++ compiler for facts a person wrote
+# in `decl/`.
+#
+# They agreed with the declaration exactly, which is why they could
+# go: the reflected wrapper set, enum set and function set each
+# matched their `declared_*` counterpart name for name.
+#
+# One of them was already dead. `_wrapper_classes` excluded a class
+# whose `_async` was False, and nothing has emitted `_async` since
+# the mock was deleted.
 
 
 def _sig(m: Proto) -> list[str]:
@@ -143,7 +78,7 @@ def _sig(m: Proto) -> list[str]:
 
 
 def _hierarchy(
-    wrapper_classes: list[type], protos: list[Proto]
+    bases: dict[str, str], protos: list[Proto]
 ) -> tuple[dict[str, str], dict[str, set[str]], list[str]]:
     """Link each emitted wrapper to its nearest emitted ancestor, and
     work out which methods the ancestor may guarantee.
@@ -159,17 +94,27 @@ def _hierarchy(
     is affine and keeps it, so query_derivation is not part of the
     guaranteed surface and lands on RemoteStore alone.
 
+    `bases` is each declared class to its declared base. It used to
+    be `cls.__mro__`, which asked a compiled object the question the
+    declaration answers - and answered it only after a C++ build.
+
+    Walked rather than read once, because a base need not be
+    EMITTED. The MRO walk took the nearest ancestor that is also a
+    wrapper; the same rule here is to keep climbing while the base is
+    declared but not among these protos.
+
     Returns (base_of, shared_of, complaints).
     """
-    by_class = dict(zip(wrapper_classes, protos, strict=True))
-    emitted = set(wrapper_classes)
+    by_name = {p["name"]: p for p in protos}
     base_of: dict[str, str] = {}
     children: dict[str, list[Proto]] = {}
-    for cls in wrapper_classes:
-        parent = next((k for k in cls.__mro__[1:] if k in emitted), None)
-        if parent is not None:
-            base_of[by_class[cls]["name"]] = by_class[parent]["name"]
-            children.setdefault(by_class[parent]["name"], []).append(by_class[cls])
+    for proto in protos:
+        parent = bases.get(proto["name"], "")
+        while parent and parent not in by_name:
+            parent = bases.get(parent, "")
+        if parent:
+            base_of[proto["name"]] = parent
+            children.setdefault(parent, []).append(proto)
 
     shared_of: dict[str, set[str]] = {}
     complaints: list[str] = []
@@ -225,8 +170,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", required=True, help="output directory for huggorm_generated")
     args = parser.parse_args(argv)
 
-    bindings = _load_bindings_module()
-
     # Which annotation names are ALIASES, told before anything is
     # emitted. The emitter distinguishes a union from a bound class
     # when it writes an import - one comes from huggorm_bindings and
@@ -235,7 +178,11 @@ def main(argv: list[str] | None = None) -> None:
     # the manifest, because the wrapper modules are written first.
     emitter_union_names(set(declared_unions()))
 
-    wrapper_classes = _wrapper_classes(bindings)
+    # Every declared class, by name. The reflected version asked the
+    # compiled package for classes carrying a threading policy; every
+    # declared class has one, and the two sets matched exactly.
+    declared: dict[str, Proto] = declared_entries()
+    wrapper_names = sorted(declared)
 
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -243,16 +190,10 @@ def main(argv: list[str] | None = None) -> None:
     # Which classes are HANDED BACK rather than constructed. The
     # declaration says, and it is the only thing that could: this was
     # a walk over the pxd's return types.
-    returned_classes: list[type] = []
-    named: set[str] = set()
-    for name in declared_returned():
-        kls = getattr(bindings, name, None)
-        if isinstance(kls, type) and name not in named:
-            returned_classes.append(kls)
-    returned_classes.sort(key=lambda c: c.__name__)
-    returned_set = set(returned_classes)
-    wrapper_classes = [c for c in wrapper_classes if c not in returned_set]
-    if not wrapper_classes:
+    returned_names = sorted(declared_returned())
+    returned_set = set(returned_names)
+    wrapper_names = [n for n in wrapper_names if n not in returned_set]
+    if not wrapper_names:
         print("no constructible wrapper classes found", file=sys.stderr)
         sys.exit(1)
 
@@ -273,12 +214,11 @@ def main(argv: list[str] | None = None) -> None:
     # Imported, not read from a file. The specification is Python and
     # so is this, so a serialisation between them would be one more
     # shape to keep in step.
-    declared: dict[str, Proto] = declared_entries()
     print(f"declared entries: {len(declared)} class(es) - "
           + ", ".join(sorted(declared)))
 
-    def _proto(kls: type) -> Proto:
-        """One binding class, as the declaration that describes it.
+    def _proto(name: str) -> Proto:
+        """One declared class, by name.
 
         A COPY. `_proto` is called twice for every class - once for
         the wrappers and once for the stubs - and the wrapper pass
@@ -286,24 +226,19 @@ def main(argv: list[str] | None = None) -> None:
         from a pool class. Handing back the same dict both times let
         that edit reach the stubs, which describe the BINDING and have
         no such rule."""
-        want = declared.get(kls.__name__)
+        want = declared.get(name)
         if want is None:
-            # Not a fallback. A binding module holds nothing but what
-            # a declaration emitted, so a class here that no
-            # declaration names means the two lists disagree - and
-            # guessing its surface is how a wrong answer reaches four
-            # generated files at once.
-            raise SystemExit(
-                f"{kls.__module__}.{kls.__qualname__} is in the bindings "
-                f"but no declaration names it")
+            # Not a fallback. Every name reaching this comes from the
+            # declaration set, so a miss means two derivations of the
+            # same set disagree - and guessing a surface is how a
+            # wrong answer reaches four generated files at once.
+            raise SystemExit(f"{name} is named as a class but no "
+                             f"declaration describes it")
         print(f"  {want['name']}: from the declaration")
         return copy.deepcopy(want)
 
-    returned_protos = [_proto(kls) for kls in returned_classes]
-    protos = [
-        _proto(svc)
-        for svc in wrapper_classes
-    ]
+    returned_protos = [_proto(n) for n in returned_names]
+    protos = [_proto(n) for n in wrapper_names]
 
     # Which classes get an async wrapper at all. A pool class whose
     # methods cannot block gets nothing from one, so it crosses every
@@ -353,7 +288,7 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"dropped {dropped} affine-returning method(s) "
                       f"from pool wrapper {proto['name']}")
 
-    base_of, shared_of, complaints = _hierarchy(wrapper_classes, protos)
+    base_of, shared_of, complaints = _hierarchy(declared_bases(), protos)
     if complaints:
         for c in complaints:
             print(f"hierarchy: {c}", file=sys.stderr)
@@ -420,11 +355,8 @@ def main(argv: list[str] | None = None) -> None:
     # nanobind function is a builtin: `inspect.signature` refuses it,
     # so there is nothing to reflect.
     declared_fns = declared_functions()
-    free_protos = [declared_fns[fn.__name__]
-                   for fn in _free_functions(bindings)
-                   if fn.__name__ in declared_fns]
-    from_decl = sorted(set(declared_fns) &
-                       {fn.__name__ for fn in _free_functions(bindings)})
+    free_protos = [declared_fns[n] for n in sorted(declared_fns)]
+    from_decl = sorted(declared_fns)
     if from_decl:
         print(f"free functions from the declaration: "
               f"{', '.join(from_decl)}")
@@ -446,7 +378,8 @@ def main(argv: list[str] | None = None) -> None:
     # The enum NAMES go in with them: an enum is a scalar everywhere
     # else, so a wire field may declare one. Read here rather than
     # from the manifest, which is not built yet.
-    enum_names = {k.__name__ for k in _enum_classes(bindings)}
+    enums = declared_enums()
+    enum_names = set(enums)
     # A union is not a class in the manifest's groups either, and for
     # a sharper reason than an enum: it never reaches an extension at
     # all. `DerivedPath = StorePath | DerivedPathBuilt` is module-level
@@ -466,17 +399,11 @@ def main(argv: list[str] | None = None) -> None:
     # The exception hierarchy, from the module the C++ emitter writes
     # it into. An error crosses the wire as a NAME, and this is the set
     # that makes a name safe to construct (tasks/036).
-    errors = extract_errors(errors_module())
-    complaints = check_error_contract(errors)
-    if complaints:
-        for c in complaints:
-            print(f"error contract: {c}", file=sys.stderr)
-        sys.exit(1)
-
+    errors = declared_errors()
     # String vocabularies libstore parses. A member is a str, so this
     # table says only "this NAME is a scalar" - to the schema, to the
     # codec, and to the stub generator, which needs to import it.
-    enums = {k.__name__: extract_enum(k) for k in _enum_classes(bindings)}
+    # ...and the vocabularies themselves, read above.
 
     manifest: Proto = {
         "schema": MANIFEST_SCHEMA,
@@ -585,9 +512,8 @@ def main(argv: list[str] | None = None) -> None:
     # to it: reflecting here directly made `manifest.json` stop
     # claiming PathInfo has an ordering while `store.pyi` went on
     # claiming it, because the stubs never saw the declaration.
-    all_protos = (
-        [_proto(k) for k in returned_classes]
-        + [_proto(k) for k in wrapper_classes])
+    all_protos = ([_proto(n) for n in returned_names]
+                  + [_proto(n) for n in wrapper_names])
     # Bases before subclasses: a stub may forward-reference, but there
     # is no reason to make a reader do it.
     order_of = {p["name"]: i for i, p in enumerate(all_protos)}

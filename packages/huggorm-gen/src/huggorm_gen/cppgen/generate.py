@@ -193,6 +193,61 @@ def error_chain() -> list[str]:
     return pyerrors.chain(have.tree(have.errors), "huggorm::raise_as")
 
 
+def declared_errors() -> dict[str, Any]:
+    """The exception surface, as the manifest carries it.
+
+    What `model.extract_errors` reflected. It imported the compiled
+    bindings package to reach the emitted `errors.py`, which made a
+    pure-Python fact - a class statement and its bases - wait on a
+    C++ compiler.
+
+    The module name is derived here for the same reason
+    `errors_module` derives it: the emitter that writes the module
+    decides where it goes."""
+    have = corpus()
+    if not have.errors:
+        return {"module": None, "classes": {}}
+    return {"module": errors_module(),
+            "classes": pyerrors.entries(have.tree(have.errors))}
+
+
+def declared_enums() -> dict[str, dict[str, Any]]:
+    """Every string vocabulary, as the manifest carries it.
+
+    The companion to `declared_entries`, and the last group that came
+    from reflection. A vocabulary was found by asking the compiled
+    package for classes that subclass both str and Enum - true, and
+    a whole C++ build to learn what `decl/words.py` says outright.
+
+    Only a `@words` class. A vocabulary declaration holds nothing
+    else, and `is_words` is the declaration's own word for it."""
+    out: dict[str, dict[str, Any]] = {}
+    have = corpus()
+    for name in have.vocabularies:
+        mod = have.module(name)
+        for cls in mod.classes:
+            if cls.is_words:
+                out[cls.name] = manifest.words_entry(cls, PACKAGE, mod.name)
+    return out
+
+
+def declared_bases() -> dict[str, str]:
+    """Each declared class to its declared base, by name.
+
+    `pygen._hierarchy` walked `cls.__mro__` for this, which is the
+    same question asked of a compiled object. A declaration states
+    its base outright, and states one - every hierarchy this binds is
+    single inheritance.
+
+    Only a base the set DECLARES. A class deriving from something
+    outside it has no emitted ancestor, which is what the MRO walk
+    meant by "the nearest class that is also emitted"."""
+    have = corpus()
+    known = {c.name for c in have.classes}
+    return {c.name: c.decl.base for c in have.classes
+            if c.decl.base in known}
+
+
 def errors_module() -> str:
     """Where the emitted exception module lands, as an import path.
 
