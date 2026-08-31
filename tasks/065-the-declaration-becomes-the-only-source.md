@@ -1,6 +1,6 @@
 # The declaration becomes the only source
 
-**OPEN.** The plan for `tasks/064`. Carl: *"ditch the IR in favor of
+**PHASES 0-2 DONE. PHASE 3 OPEN.** The plan for `tasks/064`. Carl: *"ditch the IR in favor of
 using the Python DSL decl as the source of truth always, this will
 need us to make helpful functions for both analyzing the AST and
 importing to get full type information."*
@@ -64,7 +64,7 @@ dead, left from the deleted mock.
 Each phase leaves the tree green and states the perturbation that
 proves it.
 
-### 0. A corpus, not a loop over a list
+### 0. A corpus, not a loop over a list - DONE
 
 Five functions in `cppgen/generate.py` open with the same three
 lines - `for name in NANOBIND: mod = read(DECLARATIONS / name)`. Each
@@ -87,7 +87,7 @@ that makes the next three small.
 
 *Proof:* the emitted tree is byte-identical before and after.
 
-### 1. The last two markers move into declarations
+### 1. The last two markers move into declarations - DONE
 
 `_errors_module` is derivable: `ERRORS = "errors.py"` already names
 the declaration, and `PACKAGE` already names where a module lands.
@@ -105,7 +105,7 @@ lines - 064's runner-up - are the same emitter and go with it.
 Remove a class from a declaration; the name leaves both `__init__`
 files.
 
-### 2. pygen stops importing the compiled extension
+### 2. pygen stops importing the compiled extension - DONE
 
 Replace all six sites with corpus queries. Delete the dead `_async`
 filter.
@@ -129,7 +129,7 @@ reflection is right for.
 `huggorm_bindings` **not installed**. An `ImportError` cannot be
 faked. If it builds, the reflection is gone.
 
-### 3. The manifest dies, because nothing needs a courier
+### 3. The manifest dies, because nothing needs a courier - OPEN
 
 Only now. Emit the dispatch instead of interpreting a table:
 
@@ -156,6 +156,48 @@ the worse of the two.
 Phase 2 needs phase 1, because two facts have no declaration yet.
 Phase 1 is easier to get right after phase 0, because the emitter for
 an `__init__` wants the whole set at once.
+
+## What happened
+
+Phases 0 to 2 landed in six commits. Three things came out different
+from the plan, and each is worth the next reader's attention.
+
+**The corpus paid twice.** `read()` calls over a full emit went from
+265 to 45, but only after `corpus()` itself was cached. A `Corpus`
+caching within itself bought nothing: pygen calls the six `declared_*`
+functions once each, so six instances read the same nine declarations.
+The remaining 45 are `read()`'s own `_uses` recursion, which a Corpus
+cannot see. That is the next easy win if one is wanted.
+
+**Two facts were stated twice, not one.** Renaming the errors
+declaration to prove `errors_module()` was load-bearing exposed a
+second statement of the same fact, introduced in the same commit:
+`main()` wrote `"errors.py"` hardcoded while `errors_module()` derived
+the stem. The perturbation found it; reading the diff had not.
+
+**`_async_twins` had a better home than the plan guessed.** The plan
+said it needed a module-level table in a declaration, because it is
+keyed by a foreign type. It is keyed by a VOCABULARY WORD:
+`Path = Annotated[pathlib.Path, Cxx("string")]` in `declare.py`. So
+`Async("anyio.Path")` sits beside `Cxx("string")` and the two
+spellings of one word are together. `Cxx` says how a word is spelled
+below the boundary; `Async` says how it is spelled above one.
+
+**The wrapper set and the function set needed no derivation at all.**
+The plan listed six reflection sites to replace. Three needed a new
+derivation - enums, errors, bases. The other three were enumerating
+what `declared_entries` and `declared_functions` already answered,
+name for name.
+
+The gate is in `packages/huggorm-generated/setup.py`: an assertion
+that `huggorm_bindings` is absent from `sys.modules` once generation
+has run. Absence of the PACKAGE would prove nothing - it is
+propagated, because the emitted wrappers import it at run time - so
+what is checked is that nothing reached for it. Perturbed by adding
+one `import huggorm_bindings` to pygen.
+
+`huggorm-bindings` has left `huggorm-generated`'s `build-system`. The
+two leaves are siblings, not a chain.
 
 ## What is NOT in scope
 

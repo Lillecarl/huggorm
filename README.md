@@ -125,11 +125,10 @@ a fact about this set of documents, not about a backend reading them.
     gates/nbcheck.py  emitted C++ against hand-written nanobind
 
 One package, not two, because both backends read one IR from one
-reader. pygen still reflects on the compiled extension for enums,
-errors and free functions; that seam is being closed, and a package
-boundary would have made it permanent. protobuf is pygen's extra
-rather than a dependency, so compiling the bindings does not drag it
-in.
+reader. pygen reflected on the compiled extension for enums, errors
+and free functions until 065; a package boundary would have made that
+seam permanent. protobuf is pygen's extra rather than a dependency,
+so compiling the bindings does not drag it in.
 
 One Nix header, one declaration, named after it:
 `nix/store/store-api.hh` is `decl/store.py`, and
@@ -161,39 +160,52 @@ machine without it.
       __init__.py     what the package exports, and in which order
     setup.py          runs cppgen, then one Extension per declared module
 
-`__init__.py` is the only hand-written file. `setup.py` runs the
-emitter at import - before setuptools is told the sources exist - and
-compiles what it wrote: one `.cpp` per declared module, plus
-`errors.py` and the enum modules. The C++ helpers a declaration NAMES
-are not here either; they are `huggorm_decl/cpp/`, with the
-declarations that name them.
+`__init__.py` is the only hand-written file, and it carries no marker
+the generator reads: `_errors_module` and `_async_twins` both moved to
+where the fact is decided (065). `setup.py` runs the emitter at import
+- before setuptools is told the sources exist - and compiles what it
+wrote: one `.cpp` per declared module, plus `errors.py` and the enum
+modules. The C++ helpers a declaration NAMES are not here either; they
+are `huggorm_decl/cpp/`, with the declarations that name them.
 
-`setup.py`'s `LIBRARY` dict is the one place that says which library
-each module links. A declaration names the C++ it binds; which package
-ships that C++ is the build's fact.
+One pkg-config line names the libraries, not a table per module.
+There is one library set - nix-store and nix-expr - so a table would
+say the same word nine times (tasks/060).
 
 ### huggorm-generated
 
-    generator/src/codegen/
-      model.py        declaration entries into protocol dicts
-      surface.py      names for the PYTHON surface, and what a protocol
-                      may carry
-      grpc_schema.py  names for the WIRE, and the FileDescriptorSet
-      wiretypes.py    how a declared type STRING is spelled
-      emitter.py      protocol dicts -> Python, via ast.unparse
-      runtime.py      copied into the package as _runtime.py
-      generate.py     the driver, and every contract check it runs
-      smoke_test.py   the gates that hold the surfaces to each other
+    huggorm_generated/  emitted; not in the tree
+    setup.py            runs pygen, then packages what it wrote
+
+No hand-written source, like the other leaf. The emitter it runs is
+`huggorm_gen/pygen`:
+
+    pygen/model.py        declaration entries into protocol dicts
+    pygen/surface.py      names for the PYTHON surface, and what a
+                          protocol may carry
+    pygen/grpc_schema.py  names for the WIRE, and the FileDescriptorSet
+    pygen/emitter.py      protocol dicts -> Python, via ast.unparse
+    pygen/generate.py     the driver, and every contract check it runs
+    pygen/smoke_test.py   the gates that hold the surfaces to each other
+    payload/wiretypes.py  how a declared type STRING is spelled
+    payload/runtime.py    copied into the package as _runtime.py
 
 Read `wiretypes.py` first: it is small and it is where a type's
 spelling is decided. Then `model.py`'s `check_*` functions - each one
 is a rule the build refuses to break, and each names the failure it
 prevents.
 
-Nothing here reflects a compiled class any more. Every shape comes
-from `huggorm_gen.cppgen.generate`: `declared_entries`, `declared_functions`
-and `declared_returned`. The compiled package is still imported, and
-for one thing only - to enumerate which classes to generate for.
+Nothing here imports the compiled package at all. Every shape comes
+from `huggorm_gen.cppgen.generate`: `declared_entries`,
+`declared_functions`, `declared_returned`, `declared_enums`,
+`declared_errors` and `declared_bases`.
+
+So the two leaves are siblings, not a chain: a change to the Python
+surface does not wait on a C++ compiler. `setup.py` asserts it, by
+checking `huggorm_bindings` is absent from `sys.modules` once
+generation has run - the package IS importable there, because the
+wrappers need it at run time, so what is checked is that nothing
+reached for it.
 
 ### huggorm
 
