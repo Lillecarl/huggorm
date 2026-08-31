@@ -23,6 +23,7 @@ from huggorm_dsl.declare import (
     Path,
     Str,
     StrView,
+    abstract,
     binding,
     binds,
     blocks,
@@ -130,6 +131,12 @@ return nix::MissingPaths{
 };
         """)
 
+# The C++ FACT, and it could not be stated until 061 split it from
+# "Python may not construct one". nix::Store has pure virtuals -
+# every store this hands back is really a LocalStore or a
+# UDSRemoteStore - and it is still opened by `Store(uri)`, because
+# openStore answers the abstractness with a concrete subclass.
+@abstract
 @produced(by="open_store")
 @header("nix/store/store-api.hh")
 @binding(
