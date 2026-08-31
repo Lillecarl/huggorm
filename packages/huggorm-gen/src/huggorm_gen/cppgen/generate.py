@@ -361,6 +361,34 @@ def emit_module(mod: Module, dotted: str, out: str,
     return 0
 
 
+def census_cpp(claimed: set[str]) -> None:
+    """Every hand-written C++ file, counted, including the orphans.
+
+    `emit_module` counts `cpp/<module>.hpp` for the module it is
+    emitting. That leaves any helper whose name is not a module name
+    uncounted, and two were: `errors.hpp` and `libstore.hpp`, 60 lines
+    between them, invisible on every build since they were written.
+
+    "A hatch nobody measures becomes the place the real code lives" is
+    this repo's own rule, and the per-module census WAS such a hatch -
+    it measured the files it happened to look up. This measures the
+    directory.
+
+    Named separately in the output rather than folded into a total. A
+    file no module claims is the interesting case: it is C++ that no
+    declaration is emitting beside, so nothing in a build log points
+    at the declaration that should have absorbed it."""
+    files = sorted(f for f in CPP.glob("*.hpp"))
+    if not files:
+        return
+    total = sum(_code_lines(f.read_text()) for f in files)
+    print(f"hand-written C++ in cpp/: {total} lines in {len(files)} file(s)")
+    orphans = [f for f in files if f.stem not in claimed]
+    for f in orphans:
+        print(f"  {f.name}: {_code_lines(f.read_text())} lines, claimed by "
+              f"no module - no declaration is emitted beside it")
+
+
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     have = corpus()
@@ -384,6 +412,7 @@ def main(out_dir: str) -> int:
             pyenum.module(mod, have.tree(name), mod.doc) + "\n")
         words = [c.name for c in mod.classes if c.is_words]
         print(f"{name} -> {target}: {', '.join(words)}")
+    census_cpp(set(have.module_names))
     return 0
 
 
