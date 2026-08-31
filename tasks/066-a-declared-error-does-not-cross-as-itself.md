@@ -1,7 +1,7 @@
 # A declared error does not reach the caller as itself
 
-**OPEN.** Found by the parity suite the first time it ran
-(`tests/test_parity.py`, 065).
+**DONE.** Found by the parity suite the first time it ran
+(`tests/test_parity.py`, 065), and fixed the same way it was found.
 
 `StoreLike` is what makes an `AsyncStore` and an `RPCStore`
 interchangeable. An exception type is part of a result, so this has
@@ -12,8 +12,8 @@ to work against the protocol:
     except BadStorePath:
         ...
 
-It works against `huggorm_bindings.Store` and against nothing else.
-On the async and rpc surfaces the caller gets
+It worked against `huggorm_bindings.Store` and against nothing else.
+On the async and rpc surfaces the caller got
 `huggorm_generated._runtime.InternalError`, with the real error as
 `__cause__`.
 
@@ -28,51 +28,75 @@ On the async and rpc surfaces the caller gets
 
 The duck-type is deliberate and documented: the runtime is emitted
 beside the wrappers and must not know which library it wraps
-(tasks/036). A declared Nix error has no `to_dict`, so it is not
-recognised as typed and gets wrapped.
+(tasks/036). A declared Nix error had no `to_dict`, so it was not
+recognised as typed and got wrapped.
 
 Three surfaces, three different answers to one question, and the two
-that disagree are the two the protocol says are interchangeable.
+that disagreed are the two the protocol says are interchangeable.
 
-## Why the fix is not a one-liner
+## What the fix is
 
-The obvious change - let a declared error through untouched - breaks
-the server. `faults.details(wrapper)` reads `wrapper.code` and
-`wrapper.message` to build the Fault detail, and a raw
-`BadStorePath` has neither. So passing it through locally would
-leave the remote surface unable to encode it at all, which trades a
-parity gap for a worse one.
+A declared error IS a typed error. Nothing learned to recognise one.
 
-## The shape the fix probably has
+`decl/errors.py` gains two members on `NixError`, stated once and
+inherited by every class under it:
 
-Make a declared error BE a typed wrapper error, rather than teaching
-the runtime to recognise one.
+- `code`, a property returning the class name. The wire already uses
+  that name as the error's identity - a declared error crosses in a
+  message type named for its class - so a second spelling would be a
+  second name to keep in step.
+- `to_dict`, built from `_wire_fields`. A subclass that declares more
+  parts gets them with no edit.
 
-`errors.py` is emitted from `decl/errors.py`, so the emitter can give
-each class the two things the duck-type wants: a `code` derived from
-its name and a `to_dict` derived from its `_wire_fields`. Then it
-passes `hasattr(e, "to_dict")` untouched on every surface, and
-`faults.py` can still encode it - better than today, because it would
-encode the declared class rather than an InternalError carrying it.
+Neither is emitted per class. The declaration IS the module once the
+`cxx` lines come off, so this is nine classes' worth of behaviour in
+one place, and `pyerrors.py` needed no change at all.
 
-Two things to check before starting:
+Two consequences in the hand-written layer, both of them a RUNTIME
+agreeing with the runtime below it:
 
-- `WrapperError.code` is a string the wire already carries. Whether a
-  declared error's code should be its class name or something
-  narrower is a wire decision, so it belongs in the declaration.
-- 29 places in the suite name `InternalError`, `cause_type` or
-  `__cause__`. Most describe a genuine internal failure - a C++ bug,
-  a programming error - and should keep working. The ones that
-  describe a DECLARED error are the ones that change.
+- `server._wrap` caught `WrapperError` by class, which a declared Nix
+  error cannot be: the bindings are imported BY the generated runtime
+  and cannot import it back. It now applies the same `to_dict`
+  duck-type one layer up. Catching the class made the two layers
+  disagree, and the answer a caller got depended on which saw the
+  error first.
+- `faults.details` encoded only a wrapper's CAUSE as its declared
+  parts. It now encodes the error itself when the error is declared,
+  and `rebuild` reads it back as that class. `cause_type` is what
+  tells the two shapes apart: a declared error travels as itself and
+  has no cause; anything else travels as an InternalError whose cause
+  is approximated by name.
 
-## How the suite records it today
+`_cause` and the new `_from_parts` fell out of that: rebuilding a
+declared error from a detail message was already written, and both
+callers now share it.
 
-`tests/test_parity.py` asserts BOTH forms, through
-`declared_error(kind, obj)`: the sync surface must raise the class,
-and the other two must raise `InternalError` whose `__cause__` is
-that class.
+## What it cost the suite
 
-An xfail was tried first and is wrong here twice. It cannot be
-applied per-surface - one of the three already behaves, so a strict
-xfail XPASSes on `sync`. And it would go quiet on the day the
-behaviour is fixed, where this fails and says which branch to delete.
+Four tests said the old shape, and they are the four that describe a
+DECLARED error. The other 25 references to `InternalError`,
+`cause_type` or `__cause__` describe a genuine internal failure - a
+C++ bug, a ValueError from an evaluator - and are unchanged, which is
+the evidence that the change is narrow.
+
+`tests/test_parity.py` lost its `declared_error` helper entirely. It
+existed to assert both shapes at once; there is one shape now, so the
+three error tests are written the way a caller writes them.
+
+`smoke_test.py`'s evaluation-error block is the clearest of the four.
+It used to read the cause_type off an InternalError; it now catches
+`NixError` and reads `to_dict()["code"]`, beside the ValueError case
+that still wraps. Same pairing, and now it shows what a caller sees.
+
+## Proved by breaking
+
+Each of the three changes, reverted on its own:
+
+- no `to_dict` on the declaration: the build fails in `smoke_test`,
+  `eval_expr` wrapped again.
+- `server._wrap` back to `except WrapperError`: the three rpc parity
+  error tests fail and the async ones pass, which is the layer
+  boundary showing itself.
+- `rebuild` without `_from_parts`: the same three fail, as
+  `WrapperError` rather than as the declared class.
