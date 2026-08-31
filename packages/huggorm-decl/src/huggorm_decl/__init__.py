@@ -74,3 +74,31 @@ def declaration(name: str) -> str:
     to guess wrong."""
     return str(DECLARATIONS / (name if name.endswith(".py")
                                else f"{name}.py"))
+
+
+# The C++ helpers a declaration NAMES, and the directory to compile
+# against them from.
+#
+# They are here rather than with the bindings for one reason: it makes
+# the leaf purely mechanical. `huggorm-bindings` now holds no
+# hand-written source of any kind - setuptools runs an emitter and
+# compiles what it wrote - and the two things a person actually
+# maintains, the declarations and the helpers they name, sit together.
+#
+# A helper is NOT a mapping. It is infrastructure the generated code
+# calls: a GC root over a foreign collector, thread registration a
+# library exposes no API for, an owner whose member ORDER is the fact.
+# The test is who calls it. Generated code calls a helper; a mapping
+# IS the generated code. See cpp/README.md, and the census that
+# counts these lines on every build.
+CPP = pathlib.Path(__file__).resolve().parent / "cpp"
+
+
+def include_dir() -> str:
+    """The directory to put on the compiler's include path.
+
+    The PARENT of this package, so a header is named for the package
+    that owns it - `#include "huggorm_decl/cpp/eval.hpp"` - rather
+    than by a bare `cpp/` that says nothing about where it came from.
+    nanobind's own `include_dir()` works the same way."""
+    return str(pathlib.Path(__file__).resolve().parent.parent)

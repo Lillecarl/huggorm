@@ -107,7 +107,7 @@ return {};
 
 
 @header("nix/store/derived-path.hh")
-@needs("huggorm_bindings/_cpp/derived_path.hpp")
+@needs("huggorm_decl/cpp/derived_path.hpp")
 @binding(
     cxx="nix::SingleDerivedPathBuilt",
     threading="pool",
@@ -149,7 +149,7 @@ derivation's output, and so on down.
 
 
 @header("nix/store/derived-path.hh")
-@needs("huggorm_bindings/_cpp/derived_path.hpp")
+@needs("huggorm_decl/cpp/derived_path.hpp")
 @binding(
     cxx="nix::DerivedPathBuilt",
     threading="pool",

@@ -530,7 +530,7 @@ return nix::Realisation{*found, id};
     # READ-ONLY, which is why this is the first consumer rather than
     # `build_paths`: it answers against a chroot store with nothing
     # built, so the hermetic suite can exercise the whole shape.
-    @needs("huggorm_bindings/_cpp/derived_path.hpp")
+    @needs("huggorm_decl/cpp/derived_path.hpp")
     def query_missing(self, targets: "list[DerivedPath]") -> "MissingPaths":
         """What building these would have to do.
 
@@ -631,7 +631,7 @@ return self.queryMissing(want);
     # a StoreDirConfig by upstream's own signature - so rendering is a
     # store's act, exactly as it is for a StorePath.
     @instant
-    @needs("huggorm_bindings/_cpp/derived_path.hpp")
+    @needs("huggorm_decl/cpp/derived_path.hpp")
     def print_derived_path(self, target: "DerivedPath") -> Str:
         """This target as the store spells it.
 
@@ -644,7 +644,7 @@ return huggorm::from_arms(target).to_string(self.config);
         """)
     # Pure string work: no daemon, no lock, no file.
     @instant
-    @needs("huggorm_bindings/_cpp/derived_path.hpp")
+    @needs("huggorm_decl/cpp/derived_path.hpp")
     def parse_derived_path(self, target: StrView) -> "DerivedPath":
         """Read back what `print_derived_path` wrote.
 
@@ -674,7 +674,7 @@ return huggorm::as_arms(nix::DerivedPath::parse(self.config, target));
 # class. `nix::openStore` picks an implementation from a URI, so
 # there is no constructor to declare and `@produced(by="open_store")`
 # on Store above names this function as the way in.
-@needs("huggorm_bindings/_cpp/libstore.hpp")
+@needs("huggorm_decl/cpp/libstore.hpp")
 @binds("huggorm::open_store")
 @blocks
 def open_store(uri: Str = "auto") -> "Store":
@@ -702,7 +702,7 @@ def open_store(uri: Str = "auto") -> "Store":
 # libstore needs neither - which is what the emitter used to assume
 # and get wrong.
 
-@needs("huggorm_bindings/_cpp/libstore.hpp")
+@needs("huggorm_decl/cpp/libstore.hpp")
 @binds("huggorm::init_libstore")
 @startup
 def _init_libstore() -> None:
@@ -716,7 +716,7 @@ def _init_libstore() -> None:
     initialisation.
     """
 
-@needs("huggorm_bindings/_cpp/errors.hpp")
+@needs("huggorm_decl/cpp/errors.hpp")
 @binds("huggorm::translate_nix_error")
 @translator
 def _translate_nix_error() -> None:

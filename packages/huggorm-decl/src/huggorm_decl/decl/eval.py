@@ -51,7 +51,7 @@ from huggorm_dsl.declare import (
 
 
 @produced(by="EvalState")
-@header("huggorm_bindings/_cpp/eval.hpp")
+@header("huggorm_decl/cpp/eval.hpp")
 @binding(
     # One state per thread, and its values belong to that thread. The
     # async layer inherits the runner rather than making a new one -
@@ -252,7 +252,7 @@ return self.wrap(attr->value);
         """)
 
 
-@header("huggorm_bindings/_cpp/eval.hpp")
+@header("huggorm_decl/cpp/eval.hpp")
 @binding(
     cxx="huggorm::Evaluator",
     # Not thread-safe, one per thread. libexpr says so and this is
@@ -378,7 +378,7 @@ return self.wrap_builder(made);
 # --- free functions ------------------------------------------------
 
 
-@needs("huggorm_bindings/_cpp/eval.hpp")
+@needs("huggorm_decl/cpp/eval.hpp")
 @threading("pool")
 def gc_stats() -> "dict[str, int]":
     """Live collector counters, bound straight from gc.h.
@@ -400,7 +400,7 @@ return out;
     """)
 
 
-@needs("huggorm_bindings/_cpp/eval.hpp")
+@needs("huggorm_decl/cpp/eval.hpp")
 @threading("pool")
 @blocks
 @binds("huggorm::gc_collect")
@@ -416,7 +416,7 @@ def collect_garbage() -> None:
     from unknown thread"."""
 
 
-@needs("huggorm_bindings/_cpp/eval.hpp")
+@needs("huggorm_decl/cpp/eval.hpp")
 @binds("huggorm::gc_unregister_thread")
 def gc_release_thread() -> None:
     """Take the CURRENT thread off the collector's list.
@@ -433,7 +433,7 @@ def gc_release_thread() -> None:
     executor does when its wrapper is closed."""
 
 
-@needs("huggorm_bindings/_cpp/eval.hpp")
+@needs("huggorm_decl/cpp/eval.hpp")
 @binds("nix::initGC")
 @startup
 def _gc_init() -> None:

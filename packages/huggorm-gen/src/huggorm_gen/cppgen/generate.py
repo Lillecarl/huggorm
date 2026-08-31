@@ -25,6 +25,7 @@ import sys
 from typing import Any
 
 from huggorm_decl import (
+    CPP,
     DECLARATIONS,
     ERRORS,
     NANOBIND,
@@ -271,11 +272,11 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     # Found by cython-reviewer, reviewing a change that added thirty
     # lines there.
     #
-    # Found beside the emitted `.cpp` rather than through this
-    # package: the generator writes into the BUILD's copy of
-    # `huggorm_bindings`, and its own installed location is
-    # somewhere else entirely.
-    helper = pathlib.Path(out).parent / "_cpp" / f"{mod.name}.hpp"
+    # Found through huggorm_decl, which is where a helper lives now.
+    # It used to be found beside the emitted `.cpp`, because the
+    # helpers sat in the build's copy of `huggorm_bindings`; they sit
+    # with the declarations that name them instead.
+    helper = CPP / f"{mod.name}.hpp"
     hand = _code_lines(helper.read_text()) if helper.exists() else 0
     # BOTH numbers, and the second is why. A body moved out of _cpp
     # and into a `Cxx(...)` in the declaration is better - the reader
@@ -286,7 +287,7 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
                  for m in c.methods) + sum(
                      _code_lines(f.cxx_body) for f in mod.functions)
     if hand or bodies:
-        print(f"  hand-written C++: {hand} in _cpp/{helper.name}, "
+        print(f"  hand-written C++: {hand} in cpp/{helper.name}, "
               f"{bodies} in Cxx bodies")
     return 0
 

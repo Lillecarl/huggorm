@@ -17,4 +17,4 @@ where = ["src"]
 # them, so setuptools would ship the .py files anyway, but the
 # emitter opens them by path and a wheel that dropped one would fail
 # at generate time rather than at import.
-huggorm_decl = ["decl/*.py", "py.typed"]
+huggorm_decl = ["decl/*.py", "cpp/*.hpp", "cpp/*.md", "py.typed"]

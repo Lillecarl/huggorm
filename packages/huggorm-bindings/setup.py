@@ -6,6 +6,7 @@ import subprocess
 import nanobind
 from setuptools import Extension, setup
 
+import huggorm_decl
 from huggorm_gen.cppgen.generate import nanobind_modules
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,11 +48,11 @@ def pkg_config(*packages: str) -> dict[str, list[str]]:
 # some of them linked a mock. There is one library now, so the table
 # said the same word nine times (tasks/060).
 _nix = pkg_config("nix-store", "nix-expr")
-# ...plus this directory, for the headers in `_cpp/`. They sit beside
-# the sources rather than in the extension because they are C++ a
-# DECLARATION names: `@binds("huggorm::translate_nix_error")` points
-# at one.
-_nix["include_dirs"] = [HERE] + _nix["include_dirs"]
+# ...plus huggorm-decl, for the headers a DECLARATION names. They
+# live with the declarations because that is where the hand-written
+# input to this build is: `@needs("huggorm_decl/cpp/eval.hpp")` names
+# one, and nothing in THIS directory is hand-written at all.
+_nix["include_dirs"] = [huggorm_decl.include_dir()] + _nix["include_dirs"]
 
 # Every module in the package, through nanobind.
 #

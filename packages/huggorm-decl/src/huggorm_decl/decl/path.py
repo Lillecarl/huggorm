@@ -108,7 +108,7 @@ class StorePath:
 # and get wrong.
 
 
-@needs("huggorm_bindings/_cpp/libstore.hpp")
+@needs("huggorm_decl/cpp/libstore.hpp")
 @binds("huggorm::init_libstore")
 @startup
 def _init_libstore() -> None:
@@ -123,7 +123,7 @@ def _init_libstore() -> None:
     """
 
 
-@needs("huggorm_bindings/_cpp/errors.hpp")
+@needs("huggorm_decl/cpp/errors.hpp")
 @binds("huggorm::translate_nix_error")
 @translator
 def _translate_nix_error() -> None:
