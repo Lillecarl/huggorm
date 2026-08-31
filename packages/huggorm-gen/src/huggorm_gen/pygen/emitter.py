@@ -702,7 +702,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
                   | _annotation_names(_emitted_defaults(proto))
                   | {"None"})  # None: aclose
     typing_names = {"Any"} if "Any" in used_types else set()
-    if proto["abstract"]:
+    if not proto["constructs"]:
         typing_names.add("Any")  # the refusing __init__ takes *args/**kwargs
     # A forward hands back Any; the declared type is the manifest's
     # claim, and cast is where it gets made. Adopted returns build a
@@ -724,7 +724,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     # sync target nor a runner class. It still annotates with the target
     # if a method mentions it, which is why the subtraction below is
     # conditional too.
-    constructs = not proto["abstract"]
+    constructs = proto["constructs"]
     runtime_names = [] if proto.get("async_base") else ["BaseRunner"]
     if constructs:
         mod.body.append(ast.ImportFrom(
@@ -762,7 +762,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
                         f"care which implementation answered; construct a "
                         f"subclass to get one."
                     )
-                    if proto["abstract"] else
+                    if not proto["constructs"] else
                     (
                         f"Async in-process wrapper over {svc}. The object "
                         f"is constructed lazily on its runner thread."
@@ -784,10 +784,11 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     if proto["threading"] == "affine":
         init_kwargs.append(ast.keyword(
             arg="name", value=ast.Constant(value=f"huggorm-affine-{svc}")))
-    if proto["abstract"]:
-        # No runner and no target: an abstract base has no implementation
-        # to construct. Saying so here beats letting the factory build a
-        # trampoline whose overrides do not exist.
+    if not proto["constructs"]:
+        # No runner and no target: there is no way in, so there is
+        # nothing to construct lazily. Keyed on the DOOR rather than on
+        # `abstract`, which is the C++ fact - nix::Store is abstract and
+        # still constructs, through its factory (tasks/061).
         cls.body.append(ast.FunctionDef(
             name="__init__",
             args=ast.arguments(
@@ -799,9 +800,9 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
             body=[ast.Raise(exc=ast.Call(
                 func=ast.Name(id="TypeError"),
                 args=[ast.Constant(value=(
-                    f"Async{svc} is abstract: it is the shared surface, not an "
-                    f"implementation. Construct a subclass, or receive one from "
-                    f"a call that returns {svc}."))],
+                    f"Async{svc} has no constructor: nothing declared "
+                    f"makes one. Receive one from a call that returns "
+                    f"{svc}."))],
                 keywords=[]))],
             decorator_list=[], returns=_ann("None", f"{svc}.__init__"),
             type_params=[]))

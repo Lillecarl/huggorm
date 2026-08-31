@@ -393,16 +393,15 @@ async def test_behavior() -> None:
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == "__init__"
         )
-        if proto["abstract"]:
-            # An abstract base has no constructor to check - it has one
-            # that refuses. Pin the refusal instead.
+        if not proto["constructs"]:
+            # A class with no door has no constructor to check - it has
+            # one that refuses. Pin the refusal instead.
             #
-            # NOTHING DECLARES ONE TODAY. MockStore was the only
-            # abstract binding and it went with the mock (tasks/060).
-            # The branch stays because nix::Store IS abstract and will
-            # say so once `@abstract` stops meaning two things
-            # (tasks/061) - so this is a branch waiting for its real
-            # user, not dead code.
+            # Keyed on the DOOR, not on `abstract`. That split landed
+            # in 061: nix::Store now states the true C++ fact about
+            # itself AND keeps its factory, so `abstract` here would
+            # have demanded a refusal from the one class that must not
+            # refuse.
             assert any(isinstance(n, ast.Raise) for n in ast.walk(init)), (
                 f"{py.name}.__init__ must refuse to construct an abstract base"
             )

@@ -301,6 +301,33 @@ class Class:
         return bool(self.decl.built_by) and self.ctor is None
 
     @property
+    def constructs(self) -> bool:
+        """Whether Python has a way to make one - "is there a door".
+
+        The DERIVED question, computed once here because three layers
+        used to ask it and all three asked `abstract` instead
+        (tasks/061). `@abstract` states a fact about C++: the type has
+        pure virtuals. Whether a caller can write `Store(uri)` is a
+        different question, and conflating them meant the declaration
+        could not state the true fact about nix::Store without
+        deleting its constructor.
+
+        Three ways to have no door, and each is a different sentence:
+
+        - no `__init__` at all, so nothing was declared to call;
+        - `@abstract` with no factory, so there is nothing to make;
+        - `@produced(by=...)` and no `__init__`, which is the pair
+          `is_produced` names - covered by the first test here.
+
+        A FACTORY answers abstractness. `nix::Store` is abstract and
+        `nix::openStore` hands back a concrete `LocalStore` or
+        `UDSRemoteStore`, so the door is open and the C++ fact is
+        still true."""
+        if self.ctor is None:
+            return False
+        return bool(self.decl.built_by) or not self.decl.abstract
+
+    @property
     def parts(self) -> list[tuple[Field, Method | None]]:
         """Every declared part of a wire value, with the accessor it reads.
 

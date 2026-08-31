@@ -311,12 +311,17 @@ def entry(cls: Class, package: str, module: str,
         # different problem from the one a declaration is for.
         "bases": ([f"{package}.{module}.{decl.base}"] if decl.base else []),
         "threading": threading,
-        # `@abstract`: a base that is generated and never
-        # constructed. A caller holds one most of the time - you ask
-        # for a store and use it without caring which implementation
-        # answered - so it needs an async wrapper and a wire identity
-        # of its own, and no constructor.
+        # `@abstract`: the C++ FACT. The type has pure virtuals, so a
+        # caller holds one most of the time - you ask for a store and
+        # use it without caring which implementation answered - and it
+        # needs an async wrapper and a wire identity of its own.
         "abstract": decl.abstract,
+        # ...and the DERIVED question every layer above actually asks:
+        # is there a door. They each read `abstract` and meant this,
+        # which is why nix::Store could not state the true fact about
+        # itself without losing its factory (tasks/061). Computed once,
+        # on the class, so the binding and the wrappers cannot disagree.
+        "constructs": cls.constructs,
         # PRODUCED: nothing a caller writes builds one, so a stub
         # says NoReturn for the constructor. `is_value` stood in for
         # this until a produced value bound a real Nix type and

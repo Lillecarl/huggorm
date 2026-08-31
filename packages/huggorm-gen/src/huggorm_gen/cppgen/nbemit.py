@@ -1606,8 +1606,13 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # constructor to call. A FACTORY takes its place where the
     # declaration names one. An ABSTRACT class offers neither: a
     # caller holds one all the time and constructs one never.
-    if decl.abstract:
+    if not cls.constructs:
         # No constructor, and a refusal that says so.
+        #
+        # The DOOR, not the C++ fact. `nix::Store` is abstract AND
+        # opened by a factory, so it takes the branch below - reading
+        # `decl.abstract` here sent it to this one instead and
+        # `Store("dummy://")` stopped existing (tasks/061).
         #
         # It used to be a `pointer_and_handle` guard, which refused a
         # direct call and let a SUBCLASS through - because a Python
@@ -1615,8 +1620,14 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         # trampoline. There are no trampolines any more (tasks/060),
         # so there is no door to hold open and no reason for the
         # binding to know what `nb_inst_python_derived` is.
-        body = _produced_ctor(
-            cls, "is abstract: open one through a factory")
+        # The sentence says WHICH way the door is shut, because the
+        # two are different mistakes: a declaration that forgot an
+        # `__init__`, and one that is honestly abstract with nothing
+        # to open it. `_produced_ctor` supplies the third wording
+        # itself, from `@produced(by=...)`.
+        body = _produced_ctor(cls, "" if cls.decl.built_by else (
+            "declares no constructor" if cls.ctor is None
+            else "is abstract, and no factory opens one"))
     elif decl.built_by:
         # A factory this module BINDS, where the declaration names a
         # free function - `open_store` becomes `Store.__new__`. Where
