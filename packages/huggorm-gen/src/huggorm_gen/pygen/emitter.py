@@ -890,6 +890,68 @@ def _spec(m: Proto) -> ast.expr:
         keywords=[])
 
 
+def _directory(manifest: Proto, ordered: list[Proto]) -> list[ast.stmt]:
+    """The two tables a caller reaches BY NAME.
+
+    `NixClient.acquire("Store", "auto")` and
+    `NixClient.call_function("gc_stats")` take a string, so neither
+    can be a generated method - the name is the argument. They read
+    the manifest for it, which was the last thing the client resolved
+    at run time.
+
+    A table, then, and there is no way around one: the lookup is the
+    API. What changes is that it ships as emitted Python whose entries
+    a checker reads, instead of as JSON the build hands over.
+
+    Not every class is here. One that crosses as a VALUE has no handle
+    to construct into - a caller builds it locally and passes it as an
+    argument - which is what `acquire` missing from an entry means."""
+    acquires = []
+    for proto in ordered:
+        acq = proto.get("acquire")
+        # WRAPPERS only, and the restriction is not cosmetic. `ordered`
+        # holds the returned types too, and one of them - Value - has
+        # an acquire path in the schema. Constructing it remotely was
+        # never offered, because a returned type is by definition
+        # something a call HANDS BACK.
+        if acq is None or proto["name"] not in manifest["wrappers"]:
+            continue
+        ctor = proto["ctor"]
+        acquires.append((proto["name"], ast.Call(
+            func=ast.Name(id="Acquire"),
+            args=[ast.Constant(value=proto["name"]),
+                  ast.Constant(value=acq["path"]),
+                  ast.Constant(value=acq["req"]),
+                  _args(ctor),
+                  ast.Constant(value=sum(1 for p in ctor
+                                         if p["default"] is None))],
+            keywords=[])))
+    free = [(name, _spec(fn))
+            for name, fn in sorted(manifest["free_functions"].items())
+            if "rpc" in fn]
+    # ...and the ones the wire cannot carry, with the reason.
+    #
+    # A separate table rather than absence, because the two answers
+    # differ and a caller can act on the difference: a name nobody
+    # declared is a typo, and a declared function with no RPC surface
+    # is a policy the build decided and printed. Folding them together
+    # told a caller their spelling was wrong when it was not.
+    blocked = [(name, ast.Constant(value="; ".join(fn["wire_blockers"])))
+               for name, fn in sorted(manifest["free_functions"].items())
+               if "rpc" not in fn]
+    out: list[ast.stmt] = []
+    for var, kind, rows in (("ACQUIRE", "Acquire", acquires),
+                            ("FREE", "Call", free),
+                            ("NO_RPC", "str", blocked)):
+        out.append(ast.AnnAssign(
+            target=ast.Name(id=var),
+            annotation=_ann(f"dict[str, {kind}]", var),
+            value=ast.Dict(keys=[ast.Constant(value=n) for n, _ in rows],
+                           values=[v for _, v in rows]),
+            simple=1))
+    return out
+
+
 def _spec_name(cls: str, method: str) -> str:
     """What one method's spec constant is called.
 
@@ -956,7 +1018,8 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     # imported from the generator, which does not ship.
     mod.body.append(ast.ImportFrom(
         module="._callspec",
-        names=[ast.alias(name="Arg"), ast.alias(name="Call")], level=0))
+        names=[ast.alias(name="Acquire"), ast.alias(name="Arg"),
+               ast.alias(name="Call")], level=0))
     mod.body.extend(_foreign_imports(annotations))
     sync = _sync_imports(annotations, defined | {CLIENT_PROTOCOL},
                          defaults)
@@ -994,6 +1057,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
             decorator_list=[],
             returns=_ann(ret, f"{CLIENT_PROTOCOL}.{name}"), type_params=[]))
     mod.body.append(client_p)
+    mod.body.extend(_directory(manifest, ordered))
 
     for proto in ordered:
         name = proto["name"]

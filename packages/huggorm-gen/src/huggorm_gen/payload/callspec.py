@@ -84,3 +84,12 @@ class Acquire:
     path: str
     req: str
     args: tuple[Arg, ...]
+    # How many of `args` a caller MUST pass. A constructor parameter
+    # may carry a default, and the far side fills one in - so the
+    # client checks the count rather than refusing every short call.
+    #
+    # A number, not a default VALUE. The value is already on the
+    # binding's own __init__ and on the stub; repeating it here would
+    # be a second place for it to be wrong, and nothing on this side
+    # would ever apply it.
+    required: int

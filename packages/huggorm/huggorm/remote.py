@@ -35,6 +35,7 @@ import grpclib.exceptions
 from google.protobuf import message_factory
 
 from huggorm_generated._callspec import Call
+from huggorm_generated.rpc import ACQUIRE, FREE, NO_RPC
 
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails
@@ -267,30 +268,27 @@ class NixClient:
         arguments. The arguments cross exactly like method arguments -
         same codec, same wire policies - because they are declared the
         same way."""
-        offered = sorted(n for n, p in self.manifest["wrappers"].items()
-                         if "acquire" in p)
-        proto = self.manifest["wrappers"].get(cls_name)
-        if proto is None or "acquire" not in proto:
+        spec = ACQUIRE.get(cls_name)
+        if spec is None:
             # Not every constructible class is remotely constructible.
             # One that crosses as a value has no handle to construct
             # INTO: build it locally and pass it as an argument.
             raise ValueError(
-                f"{cls_name!r} cannot be constructed remotely; the manifest "
-                f"offers {offered}")
-        ctor = proto["ctor"]
-        required = [p["name"] for p in ctor if p["default"] is None]
-        if len(args) < len(required) or len(args) > len(ctor):
+                f"{cls_name!r} cannot be constructed remotely; the bindings "
+                f"offer {sorted(ACQUIRE)}")
+        if len(args) < spec.required or len(args) > len(spec.args):
             raise TypeError(
-                f"{cls_name} takes {len(required)}..{len(ctor)} argument(s) "
-                f"({', '.join(p['name'] for p in ctor)}), got {len(args)}")
+                f"{cls_name} takes {spec.required}..{len(spec.args)} "
+                f"argument(s) ({', '.join(a.name for a in spec.args)}), "
+                f"got {len(args)}")
 
-        req = self.msg(proto["acquire"]["req"])()
-        for p, val in zip(ctor, args, strict=False):
+        req = self.msg(spec.req)()
+        for a, val in zip(spec.args, args, strict=False):
             if val is None:
                 continue  # optional, left at the proto3 default
-            self.codec.encode(req, p["name"], p["type"], val,
+            self.codec.encode(req, a.name, a.type, val,
                               lambda obj: obj.handle_id)
-        resp = await self._rpc(proto["acquire"]["path"], req, "Handle")
+        resp = await self._rpc(spec.path, req, "Handle")
         return self.proxy(cls_name, resp.id)
 
     async def release(self, obj: Any) -> None:
@@ -339,24 +337,26 @@ class NixClient:
 
         No handle: a free function has no instance. Otherwise identical
         to a method call, same codec and same policies."""
-        proto = self.manifest.get("free_functions", {}).get(name)
-        if proto is None:
+        spec = FREE.get(name)
+        if spec is None:
+            # Two different answers, and a caller can act on the
+            # difference. A declared function the wire cannot carry is
+            # a policy the build decided, and it says which.
+            if name in NO_RPC:
+                raise TypeError(
+                    f"{name!r} has no RPC surface: {NO_RPC[name]}")
             raise ValueError(
-                f"{name!r} is not a binding function; the manifest offers "
-                f"{sorted(self.manifest.get('free_functions', {}))}")
-        if "rpc" not in proto:
-            raise TypeError(
-                f"{name!r} has no RPC surface: "
-                + "; ".join(proto["wire_blockers"]))
+                f"{name!r} is not a binding function; the bindings offer "
+                f"{sorted(FREE)}")
 
-        req = self.msg(proto["rpc"]["req"])()
-        for p, val in zip(proto["params"], args, strict=True):
-            self.codec.encode(req, p["name"], p["type"], val,
+        req = self.msg(spec.req)()
+        for a, val in zip(spec.args, args, strict=True):
+            self.codec.encode(req, a.name, a.type, val,
                               lambda obj: obj.handle_id)
-        resp = await self._rpc(proto["rpc"]["path"], req, proto["rpc"]["resp"])
+        resp = await self._rpc(spec.path, req, spec.resp)
         return self.codec.decode(
-            resp, "result", proto["return_type"],
-            lambda hid: self.proxy(proto["return_type"], hid))
+            resp, "result", spec.returns,
+            lambda hid: self.proxy(spec.returns, hid))
 
     async def invoke(self, m: Call, handle_id: str | None,
                      args: list[Any]) -> Any:
