@@ -363,12 +363,50 @@ constructor deleted. A monostate arm is a different shape from a
 wrapped-struct arm, and its two `Cxx` bodies should not be folded
 into this marker just because both are variants.
 
+### What the marker would actually cover
+
+The nine `Cxx` bodies in `derived_path.py` are seven now: `output`
+and `outputs` were plain member reads and say `@reads`, which the DSL
+has had all along and nineteen accessors elsewhere use.
+
+The seven, classified - because the marker's scope is the useful
+number, not the total:
+
+    THE WRAPPED-ARM PATTERN - four, and the marker derives them
+      SingleDerivedPathBuilt.__init__   placement-new + held()
+      SingleDerivedPathBuilt.drv_path   as_arms(*self.drvPath)
+      DerivedPathBuilt.__init__         placement-new + held()
+      DerivedPathBuilt.drv_path         as_arms(*self.drvPath)
+
+    OUTPUTSSPEC'S OWN VARIANT - two, a DIFFERENT shape
+      OutputsSpec.all      holds_alternative<All>
+      OutputsSpec.names    get_if<Names> + range copy
+
+    A DECISION - one, and it stays
+      OutputsSpec.__init__  refuses `all` with names, and neither
+
+The two `drv_path` bodies are IDENTICAL text, character for
+character. That is the clearest statement of the problem in the file:
+one fact, written twice, in two classes that differ in nothing this
+line touches.
+
+So the marker covers four bodies here plus the four visits in
+`cpp/derived_path.hpp` - eight sites, one declared fact. `held` stays
+a helper on both sides of the change.
+
+`OutputsSpec` is the warning against widening it. Its arms are a
+`std::monostate` and a `std::set`, not a struct wrapping a declared
+type, so folding it in would make one marker mean two things.
+
 ### And 61 Cxx bodies
 
 `Cxx(...)` in a declaration is the sanctioned hatch: C++ written
-where the declaration can see it, lifted out by the reader. 61 uses,
-concentrated in `eval.py` (15), `store.py` (14) and
-`derived_path.py` (9). Not counted in the 330 and not a violation -
-but the hatch is where a mapping goes to hide, and `derived_path.py`
-having nine of them beside a header this task wants derived is worth
-one look.
+where the declaration can see it, lifted out by the reader. 59 uses
+now, concentrated in `eval.py` (15), `store.py` (14) and
+`derived_path.py` (7). Not counted in the cpp/ total and not a
+violation - but the hatch is where a mapping goes to hide, and the
+one look at `derived_path.py` found two bodies that only needed a
+marker the DSL already had.
+
+Worth the same look at `eval.py` and `store.py`, which have twice as
+many and have never had one.
