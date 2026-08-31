@@ -25,6 +25,7 @@ import sys
 from typing import Any
 
 from huggorm_decl import CPP, corpus
+from huggorm_dsl import declare
 from huggorm_dsl.read import Module
 from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors
 from huggorm_gen.cppgen.nbemit import bindable, extension
@@ -396,6 +397,49 @@ def census_cpp(claimed: set[str]) -> None:
               f"no module - no declaration is emitted beside it")
 
 
+def census_markers(have: Any) -> None:
+    """Every declared marker, and which of them nothing uses.
+
+    `census_cpp` counts hand-written C++ because an unmeasured hatch
+    becomes the place the real code lives. This counts the other
+    resource the same way: a marker nothing uses is an emitter branch
+    nothing runs, and it is worse than dead code because it looks
+    supported.
+
+    `@abstract` is why this exists. It has a table entry, three
+    emitter branches and a smoke-test assertion, and no declaration
+    has carried it since the mock went (tasks/060). The smoke test
+    says so in a comment, where a person finds it only by reading the
+    branch that never fires - so the build says it now.
+
+    Read off the DECORATOR NODES rather than the reader's output. The
+    reader keeps what a marker MEANT and throws away which word said
+    it, and `@produced(by=...)` and `@binds` both end up as fields
+    that no longer name themselves.
+
+    Printed rather than raised. A marker waiting for its user is a
+    real state - `@abstract` is waiting for the split tasks/061
+    describes - and failing the build would only get it deleted."""
+    used: set[str] = set()
+    names = [*have.module_names, *have.vocabularies]
+    if have.errors:
+        names.append(have.errors)
+    for name in names:
+        for node in ast.walk(have.tree(name)):
+            for dec in getattr(node, "decorator_list", []):
+                if isinstance(dec, ast.Call):
+                    dec = dec.func
+                if isinstance(dec, ast.Name):
+                    used.add(dec.id)
+    declared = set(declare.MARKERS)
+    unused = sorted(declared - used)
+    print(f"markers: {len(declared)} declared, "
+          f"{len(declared) - len(unused)} used")
+    for name in unused:
+        print(f"  @{name}: no declaration carries it - the emitter "
+              f"branches behind it have never run")
+
+
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     have = corpus()
@@ -420,6 +464,7 @@ def main(out_dir: str) -> int:
         words = [c.name for c in mod.classes if c.is_words]
         print(f"{name} -> {target}: {', '.join(words)}")
     census_cpp(set(have.module_names))
+    census_markers(have)
     return 0
 
 
