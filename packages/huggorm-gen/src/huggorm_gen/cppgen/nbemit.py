@@ -1260,13 +1260,58 @@ def _factory(cls: Class, functions: Sequence[Method],
         # still bound; it just offers no way in, which is the honest
         # answer until the factory is declared too.
         return []
-    line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){_extras(cls, made, known)}"
-    if not cls.ctor.doc:
-        return [line + ")"]
-    # One line, however the declaration wrapped it: a C++ string
-    # literal has no continuation and gluing two is noise.
-    doc = _doc(cls.ctor.doc)
-    return [line + ",", f'{INDENT * 3}     "{doc}")']
+    # Two shapes, and the declaration already says which. A factory
+    # that NAMES its C++ is an address; one that CARRIES it is a
+    # lambda, and the body goes inside.
+    #
+    # Before this, a factory had to be a named symbol, so a class
+    # whose construction needed one line of adaptation had to put a
+    # helper in `cpp/`. That is how `huggorm::open_store` came to
+    # exist: three lines wrapping one call, because the emitter could
+    # not write it (tasks/063).
+    extras = _extras(cls, made, known)
+    doc = _doc(cls.ctor.doc) if cls.ctor.doc else ""
+    if not made.cxx_body:
+        line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){extras}"
+        if not doc:
+            return [line + ")"]
+        # One line, however the declaration wrapped it: a C++ string
+        # literal has no continuation and gluing two is noise.
+        return [line + ",", f'{INDENT * 3}     "{doc}")']
+    lines = [f"{INDENT * 2}.def(nb::new_({_lambda_head(made, known)}",
+             *(f"{INDENT * 3}{ln}".rstrip()
+               for ln in made.cxx_body.strip().splitlines())]
+    close = f"{INDENT * 2}}}){extras}"
+    if not doc:
+        return [*lines, close + ")"]
+    return [*lines, close + ",", f'{INDENT * 3}     "{doc}")']
+
+
+def _lambda_head(fn: Method, known: dict[str, Class] | None) -> str:
+    """The opening of a lambda for a function that CARRIES its C++.
+
+    The return type is SPELLED, for the reason `_method` spells one:
+    a body whose returns merely CONVERT to the declared type, or that
+    ends `return {}`, cannot deduce it. A free body and a factory
+    body are the same kind of body, so they take the same rule - it
+    was applied to a method and to neither of these, which is one
+    rule in one place out of three.
+
+    NO CURRENT BODY NEEDS IT, and that is worth writing down because
+    the first version of this comment claimed otherwise. It said
+    `nix::openStore` returning a `nix::ref<Store>` would not deduce.
+    Dropping the spelling and rebuilding refuted that: nanobind takes
+    the `ref` and reaches the holder through its implicit conversion
+    to `shared_ptr`, and the module compiles. Two emitted lines
+    change - this one and `gc_stats` - and both compile either way.
+
+    So this is consistency, not a fix. It is kept because the rule is
+    real for bodies a person may write next, and because one rule
+    spelled three ways is what this repo exists to avoid."""
+    args = ", ".join(f"{_param(pr.type, known)[0]} {pr.name}"
+                     for pr in fn.params)
+    ret = f" -> {_cxx(fn.ret, known)[0]}" if fn.ret is not None else ""
+    return f"[]({args}){ret} {{"
 
 
 def wire_fields(cls: Class) -> list[tuple[str, str, str]]:
@@ -1627,11 +1672,12 @@ def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str
     # A body, for a function whose C++ is assembled rather than named.
     # `gc_stats` reads five counters out of gc.h and hands back one
     # dict; there is no upstream function with that shape to point at.
-    args = ", ".join(f"{_param(pr.type, known)[0]} {pr.name}"
-                     for pr in fn.params)
+    #
+    # `_lambda_head` writes the opening, so a free body and a factory
+    # body spell one the same way - the return type included.
     body = [f"{INDENT * 2}{ln}".rstrip()
             for ln in fn.cxx_body.strip().splitlines()]
-    return [f'{INDENT}m.def("{fn.name}", []({args}) {{', *body,
+    return [f'{INDENT}m.def("{fn.name}", {_lambda_head(fn, known)}', *body,
             f"{INDENT}}}{tail});"]
 
 
