@@ -17,10 +17,12 @@ Two details travel:
 - `Fault` - the code, the message, and the cause approximated by name.
   Unchanged in meaning, and it is what a peer gets when it cannot
   resolve anything else.
-- the cause AS ITSELF, when the bindings declare its class. Then the
-  `Any`'s type name is the identity, and the far side resolves it in
-  the schema pool or not at all. No class name has to be trusted,
-  because no class name crosses on its own.
+- the error AS ITSELF, when the bindings declare its class - the
+  failure itself when a declared Nix error crossed, and the cause
+  under an InternalError when one did not. Then the `Any`'s type name
+  is the identity, and the far side resolves it in the schema pool or
+  not at all. No class name has to be trusted, because no class name
+  crosses on its own.
 
 grpclib takes any StatusDetailsCodecBase, which is what makes this
 possible: its own ProtoStatusDetailsCodec resolves detail types
@@ -132,39 +134,53 @@ class FaultCodec:
 
     # -- server side ------------------------------------------------------
     def details(self, wrapper: Any) -> list[Any]:
-        """The detail messages for one wrapper error.
+        """The detail messages for one failed call.
 
-        Always a Fault. Also the cause as its own message, when the
-        bindings declare its class - and only when the cause IS that
-        class, not merely something sharing its name."""
-        cause = getattr(wrapper, "__cause__", None)
+        Always a Fault. Also the error a caller should end up holding,
+        as its own message, when the bindings declare its class - and
+        only when it IS that class, not merely something sharing its
+        name.
+
+        Two shapes, and `cause_type` is what tells them apart. A
+        DECLARED error travels as itself and has no cause: it is
+        already the thing the caller asked about. Anything else
+        travels as an InternalError, whose cause is approximated by
+        name and carried as its own parts when it happens to be
+        declared (tasks/066)."""
         fault = self._msg(FAULT)()
         fault.code = wrapper.code
         fault.message = wrapper.message
+        itself = self._declared(wrapper)
+        if itself is not None:
+            return [fault, self._parts(itself, wrapper)]
+        cause = getattr(wrapper, "__cause__", None)
         if cause is not None:
             fault.cause_type = type(cause).__name__
             fault.cause_message = str(cause)
-        out = [fault]
         declared = self._declared(cause)
-        if declared is not None:
-            msg = self._msg(declared + FAULT_SUFFIX)()
-            for f in self.fields[declared]:
-                setattr(msg, f.name, str(getattr(cause, f.name)))
-            out.append(msg)
-        return out
+        if declared is None:
+            return [fault]
+        return [fault, self._parts(declared, cause)]
 
-    def _declared(self, cause: BaseException | None) -> str | None:
-        """The declared class name of `cause`, or None.
+    def _parts(self, name: str, err: Any) -> Any:
+        """One declared error as the message it crosses in."""
+        msg = self._msg(name + FAULT_SUFFIX)()
+        for f in self.fields[name]:
+            setattr(msg, f.name, str(getattr(err, f.name)))
+        return msg
+
+    def _declared(self, err: BaseException | None) -> str | None:
+        """The declared class name of `err`, or None.
 
         Identity, not the name: an exception that happens to share a
         name with a declared one is a different class, and sending it
         as that class would be a lie about what failed."""
-        if cause is None or self.module_name is None:
+        if err is None or self.module_name is None:
             return None
-        name = type(cause).__name__
+        name = type(err).__name__
         if name not in self.fields:
             return None
-        if type(cause) is not getattr(self.module, name, None):
+        if type(err) is not getattr(self.module, name, None):
             return None
         return name
 
@@ -176,7 +192,13 @@ class FaultCodec:
         one from a peer built against a different schema. The caller
         then keeps the transport error it already has, because failing
         to rebuild an error must never replace it with a different
-        one."""
+        one.
+
+        The mirror of `details`, and it reads the same field to tell
+        the two shapes apart. No cause_type means the error IS what
+        the declared message says, so it comes back as that class and
+        `except BadStorePath` works over the wire (tasks/066). A
+        cause_type means an InternalError carrying something else."""
         from huggorm_generated._runtime import InternalError, WrapperError
 
         found = list(details or ())
@@ -184,12 +206,14 @@ class FaultCodec:
         if fault is None:
             return None
         if not fault.cause_type:
-            return WrapperError(fault.message)
+            return self._from_parts(found) or WrapperError(fault.message)
         return InternalError(fault.message, cause=self._cause(found, fault))
 
-    def _cause(self, details: Sequence[Any], fault: Any) -> BaseException:
-        """The cause, rebuilt from its own message when one came, and
-        approximated from the Fault when none did."""
+    def _from_parts(self, details: Sequence[Any]) -> BaseException | None:
+        """The declared error a detail message describes, or None.
+
+        Rebuilt as `cls(*parts)`, in the order `_wire_fields` states -
+        which is why that order is the constructor's."""
         for name, fields in self.fields.items():
             msg = self._named(details, name + FAULT_SUFFIX)
             if msg is None:
@@ -197,7 +221,13 @@ class FaultCodec:
             kls = getattr(self.module, name, None)
             if isinstance(kls, type) and issubclass(kls, BaseException):
                 return kls(*(getattr(msg, f.name) for f in fields))
-        return _approximate(fault.cause_type, fault.cause_message)
+        return None
+
+    def _cause(self, details: Sequence[Any], fault: Any) -> BaseException:
+        """The cause, rebuilt from its own message when one came, and
+        approximated from the Fault when none did."""
+        return (self._from_parts(details)
+                or _approximate(fault.cause_type, fault.cause_message))
 
     @staticmethod
     def _named(details: Sequence[Any], name: str) -> Any | None:
