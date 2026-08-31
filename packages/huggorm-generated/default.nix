@@ -2,81 +2,31 @@
   lib,
   python3Packages,
   huggorm-bindings,
-  ruff,
   zuban,
   # The declarations, and the reader that turns one into a manifest
-  # entry. A build input to the generator: `codegen` imports it and
-  # calls it instead of reflecting on a compiled class.
-  huggorm-idl,
+  # entry. A build input: pygen imports it and calls it instead of
+  # reflecting on a compiled class.
+  huggorm-gen,
   huggorm-decl,
   huggorm-dsl,
   ...
 }:
-let
-  # The generator is an ordinary Python distribution. It is stdlib-only;
-  # the spec's `import huggorm_bindings` is satisfied by declaring
-  # huggorm-bindings in build-system of the package below, which is
-  # exactly how setuptools PEP 517 build requirements are meant to work.
-  codegen = python3Packages.buildPythonPackage {
-    pname = "huggorm-codegen";
-    version = "0.1.0";
-    pyproject = true;
-    src = ./generator;
-
-    build-system = [ python3Packages.setuptools python3Packages.protobuf ];
-
-    # The generator produces every other surface in this repo, so it is
-    # the last place a silent Any should survive. Checked against its
-    # own source rather than the installed copy: this package IS the
-    # generator.
-    # The generator only IMPORTS these - it builds descriptors with
-    # protobuf, reads the declarations through huggorm-idl and
-    # enumerates the installed bindings - so they are check inputs,
-    # not runtime ones. Without them the checker cannot see what any
-    # of those calls return.
-    nativeCheckInputs = [
-      ruff
-      zuban
-      python3Packages.protobuf
-      huggorm-bindings
-      huggorm-idl
-      huggorm-decl
-      huggorm-dsl
-    ];
-
-    # smoke_test is excluded here and checked in the package below:
-    # it imports huggorm_generated, which is what the generator
-    # PRODUCES, so it does not exist yet at this point in the graph.
-    checkPhase = ''
-      runHook preCheck
-      ruff check --no-cache --config ${../../ruff.toml} src
-      zuban mypy --strict \
-        --python-executable ${python3Packages.python.interpreter} \
-        --exclude 'smoke_test\.py$' \
-        src/codegen
-      runHook postCheck
-    '';
-
-    pythonImportsCheck = [ "codegen" ];
-  };
-in
 python3Packages.buildPythonPackage {
   pname = "huggorm-generated";
   version = "0.1.0";
   pyproject = true;
   src = ./.;
 
-  # setup.py's build_py hook imports codegen to run it, and the generated
+  # setup.py imports huggorm_gen.pygen to run it, and the generated
   # package imports huggorm_bindings - both are standard build
-  # requirements. huggorm-idl is the third: the manifest comes from
-  # the declarations, not from parsing a pxd and reflecting on a
-  # compiled class.
+  # requirements. protobuf is here rather than in huggorm-gen's own
+  # dependencies: it is pygen's extra, and this is the build that
+  # uses pygen.
   build-system = [
     python3Packages.setuptools
     python3Packages.protobuf
-    codegen
+    huggorm-gen
     huggorm-bindings
-    huggorm-idl
     huggorm-decl
     huggorm-dsl
     python3Packages.anyio

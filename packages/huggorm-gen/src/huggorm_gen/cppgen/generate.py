@@ -4,7 +4,7 @@
 it exists so the build has a single command with a single answer to
 "which declarations, and where do their files go".
 
-    python3 -m huggorm_idl.generate <out-dir>
+    python3 -m huggorm_gen.cppgen.generate <out-dir>
 
 Nothing here decides anything. The two lists below are the whole
 configuration, and each entry is a declaration that owns a module in
@@ -22,6 +22,7 @@ import argparse
 import ast
 import pathlib
 import sys
+from typing import Any
 
 from huggorm_decl import (
     DECLARATIONS,
@@ -30,8 +31,8 @@ from huggorm_decl import (
     VOCABULARIES,
 )
 from huggorm_dsl.read import read
-from huggorm_idl import manifest, nbemit, pyenum, pyerrors
-from huggorm_idl.nbemit import bindable, extension
+from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors
+from huggorm_gen.cppgen.nbemit import bindable, extension
 
 # Which package the emitted bindings land in. The one fact a
 # declaration does not carry: where a binding is installed is the
@@ -48,7 +49,7 @@ def nanobind_modules() -> tuple[str, ...]:
     return tuple(pathlib.Path(name).stem for name in NANOBIND)
 
 
-def declared_entries() -> dict[str, dict]:
+def declared_entries() -> dict[str, dict[str, Any]]:
     """Every declared class, as the manifest entry it implies.
 
     What `codegen` calls instead of reflecting. It used to build its
@@ -122,7 +123,7 @@ def declared_unions() -> dict[str, list[str]]:
     return out
 
 
-def declared_functions() -> dict[str, dict]:
+def declared_functions() -> dict[str, dict[str, Any]]:
     """Every free function a nanobind module offers, by name.
 
     The companion to `declared_entries`, and needed for the same
@@ -299,7 +300,7 @@ def main(out_dir: str) -> int:
     src = DECLARATIONS / ERRORS
     tree = ast.parse(src.read_text())
     doc = ast.get_docstring(ast.parse(src.read_text()), clean=False) or ""
-    (out / "errors.py").write_text(pyerrors.module(None, tree, doc) + "\n")
+    (out / "errors.py").write_text(pyerrors.module(tree, doc) + "\n")
     print(f"{ERRORS} -> {out / 'errors.py'}")
     for name in VOCABULARIES:
         source = DECLARATIONS / name

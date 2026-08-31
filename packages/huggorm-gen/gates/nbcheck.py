@@ -48,7 +48,7 @@ import sys
 
 import huggorm_decl
 from huggorm_dsl.read import read
-from huggorm_idl import nbemit
+from huggorm_gen.cppgen import nbemit
 
 NANOPYNIX = pathlib.Path.home() / "Code/nanopynix/nanopynix-bindings/src"
 

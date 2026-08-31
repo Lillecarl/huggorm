@@ -28,8 +28,8 @@ import shutil
 from setuptools import setup
 from setuptools.command.build_py import build_py
 
-from codegen.generate import main as generate
-from codegen.smoke_test import main as smoke
+from huggorm_gen.pygen.generate import main as generate
+from huggorm_gen.pygen.smoke_test import main as smoke
 
 # The stub package's directory name, owned by the emitter so setup.py
 # and the generator cannot drift.

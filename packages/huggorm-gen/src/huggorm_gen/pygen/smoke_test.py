@@ -40,7 +40,7 @@ def test_annotation_rendering() -> None:
     its parameters; a method's resolved to a real generic and lost
     them. The same declaration meant two different things depending on
     where it appeared."""
-    from codegen.model import _annotation_name, check_collection_contract
+    from huggorm_gen.pygen.model import _annotation_name, check_collection_contract
 
     assert _annotation_name(dict[str, int]) == "dict[str, int]"
     assert _annotation_name(list[str]) == "list[str]"
@@ -81,7 +81,7 @@ def test_a_resolved_class_keeps_its_module() -> None:
     import datetime
     import pathlib
 
-    from codegen.model import _annotation_name
+    from huggorm_gen.pygen.model import _annotation_name
 
     assert _annotation_name(pathlib.Path) == "pathlib.Path"
     assert _annotation_name(datetime.datetime) == "datetime.datetime"
@@ -115,7 +115,7 @@ def test_a_default_is_written_or_refused() -> None:
     import enum
     import inspect
 
-    from codegen.model import default_source
+    from huggorm_gen.pygen.model import default_source
 
     class Word(enum.StrEnum):
         NAR = "nar"
@@ -162,8 +162,8 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
 
     The codec half of this is tested where the codec lives; here is
     the half the generator decides."""
-    from codegen.grpc_schema import wire_blocker
-    from codegen.model import check_wire_contract
+    from huggorm_gen.pygen.grpc_schema import wire_blocker
+    from huggorm_gen.pygen.model import check_wire_contract
 
     kinds = {"StorePath": "value", "Word": "enum"}
     for spelling in ("Word", "list[Word]", "dict[str, Word]"):
@@ -200,9 +200,9 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     adopts a returned proxy into a runner, and none of them adopts
     nothing. That one is refused for every surface at once rather than
     only for the wire."""
-    from codegen.grpc_schema import wire_blocker
-    from codegen.model import check_optional_contract
-    from codegen.wiretypes import optional_value
+    from huggorm_gen.payload.wiretypes import optional_value
+    from huggorm_gen.pygen.grpc_schema import wire_blocker
+    from huggorm_gen.pygen.model import check_optional_contract
 
     assert optional_value("StorePath | None") == "StorePath"
     assert optional_value("None | StorePath") == "StorePath"
@@ -575,7 +575,7 @@ async def test_behavior() -> None:
     # directly, or the mechanism that keeps an unrepresentable type out
     # of the schema goes untested the moment everything is
     # representable.
-    from codegen.grpc_schema import wire_blocker
+    from huggorm_gen.pygen.grpc_schema import wire_blocker
 
     kinds = {"Value": "proxy", "StorePath": "value"}
     # A container of PROXIES stays refused whichever container it is:
@@ -962,7 +962,7 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
     # (obj, runner) rather than the declared parameters. A check
     # against the wrappers alone would have compared two empty lists
     # and said nothing.
-    from codegen.emitter import STUB_PACKAGE
+    from huggorm_gen.pygen.emitter import STUB_PACKAGE
 
     # Every declared class, not only the wrapped ones: the stubs
     # describe the BINDINGS, which the generated surface has filtered.
@@ -1163,7 +1163,7 @@ def test_stubs(out: pathlib.Path) -> None:
     hierarchy split have already filtered; the bindings have neither."""
     import importlib
 
-    from codegen.emitter import STUB_PACKAGE
+    from huggorm_gen.pygen.emitter import STUB_PACKAGE
 
     stub_dir = out.parent / STUB_PACKAGE
     assert stub_dir.is_dir(), f"no stub package at {stub_dir}"

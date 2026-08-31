@@ -31,7 +31,7 @@ before it was printed.
 import ast
 
 from huggorm_dsl.read import BUILTIN_DECORATORS, Class, Module
-from huggorm_idl.manifest import PYTHON, dunders
+from huggorm_gen.cppgen.manifest import PYTHON, dunders
 
 # The dunder signatures a value type gets. Not derived from anything
 # in the declaration, because they are Python's own protocol: `__eq__`

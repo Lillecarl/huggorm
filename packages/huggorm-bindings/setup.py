@@ -6,7 +6,7 @@ import subprocess
 import nanobind
 from setuptools import Extension, setup
 
-from huggorm_idl.generate import nanobind_modules
+from huggorm_gen.cppgen.generate import nanobind_modules
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -56,7 +56,7 @@ _nix["include_dirs"] = [HERE] + _nix["include_dirs"]
 # Every module in the package, through nanobind.
 #
 # Their C++ is written before this runs, by
-# `huggorm_idl.generate.main`, straight from the declarations - so
+# `huggorm_gen.cppgen.generate.main`, straight from the declarations - so
 # there is no hand-written source for any of them, and the list of
 # modules comes from the same place the emitter reads.
 #

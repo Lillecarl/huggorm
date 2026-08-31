@@ -894,7 +894,7 @@ async def test_the_async_wrapper_hands_back_an_anyio_path(
     name the same place.
 
     Declared by the bindings, in _async_twins, not known by the
-    codegen. Nothing about the wire changes: pathlib.Path has no
+    huggorm_gen.pygen. Nothing about the wire changes: pathlib.Path has no
     protobuf field either way, so this is one annotation and one
     constructor call in the in-process wrapper."""
     import anyio

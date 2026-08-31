@@ -85,7 +85,7 @@ def chain(tree: ast.Module, raise_as: str) -> list[str]:
     return out
 
 
-def module(mod: Module, tree: ast.Module, doc: str) -> str:
+def module(tree: ast.Module, doc: str) -> str:
     """The exception module, as the declaration with its C++ taken off.
 
     A transform rather than a print, for `pyenum.py`'s reason: the

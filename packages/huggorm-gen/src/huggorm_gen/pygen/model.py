@@ -2,7 +2,7 @@
 The protocol dict, and the rules it has to obey.
 
 The dict shape is the contract between the declarations (which build
-it, in `huggorm_idl.manifest`) and the emitter (emitter.py). This
+it, in `huggorm_gen.cppgen.manifest`) and the emitter (emitter.py). This
 file holds what neither of them owns: how one annotation is spelled,
 how one default is written back as source, and the `check_*` functions
 the build refuses to pass.
@@ -22,7 +22,7 @@ from enum import Enum
 from types import ModuleType
 from typing import Any, get_args, get_origin
 
-from codegen.wiretypes import (
+from huggorm_gen.payload.wiretypes import (
     CONTAINERS,
     SCALAR_NAMES,
     head,

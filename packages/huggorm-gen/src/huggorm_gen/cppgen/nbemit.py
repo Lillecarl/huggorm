@@ -55,7 +55,7 @@ import json
 from collections.abc import Sequence
 
 from huggorm_dsl.declare import Field
-from huggorm_dsl.read import Class, Method, Module, Type
+from huggorm_dsl.read import Class, Method, Module, Param, Type
 
 INDENT = "    "
 
@@ -180,6 +180,12 @@ def _held(cls: Class) -> str:
 def _bare(cls: Class, known: dict[str, Class] | None = None) -> str:
     """The C++ type behind a declared class, or a refusal."""
     if cls.is_union:
+        # The arms are named, not carried, so they resolve through the
+        # known set. A caller that has not got one cannot ask this.
+        if known is None:
+            raise ValueError(
+                f"{cls.name} is a union: its arms resolve through the "
+                f"known set, so a caller must pass one")
         # A SUM, and std::variant is what C++ already calls one.
         # nanobind casts it natively (<nanobind/stl/variant.h>), so a
         # parameter of a union type needs no dispatch written by hand:
@@ -421,7 +427,7 @@ def waits(cls: Class, m: Method) -> bool:
     return cls.decl.blocking or m.blocks
 
 
-def _default(pr, known: dict[str, Class] | None = None) -> str:
+def _default(pr: Param, known: dict[str, Class] | None = None) -> str:
     """A Python default, as C++ spells the same value.
 
     Two cases the table cannot hold, because both need the
@@ -766,7 +772,7 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
             f"{_extras(cls, m, known)}{tail})"]
 
 
-def absent(pr, known: dict[str, Class] | None = None) -> bool:
+def absent(pr: Param, known: dict[str, Class] | None = None) -> bool:
     """Whether this parameter's absence is spelled `None`.
 
     A CONTAINER whose declared default is None. The declaration's own
@@ -1901,12 +1907,13 @@ def census(cls: Class) -> dict[str, int]:
 if __name__ == "__main__":
     import sys
 
-    from read import read
+    from huggorm_dsl.read import read
 
     for path in sys.argv[1:]:
         mod = read(path)
         for cls in mod.classes:
-            print(module(cls) if len(mod.classes) == 1 else bind_function(cls))
+            print(module([cls]) if len(mod.classes) == 1
+                  else bind_function(cls))
             c = census(cls)
             total = c["derived"] + c["hatched"]
             print(f"// {cls.name}: {c['derived']}/{total} derived, "

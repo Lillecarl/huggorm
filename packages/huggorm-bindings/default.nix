@@ -1,7 +1,7 @@
 {
   lib,
   python3Packages,
-  huggorm-idl,
+  huggorm-gen,
   huggorm-decl,
   huggorm-dsl,
   boehmgc,
@@ -38,10 +38,10 @@ python3Packages.buildPythonPackage {
     setuptools
     # nanobind, and the declarations. There is no Cython here at all:
     # every module is C++ written from a declaration before this
-    # builds, and setup.py reads the module list out of huggorm-idl
+    # builds, and setup.py reads the module list out of huggorm-decl
     # rather than naming them again.
     nanobind
-    huggorm-idl
+    huggorm-gen
     huggorm-decl
     huggorm-dsl
   ];

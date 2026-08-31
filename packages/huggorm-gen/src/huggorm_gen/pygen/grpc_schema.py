@@ -26,7 +26,7 @@ from typing import Any
 
 from google.protobuf import descriptor_pb2
 
-from codegen.wiretypes import (
+from huggorm_gen.payload.wiretypes import (
     CONTAINERS,
     MAP_KEY,
     SCALAR_NAMES,

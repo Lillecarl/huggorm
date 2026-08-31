@@ -223,7 +223,8 @@ def words_entry(cls: Class, package: str, module: str) -> dict[str, Any]:
     }
 
 
-def _ctor_params(cls: Class, functions: Sequence[Method] = ()) -> tuple:
+def _ctor_params(cls: Class,
+                 functions: Sequence[Method] = ()) -> tuple[Param, ...]:
     """The parameters a caller passes to build one of these.
 
     Two sources, and only one applies to any class. An ordinary class
@@ -262,6 +263,30 @@ def entry(cls: Class, package: str, module: str,
     decl = cls.decl
     threading = decl.threading
     wire = decl.wire or "proxy"
+    # The names that follow from the wire kind. A value crosses as a
+    # message; a proxy stays where it is and is reached through a
+    # service, so it has a service, a way to acquire one, a protocol,
+    # and the two generated classes that speak it.
+    #
+    # Every name is derived from the class's own. The generator builds
+    # them the same way, which is what makes a proxy's whole RPC
+    # surface knowable from the declaration.
+    #
+    # Named and typed here rather than spread inline: the two branches
+    # carry different value types - one of them holds a None - and a
+    # dict literal takes the type of the first branch it sees.
+    wire_names: dict[str, Any] = ({
+        "service": f"{cls.name}{SERVICE}",
+        "acquire": {
+            "path": f"/{PROTO_PACKAGE}.{cls.name}{SERVICE}/{ACQUIRE}",
+            "req": f"{cls.name}_{ACQUIRE}Req",
+        },
+        "protocol": f"{cls.name}{PROTOCOL}",
+        "async_class": f"{ASYNC}{cls.name}",
+        "rpc_class": f"{RPC}{cls.name}",
+    } if wire == "proxy" else {
+        "message": f"{cls.name}Msg" if final else None,
+    })
     return {
         "name": cls.name,
         # The one fact the declaration cannot hold: which package the
@@ -344,18 +369,7 @@ def entry(cls: Class, package: str, module: str,
         # Every name is derived from the class's own. The generator
         # builds them the same way, which is what makes a proxy's
         # whole RPC surface knowable from the declaration.
-        **({
-            "service": f"{cls.name}{SERVICE}",
-            "acquire": {
-                "path": f"/{PROTO_PACKAGE}.{cls.name}{SERVICE}/{ACQUIRE}",
-                "req": f"{cls.name}_{ACQUIRE}Req",
-            },
-            "protocol": f"{cls.name}{PROTOCOL}",
-            "async_class": f"{ASYNC}{cls.name}",
-            "rpc_class": f"{RPC}{cls.name}",
-        } if wire == "proxy" else {
-            "message": f"{cls.name}Msg" if final else None,
-        }),
+        **wire_names,
         # The round-trip helpers a wire value carries. Derived, not
         # reflected: the emitter writes both for a produced value and
         # both for a constructed one, so a declared value HAS them by

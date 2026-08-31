@@ -72,7 +72,7 @@ select = [
 # package build, so the two runs demand opposite orderings of the same
 # file and one of them always fails.
 known-first-party = [
-  "codegen",
+  "huggorm_gen",
   "huggorm_decl",
   "huggorm_dsl",
   "huggorm_idl",

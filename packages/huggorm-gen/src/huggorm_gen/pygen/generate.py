@@ -16,7 +16,14 @@ from enum import Enum
 from types import ModuleType
 from typing import Any
 
-from codegen.emitter import (
+from huggorm_gen.cppgen.generate import (
+    declared_entries,
+    declared_functions,
+    declared_returned,
+    declared_unions,
+)
+from huggorm_gen.payload.wiretypes import MANIFEST_SCHEMA, names_in
+from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
     STUB_PACKAGE,
     emitter_union_names,
@@ -30,7 +37,7 @@ from codegen.emitter import (
     unions_module,
     wrapper_module,
 )
-from codegen.model import (
+from huggorm_gen.pygen.model import (
     check_collection_contract,
     check_error_contract,
     check_optional_contract,
@@ -38,13 +45,6 @@ from codegen.model import (
     check_wrap_contract,
     extract_enum,
     extract_errors,
-)
-from codegen.wiretypes import MANIFEST_SCHEMA, names_in
-from huggorm_idl.generate import (
-    declared_entries,
-    declared_functions,
-    declared_returned,
-    declared_unions,
 )
 
 # See model.Proto: one class, method or function as a plain dict.
@@ -520,8 +520,8 @@ def main(argv: list[str] | None = None) -> None:
     # grpc_schema owns wire naming; stamping it into the manifest is what
     # lets the server and the client read the names instead of each
     # rebuilding the same convention from scratch.
-    from codegen import surface
-    from codegen.grpc_schema import annotate, build_fdset
+    from huggorm_gen.pygen import surface
+    from huggorm_gen.pygen.grpc_schema import annotate, build_fdset
     annotate(manifest)
     surface.annotate(manifest)
 
@@ -672,7 +672,9 @@ def main(argv: list[str] | None = None) -> None:
     (out / "grpc_schema.pb").write_bytes(build_fdset(manifest))
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
 
-    here = pathlib.Path(__file__).parent
+    # The payload ships rather than runs, so it lives beside the
+    # two backends rather than inside either one.
+    here = pathlib.Path(__file__).resolve().parent.parent / "payload"
     _vendor(here / "runtime.py", out / "_runtime.py")
     # ...and the SUM types, which have no home in the bindings: an
     # alias is Python and the module binding its arms is a compiled

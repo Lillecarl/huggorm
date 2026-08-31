@@ -8,7 +8,7 @@ emitter needs arrives in the protocol dict a declaration produced.
 import ast
 from typing import Any
 
-from codegen.wiretypes import dotted_heads, names_in
+from huggorm_gen.payload.wiretypes import dotted_heads, names_in
 
 # One class, method or function as a plain dict. See model.Proto.
 Proto = dict[str, Any]
@@ -770,7 +770,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
     why for each of them (see surface.protocol_blockers). Everything
     else is here, including every method whose types tasks/025 made
     identical on both sides."""
-    from codegen.surface import ACLOSE, protocol_name
+    from huggorm_gen.pygen.surface import ACLOSE, protocol_name
 
     defined = {protocol_name(p["name"]) for p in ordered}
 
@@ -888,7 +888,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     handle addresses a real object on the server, and the base is a
     perfectly good view of it - which is the common case, since a
     caller usually does not care which store answered."""
-    from codegen.surface import ACLOSE, REGISTRY, rpc_class_name
+    from huggorm_gen.pygen.surface import ACLOSE, REGISTRY, rpc_class_name
 
     defined = {rpc_class_name(p["name"]) for p in ordered}
 
@@ -1377,7 +1377,7 @@ def init_module(all_names: list[str], free_names: list[str] | None = None) -> as
     """The package front door: every wrapped class in its three forms -
     the protocol it promises, the in-process implementation and the RPC
     implementation - plus the free functions."""
-    from codegen.surface import (
+    from huggorm_gen.pygen.surface import (
         PROTOCOL_MODULE,
         REGISTRY,
         RPC_MODULE,

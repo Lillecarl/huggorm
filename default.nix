@@ -28,25 +28,27 @@ rec {
     dependencies = [ huggorm-dsl ];
     pythonImportsCheck = [ "huggorm_decl" ];
   };
-  # The EMITTERS. Handed a declaration, they decide what it means for
-  # one output: the nanobind C++, the manifest entry, the stub, the
-  # enum module, the exception module.
+  # The EMITTERS, both backends in one package. `cppgen` fills
+  # huggorm_bindings, `pygen` fills huggorm_generated, and `payload`
+  # is the hand-written Python pygen copies into its output.
   #
-  # Stdlib-only, like the two above: it parses with `ast` and writes
-  # text. Two builds use it - huggorm-bindings for its source,
-  # huggorm-generated for its manifest entries - which is why it is a
-  # package rather than a directory each of them reaches into.
-  huggorm-idl = pkgs.python3Packages.buildPythonPackage {
-    pname = "huggorm-idl";
+  # One package because they read ONE IR from one reader. A boundary
+  # between them would say the split is architectural, and it is not.
+  #
+  # protobuf is pygen's alone and is NOT a dependency here - it is an
+  # extra, so compiling the bindings does not drag it in. The build
+  # that needs it declares it.
+  huggorm-gen = pkgs.python3Packages.buildPythonPackage {
+    pname = "huggorm-gen";
     version = "0.1.0";
     pyproject = true;
-    src = ./packages/huggorm-idl;
+    src = ./packages/huggorm-gen;
     build-system = [ pkgs.python3Packages.setuptools ];
     dependencies = [ huggorm-dsl huggorm-decl ];
-    pythonImportsCheck = [ "huggorm_idl" ];
+    pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
   # The interpreter the emitters run under, with them on its path.
-  idlPython = pkgs.python3.withPackages (_: [ huggorm-idl huggorm-decl huggorm-dsl ]);
+  genPython = pkgs.python3.withPackages (_: [ huggorm-gen huggorm-decl huggorm-dsl ]);
   # The binding source that actually gets compiled.
   #
   # This is the step that makes the declaration load-bearing. Before
@@ -58,12 +60,12 @@ rec {
   bindings-src = pkgs.runCommand "huggorm-bindings-src" { } ''
     cp -r ${./packages/huggorm-bindings} $out
     chmod -R u+w $out
-    ${lib.getExe idlPython} -m huggorm_idl.generate $out/huggorm_bindings
+    ${lib.getExe genPython} -m huggorm_gen.cppgen.generate $out/huggorm_bindings
   '';
   # The bindings. Every module is a nanobind extension whose C++ is
   # written from a declaration before this builds.
   huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
-    inherit huggorm-idl huggorm-decl huggorm-dsl;
+    inherit huggorm-gen huggorm-decl huggorm-dsl;
     src = bindings-src;
   };
   # this is a Python library that uses huggorm-bindings
@@ -76,7 +78,7 @@ rec {
   # the binding stubs.
   huggorm-generated = pkgs.callPackage ./packages/huggorm-generated {
     inherit huggorm-bindings;
-    inherit huggorm-idl huggorm-decl huggorm-dsl;
+    inherit huggorm-gen huggorm-decl huggorm-dsl;
   };
   # nix run --file . python -- $args
   # to be able to run Python commands
@@ -90,7 +92,7 @@ rec {
       huggorm
       # The generator imports them, so the interpreter every check
       # runs against has to have them.
-      huggorm-idl
+      huggorm-gen
       huggorm-decl
       huggorm-dsl
       # The suites run under pytest, in the devshell and in the build
@@ -124,7 +126,7 @@ rec {
       echo "--- typecheck: the generator ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         --exclude 'smoke_test\.py$' \
-        packages/huggorm-generated/generator/src/codegen
+        packages/huggorm-gen/src/huggorm_gen
       echo "--- typecheck: the hand-written layer and the suites ---"
       ( cd packages/huggorm \
         && zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
@@ -166,7 +168,7 @@ rec {
     name = "spike";
     runtimeInputs = [ ourPython ];
     text = ''
-      cd "''${1:-.}/packages/huggorm-idl/gates"
+      cd "''${1:-.}/packages/huggorm-gen/gates"
       if [ -d "$HOME/Code/nanopynix" ]; then
         echo "--- declaration -> nanobind ---"
         python3 nbcheck.py
