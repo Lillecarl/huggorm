@@ -60,10 +60,8 @@ which was superseded rather than fixed.
   surface by kind, the demos moved to examples/, the server reports
   through a logger, and the pool takes a size. A test derives the
   export list from the two packages rather than keeping a second copy.
-- 056 (PathInfo is declared twice) is OPEN. One C++ type, two
-  declarations, three methods differing in TYPE - and the one the
-  spike gate measures is not the one we ship. The duplicate should go
-  whichever way the bigger question lands.
+- 056 (PathInfo is declared twice) is done. One declaration, and the
+  one the spike gate measures is the one we ship.
 - 055 (adjacent Nix versions) is OPEN and undecided on purpose. The
   C++ answer - preprocessor ladders - does not transfer, because four
   generated surfaces sit above the bindings and none of them has a
@@ -75,6 +73,35 @@ which was superseded rather than fixed.
   the package. Cython is gone with the question: 053 is the spike
   report that argued the direction, 054 is why pure mode lost, and
   050 records what was learned on the way.
+- 059 (sum types on the wire) is OPEN. DerivedPath and its parts
+  cross as a real tagged union rather than by shape, which is better
+  than either encoding upstream uses. The arms are declared; what is
+  not is how a union spells a C++ arm that WRAPS a declared one,
+  which is 063's last residue.
+- 060 (the mock goes) is done. `fake-library/` is deleted and no
+  binding names a mock.
+- 061 (one table for the markers) is OPEN and blocks two others. Both
+  063's union marker and the `@abstract` split want the table to
+  exist first, so designing either before it means designing it
+  twice.
+- 062 (the suite fills the disk) is OPEN.
+- 063 (the hpp files hold mappings) is OPEN, and down to one residue.
+  Its three original fronts are closed, `errors.hpp` no longer names
+  its Python module, and `open_store` is emitted. What is left is
+  `derived_path.hpp`: four visits and four declaration bodies that
+  say one fact - the opaque arm is a one-member struct wrapping the
+  declared arm - and it waits on 061.
+- 064 (the manifest is a runtime interpreter) is MOSTLY DONE.
+  `manifest.json` is deleted; the front door's thirty re-export lines
+  are what remain, and they need a decision rather than a patch.
+- 065 (the declaration becomes the only source) is done, in four
+  phases. `Corpus` reads each declaration once, the import resolves
+  inheritance the tree cannot, and the emitted `_policy.py` carries
+  what the JSON did.
+- 066 (a declared error does not cross as itself) is done. A declared
+  Nix error reaches the caller as itself on all three surfaces, so
+  `except BadStorePath` works against the protocol and not only
+  against the compiled binding.
 - 050 (shim methods hand-type their signatures) is PARKED, not fixed.
   Its steps 1-2 are scaffolding for a hand-written pyx, which a
   generated one obsoletes. Its "end state" section survives and is
