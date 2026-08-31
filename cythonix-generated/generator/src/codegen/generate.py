@@ -11,7 +11,6 @@ import ast
 import copy
 import json
 import pathlib
-import shutil
 import sys
 from enum import Enum
 from types import ModuleType
@@ -200,6 +199,23 @@ def _hierarchy(
                         f"{_sig(m)} -> {m['return_type']} "
                         f"vs {_sig(b)} -> {b['return_type']}")
     return base_of, shared_of, complaints
+
+
+def _vendor(src: pathlib.Path, dst: pathlib.Path) -> None:
+    """Copy a generator module into the emitted package, WRITABLE.
+
+    `shutil.copy` carries the source's MODE. This generator is
+    installed into the Nix store, where every file is read-only, so a
+    copied file arrives read-only too and the next run cannot
+    overwrite it.
+
+    There is always a next run. setuptools calls the build backend
+    twice - once for metadata and once for the wheel - and setup.py
+    generates on import, so the second pass writes over the first.
+    Writing the bytes leaves the destination's own mode alone, which
+    makes the generator idempotent over its own output.
+    """
+    dst.write_bytes(src.read_bytes())
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -657,7 +673,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
 
     here = pathlib.Path(__file__).parent
-    shutil.copy(here / "runtime.py", out / "_runtime.py")
+    _vendor(here / "runtime.py", out / "_runtime.py")
     # ...and the SUM types, which have no home in the bindings: an
     # alias is Python and the module binding its arms is a compiled
     # extension. Written from the manifest, so the declaration states
@@ -668,7 +684,7 @@ def main(argv: list[str] | None = None) -> None:
     # The codec reads declared type strings at run time and the schema
     # builder reads them at build time. One definition, copied, rather
     # than two that agree until one of them changes.
-    shutil.copy(here / "wiretypes.py", out / "_wiretypes.py")
+    _vendor(here / "wiretypes.py", out / "_wiretypes.py")
     print(f"copied runtime into {out}")
 
     # PEP 561: without this marker a typechecker skips an INSTALLED
