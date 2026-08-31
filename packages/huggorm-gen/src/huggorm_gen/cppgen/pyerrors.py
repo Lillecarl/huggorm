@@ -113,13 +113,21 @@ def entries(tree: ast.Module,
     return out
 
 
-def chain(tree: ast.Module, raise_as: str) -> list[str]:
+def chain(tree: ast.Module, raise_as: str, module: str) -> list[str]:
     """The translator's catch chain, most-derived first.
 
     `raise_as` is the C++ helper that sets the Python error: it is the
     one part of this that is not derived, because turning a
     `std::exception` into a live Python exception is nanobind's
     protocol rather than anything a declaration knows.
+
+    `module` is where the helper looks the class up. It was a string
+    literal inside the helper, which made it a copy of a name the
+    build derives three other ways - and a copy that no gate could
+    see, because a stale one fails at RUNTIME by falling back to
+    RuntimeError (tasks/063). Passed from here, the helper names no
+    part of the library it raises into, and both strings in the call
+    come from the same declaration.
 
     A class with no `cxx` is skipped. That is how a Python-only
     exception - one this binding raises itself and Nix never throws -
@@ -132,7 +140,7 @@ def chain(tree: ast.Module, raise_as: str) -> list[str]:
     out = ["    try {", "        throw;"]
     for name, cxx in caught:
         out.append(f"    }} catch (const {cxx} & e) {{")
-        out.append(f'        {raise_as}("{name}", e);')
+        out.append(f'        {raise_as}("{module}", "{name}", e);')
     out.append("    }")
     return out
 

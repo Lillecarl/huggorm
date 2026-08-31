@@ -25,26 +25,45 @@
 namespace huggorm {
 
 /**
- * One exception class from huggorm_bindings.errors, by name.
+ * One exception class, by module and name.
+ *
+ * The module is a PARAMETER. It used to be the literal
+ * "huggorm_bindings.errors" here, which was a fourth copy of a name
+ * the build already derives three ways - `errors_module()` from the
+ * declaration's stem, `_policy.ERROR_MODULE`, and the emitted file
+ * name. Renaming the declaration left this one behind, and the only
+ * symptom was every nix error quietly arriving as a RuntimeError
+ * through the fallback below (tasks/063).
+ *
+ * So the emitted catch chain passes both strings and this file names
+ * no part of the library it raises into.
  *
  * Imported on the first failure rather than at load time, so nothing
- * here runs while the package is still importing itself. Returns a new
- * reference, or null with a Python error already set.
+ * here runs while the package is still importing itself. No static
+ * cache: one would hold whichever module asked first, which is a
+ * wrong answer waiting for a second error module. After the first
+ * import this is a sys.modules lookup, on a path that is already
+ * building an exception.
+ *
+ * Returns a new reference, or null with a Python error already set.
  */
-inline PyObject * error_class(const char * name)
+inline PyObject * error_class(const char * module, const char * name)
 {
-    static PyObject * module = PyImport_ImportModule("huggorm_bindings.errors");
-    if (module == nullptr) {
+    PyObject * mod = PyImport_ImportModule(module);
+    if (mod == nullptr) {
         return nullptr;
     }
-    return PyObject_GetAttrString(module, name);
+    PyObject * cls = PyObject_GetAttrString(mod, name);
+    Py_DECREF(mod);
+    return cls;
 }
 
 /**
- * Raise `name` from huggorm_bindings.errors, carrying the message
- * both ways: plain first, then exactly what libstore wrote.
+ * Raise `module.name`, carrying the message both ways: plain first,
+ * then exactly what libstore wrote.
  */
-inline void raise_as(const char * name, const std::exception & e)
+inline void raise_as(const char * module, const char * name,
+                     const std::exception & e)
 {
     // libstore writes its messages in colour whether or not anything
     // is a terminal, so what() holds "\x1b[31;1merror:\x1b[0m" and
@@ -55,7 +74,7 @@ inline void raise_as(const char * name, const std::exception & e)
     const std::string colored = e.what();
     const std::string plain = nix::filterANSIEscapes(colored, /*filterAll=*/true);
 
-    PyObject * cls = error_class(name);
+    PyObject * cls = error_class(module, name);
     if (cls == nullptr) {
         // The message still beats losing it. Something is very wrong
         // with the package if this happens.

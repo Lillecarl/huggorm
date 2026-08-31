@@ -187,10 +187,16 @@ def error_chain() -> list[str]:
 
     `raise_as` stays hand-written: turning a std::exception into a
     live Python exception is nanobind's protocol, not something a
-    declaration knows. What is derived is WHICH classes and in WHAT
-    ORDER, and the order is the part a person gets wrong."""
+    declaration knows. What is derived is WHICH classes, in WHAT
+    ORDER, and WHERE to find them - the order is the part a person
+    gets wrong, and the where is the part that was written twice.
+
+    `errors_module()` is the same call that names the emitted module
+    and fills `_policy.ERROR_MODULE`, so the catch chain cannot point
+    somewhere the module is not."""
     have = corpus()
-    return pyerrors.chain(have.tree(have.errors), "huggorm::raise_as")
+    return pyerrors.chain(have.tree(have.errors), "huggorm::raise_as",
+                          errors_module())
 
 
 def declared_errors() -> dict[str, Any]:
