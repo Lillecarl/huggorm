@@ -13,7 +13,6 @@ by accident stayed invisible until a handle leaked much later.
 Run:  nix develop --file . shell --command pytest huggorm/tests
 """
 
-from typing import Any
 
 import pytest
 
@@ -280,22 +279,3 @@ def test_touch_takes_ownership_back_after_detach() -> None:
     assert (
         t.escrow[a][ha] == 1 and t.entries[ha].leases == 2
     ), "escrow still holds the detached lease"
-
-
-def test_manifest_schema_is_checked() -> None:
-    """A manifest from another generator must be refused, not read.
-
-    The server and the client learn every type, policy and rpc name
-    from this file. A stale one does not fail on load - it answers
-    wrong, one lookup at a time (tasks/022)."""
-    from huggorm import grpc_pb
-    from huggorm_generated._wiretypes import MANIFEST_SCHEMA, check_manifest
-
-    assert (
-        grpc_pb.load_manifest()["schema"] == MANIFEST_SCHEMA
-    ), "the shipped manifest passes its own check"
-    bad_manifests: list[dict[str, Any]] = [
-        {}, {"schema": MANIFEST_SCHEMA + 1}, {"schema": "1"}]
-    for bad in bad_manifests:
-        with pytest.raises(ValueError):
-            check_manifest(bad)

@@ -21,17 +21,15 @@ import ast
 # generator stamps it and every reader checks it: client and server are
 # built together today, so they always agree with each other and would
 # agree just as happily on yesterday's shape (tasks/022).
-MANIFEST_SCHEMA = 1
-
-
-def check_manifest(manifest: dict[str, object]) -> None:
-    """Refuse a manifest this code cannot read."""
-    found = manifest.get("schema")
-    if found != MANIFEST_SCHEMA:
-        raise ValueError(
-            f"manifest schema {found!r}, expected {MANIFEST_SCHEMA}: it was "
-            f"written by a different generator. Rebuild the package that "
-            f"ships it against this one.")
+# `MANIFEST_SCHEMA` and `check_manifest` stood here. The manifest was
+# a dispatch table three modules read on every call, so a file from
+# another generator was a real hazard: it did not fail on load, it
+# answered wrong one lookup at a time.
+#
+# Nothing reads it at run time now (065). Every table is emitted
+# Python, which ships with the code that reads it and cannot come from
+# somewhere else, so there is nothing left for a version stamp to
+# defend.
 
 
 # The types that go in a field as themselves. The schema maps them to

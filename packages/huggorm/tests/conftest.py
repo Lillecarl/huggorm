@@ -22,7 +22,9 @@ expensive or slow to set up:
 """
 
 import glob
+import json
 import os
+import pathlib
 import shutil
 import socket
 import sys
@@ -176,11 +178,31 @@ def grpcurl() -> str:
     return found
 
 
+def load_manifest() -> dict[str, Any]:
+    """The build's own report of what it decided.
+
+    Not an IR, and no longer a dispatch table. Every table the server,
+    the client, the codec and the fault codec used to read out of it
+    at run time is emitted Python now, in `huggorm_generated._policy`
+    (065). What is left is an enumeration, and the suite is its only
+    reader: several tests hold ANOTHER artifact - the protobuf
+    descriptor set, the front door's `__all__`, the type stubs - up
+    against what the build says it emitted.
+
+    It lives here rather than in the library because that is who
+    reads it. `huggorm/grpc_pb.py` had it, which made a test-only
+    reader look like part of the surface."""
+    import huggorm_generated
+
+    manifest: dict[str, Any] = json.loads(
+        (pathlib.Path(huggorm_generated.__file__).parent
+         / "manifest.json").read_text())
+    return manifest
+
+
 @pytest.fixture
 def manifest() -> Iterator[dict[str, Any]]:
-    from huggorm import grpc_pb
-
-    yield grpc_pb.load_manifest()
+    yield load_manifest()
 
 
 async def run_tool(binpath: str, port: int, symbol: str | None = None,

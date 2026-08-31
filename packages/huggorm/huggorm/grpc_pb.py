@@ -1,14 +1,17 @@
-"""Load the build-time gRPC schema emitted by huggorm-generated."""
+"""Load the build-time gRPC schema emitted by huggorm-generated.
 
-import json
+The descriptor set and nothing else. `load_manifest` lived here and
+is gone: no code in this library reads `manifest.json` any more, so
+the one reader left - the suite, which uses it as an enumeration of
+what the build decided - keeps its own (065).
+"""
+
 import pathlib
-from typing import Any
 
 from google.protobuf import descriptor_pb2, descriptor_pool
 
 import huggorm_generated
 from huggorm_generated._policy import PKG as _PKG
-from huggorm_generated._wiretypes import check_manifest
 
 
 def _pkg_dir() -> pathlib.Path:
@@ -27,26 +30,6 @@ def load_pool() -> descriptor_pool.DescriptorPool:
     for file_dp in fds.file:
         pool.Add(file_dp)  # type: ignore[no-untyped-call]
     return pool
-
-
-def load_manifest() -> dict[str, Any]:
-    """The build's manifest, for a TEST to assert against.
-
-    Nothing in this library reads it any more. The server, the
-    client, the codec and the fault codec each took a table out of it
-    at run time; all of those tables are emitted Python now, in
-    `huggorm_generated._policy`, so the JSON has no reader left except
-    the suite - which uses it as a second description of the surface
-    to hold the emitted one against.
-
-    `check_manifest` goes with the JSON when the suite stops needing
-    it. It exists only because a file can come from another
-    generator: *"it would answer wrong, one lookup at a time"*. An
-    emitted module ships with the code that reads it."""
-    manifest: dict[str, Any] = json.loads(
-        (_pkg_dir() / "manifest.json").read_text())
-    check_manifest(manifest)
-    return manifest
 
 
 # The protobuf package every message and service sits in. DERIVED,

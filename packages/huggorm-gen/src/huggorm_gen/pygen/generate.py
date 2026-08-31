@@ -24,7 +24,7 @@ from huggorm_gen.cppgen.generate import (
     declared_returned,
     declared_unions,
 )
-from huggorm_gen.payload.wiretypes import MANIFEST_SCHEMA, names_in
+from huggorm_gen.payload.wiretypes import names_in
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
     STUB_PACKAGE,
@@ -407,7 +407,6 @@ def main(argv: list[str] | None = None) -> None:
     # ...and the vocabularies themselves, read above.
 
     manifest: Proto = {
-        "schema": MANIFEST_SCHEMA,
         "wrappers": {p["name"]: p for p in protos},
         "returned_types": {p["name"]: p for p in returned_protos},
         "free_functions": {p["name"]: p for p in free_protos},

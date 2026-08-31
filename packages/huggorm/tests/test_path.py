@@ -99,7 +99,9 @@ def test_a_real_path_crosses_the_wire() -> None:
     from the _wire_fields the binding declares, and rebuilds it on the
     far side through _from_parts. No layer above the binding knows the
     type exists."""
-    manifest = grpc_pb.load_manifest()
+    from conftest import load_manifest
+
+    manifest = load_manifest()
     proto = manifest["wrappers"]["StorePath"]
     assert proto["binds"] == "CStorePath"
     assert proto["wire"] == "value"
@@ -187,7 +189,9 @@ def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
     So there is no object whose accessors can pose the question, and
     driving encode/decode directly is the honest way to keep asking
     it. It is also closer to the bug: 048 was a codec fix."""
-    manifest = grpc_pb.load_manifest()
+    from conftest import load_manifest
+
+    manifest = load_manifest()
     codec = WireCodec()
     msg = _message(manifest["returned_types"]["PathInfo"]["message"])()
 
