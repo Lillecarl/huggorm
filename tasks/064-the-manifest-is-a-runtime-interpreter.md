@@ -94,9 +94,15 @@ Two things are provisional until this lands:
   every manifest-reading helper go with the JSON.
 - The `huggorm` / `huggorm-generated` boundary moves. However much of
   `server.py`, `remote.py`, `wire.py` and `faults.py` turns out to be
-  interpreter becomes emitted instead - `server.py` alone is about
-  500 lines of it. If most of it goes, those two packages start
-  looking like one.
+  interpreter becomes emitted instead.
+
+  **"server.py alone is about 500 lines of it" was a guess, and it is
+  wrong.** Measured in 065: the four files are 1291 code lines and 12
+  sites read the manifest. `server.py` is 441 lines, of which 94
+  build handlers from it. The rest is runtime - the handle table, the
+  leases, the codec's shape logic - which does the same thing for
+  every type and therefore states nothing a declaration could. Those
+  two packages do not merge.
 
 ## One more mapping, found while renaming
 

@@ -131,17 +131,90 @@ faked. If it builds, the reflection is gone.
 
 ### 3. The manifest dies, because nothing needs a courier - OPEN
 
-Only now. Emit the dispatch instead of interpreting a table:
+**This phase is much smaller than 064 and this file first claimed,
+and the correction is measured rather than argued.** Carl asked the
+right question: *"obviously there has to be some Python glue that
+wraps up the generated raw bindings"*. There does, and almost all of
+those four files ARE that glue.
 
-- `server.py` - one handler per RPC, not a loop over `manifest`
-- `remote.py` - an emitted client, not `manifest["wrappers"].get()`
-  per call
-- `wire.py` - emitted encode and decode per message
-- `faults.py` - an emitted error table
-- `payload/wiretypes.check_manifest` and every manifest reader go
+#### The measurement
 
-`grpc_schema.pb` STAYS. It is the descriptor set, for reflection and
-for building messages. It is not a mapping table.
+    server.py  441 code lines    94 of them manifest-driven
+    wire.py    360               4 tables, built in __init__
+    remote.py  300               2 lookups, both name-keyed
+    faults.py  190               1 table, built in __init__
+    ----------------
+               1291 code lines, 12 sites that read the manifest
+
+So 064's *"server.py alone is about 500 lines of it"* is wrong.
+`server.py` is 441 lines and 94 of them - `_service`, `_acquire`,
+`_free_service` - build handlers from the manifest. The other 347 are
+the handle table, the leases, the fixed Session service, `serve()`
+and the sweeper. None of that names a type or ever could.
+
+#### The line, and it is CLAUDE.md's own
+
+A RUNTIME does the same thing for every type: walk a list, fill a
+map, hold a handle, run a lease, encode a scalar, keep a thread. It
+needs no per-type knowledge, so there is nothing in it a declaration
+could state. That is a HELPER in the C++ sense, and it stays
+hand-written.
+
+A MAPPING says "this Python name means that wire call". That is the
+generated code, in Python exactly as in C++.
+
+`manifest.json` is a mapping table in JSON, interpreted by a runtime.
+Phase 3 does not delete the runtime. It moves the mapping out of JSON
+and into emitted Python.
+
+#### The client already does this
+
+`rpc.py` carries `_rpc` per class - the call spec, emitted inline as
+a dict literal - and `remote.invoke()` says so itself: *"Nothing is
+resolved here - the build already did it."* So `remote.py` is already
+a runtime. Its two remaining manifest reads are `acquire(cls_name)`
+and `call_function(name)`, which are the by-NAME entry points: a
+directory lookup, not a per-call interpretation.
+
+**The server is the half that was never done.** `Dispatcher.__init__`
+loops the manifest and builds one closure per method, and that
+closure reads `proto["rpc"]["req"]`, `proto["params"]` and
+`proto["return_type"]` at call time.
+
+So phase 3 is: **make the server look like the client already does**,
+and emit `wire.py`'s four tables and `faults.py`'s one as Python.
+
+#### The design question, which is Carl's
+
+`rpc.py`'s `_rpc` is emitted Python holding a dict literal. That wins
+one of the two prizes and not the other:
+
+- **won** - the table ships with the code that reads it, so
+  `check_manifest` has nothing left to defend against. Its own
+  comment is the reason it exists: *"A manifest from another
+  generator would not fail here - it would answer wrong, one lookup
+  at a time."*
+- **not won** - it is still `dict[str, Any]`, so `--strict` still
+  proves nothing about any of it.
+
+Two ways to finish, and it is a real choice:
+
+**3a, small.** Emit every table and spec as a Python literal, the way
+`rpc.py` already does. Delete `manifest.json`, `check_manifest` and
+`grpc_pb.load_manifest`. Mechanical, low risk, changes no signature.
+Keeps `dict[str, Any]`.
+
+**3b, real.** Emit the CALL. The server gets one real `async def` per
+RPC with its types spelled, and the client's `_rpc` dicts go away
+with it. Typechecked end to end, and the four files shrink to the
+runtime they should have been. Much larger.
+
+3a is a step toward 3b rather than a detour: both need the same
+emitter, and 3b is 3a with the spec inlined into a body instead of
+into a dict.
+
+`grpc_schema.pb` STAYS either way. It is the descriptor set, for
+reflection and for building messages. It is not a mapping table.
 
 *Proof:* delete `manifest.json` after a build. The suite still
 passes.
