@@ -156,3 +156,33 @@ rather than a body deleted.
 
 `tasks/061` overlaps: `@guard` is a new marker, and designing it
 before the marker table exists means designing it twice.
+
+## The numbers, remeasured (065)
+
+The figures above are stale in two ways. `_cpp/eval.hpp` is
+`huggorm_decl/cpp/eval.hpp` since the restructure, and it is 238 code
+lines rather than 417 - the accessors named under MAPPINGS came down
+before this was reread.
+
+The second way matters more. The census counted `cpp/<module>.hpp`
+for each module it emitted, so it only ever measured the two files
+whose names are module names. What the whole directory holds:
+
+    238  eval.hpp          counted
+     35  derived_path.hpp  counted
+     37  errors.hpp        NOT counted, until 065
+     20  libstore.hpp      NOT counted, until 065
+    ---
+    330  total
+
+Plus 103 in `Cxx` bodies - 56 in `eval.py`, 47 in `store.py`.
+
+So the number to work down is 330, not 273, and 57 of it had never
+appeared in a build log. `census_cpp` prints the directory total now
+and names any file no module claims.
+
+`errors.hpp` and `libstore.hpp` are the two orphans. Neither has a
+declaration emitted beside it, which is why the per-module census
+could not see them and is the first thing to look at: a helper with
+no declaration next to it has nothing pulling it toward being
+derived.
