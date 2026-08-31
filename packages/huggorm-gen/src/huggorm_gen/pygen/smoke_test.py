@@ -766,7 +766,14 @@ async def test_behavior() -> None:
     # Anything else is not declared, carries no parts, and arrives as
     # an InternalError naming it. The mock could only ever raise the
     # second kind, so this pairing is new.
-    from huggorm_bindings.errors import NixError
+    # The error module by its DERIVED name. `huggorm_bindings` is a
+    # fixed fact in this file, but the errors submodule is named after
+    # the declaration - so writing `.errors` here would have been a
+    # copy of a name the build computes, and renaming the declaration
+    # proved it (tasks/063).
+    from huggorm_generated._policy import ERROR_MODULE
+
+    NixError = importlib.import_module(ERROR_MODULE).NixError
 
     try:
         await state.eval_expr("not an expression")
