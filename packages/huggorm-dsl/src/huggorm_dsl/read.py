@@ -59,8 +59,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, get_args, get_origin
 
-from huggorm_idl import declare
-from huggorm_idl.declare import Cxx, Decl, Field
+from huggorm_dsl import declare
+from huggorm_dsl.declare import Cxx, Decl, Field
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
@@ -71,12 +71,12 @@ BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
 # Where a declaration takes its vocabulary from. Named once: a
 # declaration is read rather than imported, so this string is the only
 # thing tying the two files together.
-VOCABULARY = "huggorm_idl.declare"
+VOCABULARY = "huggorm_dsl.declare"
 
 # Where the declarations live. A declaration that names a type
 # another declaration owns imports it from here, and the reader
 # follows that import rather than being told the file.
-DECLARATIONS = "huggorm_idl.decl"
+DECLARATIONS = "huggorm_decl.decl"
 
 # What a hand-written wire reconstructor is called. One name, because
 # the wire layer asks for it by that name and the emitter binds it by
@@ -1174,7 +1174,7 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
 def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
     """Declarations this one imported, read.
 
-    `from huggorm_idl.decl.words import ContentAddressMethod`
+    `from huggorm_decl.decl.words import ContentAddressMethod`
     is how a declaration names a type another declaration owns. The
     import is never executed - nothing here is - but it is the one
     place that says WHICH other file to read, so following it beats

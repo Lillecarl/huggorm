@@ -16,9 +16,9 @@ other vocabularies. They have no C++ behind them, so they have no
 extension to live in.
 """
 
-from huggorm_idl.decl.hash import Hash
-from huggorm_idl.decl.words import ContentAddressMethod
-from huggorm_idl.declare import (
+from huggorm_decl.decl.hash import Hash
+from huggorm_decl.decl.words import ContentAddressMethod
+from huggorm_dsl.declare import (
     Cxx,
     Str,
     binding,

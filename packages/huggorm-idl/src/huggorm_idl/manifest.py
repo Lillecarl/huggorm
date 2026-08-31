@@ -45,8 +45,8 @@ import inspect
 from collections.abc import Sequence
 from typing import Any
 
-from huggorm_idl.declare import Decl
-from huggorm_idl.read import Class, Method, Param, Type
+from huggorm_dsl.declare import Decl
+from huggorm_dsl.read import Class, Method, Param, Type
 
 # The names a proxy's RPC surface is spelled with. Derived from the
 # class name in every case, so the whole surface is knowable from a

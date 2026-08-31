@@ -1,7 +1,7 @@
 """
 Python exceptions for what real Nix throws.
 
-GENERATED. The source is `huggorm_idl/decl/errors.py`, which is this
+GENERATED. The source is `huggorm_decl/decl/errors.py`, which is this
 module plus one `cxx = "nix::..."` line per class.
 
 The hierarchy mirrors libnixutil's own, because catching by type is the

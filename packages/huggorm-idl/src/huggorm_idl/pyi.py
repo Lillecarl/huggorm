@@ -30,8 +30,8 @@ before it was printed.
 
 import ast
 
+from huggorm_dsl.read import BUILTIN_DECORATORS, Class, Module
 from huggorm_idl.manifest import PYTHON, dunders
-from huggorm_idl.read import BUILTIN_DECORATORS, Class, Module
 
 # The dunder signatures a value type gets. Not derived from anything
 # in the declaration, because they are Python's own protocol: `__eq__`
@@ -65,7 +65,7 @@ def _resolve(node: ast.expr | None, vocab: dict[str, str]) -> ast.expr | None:
         # there. So the quotes come off rather than being reprinted.
         return ast.Name(id=node.value, ctx=ast.Load())
     if isinstance(node, ast.Name) and node.id in vocab:
-        from huggorm_idl.read import type_of
+        from huggorm_dsl.read import type_of
         t = type_of(node, vocab)
         if t.cxx is not None and t.cxx.spelling in PYTHON:
             return ast.Name(id=PYTHON[t.cxx.spelling], ctx=ast.Load())

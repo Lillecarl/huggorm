@@ -8,6 +8,8 @@
   # entry. A build input to the generator: `codegen` imports it and
   # calls it instead of reflecting on a compiled class.
   huggorm-idl,
+  huggorm-decl,
+  huggorm-dsl,
   ...
 }:
 let
@@ -38,6 +40,8 @@ let
       python3Packages.protobuf
       huggorm-bindings
       huggorm-idl
+      huggorm-decl
+      huggorm-dsl
     ];
 
     # smoke_test is excluded here and checked in the package below:
@@ -73,6 +77,8 @@ python3Packages.buildPythonPackage {
     codegen
     huggorm-bindings
     huggorm-idl
+    huggorm-decl
+    huggorm-dsl
     python3Packages.anyio
   ];
 

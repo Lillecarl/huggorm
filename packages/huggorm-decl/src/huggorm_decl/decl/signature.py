@@ -7,7 +7,7 @@ what they wrote - and a caller who wants to know WHICH key signed a
 path should not be splitting a string to find out.
 """
 
-from huggorm_idl.declare import (
+from huggorm_dsl.declare import (
     Bytes,
     Cxx,
     Str,

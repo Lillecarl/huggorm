@@ -4,23 +4,49 @@
 rec {
   inherit pkgs;
   inherit (pkgs) lib;
-  # The declarations, and the emitters that read them.
+  # The LANGUAGE a declaration is written in, and the reader that
+  # parses one. No declaration and no emitter is in here, which is
+  # what lets the two below depend on it without depending on each
+  # other.
+  huggorm-dsl = pkgs.python3Packages.buildPythonPackage {
+    pname = "huggorm-dsl";
+    version = "0.1.0";
+    pyproject = true;
+    src = ./packages/huggorm-dsl;
+    build-system = [ pkgs.python3Packages.setuptools ];
+    pythonImportsCheck = [ "huggorm_dsl" ];
+  };
+  # The DECLARATIONS: one document per Nix class, and the lists
+  # saying which of them owns a compiled module. Data, plus the
+  # statement of what data there is.
+  huggorm-decl = pkgs.python3Packages.buildPythonPackage {
+    pname = "huggorm-decl";
+    version = "0.1.0";
+    pyproject = true;
+    src = ./packages/huggorm-decl;
+    build-system = [ pkgs.python3Packages.setuptools ];
+    dependencies = [ huggorm-dsl ];
+    pythonImportsCheck = [ "huggorm_decl" ];
+  };
+  # The EMITTERS. Handed a declaration, they decide what it means for
+  # one output: the nanobind C++, the manifest entry, the stub, the
+  # enum module, the exception module.
   #
-  # An ordinary Python distribution, and stdlib-only: it parses
-  # declarations with `ast` and writes text. Two builds use it -
-  # huggorm-bindings for its source, huggorm-generated for its
-  # manifest entries - which is why it is a package rather than a
-  # directory each of them reaches into.
+  # Stdlib-only, like the two above: it parses with `ast` and writes
+  # text. Two builds use it - huggorm-bindings for its source,
+  # huggorm-generated for its manifest entries - which is why it is a
+  # package rather than a directory each of them reaches into.
   huggorm-idl = pkgs.python3Packages.buildPythonPackage {
     pname = "huggorm-idl";
     version = "0.1.0";
     pyproject = true;
     src = ./packages/huggorm-idl;
     build-system = [ pkgs.python3Packages.setuptools ];
+    dependencies = [ huggorm-dsl huggorm-decl ];
     pythonImportsCheck = [ "huggorm_idl" ];
   };
   # The interpreter the emitters run under, with them on its path.
-  idlPython = pkgs.python3.withPackages (_: [ huggorm-idl ]);
+  idlPython = pkgs.python3.withPackages (_: [ huggorm-idl huggorm-decl huggorm-dsl ]);
   # The binding source that actually gets compiled.
   #
   # This is the step that makes the declaration load-bearing. Before
@@ -28,7 +54,7 @@ rec {
   # gate diffed them - which proves the emitter COULD have written the
   # binding. Here it DOES: there is no binding source in the repo at
   # all, and the only thing standing behind `huggorm_bindings.path`
-  # is `packages/huggorm-idl/src/huggorm_idl/decl/path.py`.
+  # is `packages/huggorm-decl/src/huggorm_decl/decl/path.py`.
   bindings-src = pkgs.runCommand "huggorm-bindings-src" { } ''
     cp -r ${./packages/huggorm-bindings} $out
     chmod -R u+w $out
@@ -37,7 +63,7 @@ rec {
   # The bindings. Every module is a nanobind extension whose C++ is
   # written from a declaration before this builds.
   huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
-    inherit huggorm-idl;
+    inherit huggorm-idl huggorm-decl huggorm-dsl;
     src = bindings-src;
   };
   # this is a Python library that uses huggorm-bindings
@@ -50,7 +76,7 @@ rec {
   # the binding stubs.
   huggorm-generated = pkgs.callPackage ./packages/huggorm-generated {
     inherit huggorm-bindings;
-    inherit huggorm-idl;
+    inherit huggorm-idl huggorm-decl huggorm-dsl;
   };
   # nix run --file . python -- $args
   # to be able to run Python commands
@@ -62,9 +88,11 @@ rec {
       huggorm-bindings
       huggorm-generated
       huggorm
-      # The generator imports it, so the interpreter every check runs
-      # against has to have it.
+      # The generator imports them, so the interpreter every check
+      # runs against has to have them.
       huggorm-idl
+      huggorm-decl
+      huggorm-dsl
       # The suites run under pytest, in the devshell and in the build
       # alike. pytest-timeout because a hung test is the failure this
       # suite is most exposed to - a server that never came up, or a

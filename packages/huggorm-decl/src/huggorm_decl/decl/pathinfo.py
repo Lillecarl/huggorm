@@ -12,11 +12,11 @@ The C++ lives in bodies. The only strings here are C++.
 # The declaration this one names. A declaration names another
 # declaration's type by importing it, and the reader follows the
 # import.
-from huggorm_idl.decl.content_address import ContentAddress
-from huggorm_idl.decl.hash import Hash
-from huggorm_idl.decl.path import StorePath
-from huggorm_idl.decl.signature import Signature
-from huggorm_idl.declare import (
+from huggorm_decl.decl.content_address import ContentAddress
+from huggorm_decl.decl.hash import Hash
+from huggorm_decl.decl.path import StorePath
+from huggorm_decl.decl.signature import Signature
+from huggorm_dsl.declare import (
     I64,
     U64,
     Bint,

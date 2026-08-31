@@ -10,7 +10,7 @@ the place a mistake in it surfaces is three layers away.
 
 Nothing in here is the binding. Every module's C++ is written into the
 build's copy of this directory from a declaration in
-`huggorm-idl/src/huggorm_idl/decl/`, and `setup.py` compiles one
+`huggorm-decl/src/huggorm_decl/decl/`, and `setup.py` compiles one
 nanobind extension per declaration.
 
 One Nix header, one declaration, named after it. `nix/store/path.hh`

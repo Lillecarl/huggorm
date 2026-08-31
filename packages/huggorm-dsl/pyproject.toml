@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "huggorm-dsl"
+version = "0.1.0"
+description = "The declaration language, and the reader that parses one"
+requires-python = ">=3.14"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# py.typed because the emitters import this package and are checked
+# --strict: without it every call reads as Any and the check passes
+# while proving nothing (tasks/027).
+huggorm_dsl = ["py.typed"]

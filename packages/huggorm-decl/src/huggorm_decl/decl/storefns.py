@@ -26,7 +26,7 @@ GIL, would be uninterruptible. Either alone would settle it.
 
 from typing import overload
 
-from huggorm_idl.declare import Str, binds, blocks
+from huggorm_dsl.declare import Str, binds, blocks
 
 
 @blocks

@@ -11,10 +11,10 @@ means anything alone. `DrvOutput` is the key: which derivation, and
 which of its outputs. `Realisation` is what the store found.
 """
 
-from huggorm_idl.decl.hash import Hash
-from huggorm_idl.decl.path import StorePath
-from huggorm_idl.decl.signature import Signature
-from huggorm_idl.declare import (
+from huggorm_decl.decl.hash import Hash
+from huggorm_decl.decl.path import StorePath
+from huggorm_decl.decl.signature import Signature
+from huggorm_dsl.declare import (
     Cxx,
     Str,
     binding,

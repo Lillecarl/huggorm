@@ -2,6 +2,8 @@
   lib,
   python3Packages,
   huggorm-idl,
+  huggorm-decl,
+  huggorm-dsl,
   boehmgc,
   nix,
   pkg-config,
@@ -40,6 +42,8 @@ python3Packages.buildPythonPackage {
     # rather than naming them again.
     nanobind
     huggorm-idl
+    huggorm-decl
+    huggorm-dsl
   ];
 
   # pkg-config finds real Nix. It is how nix ships its build interface:

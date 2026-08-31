@@ -23,8 +23,8 @@ Nothing here prints itself. `DerivedPath::to_string` takes a
 already makes for a StorePath (tasks/040, tasks/042).
 """
 
-from huggorm_idl.decl.path import StorePath
-from huggorm_idl.declare import (
+from huggorm_decl.decl.path import StorePath
+from huggorm_dsl.declare import (
     Bint,
     Cxx,
     Str,

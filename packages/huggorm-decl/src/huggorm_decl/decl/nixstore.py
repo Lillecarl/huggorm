@@ -22,7 +22,7 @@ there is nothing for `nb::init` to bind. `@produced(by=...)` says so,
 and says where to look instead.
 """
 
-from huggorm_idl.declare import (
+from huggorm_dsl.declare import (
     Bint,
     Cxx,
     Str,

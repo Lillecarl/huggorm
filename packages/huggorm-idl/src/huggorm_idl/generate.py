@@ -23,49 +23,15 @@ import ast
 import pathlib
 import sys
 
+from huggorm_decl import (
+    DECLARATIONS,
+    ERRORS,
+    NANOBIND,
+    VOCABULARIES,
+)
+from huggorm_dsl.read import read
 from huggorm_idl import manifest, nbemit, pyenum, pyerrors
 from huggorm_idl.nbemit import bindable, extension
-from huggorm_idl.read import read
-
-HERE = pathlib.Path(__file__).resolve().parent
-
-# Declarations that own a WHOLE module, through nanobind. Each emits
-# one C++ translation unit and there is no hand-written source for it
-# at all - no pyx, no pxd, no shim header.
-#
-# The `.pyx` route these took is gone. Every workaround it needed
-# went with it: a store path crossed as its base name and was parsed
-# back, absence was the empty string, a set became a vector of
-# strings, and a bound object came back as an owning raw pointer.
-# nanobind casts all four, so the declaration stopped carrying them.
-# A LIST, not a mapping of module to files, and the difference will
-# matter one day. One declaration owns one module because one Nix
-# header owns one class: `path-info.hh` is `pathinfo.py` is
-# `huggorm_bindings.pathinfo`. The mapping becomes real the first
-# time one HEADER's classes want separate declaration files -
-# `store-api.hh` the day StoreLocation earns its own, or a genuinely
-# multi-class header. Until then it would be machinery with no
-# second case to keep it honest.
-NANOBIND = (
-    "decl/path.py",
-    "decl/hash.py",
-    "decl/signature.py",
-    "decl/content_address.py",
-    "decl/derived_path.py",
-    "decl/realisation.py",
-    "decl/pathinfo.py",
-    "decl/store.py",
-    "decl/eval.py",
-)
-
-# Vocabularies. A StrEnum whose members ARE the strings a Nix parser
-# takes, so there is no C++ and nothing to compile - the emitted
-# module is plain Python and the build writes it whole, the way it
-# writes a NANOBIND entry.
-VOCABULARIES = (
-    "decl/words.py",
-)
-
 
 # Which package the emitted bindings land in. The one fact a
 # declaration does not carry: where a binding is installed is the
@@ -110,7 +76,7 @@ def declared_entries() -> dict[str, dict]:
     values it emits, which is what `is_value` already says."""
     out = {}
     for name in NANOBIND:
-        mod = read(str(HERE / name))
+        mod = read(str(DECLARATIONS / name))
         known = mod.known
         for cls in mod.classes:
             entry = manifest.entry(cls, PACKAGE, mod.name, final=False,
@@ -150,7 +116,7 @@ def declared_unions() -> dict[str, list[str]]:
     numbers a oneof's fields in and a renumbering is a wire change."""
     out: dict[str, list[str]] = {}
     for name in NANOBIND:
-        mod = read(str(HERE / name))
+        mod = read(str(DECLARATIONS / name))
         for union in mod.unions:
             out[union.name] = list(union.decl.arms)
     return out
@@ -172,7 +138,7 @@ def declared_functions() -> dict[str, dict]:
     reads it rather than repeating it."""
     out = {}
     for name in NANOBIND:
-        mod = read(str(HERE / name))
+        mod = read(str(DECLARATIONS / name))
         for fn in nbemit.public(mod.exported, mod.classes):
             out[fn.name] = manifest.function_entry(fn, PACKAGE, mod.name)
     return out
@@ -202,7 +168,7 @@ def declared_returned() -> list[str]:
     be built at all, and neither can PathInfo."""
     out: set[str] = set()
     for name in NANOBIND:
-        mod = read(str(HERE / name))
+        mod = read(str(DECLARATIONS / name))
         known = mod.known
         for cls in mod.classes:
             for m in cls.methods:
@@ -222,7 +188,6 @@ def declared_returned() -> list[str]:
 # The exception hierarchy, declared once. It emits two things that
 # used to be written twice and had to agree: the Python module a
 # caller catches, and the translator's catch chain.
-ERRORS = "decl/errors.py"
 
 
 def error_chain() -> list[str]:
@@ -232,7 +197,7 @@ def error_chain() -> list[str]:
     live Python exception is nanobind's protocol, not something a
     declaration knows. What is derived is WHICH classes and in WHAT
     ORDER, and the order is the part a person gets wrong."""
-    tree = ast.parse((HERE / ERRORS).read_text())
+    tree = ast.parse((DECLARATIONS / ERRORS).read_text())
     return pyerrors.chain(tree, "huggorm::raise_as")
 
 
@@ -269,7 +234,7 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
     standalone shape a spike builds; `huggorm_bindings.path` is the
     shape inside a package, and it is also what lets a module import
     the sibling whose types it names."""
-    mod = read(str(HERE / decl) if not pathlib.Path(decl).is_absolute()
+    mod = read(str(DECLARATIONS / decl) if not pathlib.Path(decl).is_absolute()
                else decl)
     bound = bindable(mod)
     if not bound:
@@ -328,16 +293,16 @@ def emit_module(decl: str, dotted: str, out: str) -> int:
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     for name in NANOBIND:
-        mod = read(str(HERE / name))
+        mod = read(str(DECLARATIONS / name))
         target = out / f"{mod.name}.cpp"
         emit_module(name, f"{PACKAGE}.{mod.name}", str(target))
-    src = HERE / ERRORS
+    src = DECLARATIONS / ERRORS
     tree = ast.parse(src.read_text())
     doc = ast.get_docstring(ast.parse(src.read_text()), clean=False) or ""
     (out / "errors.py").write_text(pyerrors.module(None, tree, doc) + "\n")
     print(f"{ERRORS} -> {out / 'errors.py'}")
     for name in VOCABULARIES:
-        source = HERE / name
+        source = DECLARATIONS / name
         mod = read(str(source))
         target = out / f"{mod.name}.py"
         tree = ast.parse(source.read_text())

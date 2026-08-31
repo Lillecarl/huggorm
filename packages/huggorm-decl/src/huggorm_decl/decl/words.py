@@ -16,7 +16,7 @@ named after either header would have been the wrong home for the
 other's.
 """
 
-from huggorm_idl.declare import header, words
+from huggorm_dsl.declare import header, words
 
 
 @header("nix/store/content-address.hh")

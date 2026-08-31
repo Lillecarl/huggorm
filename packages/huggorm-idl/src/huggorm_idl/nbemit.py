@@ -54,8 +54,8 @@ import ast
 import json
 from collections.abc import Sequence
 
-from huggorm_idl.declare import Field
-from huggorm_idl.read import Class, Method, Module, Type
+from huggorm_dsl.declare import Field
+from huggorm_dsl.read import Class, Method, Module, Type
 
 INDENT = "    "
 

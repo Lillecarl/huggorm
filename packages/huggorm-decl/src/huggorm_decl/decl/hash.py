@@ -12,8 +12,8 @@ vocabularies. They have no C++ behind them, so they have no extension
 to live in.
 """
 
-from huggorm_idl.decl.words import HashAlgorithm
-from huggorm_idl.declare import (
+from huggorm_decl.decl.words import HashAlgorithm
+from huggorm_dsl.declare import (
     Bytes,
     Cxx,
     Str,

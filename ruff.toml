@@ -73,6 +73,8 @@ select = [
 # file and one of them always fails.
 known-first-party = [
   "codegen",
+  "huggorm_decl",
+  "huggorm_dsl",
   "huggorm_idl",
   "huggorm_bindings",
   "huggorm_generated",

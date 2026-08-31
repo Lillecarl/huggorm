@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "huggorm-decl"
+version = "0.1.0"
+description = "The Nix surface, declared"
+requires-python = ">=3.14"
+dependencies = ["huggorm-dsl"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The declarations are DATA as well as modules: an emitter PARSES
+# them, so setuptools would ship the .py files anyway, but the
+# emitter opens them by path and a wheel that dropped one would fail
+# at generate time rather than at import.
+huggorm_decl = ["decl/*.py", "py.typed"]

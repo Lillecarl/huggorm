@@ -58,7 +58,7 @@ class Cxx:
 # declaration is imported as well as parsed: the interpreter is
 # already there and it is better at this than we would be.
 #
-# The default is what a bare `import huggorm_idl.decl.store` sees -
+# The default is what a bare `import huggorm_decl.decl.store` sees -
 # a reader, an editor, a typechecker - so it must be a real version
 # rather than a sentinel that makes every comparison false.
 NIX_VERSION: tuple[int, ...] = (2, 34)

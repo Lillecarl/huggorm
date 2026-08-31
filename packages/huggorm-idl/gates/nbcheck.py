@@ -46,9 +46,9 @@ import pathlib
 import re
 import sys
 
-import huggorm_idl
+import huggorm_decl
+from huggorm_dsl.read import read
 from huggorm_idl import nbemit
-from huggorm_idl.read import read
 
 NANOPYNIX = pathlib.Path.home() / "Code/nanopynix/nanopynix-bindings/src"
 
@@ -359,7 +359,7 @@ def main() -> int:
     print(f"emitted nanobind vs {NANOPYNIX}")
     problems = []
     for n in names:
-        decl = huggorm_idl.declaration(n)
+        decl = huggorm_decl.declaration(n)
         problems += check(decl)
         problems += check_functions(decl)
     if problems:

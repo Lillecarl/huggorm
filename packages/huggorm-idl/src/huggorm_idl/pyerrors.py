@@ -20,7 +20,7 @@ maintained.
 
 import ast
 
-from huggorm_idl.read import Module
+from huggorm_dsl.read import Module
 
 # The attribute a declared exception uses to name its C++ class. Not a
 # decorator: an exception declaration has no behaviour to mark, and a

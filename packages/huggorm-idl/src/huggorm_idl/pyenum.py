@@ -27,7 +27,7 @@ what libstore already accepts and a typo fails before the call.
 
 import ast
 
-from huggorm_idl.read import Class, Module
+from huggorm_dsl.read import Class, Module
 
 
 def class_def(cls: Class, node: ast.ClassDef) -> ast.ClassDef:

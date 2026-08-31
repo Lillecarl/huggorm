@@ -11,7 +11,7 @@ mock still backs everything else, and a spike that broke the working
 surface would prove nothing.
 """
 
-from huggorm_idl.declare import (
+from huggorm_dsl.declare import (
     Bint,
     Field,
     Str,

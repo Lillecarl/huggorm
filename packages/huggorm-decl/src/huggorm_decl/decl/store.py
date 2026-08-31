@@ -10,12 +10,12 @@ what makes this testable in a build sandbox.
 # Declarations this one names. A declaration names another
 # declaration's type by importing it, and the reader follows the
 # import - nothing here runs, so this costs a parse.
-from huggorm_idl.decl.derived_path import DerivedPath
-from huggorm_idl.decl.path import StorePath
-from huggorm_idl.decl.pathinfo import PathInfo
-from huggorm_idl.decl.realisation import DrvOutput, Realisation
-from huggorm_idl.decl.words import ContentAddressMethod, HashAlgorithm
-from huggorm_idl.declare import (
+from huggorm_decl.decl.derived_path import DerivedPath
+from huggorm_decl.decl.path import StorePath
+from huggorm_decl.decl.pathinfo import PathInfo
+from huggorm_decl.decl.realisation import DrvOutput, Realisation
+from huggorm_decl.decl.words import ContentAddressMethod, HashAlgorithm
+from huggorm_dsl.declare import (
     U64,
     Bint,
     Bytes,

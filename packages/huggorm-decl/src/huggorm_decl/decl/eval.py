@@ -26,7 +26,7 @@ in this binding a declaration could not have written, and
 `_cpp/eval.hpp` says why line by line.
 """
 
-from huggorm_idl.declare import (
+from huggorm_dsl.declare import (
     I64,
     Bint,
     Cxx,
