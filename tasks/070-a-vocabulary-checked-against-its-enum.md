@@ -237,10 +237,82 @@ what.
 `blake3` is gated for real - `parseHashAlgoOpt` calls
 `xpSettings.require(Xp::BLAKE3Hashes)` - so one word of the two.
 
+## The wire carries the WORD, and that is decided
+
+Protobuf has native enums, and the objection written above - that an
+IntEnum publishes a numbering that is not API - does NOT apply to
+one. A proto enum's numbers would be OURS, assigned by the emitter,
+not `MD5 = 42` from a header. That argument was aimed at the wrong
+target and is withdrawn.
+
+**Carl's decision, 2026-09-01: strings, with a generated mapping at
+both ends.** A word is easier to read off a wire than a magic number
+is, and these calls are far too expensive for the difference in bytes
+to matter.
+
+The condition is "generated on both sides", and it holds:
+
+    to C++      `parsed_by`, or the emitted `from_word` where
+                upstream has no parser
+    from C++    the emitted `as_word` switch
+    to wire     a StrEnum member IS its string
+    from wire   `WireCodec.scalar` answers with the enum CLASS, so a
+                word that is not a member raises where it was typed
+
+Two arguments FOR a proto enum are real and were weighed. It is
+smaller, and the `.proto` would become a second machine-readable
+statement of the vocabulary that a client in another language gets
+for free. Against: proto3 does not REJECT an unknown enum number - it
+preserves it as an integer - so the wire would stop being where a bad
+value is caught, and the numbers would become a frozen contract
+(`tasks/022`). Today a bad word is refused by the codec before it
+leaves Python, and by libstore's own parser if it gets further.
+
+`BuildMode` is the case that tests the decision rather than restating
+it, and `tests/test_remote.py` is where: HashAlgorithm costs nothing
+as a string because a member IS what libstore parses, and BuildMode
+has no string form upstream at all.
+
+## BuildMode, the first vocabulary whose words are ours
+
+`nix::BuildMode` has no parser and no rendering. It crosses Nix's own
+worker protocol as an integer, so `normal`, `repair` and `check` are
+named in the declaration and the emitter writes BOTH directions - a
+chain for the way in, because C++ cannot switch on a string, and the
+usual switch for the way out.
+
+The way-out switch is emitted even though nothing returns a
+BuildMode. That is deliberate: the switch IS the gate, and without it
+the day upstream adds a fourth mode would pass silently. So
+`_vocabularies_used` walks every site rather than the returns.
+
+### What the test refuted, twice
+
+The first version asserted all three modes are accepted. That proves
+nothing - a binding that DROPPED the mode would pass it, because
+`normal` on an already-valid path is a no-op. The test has to be the
+difference.
+
+Then which mode differs was guessed wrong. Measured, on a path that
+was ADDED rather than built:
+
+    normal   no-op
+    check    no-op        rebuild-and-compare, and there is no
+                          derivation to rebuild
+    repair   RAISES       "no substituter that can build it" -
+                          repairing means REPLACING, and substituting
+                          is all that is left
+
+One mode of three is observably different, and one is enough.
+
 ## What is NOT done
 
-`BuildMode`, `BuildResultSuccessStatus`, `BuildResultFailureStatus`,
+`BuildResultSuccessStatus`, `BuildResultFailureStatus`,
 `TrustedFlag`, `GCAction` and `FileIngestionMethod` are the queue.
-None has a binding that returns one yet, so none has a site for the
-conversion to be emitted at - `BuildMode` gets one when
-`Store.build_paths` takes a mode.
+The two BuildResult ones sit behind a larger question: upstream's
+`BuildResult` is a sum type whose failure arm IS `BuildError`, an
+exception class, so declaring it is not just an enum.
+
+Two front doors gained a `BuildMode` re-export line each, by hand.
+That is `tasks/064` - thirty such lines already - rather than
+anything this added.
