@@ -86,3 +86,65 @@ into `tmp_path` reproduces it.
 Nothing is fixed. The 16 GB was deleted so work could continue, and
 that is all. The numbers above are from a clean run afterwards, so
 they are current rather than remembered.
+
+## Remeasured on 2026-09-01, and two of the three answers change
+
+### The unbounded growth does not reproduce, and question 2 is closed
+
+A `chmod -R u+w` finalizer was written, and then measured against the
+version without it. **They are identical.** Five clean runs each,
+from an empty `/tmp/pytest-of-lillecarl`:
+
+    with the fixture      pytest-2 pytest-3 pytest-4   0 garbage   1.4 GB
+    without the fixture   pytest-4 pytest-5 pytest-6   0 garbage   1.4 GB
+
+pytest 9.1.1 already does it. `_pytest/pathlib.py:on_rm_rf_error`
+catches `PermissionError`, chmods the path read-write, walks the
+PARENTS for a file, and retries. That is the whole of what the
+finalizer would have added.
+
+The fault IS real and was reproduced directly - a store path that is
+a DIRECTORY is `r-xr-xr-x`, and `shutil.rmtree` raises EACCES on it;
+`chmod u+w` on directories alone fixes it. A read-only FILE unlinks
+fine, because the permission that matters is the parent's. Seven
+tests in the current suite add a directory to a store, so the shape
+is live. pytest simply recovers from it.
+
+So what made 16 GB was the errors pytest does NOT recover from, and
+the task's own warnings name them:
+
+    OSError: [Errno 30] Read-only file system
+    OSError: [Errno 39] Directory not empty
+
+Neither is a `PermissionError`, so line 94 of that handler warns and
+gives up. `EROFS` is not a permission at all - no chmod fixes a
+read-only FILESYSTEM - and the test it came from is
+`test_a_build_lands_in_the_uppe0`, an OverlayFS test with a `lower`
+layer. That test does not exist any more.
+
+**Do not add the finalizer.** It costs a directory walk per test and
+an empty `tmp_path` for every test that wanted none, and it fixes
+nothing this pytest does not already fix. If an overlay test returns,
+the fix is that test unmounting what it mounted, not a chmod.
+
+### Question 1 rests on a wrong premise
+
+The setting is not `reserved-size` and it is not reachable from a
+store URI. In nix 2.35 it is `gc-reserved-space`, declared on
+`GCSettings`, and `Settings` in `globals.hh` privately inherits
+`LocalSettings` which inherits that - so it is a GLOBAL nix setting,
+not a per-store one. Measured, three spellings, all refused:
+
+    warning: unknown setting 'gc-reserved-space'
+    {d}?gc-reserved-space=0              reserved=8192 KiB
+    local?root={d}&gc-reserved-space=0   reserved=8192 KiB
+    {d}?reserved-size=0                  reserved=8192 KiB
+
+So the fixture cannot ask for it. Setting it globally would need
+binding surface this repo does not have, for a test-only concern.
+
+### What is actually left
+
+Question 3 alone, and it is a judgement rather than a defect: 464 MB
+per run, three runs retained, 1.4 GB steady. Bounded, and the
+dangerous half is gone.
