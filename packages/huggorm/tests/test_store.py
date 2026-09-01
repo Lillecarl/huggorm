@@ -9,11 +9,12 @@ nothing on disk, which is what makes it testable in a build sandbox.
 import gc
 import pathlib
 import sys
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from huggorm_bindings import (
+    BuildMode,
     ContentAddress,
     DerivedPathBuilt,
     DrvOutput,
@@ -1236,6 +1237,64 @@ def test_building_what_is_already_there_does_nothing(chroot: Store) -> None:
     # An empty ask is a real ask here too, and does nothing at all.
     chroot.build_paths([])
     assert set(chroot.query_all_valid_paths()) == before
+
+
+def test_a_build_mode_reaches_libstore_as_the_enum(chroot: Store) -> None:
+    """The mode crosses, and it CHANGES what libstore does.
+
+    `nix::BuildMode` has no parser and no rendering upstream - it goes
+    over Nix's own worker protocol as an integer - so `normal`,
+    `repair` and `check` are words huggorm invents and the emitter
+    writes the mapping. There is no Nix parser to round-trip through,
+    so what is left to assert is that the value ARRIVES.
+
+    Asserting all three are accepted would not have shown that. A
+    binding that dropped the mode entirely would pass such a test,
+    because `normal` on an already-valid path is a no-op. So the test
+    is the DIFFERENCE: normal does nothing and the other two refuse.
+
+    Which mode differs was measured, and it refuted two guesses in a
+    row. `repair` on a path that was ADDED does not fall back to the
+    no-op: repairing means REPLACING, an added path has no derivation
+    behind it, and substituting is what is left -
+
+        path '/nix/store/...-moded' is required, but there is no
+        substituter that can build it
+
+    `check` does nothing at all, and that is consistent rather than
+    surprising: checking means rebuild-and-compare, and with no
+    derivation there is nothing to rebuild. So one mode of three is
+    observably different here, and one is enough - a binding that
+    dropped the mode would make `repair` a no-op too.
+
+    Checking a real derivation is the `live` half (tasks/037),
+    because it needs a builder to run twice."""
+    held = chroot.add_to_store("moded", b"x", CA.NAR, HashAlgorithm.SHA256)
+    before = set(chroot.query_all_valid_paths())
+
+    for quiet in (BuildMode.NORMAL, BuildMode.CHECK):
+        chroot.build_paths([held], quiet)
+        assert set(chroot.query_all_valid_paths()) == before
+
+    with pytest.raises(NixError, match="no substituter that can build it"):
+        chroot.build_paths([held], BuildMode.REPAIR)
+
+
+def test_an_unknown_build_mode_is_refused_by_name(chroot: Store) -> None:
+    """A word outside the vocabulary, and what it is told.
+
+    The emitted mapping refuses it the way upstream's own parsers
+    refuse an unknown word: a UsageError that LISTS what it takes. So
+    a caller who mistypes gets the same shape of answer whether the
+    words came from libstore or from here.
+
+    The `cast` is the test. A BuildMode cannot HOLD this word and the
+    stub says the parameter is one, so a caller who mistypes is
+    already stopped before running - and the only way to reach the
+    runtime refusal is to defeat the type checker on purpose. Both
+    layers hold, which is what this asserts."""
+    with pytest.raises(UsageError, match="unknown BuildMode 'rebuild'"):
+        chroot.build_paths([], cast(BuildMode, "rebuild"))
 
 
 def test_building_a_path_the_store_lacks_is_libstores_error(
