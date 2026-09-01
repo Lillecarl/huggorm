@@ -122,9 +122,15 @@ which was superseded rather than fixed.
   for - one `Cxx` line, because the caster from 067 already made the
   parameter a `std::vector<nix::DerivedPath>`. Two hermetic tests: a
   held path builds as a no-op, an absent one raises in libstore's own
-  words. What is left needs a C++ ENUM on the surface, which this DSL
-  has no marker for: the build MODE, and `buildPathsWithResults`
-  through the `BuildResult` it would have to declare.
+  words. Four more Store methods came with it and needed no new DSL
+  at all - `ensure_path`, `add_temp_root`,
+  `query_substitutable_paths`, `topo_sort_paths` - so a caller can
+  now build a thing, keep it from the collector, ask what could be
+  fetched instead, and walk a closure in reference order. What is
+  left needs a C++ ENUM on the surface, which this DSL has no marker
+  for: the build MODE, and `buildPathsWithResults` through the
+  `BuildResult` it would have to declare. That marker has ONE ready
+  user today, so it waits for its second (CLAUDE.md).
 - 068 (what a spike actually costs) is OPEN. A jj workspace is 2.5 MB
   and is deleted on exit; 1792 dead build outputs are 1.8 GB. The
   junk is the builds a worktree invites, not the worktree - and

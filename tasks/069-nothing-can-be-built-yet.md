@@ -63,6 +63,28 @@ It needs `KeyedBuildResult` declared as a wire value, which is a
 struct with a status enum, a message, timings and a map of built
 outputs - so it waits on the enum question above.
 
+### buildPathsWithResults is bigger than it looks
+
+`BuildResult` is itself a SUM TYPE - `std::variant<Success, Failure>`
+- where `Success` carries an enum and a `SingleDrvOutputs` map, and
+`Failure` IS `BuildError`, an exception class with a second enum.
+Two enums, a map and a variant whose arm is an exception.
+
+So it is not "one more value type". It wants the enum marker above
+plus a decision about how an arm that is an EXCEPTION crosses, which
+is a question this repo has not been asked yet.
+
+### And the enum marker has one ready user, not two
+
+`BuildMode` is the only C++ enum a declaration is ready to name
+today; `BuildResult`'s two are behind the paragraph above. CLAUDE.md
+says one user is a helper and two is a pattern, so building the
+marker now would be building it for one - and `tasks/063` already
+recorded what that costs, when `OutputsSpec` nearly got folded into
+a marker that meant something else.
+
+The marker waits for its second user.
+
 ### evalStore
 
 `buildPaths` takes an optional second store, used for derivations
