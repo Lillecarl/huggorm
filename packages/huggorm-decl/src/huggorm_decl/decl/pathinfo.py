@@ -137,6 +137,7 @@ return static_cast<std::int64_t>(self.registrationTime);
         None rather than an empty one: the two are different answers,
         and the wire carries them both across (tasks/048)."""
 
+    @reads("references")
     def references(self) -> "list[StorePath]":
         """The store paths this one points at, its own included when
         it does.
@@ -148,8 +149,8 @@ return static_cast<std::int64_t>(self.registrationTime);
 
         Sorted, because Nix keeps them in a set and the order is that
         set's."""
-        Cxx("return as_list(self.references);")
 
+    @reads("sigs")
     def sigs(self) -> "list[Signature]":
         """Who vouched for this path.
 
@@ -159,7 +160,6 @@ return static_cast<std::int64_t>(self.registrationTime);
 
         Sorted, because Nix keeps them in a set and the order is that
         set's."""
-        Cxx("return as_list(self.sigs);")
 
     # --- the wire's other half, where it belongs ---------------------
 
