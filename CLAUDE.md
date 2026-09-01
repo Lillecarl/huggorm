@@ -66,6 +66,21 @@ When 1 and 2 conflict, 1 wins - and the conflict is a task.
 is found, and do not trade a derived mapping for a hand-written fast
 one.
 
+# Build the cheap thing first
+
+    nix build --file . bindings-src        seconds,  124 KB
+    nix build --file . huggorm-bindings    minutes,  3.3 MB
+
+Most emitter changes are proved by DIFFING the emitted C++ against
+the previous store path. Compile only when the C++ changed shape.
+1792 dead build outputs and 1.8 GB were sitting in the store when
+this was measured, and the disk filling is a failure this repo has
+already had (`tasks/062`, `tasks/068`).
+
+The exception is anything nanobind resolves at compile or run time
+rather than in the text. A missing type_caster emits fine and
+compiles fine, and fails a gate later (`tasks/067`).
+
 # Maintain `tasks/` as you work
 
 Goal 3 says to record decisions in `tasks/`, including the ones that
