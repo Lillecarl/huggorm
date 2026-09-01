@@ -21,6 +21,7 @@ from huggorm_dsl.declare import (
     header,
     instant,
     local,
+    reads,
     wire_value,
 )
 
@@ -72,9 +73,9 @@ for (std::size_t i = 0; i < self->hashSize; ++i)
 
     # WIRE ORDER: the two facts, in the order a caller says them.
 
+    @reads("algo")
     def algorithm(self) -> HashAlgorithm:
         """Which digest this is - `sha256` for almost everything."""
-        Cxx("return std::string(nix::printHashAlgo(self.algo));")
 
     def digest(self) -> Bytes:
         """The raw digest. Not a rendering of it.

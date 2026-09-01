@@ -16,7 +16,7 @@ named after either header would have been the wrong home for the
 other's.
 """
 
-from huggorm_dsl.declare import header, words
+from huggorm_dsl.declare import Enumerated, header, words
 
 
 @header("nix/store/content-address.hh")
@@ -48,7 +48,8 @@ class ContentAddressMethod:
 
 
 @header("nix/util/hash.hh")
-@words(parsed_by="nix::parseHashAlgo")
+@words(parsed_by="nix::parseHashAlgo",
+       enumerated=Enumerated("nix::HashAlgorithm"))
 class HashAlgorithm:
     """The digest used to content-address a store object.
 
