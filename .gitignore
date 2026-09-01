@@ -5,6 +5,10 @@ result-*
 
 # Agents
 .scratchpad
+# jj workspaces, which an agent opens to try a shape without putting
+# it in the main tree. `jj workspace add` checks real files out here,
+# and the main workspace would otherwise snapshot every one of them.
+.claude/worktrees/
 
 # Python
 __pycache__/
