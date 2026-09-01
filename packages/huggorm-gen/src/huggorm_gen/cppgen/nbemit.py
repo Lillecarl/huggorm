@@ -1275,14 +1275,14 @@ def words_conversion(cls: Class) -> list[str]:
     enum = cls.decl.enumerated
     assert enum is not None
     out = [f"/** A {cls.name}, as the word Python has. */",
-           f"inline std::string as_word({enum.cxx} value)",
+           f"inline std::string as_word({enum.held} value)",
            "{",
-           f"{INDENT}switch (value) {{"]
+           f"{INDENT}switch (value{enum.reach}) {{"]
     for word in cls.members:
         out.append(f"{INDENT}case {enum.enumerator(word.name)}: "
                    f'return "{word.value}";')
     out += [f"{INDENT}}}",
-            f'{INDENT}throw nix::Error("unknown {enum.cxx}");',
+            f'{INDENT}throw nix::Error("unknown {enum.held}");',
             "}", ""]
     return out
 

@@ -140,6 +140,28 @@ Path = Annotated[pathlib.Path, Cxx("string"), Async("anyio.Path")]
 
 
 @dataclass(frozen=True)
+class Wrap:
+    """How a C++ type holds a value the Python surface names directly.
+
+    Two shapes need this, and they are the same fact. Upstream's
+    opaque variant arm is `DerivedPathOpaque`, a struct whose only
+    member is a `nix::StorePath`, and Python is given the StorePath.
+    Upstream's `nix::ContentAddressMethod` is a struct whose only
+    member is a `Raw` enum, and Python is given the word.
+
+    Either way the type C++ hands over and the type the declaration
+    names are different, and this is the one fact that says how to
+    get from one to the other.
+
+    `cxx` is the holder's own type, and `holds` is the member inside
+    it. Together they are both directions: reading takes the member,
+    writing builds the struct round it."""
+
+    cxx: str
+    holds: str
+
+
+@dataclass(frozen=True)
 class Enumerated:
     """The C++ enum a vocabulary's words stand for.
 
@@ -165,28 +187,28 @@ class Enumerated:
 
     cxx: str
     spelled: dict[str, str] = field(default_factory=dict)
+    # The struct C++ hands over, when it does not hand the enum over
+    # bare. `nix::ContentAddressMethod` is a struct whose only member
+    # is the `Raw` enum, and a method that answers one answers the
+    # struct - so the conversion takes that and reaches inside.
+    wrapped: Wrap | None = None
+
+    @property
+    def held(self) -> str:
+        """The C++ type a conversion of this TAKES.
+
+        The enum itself in the usual case, and the struct around it
+        where upstream wraps one."""
+        return self.wrapped.cxx if self.wrapped else self.cxx
+
+    @property
+    def reach(self) -> str:
+        """How to get from that type to the enum. Empty when it IS one."""
+        return f".{self.wrapped.holds}" if self.wrapped else ""
 
     def enumerator(self, word: str) -> str:
         """The C++ enumerator for one word, by the word's own name."""
         return f"{self.cxx}::{self.spelled.get(word, word)}"
-
-
-@dataclass(frozen=True)
-class Wrap:
-    """How a C++ variant holds an arm the Python surface names directly.
-
-    Upstream's opaque arm is `DerivedPathOpaque`, a struct whose only
-    member is a `nix::StorePath`. Python is given the StorePath, so
-    the alternative in the variant and the arm the declaration names
-    are different types - and this is the one fact that says how to
-    get from one to the other.
-
-    `cxx` is the alternative's own type, and `holds` is the member
-    inside it. Together they are both directions: reading takes the
-    member, writing builds the struct round it."""
-
-    cxx: str
-    holds: str
 
 
 @dataclass(frozen=True)
