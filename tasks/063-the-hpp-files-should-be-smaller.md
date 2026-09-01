@@ -410,3 +410,112 @@ marker the DSL already had.
 
 Worth the same look at `eval.py` and `store.py`, which have twice as
 many and have never had one.
+
+### derived_path.hpp: the fact rides on the alias - DONE
+
+The file is gone. 35 code lines, and the emitter writes every one of
+them from what the two aliases now declare.
+
+#### Carl asked whether classes, decorators and multiple inheritance
+#### were the right shape. They are not, and the reader says so.
+
+The proposal was `class SingleDerivedPath(StorePath,
+SingleDerivedPathBuilt)` - a real object to decorate, with the arms
+as bases. Three things are wrong with it, and each was measured
+rather than argued:
+
+**The variance is backwards.** Python inheritance is "is a". With the
+arms as bases, a SingleDerivedPath IS a StorePath, and
+`isinstance(SingleDerivedPath(), StorePath)` is True. A sum type says
+the opposite: a StorePath is one of the things a SingleDerivedPath
+can be. The declaration would state the relation upside down, and a
+type checker would believe it.
+
+**The reader already refuses a second base, for its own reason.**
+`read.py` raises "one base. Every hierarchy this binds is single
+inheritance", and `Decl.base` means the C++ base a bound class
+derives from - `LocalFSStore` genuinely derives from `Store`. Taking
+the refusal out would make one syntax carry two opposite meanings:
+`class LocalFSStore(Store)` says "is a Store", and `class
+DerivedPath(StorePath, DerivedPathBuilt)` would say "is one of
+these".
+
+**The union stops being a union.** Probed in Python: the class
+inherits its arms' methods (`drv_path` and `to_string` both appear on
+it) and is constructible through the arm's `__init__`. `A | B` is a
+type alias a checker and a reader both see; a class is not.
+
+#### What it is instead: Annotated, which this DSL already documents
+
+`declare.py`'s own header says it: "**Annotated type aliases** carry
+facts about a TYPE. **Decorators** carry facts about a METHOD or a
+CLASS." A union is a type. So the alias keeps being an alias and the
+C++ facts ride beside it:
+
+    SingleDerivedPath = Annotated[
+        StorePath | SingleDerivedPathBuilt,
+        Variant(
+            "nix::SingleDerivedPath",
+            raw="raw()",
+            header="nix/store/derived-path.hh",
+            wraps={"StorePath": Wrap("nix::DerivedPathOpaque",
+                                     holds="path")},
+        ),
+    ]
+
+Four facts, and each one is a thing only the declaration can know.
+`cxx` is the union's own type. `raw` is how to reach the std::variant
+inside it, because upstream's unions publicly INHERIT their variant.
+`header` is where the type is declared - a union has no `@header` to
+carry it, and `store.cpp` only PASSES a DerivedPath, so it declares
+none of the arms. `wraps` says the one thing that is not derivable:
+the opaque arm is a `DerivedPathOpaque`, and the StorePath Python
+holds is its member `path`.
+
+Every arm `wraps` does not name is held as itself, which is why
+`SingleDerivedPathBuilt` says nothing. Naming every arm would make
+the one that IS wrapped read like the rest.
+
+#### What the emitter derives from it
+
+`nbemit.conversions` writes `as_arms`, `from_arms` and `held` per
+union, into the same `namespace huggorm` block `as_tuple` already
+used. The output is the deleted header, character for character,
+except that it spells `nix::DerivedPathOpaque` where the hand
+version said `nix::SingleDerivedPath::Opaque` - the same type, and
+the one the declaration states.
+
+`held` is generated too. `tasks/063` had it staying a helper because
+`ref` is upstream's spelling rather than a decision - but it converts
+arms into a `ref`, and CLAUDE.md lists a conversion as a MAPPING. It
+is three lines from the same fact, so keeping it by hand would have
+left one hand-written line to justify a file.
+
+`_sites` is new and is why there is one walk rather than two. The
+includes need every type's caster and the conversions need every
+union; both read the same list of places a translation unit names a
+declared type.
+
+    96  errors.hpp
+   601  eval.hpp
+    48  libstore.hpp
+
+#### Proved by breaking
+
+`wraps={"StorePathX": ...}` - the reader refuses at
+`derived_path.py:146:1`, naming the arms it could have meant.
+
+Dropping `header=` from the DerivedPath alias - `store.cpp` stops
+including `nix/store/derived-path.hh`.
+
+`holds="pathx"` - g++ says "'const struct nix::DerivedPathOpaque' has
+no member named 'pathx'; did you mean 'path'?".
+
+And one perturbation REFUTED a claim in the declaration. Dropping
+`raw="raw()"` emits `&p` instead of `&p.raw()`, and it compiles:
+`std::get_if` deduces `variant<Types...>*` from the derived class,
+because upstream's inheritance is public. So the field is not
+load-bearing. It stays, with the comment corrected to say why - `&p`
+leans on that inheritance being public, which is a detail of the
+header rather than an API of it, and goal 1 is closeness to what Nix
+publishes.
