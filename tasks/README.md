@@ -5,9 +5,23 @@ One file per issue, named `NNN-short-name.md`. When done, append the
 
     mv 001-runner-resolve-race.md 001-runner-resolve-race.md.done
 
+The first line after the title OPENS with the status in bold, in one
+of five words: **OPEN**, **MOSTLY DONE**, **PARKED**, **DONE**,
+**CLOSED**. A clause may follow it - "CLOSED, by the question going
+away" says more than the word alone - but the word comes first, so a
+grep finds it. The word and the filename suffix say the same thing,
+and checking one against the other is how the tracker is audited: 063
+reached DONE in its text while its filename still said open.
+
 Keep files short: problem, evidence, fix sketch. A closed file keeps
 its original text and gains a "## Done" section, so the fix stays
 readable next to what it fixed.
+
+Update the file as the work happens, not at the end. A task that
+records only its conclusion loses the measurement that produced it,
+and the refutations - a gate that turned out not to hold, a rationale
+that turned out to be false - are the part nothing else in the repo
+records.
 
 Findings reference three architectural reviews: 2026-08-23,
 2026-08-25, and 2026-08-26 (the Claude Fable review agent, tasks
@@ -73,11 +87,11 @@ which was superseded rather than fixed.
   the package. Cython is gone with the question: 053 is the spike
   report that argued the direction, 054 is why pure mode lost, and
   050 records what was learned on the way.
-- 059 (sum types on the wire) is OPEN. DerivedPath and its parts
+- 059 (sum types on the wire) is DONE. DerivedPath and its parts
   cross as a real tagged union rather than by shape, which is better
-  than either encoding upstream uses. The arms are declared; what is
-  not is how a union spells a C++ arm that WRAPS a declared one,
-  which is 063's last residue.
+  than either encoding upstream uses. The last piece was how a union
+  spells a C++ arm that WRAPS a declared one: `Variant(...)` on the
+  alias says it, and the emitter writes the visit both ways.
 - 060 (the mock goes) is done. `fake-library/` is deleted and no
   binding names a mock.
 - 061 (one table for the markers) is done. The table drives
@@ -88,12 +102,19 @@ which was superseded rather than fixed.
   one cross-class check, which is why collection produces no bogus
   errors.
 - 062 (the suite fills the disk) is OPEN.
-- 063 (the hpp files hold mappings) is OPEN, and down to one residue.
-  Its three original fronts are closed, `errors.hpp` no longer names
-  its Python module, and `open_store` is emitted. What is left is
-  `derived_path.hpp`: four visits and four declaration bodies that
-  say one fact - the opaque arm is a one-member struct wrapping the
-  declared arm - and it waits on 061.
+- 063 (the hpp files hold mappings) is DONE. Its three original
+  fronts closed, `errors.hpp` stopped naming its Python module,
+  `open_store` is emitted, and `derived_path.hpp` is deleted - the
+  union's alias carries a `Variant(...)` and the emitter writes
+  `as_arms`, `from_arms` and `held` from it. Multiple inheritance was
+  the shape Carl asked about and the file records why it is not:
+  inheritance says "is a", which is the reverse of a sum type. cpp/
+  is 290 code lines in three files, all helpers.
+- 067 (a caster instead of a named conversion) is OPEN. Eleven
+  declaration bodies name a conversion - `as_arms`, `from_arms`,
+  `held`, a `ref` deref - that a generated nanobind type_caster would
+  do once. It needs the same declared fact 063 landed, and it writes
+  C++ shapes this repo has not written, so it waits on Carl.
 - 064 (the manifest is a runtime interpreter) is MOSTLY DONE.
   `manifest.json` is deleted; the front door's thirty re-export lines
   are what remain, and they need a decision rather than a patch.

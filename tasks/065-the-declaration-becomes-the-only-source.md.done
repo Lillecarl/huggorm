@@ -1,6 +1,6 @@
 # The declaration becomes the only source
 
-**ALL FOUR PHASES DONE.** The plan for `tasks/064`. Carl: *"ditch the IR in favor of
+**DONE**, all four phases. The plan for `tasks/064`. Carl: *"ditch the IR in favor of
 using the Python DSL decl as the source of truth always, this will
 need us to make helpful functions for both analyzing the AST and
 importing to get full type information."*
