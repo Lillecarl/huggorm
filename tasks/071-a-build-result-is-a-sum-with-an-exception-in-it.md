@@ -1,6 +1,6 @@
 # A build result is a sum with an exception in it
 
-**OPEN, and it needs a decision before code.** `buildPathsWithResults`
+**OPEN, and it is now unblocked.** The decision below is made. `buildPathsWithResults`
 is the last shape of `Store.build_paths` that is not bound, and it
 cannot be declared the way the other returns were. The reason is one
 line of upstream:
@@ -92,6 +92,28 @@ spellings of one.
 Answer 3 looks right and it is the most work, so it is a decision
 rather than a default.
 
+### DECIDED, 2026-09-01: it does not raise
+
+Carl: "buildresult doesn't raise in Nix so it shouldn't raise in
+Python either."
+
+That rules out answer 2 outright, and it settles the SEMANTICS rather
+than the shape: reading a failed result is never an exception. A
+caller building twenty targets gets twenty results.
+
+Answer 3 is what that leaves, and it does not conflict. Nothing about
+it raises on its own - `error()` ANSWERS with the typed error rather
+than throwing it, and that is the whole difference from `build_paths`.
+Upstream's `tryThrowBuildError` is a method a caller may call, not
+something the value does; binding it is binding what Nix has, and it
+is the caller who chooses. If even that is too close to raising, the
+method goes and `error()` stays - the value semantics are the part
+that was decided.
+
+Answer 1 stays rejected for the reason already written: it throws
+away the `Error` half, so this surface would tell a caller LESS than
+the sync one does about the same failure.
+
 ## What else was unsettled, and two of the three are decided
 
 - `KeyedBuildResult` adds `path`, a `DerivedPath` - which is the
@@ -123,14 +145,24 @@ rather than a default.
 
 - `cpuUser`/`cpuSystem` are `std::optional<std::chrono::microseconds>`.
 
-  **DECIDED, not yet done.** Carl: Python's own time representation,
-  which is `datetime.timedelta`. So the DSL wants a `Duration` alias
-  the way it has `Path`, and nanobind ships the caster -
+  **DECIDED, not yet done.** Carl, twice: Python's own time
+  representation - `datetime.timedelta` - and MICROSECONDS on the
+  wire.
+
+  So the DSL wants a `Duration` alias the way it has `Path`, and the
+  two ends differ on purpose. nanobind ships the caster:
   `<nanobind/stl/chrono.h>` maps a `std::chrono::duration` to a
-  `datetime.timedelta` both ways. What is NOT settled is what the
-  WIRE carries: a timedelta is not a protobuf scalar, so it is either
-  a well-known `Duration` message or an int of microseconds with the
-  Python type rebuilt on arrival.
+  `datetime.timedelta` both ways, so the in-process surface is a
+  timedelta with no code of ours. The wire carries an int64 of
+  microseconds and the codec rebuilds the timedelta on arrival,
+  which is the same shape a vocabulary has: one Python type, a
+  simpler thing on the wire, and a generated mapping at each end.
+
+  Not a protobuf well-known `Duration` message, which was the
+  alternative. It costs an import and a message where an int64 does,
+  and `google.protobuf.Duration` splits into seconds plus nanos -
+  a second representation to convert through for no gain over the
+  unit upstream already uses.
 
 - `timesBuilt`, `startTime`, `stopTime` are plain and need nothing.
   `startTime`/`stopTime` are `time_t`, which is a POINT in time
@@ -146,5 +178,27 @@ all.
 
 ## What is NOT done
 
-All of it. Nothing here is written; upstream was read on 2026-09-01
-and the three answers above are the question, not a plan.
+All the CODE. Upstream was read on 2026-09-01, and the three
+questions the task opened with are now answered: the map is built,
+the duration is decided, and the result does not raise.
+
+What is left to write, roughly in order:
+
+1. the two status vocabularies, which need nothing new from 070 -
+   and which emit NOTHING until something names them, because
+   `_vocabularies_used` walks sites;
+2. the `Duration` alias, its `<nanobind/stl/chrono.h>` caster, and
+   the microsecond form on the wire;
+3. `BuildResult` itself, which is where the new DSL is: a value one
+   of whose fields is a declared ERROR class. `tasks/036` made an
+   error CROSS as an error; nothing yet makes one be PART of
+   something else;
+4. `Store.build_paths_with_results`.
+
+One shape question is still open inside 3, and it is not Carl's - it
+is a reading of upstream. The two status enums are declared with
+"Names must be disjoint with" each other, in upstream's own comment,
+which is a licence to publish ONE Python vocabulary of sixteen words
+and let `status()` answer from whichever arm is held. Two C++ enums,
+two defaultless switches, one word list. Decide it against the code
+when 3 is written, and record which way.
