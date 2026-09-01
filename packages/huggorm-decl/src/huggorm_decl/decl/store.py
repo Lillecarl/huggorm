@@ -14,7 +14,7 @@ from huggorm_decl.decl.derived_path import DerivedPath
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
-from huggorm_decl.decl.words import ContentAddressMethod, HashAlgorithm
+from huggorm_decl.decl.words import BuildMode, ContentAddressMethod, HashAlgorithm
 from huggorm_dsl.declare import (
     U64,
     Bint,
@@ -552,7 +552,8 @@ return nix::Realisation{*found, id};
     # The pair is upstream's own, and it is why the union exists
     # (tasks/059): both take the same list, and only one of them
     # changes the store.
-    def build_paths(self, targets: "list[DerivedPath]") -> None:
+    def build_paths(self, targets: "list[DerivedPath]",
+                    mode: "BuildMode" = BuildMode.NORMAL) -> None:
         """Build or fetch every one of these, and wait.
 
         A target that is a derivation gets BUILT, which means its
@@ -571,18 +572,15 @@ return nix::Realisation{*found, id};
         other shape - a result per target, no exception - and it needs
         a `BuildResult` value declared, which is its own task.
 
-        No build MODE. Upstream takes `bmNormal`, `bmRepair` or
-        `bmCheck`, and this binds the first: the other two need a C++
-        enum on the surface, which this DSL has no vocabulary for -
-        `@words` is for a StrEnum whose member IS a string libstore
-        parses, and `bmRepair` is not one. Narrower than the C++,
-        never wider (CLAUDE.md goal 1).
+        `mode` says what the build is FOR. `normal` stops as soon as
+        the outputs are valid; `repair` replaces one whose contents
+        no longer hash to its name; `check` rebuilds a valid output
+        and compares without replacing it. The default is upstream's.
 
-        No `evalStore` either, for the same kind of reason: it is a
-        second store the caller supplies for derivations only, and
-        the shape a Python caller wants for that is a question rather
-        than a parameter to pass through."""
-        Cxx("self.buildPaths(targets);")
+        No `evalStore`. It is a second store the caller supplies for
+        derivations only, and the shape a Python caller wants for
+        that is a question rather than a parameter to pass through."""
+        Cxx("self.buildPaths(targets, mode);")
     @cxx_name("ensurePath")
     def ensure_path(self, path: "StorePath") -> None:
         """Make this path valid, by substituting it if it is not.

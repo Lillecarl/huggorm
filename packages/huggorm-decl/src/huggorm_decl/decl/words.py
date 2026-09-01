@@ -101,3 +101,49 @@ class HashAlgorithm:
     BLAKE3 = "blake3"
     """Behind the `blake3-hashes` experimental feature - the word is
     known, the feature is off until enabled."""
+
+
+@header("nix/store/store-api.hh")
+@words(
+    # No `parsed_by`, and that is a fact about upstream rather than an
+    # omission. `nix::BuildMode` has no parser and no rendering: it
+    # crosses Nix's own worker protocol as an integer, so these three
+    # words are this binding's own. The emitter writes both
+    # directions, and the read-back one is still the switch that
+    # checks the list.
+    enumerated=Enumerated(
+        "nix::BuildMode",
+        spelled={"NORMAL": "bmNormal",
+                 "REPAIR": "bmRepair",
+                 "CHECK": "bmCheck"},
+    ),
+)
+class BuildMode:
+    """What a build is FOR, beyond making the outputs valid.
+
+    A vocabulary rather than a flag, because upstream is an enum and
+    the three answers are not two booleans: repairing and checking
+    both re-run a builder whose outputs are already there, and they
+    do opposite things with the result.
+    """
+
+    NORMAL = "normal"
+    """Make the outputs valid, and stop as soon as they are.
+
+    A target that is already valid is a no-op, and one that can be
+    substituted is fetched rather than built."""
+
+    REPAIR = "repair"
+    """Rebuild an output whose contents no longer hash to its name,
+    and REPLACE it.
+
+    For a store somebody has edited or a disk that has corrupted one.
+    The daemon refuses this from an untrusted client."""
+
+    CHECK = "check"
+    """Rebuild an output that is already valid and compare, without
+    replacing it.
+
+    This is how a derivation is shown to be non-reproducible: the
+    second build's outputs are compared with the first's and a
+    difference is an error."""

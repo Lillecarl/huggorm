@@ -57,9 +57,10 @@ from .pathinfo import PathInfo
 from .realisation import DrvOutput, Realisation
 from .signature import Signature
 from .store import MissingPaths, Store, StoreLocation
-from .words import ContentAddressMethod, HashAlgorithm
+from .words import BuildMode, ContentAddressMethod, HashAlgorithm
 
 __all__ = [
+    "BuildMode",
     "ContentAddress",
     "ContentAddressMethod",
     "DerivedPathBuilt",
