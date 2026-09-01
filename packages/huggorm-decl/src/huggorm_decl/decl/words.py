@@ -16,11 +16,34 @@ named after either header would have been the wrong home for the
 other's.
 """
 
-from huggorm_dsl.declare import Enumerated, header, words
+from huggorm_dsl.declare import Enumerated, Wrap, header, words
 
 
 @header("nix/store/content-address.hh")
-@words(parsed_by="nix::ContentAddressMethod::parse")
+@words(parsed_by="nix::ContentAddressMethod::parse",
+       enumerated=Enumerated(
+           "nix::ContentAddressMethod::Raw",
+           # EVERY word, not just the one that reads differently.
+           # A vocabulary spells its words the way Python spells a
+           # constant and upstream spells this enum the way C++
+           # spells a type, so the default - the word's own name -
+           # is right for `nix::HashAlgorithm` by coincidence and
+           # wrong for all four of these.
+           #
+           # `nar` is the one that is not a case difference:
+           # upstream calls the method NixArchive, and the word is
+           # what a store URI and a .narinfo carry. Both names are
+           # right and neither derives the other.
+           spelled={
+               "FLAT": "Flat",
+               "NAR": "NixArchive",
+               "GIT": "Git",
+               "TEXT": "Text",
+           },
+           # A struct with one member, and a method that answers
+           # one answers the struct.
+           wrapped=Wrap("nix::ContentAddressMethod", holds="raw"),
+       ))
 class ContentAddressMethod:
     """How the hash that names a store path is computed.
 
@@ -38,9 +61,13 @@ class ContentAddressMethod:
     a directory."""
 
     GIT = "git"
-    """Git's own tree hashing. Behind the `git-hashing` experimental
-    feature: libstore knows the word and refuses the feature until it
-    is enabled."""
+    """Git's own tree hashing.
+
+    NOT behind an experimental feature at this entry point, which is
+    worth stating because it looks like it should be.
+    `ContentAddressMethod::parse` reaches `parseFileIngestionMethod`,
+    which takes `git` with no check. `parsePrefix` is the one that
+    requires `Xp::GitHashing`, and nothing here calls it."""
 
     TEXT = "text"
     """Flat hashing, with references recorded. What `builtins.toFile`

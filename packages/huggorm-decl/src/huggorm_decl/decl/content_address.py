@@ -57,10 +57,10 @@ class ContentAddress:
 
     # WIRE ORDER: the two facts, in the order the rendering states them.
 
+    @reads("method")
     def method(self) -> ContentAddressMethod:
         """How the bytes were serialised before hashing - `nar` for a
         directory, `flat` for a single file's contents."""
-        Cxx("return std::string(self.method.render());")
 
     @reads("hash")
     def hash(self) -> Hash:
