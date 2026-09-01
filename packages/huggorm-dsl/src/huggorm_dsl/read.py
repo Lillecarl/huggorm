@@ -53,10 +53,12 @@ binding that compiles and is wrong.
 """
 
 import ast
+import contextlib
 import difflib
 import functools
 import pathlib
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any, get_args, get_origin
@@ -86,15 +88,63 @@ DECLARATIONS = "huggorm_decl.decl"
 FROM_PARTS = "_from_parts"
 
 
+# Which declaration is being read, innermost last.
+#
+# A STACK rather than one path, because `_uses` calls `read` for every
+# declaration this one imports - `decl/store.py` pulls in five - so an
+# error is routinely raised while reading a file that is not the one
+# the caller asked for. The old message said "line 183" and left a
+# reader to work out which of nine files that was (tasks/061).
+#
+# A plain list, not a ContextVar. Nothing here runs concurrently: the
+# generator reads the corpus on one thread, and a ContextVar would buy
+# isolation nobody has asked for while hiding the push/pop that makes
+# this legible.
+_READING: list[str] = []
+
+
+@contextlib.contextmanager
+def reading(path: str) -> Iterator[None]:
+    """Name the declaration a diagnostic raised in here belongs to.
+
+    `read` does this for itself. This is for the emitters, which read
+    a tree the corpus already parsed and can still refuse it -
+    `pyerrors.entries` does, when the exception declaration will not
+    import - and which otherwise raise a diagnostic with no file on
+    it."""
+    _READING.append(path)
+    try:
+        yield
+    finally:
+        _READING.pop()
+
+
 class DeclarationError(Exception):
     """A declaration this reader will not guess at.
 
-    Carries the line, because the reader's answer to an unreadable
-    declaration is to point at it."""
+    Carries `path:line:col`, because the reader's answer to an
+    unreadable declaration is to point at it - and a tool that opens
+    the file wants all three. The format is the one every compiler
+    and every editor already parses.
+
+    The column is 1-based. `ast` counts columns from 0 and lines from
+    1, which is nobody's convention on either count; a message that
+    mixes the two sends a reader one character to the left.
+
+    The path comes from `_READING` rather than from an argument, so
+    the 36 raise sites in this module stay as they are. Threading a
+    path through 36 signatures to print it in one place is the shape
+    this codebase spends its effort removing."""
 
     def __init__(self, node: ast.AST, message: str) -> None:
-        line = getattr(node, "lineno", "?")
-        super().__init__(f"line {line}: {message}")
+        line = getattr(node, "lineno", None)
+        col = getattr(node, "col_offset", None)
+        where = _READING[-1] if _READING else "<declaration>"
+        if line is not None:
+            where += f":{line}"
+            if col is not None:
+                where += f":{col + 1}"
+        super().__init__(f"{where}: {message}")
 
 
 @dataclass(frozen=True)
@@ -1108,6 +1158,15 @@ def read(path: str) -> Module:
 
     The import is the authority on WHAT exists. The tree is the source
     for HOW to render it. No fact is taken from both."""
+    _READING.append(path)
+    try:
+        return _read(path)
+    finally:
+        _READING.pop()
+
+
+def _read(path: str) -> Module:
+    """`read` with the path already on the stack."""
     source = pathlib.Path(path).read_text()
     tree = ast.parse(source, filename=path)
     live = _live(path)
