@@ -66,6 +66,44 @@ When 1 and 2 conflict, 1 wins - and the conflict is a task.
 is found, and do not trade a derived mapping for a hand-written fast
 one.
 
+# Maintain `tasks/` as you work
+
+Goal 3 says to record decisions in `tasks/`, including the ones that
+turned out wrong. That is not a step at the end. `tasks/README.md`
+holds the conventions; this is the part an agent forgets.
+
+**Update the task while the work happens.** Write the measurement when
+you take it, not from memory afterwards. A number recalled at the end
+is a number you did not check.
+
+**Record what you got WRONG, and say what refuted it.** A rationale
+that turned out false, a gate that turned out not to hold, a shape you
+argued for and then measured against - none of that is anywhere else
+in the repo. Two of the last three tasks found a claim written into a
+comment that the compiler refuted; both are recorded, and both would
+have been believed forever otherwise.
+
+**Three things must agree, and drift silently when they do not:**
+
+1. the `.done` suffix on the filename,
+2. the bold status word on the file's first line,
+3. what `tasks/README.md` says about that number.
+
+Change all three in the same commit. Check them before you stop:
+
+```bash
+cd tasks && for f in [0-9]*.md*; do
+  case "$f" in *.done) a=done;; *) a=open;; esac
+  w=$(sed -n 1,12p "$f" | grep -m1 -oE '\*\*(OPEN|DONE|MOSTLY DONE|PARKED|CLOSED)' | tr -d '*')
+  case "$w" in DONE|CLOSED) b=done;; *) b=open;; esac
+  [ "$a" = "$b" ] || echo "MISMATCH $f file=$a line=${w:-none}"
+done
+```
+
+**Open a task for work you name and do not do.** A next step described
+in a reply is lost when the session ends. If you would say "this is
+worth doing next", it is worth a file.
+
 # Scratchpad
 use .scratchpad as the scratchpad directory which is gitignored and easily accessible to be inspected by the user.
 
