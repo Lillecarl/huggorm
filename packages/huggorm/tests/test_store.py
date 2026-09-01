@@ -6,6 +6,7 @@ openStore rather than a constructor. "dummy://" is in-memory and needs
 nothing on disk, which is what makes it testable in a build sandbox.
 """
 
+import datetime
 import gc
 import pathlib
 import sys
@@ -1476,7 +1477,10 @@ def _failed_result() -> Any:
         KeyedBuildResult, StorePath("dc7sp11s8vykw8xq6a64hn9kzpvhdpji-x"),
         None, BuildError("it timed out", "", BuildFailureStatus.TIMED_OUT,
                          True),
-        2, 300, 400)
+        # No CPU times, which is the other half of the pair below: a
+        # target that never ran has none to report, and upstream's
+        # own `std::optional` is what says so.
+        2, 300, 400, None, None)
     return _rebuild(KeyedBuildResult, *seed._parts())
 
 
@@ -1636,7 +1640,14 @@ def test_every_wire_value_survives_its_own_round_trip(
         "KeyedBuildResult": (
             _rebuild(KeyedBuildResult, held,
                      _rebuild(BuildSuccess, BuildSuccessStatus.BUILT, {}),
-                     None, 1, 100, 200),
+                     None, 1, 100, 200,
+                     # Durations that are not whole seconds, so a wire
+                     # that rounded to seconds would be caught here.
+                     # Microseconds all the way through is what makes
+                     # this exact, and 7 of them is under any coarser
+                     # unit (tasks/071).
+                     datetime.timedelta(seconds=1, microseconds=250),
+                     datetime.timedelta(microseconds=7)),
             [_failed_result()._parts()]),
     }
 
@@ -1676,6 +1687,69 @@ def test_every_wire_value_survives_its_own_round_trip(
             f"{name}: {asleep} holds one value in every case, so this "
             f"test would pass with it dropped from _from_parts. Give a "
             f"case where it differs.")
+
+
+def test_a_duration_crosses_as_whole_microseconds() -> None:
+    """A build's CPU time is a datetime.timedelta, and an int on the
+    wire.
+
+    Two boundaries, one resolution. nanobind's chrono caster hands
+    `std::chrono::microseconds` over as a timedelta, so the in-process
+    surface needs no code of ours; the wire carries an int and the
+    codec rebuilds the timedelta. Both are microseconds, which is the
+    finest unit a timedelta holds - so nothing rounds, in either
+    direction (tasks/071).
+
+    The round-trip gate above proves the C++ boundary and cannot see
+    this one: it never builds a message. This one reads the field.
+
+    A whole number, asserted as a NUMBER rather than as whatever came
+    back. A wire that carried seconds would round-trip a whole second
+    happily and lose the 250 microseconds beside it, so the case
+    that catches it must not be a whole second."""
+    from google.protobuf import message_factory
+
+    from huggorm.grpc_pb import load_pool
+    from huggorm.wire import WireCodec
+
+    codec = WireCodec()
+    assert codec.kind("datetime.timedelta") == "scalar", (
+        "a duration goes in a scalar field; nothing else can carry it")
+
+    pool = load_pool()
+    # protobuf ships no stubs for either call; see the note above.
+    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
+        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+            "huggorm.v1.KeyedBuildResultMsg"))
+
+    sent = _rebuild(
+        KeyedBuildResult, StorePath("dc7sp11s8vykw8xq6a64hn9kzpvhdpji-x"),
+        _rebuild(BuildSuccess, BuildSuccessStatus.BUILT, {}), None,
+        1, 100, 200,
+        datetime.timedelta(seconds=1, microseconds=250),
+        datetime.timedelta(microseconds=7))
+
+    msg = kls()
+    codec.value_to_msg("KeyedBuildResult", sent, msg)
+    assert msg.cpu_user == 1_000_250
+    assert msg.cpu_system == 7
+
+    back = codec.value_from_msg("KeyedBuildResult", msg)
+    assert back.cpu_user() == datetime.timedelta(seconds=1, microseconds=250)
+    assert back.cpu_system() == datetime.timedelta(microseconds=7)
+    assert back == sent
+
+    # ...and ABSENCE crosses as absence rather than as a zero
+    # duration. The field carries presence, which is what lets a
+    # target that never ran say so.
+    none = _rebuild(
+        KeyedBuildResult, StorePath("dc7sp11s8vykw8xq6a64hn9kzpvhdpji-x"),
+        _rebuild(BuildSuccess, BuildSuccessStatus.BUILT, {}), None,
+        0, 0, 0, None, None)
+    empty = kls()
+    codec.value_to_msg("KeyedBuildResult", none, empty)
+    assert not empty.HasField("cpu_user")
+    assert codec.value_from_msg("KeyedBuildResult", empty).cpu_user() is None
 
 
 @pytest.mark.live
