@@ -175,14 +175,72 @@ the coverage is by construction rather than by coincidence.
                                      mapping it - goal 1.
     upstream REORDERS or RENUMBERS   not checked, and not API.
 
+## The second vocabulary, which is the harder shape
+
+`nix::ContentAddressMethod` is a STRUCT holding one `Raw raw` member,
+so C++ hands over the struct and the switch has to reach inside.
+`Enumerated` gained `wrapped=Wrap("nix::ContentAddressMethod",
+holds="raw")` for that, reusing the `Wrap` the unions already had -
+one fact, "how a C++ type holds a value the Python surface names
+directly", and two shapes needing it.
+
+It emits:
+
+    inline std::string as_word(nix::ContentAddressMethod value)
+    {
+        switch (value.raw) {
+        case nix::ContentAddressMethod::Raw::Flat: return "flat";
+        case nix::ContentAddressMethod::Raw::NixArchive: return "nar";
+        ...
+
+and `ContentAddress.method` lost its own `Cxx` body - the second
+hand-written mapping this removes.
+
+### P4: the default enumerator spelling was WRONG, and the build said so
+
+`Enumerated` defaults an enumerator to the word's own name, and that
+is right for `nix::HashAlgorithm` BY COINCIDENCE: upstream happens to
+spell it `MD5`, `SHA1`, `SHA256`. `Raw` is spelled `Flat`, `Git`,
+`Text`, so three of four defaults were wrong. Emitted and compiled
+without noticing:
+
+    error: 'FLAT' is not a member of 'nix::ContentAddressMethod::Raw'
+    error: 'GIT' is not a member of ...; did you mean 'Git'?
+    error: 'TEXT' is not a member of ...
+    error: enumeration value 'Flat' not handled in switch [-Werror=switch]
+    error: enumeration value 'Git' not handled in switch
+    error: enumeration value 'Text' not handled in switch
+
+This is the REMOVE-or-RENAME half of the gate, arriving by accident
+and firing exactly as designed - both halves at once, and gcc naming
+the fix. The default stays, because a wrong default cannot reach a
+built binding.
+
+`spelled` now names all four rather than only `NAR`. Three are case,
+one is not: upstream calls the NAR method `NixArchive`, and `nar` is
+what a store URI and a `.narinfo` carry.
+
+## What the test found in the DECLARATION
+
+`git` was declared as "Behind the `git-hashing` experimental feature:
+libstore knows the word and refuses the feature until it is enabled."
+The goal-1 test asserted that and FAILED:
+
+    DID NOT RAISE NixError
+
+`nix::ContentAddressMethod::parse` reaches `parseFileIngestionMethod`,
+which takes `git` with no check at all. `parsePrefix` is the entry
+point that requires `Xp::GitHashing`, and nothing here calls it. The
+docstring was believable and wrong; it now says which parser does
+what.
+
+`blake3` is gated for real - `parseHashAlgoOpt` calls
+`xpSettings.require(Xp::BLAKE3Hashes)` - so one word of the two.
+
 ## What is NOT done
 
-`ContentAddressMethod` is the second vocabulary with an enum behind
-it, and it is a harder shape: `nix::ContentAddressMethod` is a STRUCT
-holding `Raw raw`, and one word is spelled differently
-(`NAR` is `NixArchive`). `Enumerated` carries `spelled` for the second
-half; the first half is untested.
-
 `BuildMode`, `BuildResultSuccessStatus`, `BuildResultFailureStatus`,
-`TrustedFlag`, `GCAction` and `FileIngestionMethod` are the queue
-behind that.
+`TrustedFlag`, `GCAction` and `FileIngestionMethod` are the queue.
+None has a binding that returns one yet, so none has a site for the
+conversion to be emitted at - `BuildMode` gets one when
+`Store.build_paths` takes a mode.
