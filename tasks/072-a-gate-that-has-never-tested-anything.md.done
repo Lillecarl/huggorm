@@ -1,6 +1,6 @@
 # A gate that has never tested anything
 
-**OPEN.** `pyerrors.declared(mod)` answers "every exception class this
+**DONE, by deleting it.** `pyerrors.declared(mod)` answered "every exception class this
 declaration names, for a gate", and it has been answering `[]` since
 it was written.
 
@@ -45,3 +45,33 @@ anything. This one is stronger than that: it is a gate that CANNOT
 fail, and it sat in the tree looking like coverage.
 
 It is also cheap. The names are already read.
+
+## What happened, 2026-09-02
+
+**Nothing read it.** Searched the tree and the history: no caller, in
+any commit. The `declared(` hits in `git log -S` are a local function
+of the same name inside `smoke_test.py`. So it was not a gate that
+could not fail - it was dead code shaped like one, which is worse,
+because a reader counts it as coverage.
+
+Deleted, per this task's own second half: "if nothing stops, the gate
+is not a gate and this task is about deleting it rather than fixing
+it."
+
+**And there is nothing left for it to check.** `entries()` and
+`chain()` and `module()` all read ONE parse of one file, so they
+cannot disagree. That is the design `pyerrors.py`'s docstring opens
+with - "two outputs from one file, and they used to be two
+hand-written files that had to agree" - and `declared()` is a
+leftover from when they were two.
+
+**One claim of mine was refuted on the way.** The first version of
+the deletion said `entries()` already covers what `declared()` looked
+like it covered, "because `getattr(mod, name)` refuses a class the
+tree names and the module does not define". Perturbed to check it,
+and it does not: `entries()` reads `tree.body`, so a class nested
+under `if NIX_VERSION >= ...` is invisible to it. The build passed
+with such a class in the emitted module and in no manifest entry.
+
+That is `tasks/073`, and it is a real hole rather than a dead one.
+The perturbation is written out there.

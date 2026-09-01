@@ -186,13 +186,21 @@ which was superseded rather than fixed.
   DOTTED type to cross; `pathlib.Path` is still blocked. A fourth
   claim was refuted, and it was mine: a spelling collapse written
   into `smoke_test._same` that no gate needed.
-- 072 (a gate that has never tested anything) is OPEN, and cheap.
-  `pyerrors.declared()` reads `mod.classes`, which is empty for the
+- 072 (a gate that has never tested anything) is DONE, by deleting
+  it. `pyerrors.declared()` read `mod.classes`, which is empty for the
   errors declaration because the reader takes only DECORATED classes
-  and an error class wears none. So it has answered `[]` since it was
-  written, and whatever reads it has been checking nothing against
-  nothing. 071 made the names available; the work is using them and
-  then PROVING the gate can fail.
+  and an error class wears none. It turned out to have no caller in
+  any commit - dead code shaped like a gate, which a reader counts as
+  coverage. There is nothing left for it to check either: the module,
+  the chain and the manifest come from ONE parse of one file, so they
+  cannot disagree.
+- 073 (a version-branched error class reaches nothing) is OPEN, and
+  it is what 072 found. `pyerrors.entries` and `chain` read
+  `tree.body`, so a class under `if NIX_VERSION >= ...` reaches the
+  emitted module and reaches no manifest entry and no catch clause.
+  Measured: the perturbation is in the task, and `check` said "all
+  checks passed" with it in place. Refuse the branch or read it, and
+  either way make that perturbation stop the build.
 - 068 (what a spike actually costs) is OPEN on its recommendations,
   and the second one is DONE: `nix-collect-garbage -d` on 2026-09-01
   freed 5.5 GiB across 22557 paths, 83% -> 77%. The jj workspace is
