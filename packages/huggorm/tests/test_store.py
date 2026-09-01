@@ -1239,6 +1239,63 @@ def test_building_what_is_already_there_does_nothing(chroot: Store) -> None:
     assert set(chroot.query_all_valid_paths()) == before
 
 
+def test_a_map_return_is_a_dict(chroot: Store) -> None:
+    """The first declared `dict[str, T]` over a bound class.
+
+    Until this the only dict the DSL could spell was a hard-coded
+    `dict[str, int]` serving one free function, and a body built the
+    `nb::dict` by hand. Now `_cxx` spells
+    `std::map<std::string, nix::StorePath>` the same way it spells a
+    vector, which is what `OutputPathMap` already is upstream.
+
+    What is asserted is the SHAPE, and deliberately only that. Asking
+    a path that is not a derivation was measured twice and answered
+    differently each time:
+
+        inside the build sandbox    {}
+        outside it                  NixError, "store path
+                                    '...-notadrv' is not a valid
+                                    derivation path"
+
+    Both are libstore's, and the difference is the environment rather
+    than the binding - `readInvalidDerivation` reaches a name check
+    in one and not the other. So a test that pinned either answer
+    would pass in one half of this suite's two homes and fail in the
+    other, which is worse than testing less.
+
+    The non-empty map of DECLARED values needs a real .drv and
+    belongs to the `live` half (tasks/037). The non-empty half of the
+    MECHANISM is covered already: `gc_stats` is the same `std::map`
+    crossing, with int values."""
+    held = chroot.add_to_store("notadrv", b"x", CA.NAR, HashAlgorithm.SHA256)
+    try:
+        answer: Any = chroot.query_derivation_output_map(held)
+    except NixError:
+        # libstore refused the name. See the docstring: this is one of
+        # its two answers, not a failure of the crossing.
+        return
+    assert isinstance(answer, dict)
+
+
+def test_a_map_of_ints_crosses_with_its_values(chroot: Store) -> None:
+    """The same `std::map` crossing, non-empty, in process.
+
+    `gc_stats` was a hand-built `nb::dict` behind a hard-coded
+    `"dict[str, int]"` table entry. Both are gone: it declares
+    `dict[str, I64]` and the emitter spells
+    `std::map<std::string, std::int64_t>` from that.
+
+    Tested here rather than only over RPC, which is where it was
+    tested before. The wire test proves the codec; this proves the
+    caster, and they are different halves."""
+    import huggorm_bindings
+
+    stats = huggorm_bindings.gc_stats()
+    assert isinstance(stats, dict)
+    assert "live_roots" in stats, sorted(stats)
+    assert all(isinstance(v, int) for v in stats.values()), stats
+
+
 def test_a_build_mode_reaches_libstore_as_the_enum(chroot: Store) -> None:
     """The mode crosses, and it CHANGES what libstore does.
 
