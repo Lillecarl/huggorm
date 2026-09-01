@@ -583,6 +583,67 @@ return nix::Realisation{*found, id};
         the shape a Python caller wants for that is a question rather
         than a parameter to pass through."""
         Cxx("self.buildPaths(targets);")
+    @cxx_name("ensurePath")
+    def ensure_path(self, path: "StorePath") -> None:
+        """Make this path valid, by substituting it if it is not.
+
+        The narrow half of `build_paths`. That one takes a target
+        which may be a derivation and will RUN a builder; this takes
+        a path and will only fetch. So a caller who wants a binary
+        cache hit and no local build asks for this, and finds out by
+        the raise rather than by waiting.
+
+        Already valid is a no-op. Nothing to substitute from raises,
+        in libstore's own words."""
+    @cxx_name("addTempRoot")
+    def add_temp_root(self, path: "StorePath") -> None:
+        """Keep this path from the collector while the store is open.
+
+        A temporary root, held by THIS process: `collect_garbage`
+        here or in any other process will not take the path until the
+        store object goes away. That is the answer to the race
+        upstream documents - root the path BEFORE checking whether it
+        is valid, because between the check and the use is where the
+        collector runs.
+
+        `add_to_store` already calls this for what it adds, so a
+        caller who only adds needs nothing. A caller who BUILDS does:
+        `build_paths` does not root its targets, and upstream is
+        explicit that rooting them is the caller's job and would be
+        too late if the call did it.
+
+        A store with no garbage collector does NOTHING here, and does
+        not say so - upstream logs a debug line and returns. So this
+        is not a promise the path is rooted; it is a promise this
+        store was asked. A binary cache has nothing to root."""
+    @cxx_name("querySubstitutablePaths")
+    def query_substitutable_paths(
+            self, paths: "list[StorePath]") -> "list[StorePath]":
+        """Which of these this store could FETCH rather than build.
+
+        Asked of the substituters, not of this store: a path already
+        valid here is not the question. So the answer says what a
+        `build_paths` would get cheaply, and the difference from
+        `query_missing` is the grain - that one plans a whole target
+        including its derivations, this one answers about paths.
+
+        Shorter than what went in, and sorted, because upstream keeps
+        them in a set."""
+    @cxx_name("topoSortPaths")
+    def topo_sort_paths(self, paths: "list[StorePath]") -> "list[StorePath]":
+        """These paths in reference order: a path before what it needs.
+
+        If p refers to q then p comes before q. That is the order to
+        DELETE in, and the reverse of the order to register in - so a
+        caller copying a closure into another store walks this
+        backwards.
+
+        `compute_fs_closure` answers WHICH paths; this answers in what
+        order. The pair is how a closure becomes something a caller
+        can act on one path at a time.
+
+        Raises on a cycle. A store path graph cannot have one, so
+        that is a corrupt store rather than a bad ask."""
     @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
         """Which store path has this hash part, or None.
