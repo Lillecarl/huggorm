@@ -140,6 +140,58 @@ Path = Annotated[pathlib.Path, Cxx("string"), Async("anyio.Path")]
 
 
 @dataclass(frozen=True)
+class Wrap:
+    """How a C++ variant holds an arm the Python surface names directly.
+
+    Upstream's opaque arm is `DerivedPathOpaque`, a struct whose only
+    member is a `nix::StorePath`. Python is given the StorePath, so
+    the alternative in the variant and the arm the declaration names
+    are different types - and this is the one fact that says how to
+    get from one to the other.
+
+    `cxx` is the alternative's own type, and `holds` is the member
+    inside it. Together they are both directions: reading takes the
+    member, writing builds the struct round it."""
+
+    cxx: str
+    holds: str
+
+
+@dataclass(frozen=True)
+class Variant:
+    """The C++ union behind a declared sum type.
+
+    A union is a TYPE, so its C++ facts ride on the alias rather than
+    on a decorator - which is what this module's own header says
+    Annotated aliases are for. There is nothing else to put them on:
+    `A | B` is an expression, and a class whose BASES were the arms
+    would say the opposite of what a sum type means. Inheritance is
+    "is a", so `class DerivedPath(StorePath, DerivedPathBuilt)` makes
+    a DerivedPath a StorePath, when the truth runs the other way -
+    and `read.py` already refuses a second base for a reason of its
+    own.
+
+    `cxx` is the union's own C++ type. `raw` is how to reach the
+    std::variant inside it: upstream's unions PUBLICLY INHERIT their
+    variant and re-expose it through `raw()`, so a visit says
+    `std::get_if<...>(&p.raw())` rather than `&p`.
+
+    `wraps` names any arm the variant does not hold directly, by the
+    declared arm's name. An arm not named here is held as itself.
+
+    `header` is where the union's own type is declared. A union has
+    no `@header` decorator to carry it, and the translation unit that
+    only PASSES one - `store.cpp` takes a DerivedPath and declares
+    none of its arms - would otherwise name a type it never included.
+    """
+
+    cxx: str
+    raw: str = ""
+    header: str = ""
+    wraps: dict[str, Wrap] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Field:
     """One declared part of a wire value.
 
@@ -175,6 +227,11 @@ class Decl:
     # - so it has no decorator to carry this and the reader fills it
     # in. Empty for everything that is not one.
     arms: tuple[str, ...] = ()
+    # The C++ union a sum type stands for, from the `Variant(...)` on
+    # its Annotated alias. None for a union declared without one,
+    # which is legal: a union whose arms C++ holds directly needs no
+    # conversion written at all.
+    variant: Variant | None = None
     compare: str = ""
     text: str = ""
     shown: str = ""

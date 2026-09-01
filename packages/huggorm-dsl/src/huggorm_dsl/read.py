@@ -77,6 +77,11 @@ BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
 # thing tying the two files together.
 VOCABULARY = "huggorm_dsl.declare"
 
+# `typing.Annotated`, which is where a fact about a TYPE goes. Named
+# because the reader matches on the spelling in the source: the alias
+# is never evaluated here, so `Annotated` is a bare name in a tree.
+ANNOTATED = "Annotated"
+
 # Where the declarations live. A declaration that names a type
 # another declaration owns imports it from here, and the reader
 # follows that import rather than being told the file.
@@ -698,6 +703,13 @@ def _value(node: ast.expr, vocab: dict[str, str]) -> Any:
         return target(*args, **kwargs)
     if isinstance(node, ast.Tuple):
         return tuple(_value(e, vocab) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        # Recursed rather than literal_eval'd, because a value may be
+        # a vocabulary call: `wraps={"StorePath": Wrap(...)}` is a
+        # dict whose values are not constants.
+        return {_value(k, vocab): _value(v, vocab)
+                for k, v in zip(node.keys, node.values, strict=True)
+                if k is not None}
     try:
         return ast.literal_eval(node)
     except ValueError as exc:
@@ -1314,7 +1326,7 @@ def _read(path: str) -> Module:
                 _method(n, vocab, bound=False, bound_kind=False))
         except DeclarationError as e:
             _survive(e)
-    unions = _unions(body, stem)
+    unions = _unions(body, stem, vocab)
     uses = _uses(tree, pathlib.Path(path).parent)
     # ...checked once the arms can be resolved, which needs the
     # imports this file made and the classes it declares itself.
@@ -1363,7 +1375,25 @@ def _arms(node: ast.expr) -> tuple[str, ...] | None:
     return None
 
 
-def _unions(body: list[ast.stmt], where: str) -> tuple[Class, ...]:
+def _annotated(node: ast.expr) -> tuple[ast.expr, list[ast.expr]]:
+    """An `Annotated[X, ...]` as X and its metadata, or the node bare.
+
+    The alias STAYS a type alias. `Annotated[A | B, Variant(...)]` is
+    `A | B` to a type checker and to anyone reading the file, so the
+    union keeps the one property that made it an alias rather than a
+    class - and the C++ facts ride where this DSL already puts facts
+    about a type."""
+    if not (isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == ANNOTATED):
+        return node, []
+    if not isinstance(node.slice, ast.Tuple) or not node.slice.elts:
+        return node, []
+    return node.slice.elts[0], list(node.slice.elts[1:])
+
+
+def _unions(body: list[ast.stmt], where: str,
+            vocab: dict[str, str]) -> tuple[Class, ...]:
     """Every module-level union alias, as a Class the emitters can name.
 
     A union is written as the alias it is:
@@ -1383,10 +1413,12 @@ def _unions(body: list[ast.stmt], where: str) -> tuple[Class, ...]:
             continue
         if len(item.targets) != 1 or not isinstance(item.targets[0], ast.Name):
             continue
-        arms = _arms(item.value)
+        held, meta = _annotated(item.value)
+        arms = _arms(held)
         if arms is None or len(arms) < 2:
             continue
         name = item.targets[0].id
+        variant = _variant(name, meta, arms, vocab, item)
         doc = ""
         nxt = body[i + 1] if i + 1 < len(body) else None
         if (isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant)
@@ -1394,9 +1426,41 @@ def _unions(body: list[ast.stmt], where: str) -> tuple[Class, ...]:
             doc = nxt.value.value
         out.append(Class(
             name=name, doc=doc, ctor=None, module=where,
-            decl=Decl(name=name, kind="union", arms=arms, wire="value"),
+            decl=Decl(name=name, kind="union", arms=arms, wire="value",
+                      variant=variant),
         ))
     return tuple(out)
+
+
+def _variant(name: str, meta: list[ast.expr], arms: tuple[str, ...],
+             vocab: dict[str, str], node: ast.AST) -> declare.Variant | None:
+    """The `Variant(...)` on a union's alias, checked against its arms.
+
+    None when the alias carries none, which stays legal: a union
+    whose C++ variant holds its arms as themselves needs no fact
+    stated, and the emitter refuses only where it actually needs one.
+
+    A `wraps` key that names no arm is refused here. It is the
+    mistake a rename makes - the arm moves, the wrap does not - and
+    it would otherwise emit a conversion for a type the variant does
+    not hold."""
+    found = [_value(m, vocab) for m in meta]
+    variants = [v for v in found if isinstance(v, declare.Variant)]
+    if len(variants) > 1:
+        raise DeclarationError(
+            node, f"{name}: one Variant(...) on an alias. Two would be two "
+                  f"answers to what one C++ union is.")
+    if not variants:
+        return None
+    variant = variants[0]
+    for arm in variant.wraps:
+        if arm not in arms:
+            raise DeclarationError(
+                node, f"{name}: wraps names '{arm}', which is not an arm of "
+                      f"this union. A wrap says how the C++ variant holds a "
+                      f"DECLARED arm, so it can only name one of "
+                      f"{', '.join(arms)}.")
+    return variant
 
 
 # What a union's ARM may be. Each refusal is its own sentence, because
