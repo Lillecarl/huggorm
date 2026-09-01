@@ -26,7 +26,7 @@ from typing import Any
 
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
-from huggorm_dsl.read import Module
+from huggorm_dsl.read import Module, reading
 from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors
 from huggorm_gen.cppgen.nbemit import bindable, extension
 
@@ -214,9 +214,14 @@ def declared_errors() -> dict[str, Any]:
     have = corpus()
     if not have.errors:
         return {"module": None, "classes": {}}
-    return {"module": errors_module(),
-            "classes": pyerrors.entries(have.tree(have.errors),
-                                        have.imported(have.errors))}
+    # Named, so a refusal from `entries` carries the file it is about
+    # rather than `<declaration>`. The reader does this for itself;
+    # an emitter reading a tree the corpus already parsed has to say
+    # so (tasks/061).
+    with reading(str(have.path(have.errors))):
+        return {"module": errors_module(),
+                "classes": pyerrors.entries(have.tree(have.errors),
+                                            have.imported(have.errors))}
 
 
 def declared_enums() -> dict[str, dict[str, Any]]:
