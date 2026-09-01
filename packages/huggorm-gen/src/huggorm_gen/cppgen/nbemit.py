@@ -199,8 +199,12 @@ def _bare(cls: Class, known: dict[str, Class] | None = None) -> str:
         # something deriving from one. So the binding takes the arms
         # the PYTHON side has and a body converts, which is a decision
         # and belongs in a body.
-        inner = ", ".join(_bare(known[a], known) for a in cls.decl.arms)
-        return f"std::variant<{inner}>"
+        if cls.decl.variant is not None:
+            # THE UNION'S OWN TYPE. A generated type_caster casts it
+            # to the arms Python has, so a signature names what
+            # libstore names and no body converts.
+            return cls.decl.variant.cxx
+        return _arms_type(cls, known)
     if cls.is_words:
         # A vocabulary. The member IS the string a Nix parser takes,
         # so it crosses as one - a fact about the words rather than
@@ -211,6 +215,16 @@ def _bare(cls: Class, known: dict[str, Class] | None = None) -> str:
             f"'{cls.name}' has no C++ type behind it. Only a class with "
             f"@binding(cxx=...) or @produced(by=...) can cross as one.")
     return _held(cls)
+
+
+def _arms_type(cls: Class, known: dict[str, Class]) -> str:
+    """A union as the std::variant of the arms PYTHON has.
+
+    Not what a signature says any more - that is the union's own C++
+    type - but what the caster casts through, and what `from_arms`
+    takes."""
+    inner = ", ".join(_bare(known[a], known) for a in cls.decl.arms)
+    return f"std::variant<{inner}>"
 
 
 def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | None]:
@@ -1238,7 +1252,7 @@ def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
     variant = cls.decl.variant
     assert variant is not None
     arms = cls.decl.arms
-    held = _bare(cls, known)
+    held = _arms_type(cls, known)
     reach = f"p.{variant.raw}" if variant.raw else "p"
     out = [f"/** The arms of a {cls.name}, as Python has them. */",
            f"inline {held} as_arms(const {variant.cxx} & p)",
@@ -1276,6 +1290,76 @@ def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
             f"{INDENT}return nix::make_ref<{variant.cxx}>(from_arms(a));",
             "}", ""]
     return out
+
+
+def caster(cls: Class, known: dict[str, Class]) -> list[str]:
+    """One union as a nanobind type_caster, so no body converts.
+
+    `as_arms` and `from_arms` still do the work; this is where they
+    are CALLED, once, instead of at every site that names the type.
+    The signature then says `nix::DerivedPath` - what libstore says -
+    and `store.parse_derived_path` is one call with nothing round it.
+
+    Composed with the caster nanobind ships for std::variant rather
+    than written out. The arms already cast; the only thing missing
+    was that `nix::DerivedPath` IS a variant and nanobind's caster is
+    specialised on `std::variant` exactly, not on something deriving
+    from one.
+
+    NB_TYPE_CASTER is not used, for the reason nanobind's own variant
+    caster does not use it: the macro declares `Value value;` and
+    neither union is default-constructible - the opaque arm holds a
+    `nix::StorePath`, which has no default constructor. The storage is
+    an optional instead, and the three cast operators reach through
+    it.
+    """
+    variant = cls.decl.variant
+    assert variant is not None
+    arms = _arms_type(cls, known)
+    return [
+        f"/** {variant.cxx}, cast as the arms Python has. */",
+        f"template <> struct type_caster<{variant.cxx}> {{",
+        f"{INDENT}using Value = {variant.cxx};",
+        f"{INDENT}using Arms = {arms};",
+        f"{INDENT}using Caster = make_caster<Arms>;",
+        f"{INDENT}static constexpr auto Name = Caster::Name;",
+        f"{INDENT}template <typename T_> using Cast = movable_cast_t<T_>;",
+        f"{INDENT}template <typename T_> static constexpr bool can_cast()"
+        f" {{ return true; }}",
+        "",
+        f"{INDENT}std::optional<Value> held;",
+        f"{INDENT}explicit operator Value *() {{ return &*held; }}",
+        f"{INDENT}explicit operator Value &() {{ return *held; }}",
+        f"{INDENT}explicit operator Value &&() {{ return (Value &&) *held; }}",
+        "",
+        f"{INDENT}bool from_python(handle src, uint8_t flags,",
+        f"{INDENT * 4}     cleanup_list *cleanup) noexcept",
+        f"{INDENT}{{",
+        f"{INDENT * 2}Caster caster;",
+        f"{INDENT * 2}if (!caster.from_python(src, flags, cleanup))",
+        f"{INDENT * 3}return false;",
+        f"{INDENT * 2}held.emplace({NAMESPACE}::from_arms("
+        f"caster.operator cast_t<Arms>()));",
+        f"{INDENT * 2}return true;",
+        f"{INDENT}}}",
+        "",
+        f"{INDENT}static handle from_cpp(const Value &value, rv_policy policy,",
+        f"{INDENT * 4}               cleanup_list *cleanup) noexcept",
+        f"{INDENT}{{",
+        f"{INDENT * 2}return Caster::from_cpp({NAMESPACE}::as_arms(value), "
+        f"policy, cleanup);",
+        f"{INDENT}}}",
+        "",
+        f"{INDENT}static handle from_cpp(const Value *value, rv_policy policy,",
+        f"{INDENT * 4}               cleanup_list *cleanup) noexcept",
+        f"{INDENT}{{",
+        f"{INDENT * 2}if (value == nullptr)",
+        f"{INDENT * 3}return none().release();",
+        f"{INDENT * 2}return from_cpp(*value, policy, cleanup);",
+        f"{INDENT}}}",
+        "};",
+        "",
+    ]
 
 
 # A list field, as something a hash can hold.
@@ -1949,6 +2033,14 @@ def module(classes: Sequence[Class],
         for u in unions:
             head += conversions(u, known or {})
         head += [f"}}  // namespace {NAMESPACE}", ""]
+    # The casters come AFTER the conversions and outside the
+    # namespace: each one calls a conversion by name, and a
+    # specialisation has to live in nanobind's own namespace.
+    if unions:
+        head += ["namespace nanobind::detail {", ""]
+        for u in unions:
+            head += caster(u, known or {})
+        head += ["}  // namespace nanobind::detail", ""]
     # The structs first: a bind function returns one, so the type has
     # to be complete before the compiler reads the lambda.
     head += records(classes, known)

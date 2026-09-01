@@ -131,12 +131,12 @@ class SingleDerivedPathBuilt:
         """Name one output of one derivation."""
         Cxx("""
 new (self) nix::SingleDerivedPathBuilt{
-    huggorm::held(drv_path), output};
+    nix::make_ref<nix::SingleDerivedPath>(drv_path), output};
         """)
 
     def drv_path(self) -> "SingleDerivedPath":
         """The derivation, which may itself be an output."""
-        Cxx("return huggorm::as_arms(*self.drvPath);")
+        Cxx("return *self.drvPath;")
 
     @reads("output")
     def output(self) -> Str:
@@ -193,12 +193,13 @@ class DerivedPathBuilt:
                  outputs: OutputsSpec) -> None:
         """Ask for some outputs of one derivation."""
         Cxx("""
-new (self) nix::DerivedPathBuilt{huggorm::held(drv_path), outputs};
+new (self) nix::DerivedPathBuilt{
+    nix::make_ref<nix::SingleDerivedPath>(drv_path), outputs};
         """)
 
     def drv_path(self) -> "SingleDerivedPath":
         """The derivation, which may itself be an output."""
-        Cxx("return huggorm::as_arms(*self.drvPath);")
+        Cxx("return *self.drvPath;")
 
     @reads("outputs")
     def outputs(self) -> OutputsSpec:

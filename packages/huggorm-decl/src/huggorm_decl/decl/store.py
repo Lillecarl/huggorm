@@ -547,13 +547,7 @@ return nix::Realisation{*found, id};
         `unknown` is the interesting one: a derivation this store does
         not hold cannot be planned around, and saying so is different
         from saying it needs building."""
-        Cxx("""
-std::vector<nix::DerivedPath> want;
-want.reserve(targets.size());
-for (auto & target : targets)
-    want.push_back(huggorm::from_arms(target));
-return self.queryMissing(want);
-        """)
+        Cxx("return self.queryMissing(targets);")
     @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
         """Which store path has this hash part, or None.
@@ -644,9 +638,7 @@ return self.queryMissing(want);
         them, and a plain store path for the opaque arm. The `^`
         spelling, not the `!` one: upstream keeps both and `^` is what
         the command line takes."""
-        Cxx("""
-return huggorm::from_arms(target).to_string(self.config);
-        """)
+        Cxx("return target.to_string(self.config);")
     # Pure string work: no daemon, no lock, no file.
     @instant
     def parse_derived_path(self, target: StrView) -> "DerivedPath":
@@ -656,9 +648,7 @@ return huggorm::from_arms(target).to_string(self.config);
         The nested arm is behind the `dynamic-derivations`
         experimental feature, so a `^` inside a `^` says so rather
         than being read as something else."""
-        Cxx("""
-return huggorm::as_arms(nix::DerivedPath::parse(self.config, target));
-        """)
+        Cxx("return nix::DerivedPath::parse(self.config, target);")
     @instant
     @cxx_name("parseStorePath")
     def parse_store_path(self, path: StrView) -> "StorePath":
