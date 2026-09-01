@@ -83,3 +83,86 @@ The `ref` caster needs one fact this repo has not stated: that
 `nix::ref<T>` is a non-nullable handle, and how to make one
 (`nix::make_ref<T>`). `Decl.holder` says something close for
 `shared_ptr` and may be the right place.
+
+## Spiked in a jj workspace, and it works
+
+Built in `.claude/worktrees/caster-spike`, so the main tree never
+carried it. Two commits there: the caster, and deleting `held` once
+nothing called it.
+
+**Result: 205 tests pass, `check` passes, and no declaration body
+names a conversion any more.** The seven that did now say plain
+libstore:
+
+    query_missing        return self.queryMissing(targets);
+    print_derived_path   return target.to_string(self.config);
+    parse_derived_path   return nix::DerivedPath::parse(self.config, target);
+    ...Built.drv_path     return *self.drvPath;                  (x2)
+    ...Built.__init__     new (self) nix::SingleDerivedPathBuilt{
+                              nix::make_ref<nix::SingleDerivedPath>(drv_path),
+                              output};                          (x2 in shape)
+
+The signature says `nix::DerivedPath` now, which is what libstore
+says. `_bare` returns the union's own `cxx` when its alias declares a
+`Variant`, and `_arms_type` is the std::variant the caster casts
+THROUGH - the conversions and the caster are the only two things that
+still name it.
+
+The PYTHON surface does not move. The stubs still say
+`def parse_derived_path(self, target: str) -> DerivedPath`, because
+the caster changes what C++ passes, not what Python sees.
+
+### The caster, and why it is not the macro
+
+`NB_TYPE_CASTER` declares `Value value;`. Neither union is
+default-constructible - the opaque arm holds a `nix::StorePath`,
+which has no default constructor - so the storage is a
+`std::optional` and the three cast operators reach through it. That
+is the same reason nanobind's own variant caster does not use the
+macro.
+
+`from_python` runs the arms' caster and calls `from_arms`; `from_cpp`
+calls `as_arms` and hands the result to the arms' caster. Both
+conversions were already generated, so the caster is where they are
+CALLED rather than new logic.
+
+### Proved by breaking, and the first attempt was wrong
+
+Removing the caster and compiling **succeeded**. That is the failure
+mode `includes()` already warns about: a missing caster does not fail
+at compile time, because nanobind falls back to `type_caster_base`.
+
+Removing it and running the SUITE fails, and an existing gate catches
+it before any test does - the signature gate in `huggorm-generated`
+diffs nanobind's introspected signature against the declared one:
+
+    Store.print_derived_path
+      nanobind: ("nix::StorePath | DerivedPathBuilt") -> str
+      declared: (StorePath | DerivedPathBuilt) -> str
+
+The quotes are nanobind naming a type it has no caster for.
+
+### What is NOT worth doing: the ref caster
+
+The plan named a second caster for `nix::ref<T>`, to turn `drv_path`
+into `@reads("drvPath")` and `query_path_info` into a pointer bind.
+It does not reach:
+
+`@reads` emits `return self.drvPath;`, and the lambda's return type
+comes from the DECLARED type - `nix::SingleDerivedPath`. The member
+is a `ref<const SingleDerivedPath>`, which does not convert to one.
+For `@reads` to work the emitter would have to know the member is a
+ref, which is a fact no declaration states and which only this member
+and `queryPathInfo` would use.
+
+So `Cxx("return *self.drvPath;")` stays. It is one line, it says a
+C++ fact about the member rather than about the binding, and the
+alternative is a marker with two users that has to teach the emitter
+a handle type.
+
+### The decision left
+
+Merging this puts a nanobind `type_caster` specialisation in the
+emitter's output - a shape this repo has not emitted before. It is
+generated, not hand-written, and it is 40 lines per union. That is
+Carl's call.
