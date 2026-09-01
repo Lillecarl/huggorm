@@ -42,7 +42,14 @@ import ast
 import pathlib
 from types import ModuleType
 
-from huggorm_dsl.read import Class, Method, Module, load, read
+from huggorm_dsl.read import (
+    Class,
+    Method,
+    Module,
+    collecting,
+    load,
+    read,
+)
 
 
 class Corpus:
@@ -119,6 +126,27 @@ class Corpus:
         return load(str(self.path(name)))
 
     # -- the three groups ------------------------------------------
+
+    def read_all(self) -> None:
+        """Read every declaration, reporting every refusal at once.
+
+        A generator calls this BEFORE it emits anything. Reading is
+        where a declaration is refused, and a refusal per run means a
+        person fixing three mistakes waits for three builds.
+
+        Here rather than in a generator because this is the object
+        that knows what "every declaration" is - and both generators
+        would otherwise carry the same list.
+
+        Idempotent and free after the first call: every read below is
+        cached, so this populates the caches and later access pays
+        nothing."""
+        with collecting():
+            for name in (*self._nanobind, *self._vocabularies):
+                self.module(name)
+            if self._errors:
+                self.tree(self._errors)
+                self.imported(self._errors)
 
     @property
     def nanobind(self) -> tuple[str, ...]:

@@ -13,6 +13,7 @@ import pathlib
 import sys
 from typing import Any
 
+from huggorm_decl import corpus
 from huggorm_dsl import declare
 from huggorm_gen.cppgen.generate import (
     declared_bases,
@@ -455,6 +456,9 @@ def main(argv: list[str] | None = None) -> None:
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
+    # Every refusal this build can see, before it derives anything
+    # (tasks/061).
+    corpus().read_all()
     manifest = build_manifest()
     protos = list(manifest["wrappers"].values())
     returned_protos = list(manifest["returned_types"].values())

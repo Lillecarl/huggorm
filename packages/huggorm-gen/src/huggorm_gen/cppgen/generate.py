@@ -448,6 +448,10 @@ def census_markers(have: Any) -> None:
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     have = corpus()
+    # Read everything first, so a build reports every refusal it can
+    # see rather than the first one. Emission below then runs against
+    # a corpus known to be sound (tasks/061).
+    have.read_all()
     chain = error_chain()
     for mod in have.modules:
         target = out / f"{mod.name}.cpp"
