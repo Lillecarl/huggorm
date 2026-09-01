@@ -16,13 +16,32 @@ before its subclass swallows it - `nix::Error` first would make every
 one of these a NixError. Python's own inheritance already says which
 class derives from which, so the order is computed rather than
 maintained.
+
+Both readings take every TOP-LEVEL `ast.ClassDef`, with no decorator
+test. That is what an error declaration is: `cxx = "nix::Error"` is a
+bare assignment, because there is no behaviour to mark. A
+`declared()` helper stood here that read `Module.classes` instead -
+the reader's DECORATED classes - so it answered `[]` for this file
+from the day it was written, and nothing ever called it. Deleted
+rather than fixed (tasks/072).
+
+Deleted rather than fixed because there is nothing left for it to
+check. The module and the chain come from ONE reading of one file, so
+they cannot disagree; that is the whole design, and `declared()` is a
+leftover from when they were two hand-written files.
+
+TOP-LEVEL is a limit, not a shorthand, and it was measured. A class
+under `if NIX_VERSION >= ...` reaches the emitted module - `module()`
+copies the branch through - and reaches no manifest entry and no
+catch clause, because both of those read `tree.body` alone. Nothing
+in the build says so. That is `tasks/073`.
 """
 
 import ast
 from types import ModuleType
 from typing import Any
 
-from huggorm_dsl.read import DeclarationError, Module
+from huggorm_dsl.read import DeclarationError
 
 # The attribute a declared exception uses to name its C++ class. Not a
 # decorator: an exception declaration has no behaviour to mark, and a
@@ -171,7 +190,3 @@ def module(tree: ast.Module, doc: str) -> str:
     ast.fix_missing_locations(out)
     return ast.unparse(out)
 
-
-def declared(mod: Module) -> list[str]:
-    """Every exception class this declaration names, for a gate."""
-    return [cls.name for cls in mod.classes]
