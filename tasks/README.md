@@ -158,22 +158,38 @@ which was superseded rather than fixed.
   the bytes to matter. Protobuf's own enums would have worked; the
   argument written against them was aimed at C++'s numbering rather
   than at a proto's, and it fell.
-- 071 (a build result is a sum with an exception in it) is OPEN, and
-  it needs a decision before code. `buildPathsWithResults` is the
-  last shape of build_paths left, and upstream's `BuildResult` is a
-  variant whose failure arm IS `BuildError`, a throwable class. So
-  the question is how a failed result reaches Python - as a status
-  word, as a raise, or as a value CARRYING the typed error - and the
-  three are different APIs. Its two status enums are the easy half
-  and need nothing new from 070.
+- 071 (a build result is a sum with an exception in it) is OPEN with
+  one piece left. `Store.build_paths_with_results` is bound and
+  answers a `KeyedBuildResult` per target: two arms, `success` and
+  `error`, exactly one present, and it never raises. Carl decided
+  that - a BuildResult does not raise in Nix - so `error` ANSWERS
+  with the typed BuildError rather than throwing it.
 
-  Two of its smaller questions are ANSWERED. The DSL learned maps:
-  `dict[str, T]` over a declared class spells
-  `std::map<std::string, T>`, so `builtOutputs` needs nothing new,
-  `Store.query_derivation_output_map` is bound, and the hard-coded
-  `dict[str, int]` entry that served one free function is gone. And
-  cpuUser/cpuSystem become `datetime.timedelta` - decided, not built,
-  and what the WIRE carries for one is still open.
+  Two vocabularies rather than one merged list of sixteen words, and
+  that closed the shape question. Upstream documents the two status
+  enums as having disjoint names, which would license the merge;
+  `Enumerated` names one C++ enum, so a merged list cannot say which
+  `from_word` a word belongs to. A test asserts the disjointness.
+
+  It cost the codegen four things: the reader reads exception
+  classes (it skipped every one, because an error declaration wears
+  no decorator), an imported union brings its arms, `@spells` names a
+  vocabulary a body uses and a signature does not, and the wire has
+  an `error` kind pointing at the fault message it already had. Three
+  claims were refuted by the build and are recorded there.
+
+  LEFT: the `Duration` alias. cpuUser/cpuSystem become
+  `datetime.timedelta`, through nanobind's own chrono caster, and an
+  int64 of MICROSECONDS on the wire - both Carl's. Ordered last on
+  purpose: like a vocabulary, it emits nothing until something names
+  it, so it lands with its first user rather than alone.
+- 072 (a gate that has never tested anything) is OPEN, and cheap.
+  `pyerrors.declared()` reads `mod.classes`, which is empty for the
+  errors declaration because the reader takes only DECORATED classes
+  and an error class wears none. So it has answered `[]` since it was
+  written, and whatever reads it has been checking nothing against
+  nothing. 071 made the names available; the work is using them and
+  then PROVING the gate can fail.
 - 068 (what a spike actually costs) is OPEN on its recommendations,
   and the second one is DONE: `nix-collect-garbage -d` on 2026-09-01
   freed 5.5 GiB across 22557 paths, 83% -> 77%. The jj workspace is
