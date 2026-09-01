@@ -51,6 +51,7 @@ NANOBIND = (
     "derived_path.py",
     "realisation.py",
     "pathinfo.py",
+    "build_result.py",
     "store.py",
     "eval.py",
 )
