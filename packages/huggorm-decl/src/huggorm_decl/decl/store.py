@@ -548,6 +548,41 @@ return nix::Realisation{*found, id};
         not hold cannot be planned around, and saying so is different
         from saying it needs building."""
         Cxx("return self.queryMissing(targets);")
+    # `query_missing` says what building these WOULD do; this does it.
+    # The pair is upstream's own, and it is why the union exists
+    # (tasks/059): both take the same list, and only one of them
+    # changes the store.
+    def build_paths(self, targets: "list[DerivedPath]") -> None:
+        """Build or fetch every one of these, and wait.
+
+        A target that is a derivation gets BUILT, which means its
+        outputs are made valid - by substituting them if they can be
+        substituted, and by running the builder if they cannot,
+        recursively through the inputs. A target that is a plain
+        store path gets SUBSTITUTED.
+
+        Already valid is a no-op, and that is upstream's own word for
+        it. So building twice costs nothing the second time, and
+        building an empty list does nothing at all.
+
+        Raises rather than reporting. A failed build is a
+        `nix::Error`, so it reaches Python as a NixError with
+        libstore's message. Upstream's `buildPathsWithResults` is the
+        other shape - a result per target, no exception - and it needs
+        a `BuildResult` value declared, which is its own task.
+
+        No build MODE. Upstream takes `bmNormal`, `bmRepair` or
+        `bmCheck`, and this binds the first: the other two need a C++
+        enum on the surface, which this DSL has no vocabulary for -
+        `@words` is for a StrEnum whose member IS a string libstore
+        parses, and `bmRepair` is not one. Narrower than the C++,
+        never wider (CLAUDE.md goal 1).
+
+        No `evalStore` either, for the same kind of reason: it is a
+        second store the caller supplies for derivations only, and
+        the shape a Python caller wants for that is a question rather
+        than a parameter to pass through."""
+        Cxx("self.buildPaths(targets);")
     @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
         """Which store path has this hash part, or None.
