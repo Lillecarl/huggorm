@@ -519,3 +519,55 @@ load-bearing. It stays, with the comment corrected to say why - `&p`
 leans on that inheritance being public, which is a detail of the
 header rather than an API of it, and goal 1 is closeness to what Nix
 publishes.
+
+### The Cxx-body audit, done for every declaration
+
+`derived_path.py` was audited because the marker work went through
+it, and it gave up two `@reads`. The same look at the other eight, by
+shape rather than by file:
+
+    57 Cxx bodies in all
+
+     3  return as_list(self.MEMBER);       <- @reads, and nothing else
+     2  out-parameter, then as_list        <- a real call
+     4  reach through self.get()           <- @guard, already derived
+     5  mention self.config                <- not one shape; see below
+     2  deref of a ref MEMBER              <- the DerivedPath pattern
+     1  deref of a ref<T>                  <- query_path_info
+     1  .string() on a fs::path            <- follow_links_to_store
+
+Only the first row was restatement, and it is fixed: `references`,
+`sigs` and `signatures` say `@reads` now, and the emitted C++ is
+identical.
+
+"Mention self.config" looked like five and is not one shape. Only
+`nixstore.get_store_dir` is a member read through it; the rest call a
+method on it, or mention it inside larger logic - `real_path` does a
+`dynamic_cast` and raises `Unsupported`, which is a decision.
+
+`eval.py` and `store.py` have the most bodies and gave up none.
+Their shapes are guards and producers, which the emitter already
+derives, and genuine decisions.
+
+#### What the audit DID find: a fact stated in one branch of two
+
+`_method` spelled the lambda's return type for a declared body and
+not for a derived one. The comment justifying it argued from the
+BODY - "cannot deduce" - which is true of a derived body too. So
+`@reads` over a `list[T]` deduced `as_list`'s return where the same
+accessor with a `Cxx` line spelled it, and swapping the three
+accessors to `@reads` made that visible: the bodies matched, the
+lambda heads did not.
+
+`_returns` is now read by both branches. 29 emitted lambdas gained a
+return type and all of them compile.
+
+#### Still open, and it is one shape, not three
+
+`*self.queryPathInfo(path)`, `*self.drvPath` twice, and the `held`
+that builds one: four sites where a `nix::ref<T>` meets the boundary.
+A generated nanobind type_caster for `ref` would take all four, and
+the same caster for `nix::DerivedPath` would take the seven
+`as_arms`/`from_arms` calls the bodies still name. That writes C++
+shapes this repo has not written before, so it needs Carl's word
+first.
