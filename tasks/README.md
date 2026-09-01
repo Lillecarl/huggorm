@@ -117,6 +117,14 @@ which was superseded rather than fixed.
   not move: the stubs still read `-> DerivedPath`. Spiked in a jj
   workspace first (068), which is why the main tree never carried a
   version that did not work.
+- 069 (nothing can be built yet) is MOSTLY DONE. `Store.build_paths`
+  is bound, so the DerivedPath union has the consumer it was built
+  for - one `Cxx` line, because the caster from 067 already made the
+  parameter a `std::vector<nix::DerivedPath>`. Two hermetic tests: a
+  held path builds as a no-op, an absent one raises in libstore's own
+  words. What is left needs a C++ ENUM on the surface, which this DSL
+  has no marker for: the build MODE, and `buildPathsWithResults`
+  through the `BuildResult` it would have to declare.
 - 068 (what a spike actually costs) is OPEN. A jj workspace is 2.5 MB
   and is deleted on exit; 1792 dead build outputs are 1.8 GB. The
   junk is the builds a worktree invites, not the worktree - and
