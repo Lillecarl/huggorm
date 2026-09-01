@@ -92,21 +92,49 @@ spellings of one.
 Answer 3 looks right and it is the most work, so it is a decision
 rather than a default.
 
-## What else is unsettled, and is smaller
+## What else was unsettled, and two of the three are decided
 
 - `KeyedBuildResult` adds `path`, a `DerivedPath` - which is the
   union `tasks/063` and `tasks/067` already made cross. So the key
   half is free.
-- `Success::builtOutputs` is `SingleDrvOutputs`, a map of output name
-  to `Realisation`. `Realisation` is declared; `dict[str, T]` for a
-  declared T is NOT reachable - one hard-coded `"dict[str, int]"`
-  entry serves one free function (`tasks/069`). So this either waits
-  for the DSL to learn a typed map, or `built_outputs` comes back as
-  a list of pairs.
+- `Success::builtOutputs` is `SingleDrvOutputs`, which upstream
+  declares as `std::map<OutputName, Realisation>`.
+
+  **DECIDED, and DONE.** Carl: the DSL should learn more complicated
+  maps. It has: `dict[str, T]` over a declared class now spells
+  `std::map<std::string, T>`, the same way `list[T]` already spelled
+  a vector. So `built_outputs` needs nothing new when this is
+  written.
+
+  Two things went with it rather than beside it. The hard-coded
+  `"dict[str, int]": nb::dict` table entry is deleted, because a body
+  building an `nb::dict` by hand IS the mapping the emitter exists to
+  derive - `gc_stats` returns the map now. And a container passes its
+  alias's C++ spelling DOWN, which was a latent bug in the `list`
+  branch too: `list[I64]` would have deduced a bare `int` with no
+  width.
+
+  Over RPC a map's values cross the way any value does. Carl again:
+  a stateful unserializable object goes as a HANDLE - which is
+  already what `wire_blocker` says, and it currently REFUSES a
+  container of proxies outright ("one lease per element, and nothing
+  grants leases in bulk", `tasks/031`). Bulk leases are that task,
+  not this one.
+
 - `cpuUser`/`cpuSystem` are `std::optional<std::chrono::microseconds>`.
-  No caster, and the surface question is whether Python gets a float
-  of seconds or an int of microseconds.
+
+  **DECIDED, not yet done.** Carl: Python's own time representation,
+  which is `datetime.timedelta`. So the DSL wants a `Duration` alias
+  the way it has `Path`, and nanobind ships the caster -
+  `<nanobind/stl/chrono.h>` maps a `std::chrono::duration` to a
+  `datetime.timedelta` both ways. What is NOT settled is what the
+  WIRE carries: a timedelta is not a protobuf scalar, so it is either
+  a well-known `Duration` message or an int of microseconds with the
+  Python type rebuilt on arrival.
+
 - `timesBuilt`, `startTime`, `stopTime` are plain and need nothing.
+  `startTime`/`stopTime` are `time_t`, which is a POINT in time
+  rather than a span, so the timedelta answer does not cover them.
 
 ## Why it is worth doing
 
