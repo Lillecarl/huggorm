@@ -16,7 +16,7 @@ import huggorm_bindings
 import huggorm_generated.async_store
 from huggorm_bindings import ContentAddressMethod as CA
 from huggorm_bindings import HashAlgorithm
-from huggorm_bindings.errors import BadStorePath
+from huggorm_bindings.errors import BadStorePath, NixError
 from huggorm_generated import RPCValue
 from huggorm_generated._runtime import InternalError
 
@@ -330,6 +330,55 @@ async def test_a_default_means_the_same_thing_remotely(
         "greeting", b"hello world\n",
         CA.NAR, HashAlgorithm.SHA256).to_string()
     await store.aclose()
+
+
+async def test_a_vocabulary_of_our_own_words_crosses_as_the_word(
+        client: Any, tmp_path: Any) -> None:
+    """A build mode over the wire, and back as the enum.
+
+    `string mode = 3` in the request, not a number. The decision is
+    that a word is easier to read off a wire than a magic number is,
+    and that these calls are far too expensive for the difference in
+    bytes to matter - so both sides get a generated mapping and the
+    wire carries the word.
+
+    BuildMode is the case that tests the decision rather than
+    restating it. HashAlgorithm and ContentAddressMethod cost nothing
+    to carry as strings because a member IS the string libstore
+    parses; `nix::BuildMode` has no string form at all, so `normal`
+    and `repair` exist only because this repo named them and the
+    mapping is generated at both ends.
+
+    Compared against a LOCAL call, because two remote calls that both
+    dropped the mode would agree with each other."""
+    store = await client.acquire("Store", str(tmp_path))
+    held = await store.add_to_store("moded", b"x")
+
+    # `normal` is the no-op, the same as it is in process.
+    await store.build_paths([held], huggorm_bindings.BuildMode.NORMAL)
+
+    # `repair` is not, and the raise is libstore's, which is how the
+    # word is known to have arrived rather than been dropped.
+    with pytest.raises(NixError, match="no substituter that can build it"):
+        await store.build_paths([held], huggorm_bindings.BuildMode.REPAIR)
+    await store.aclose()
+
+
+async def test_a_word_outside_the_vocabulary_stops_before_the_wire(
+        client: Any, tmp_path: Any) -> None:
+    """The codec refuses it here, not on the far side.
+
+    `WireCodec.scalar` answers with the enum CLASS for a vocabulary,
+    so a word that is not a member raises where it was typed. That is
+    what the generated mapping on THIS side buys: the bad value never
+    becomes a request, and the caller gets a Python error with the
+    word in it rather than a decode failure from a server."""
+    from huggorm.wire import WireCodec
+
+    codec = WireCodec()
+    assert codec.scalar("BuildMode")("repair") is huggorm_bindings.BuildMode.REPAIR
+    with pytest.raises(ValueError, match="not a valid"):
+        codec.scalar("BuildMode")("rebuild")
 
 
 async def test_a_path_is_read_on_the_store_side(
