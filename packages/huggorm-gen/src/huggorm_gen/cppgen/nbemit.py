@@ -97,10 +97,6 @@ CXX_PYTHON = {
 CXX_BUILTIN = {
     "str": ("const std::string &", "string"),
     "bool": ("bool", None),
-    # A dict built by a body, handed straight to Python. There is no
-    # C++ type behind it and none is wanted: the body says what goes
-    # in, and nanobind's own dict is already a Python object.
-    "dict[str, int]": ("nb::dict", None),
 }
 
 # Comparison dunders and the C++ operator each one binds. Every entry
@@ -241,12 +237,37 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
         return f"std::optional<{held}>", "optional"
     if inner.startswith("list["):
         item = inner[len("list["):-1]
-        held, _ = _cxx(Type(python=item, bound=item[:1].isupper()), known)
+        # `cxx=t.cxx`, like the optional branch above. An alias inside
+        # a container is the alias of the ELEMENT - `list[I64]` reads
+        # as a list of int64_t - and the reader already rewrote the
+        # python spelling to `list[int]` while keeping the Cxx. Drop it
+        # here and a width the declaration stated becomes a bare `int`
+        # with no C++ spelling at all.
+        held, _ = _cxx(Type(python=item, cxx=t.cxx,
+                            bound=item[:1].isupper()), known)
         # A vector, not the std::set libstore keeps them in. A set
         # casts to a Python set, which has no order - and every one
         # of these answers is sorted, which is information a caller
         # can use.
         return f"std::vector<{held}>", "vector"
+    if inner.startswith("dict[str, "):
+        value = inner[len("dict[str, "):-1].strip()
+        held, _ = _cxx(Type(python=value, cxx=t.cxx,
+                            bound=value[:1].isupper()), known)
+        # `std::map`, which is what libstore keeps every one of these
+        # in - `OutputPathMap` and `SingleDrvOutputs` are both one -
+        # and what nanobind's <nanobind/stl/map.h> casts.
+        #
+        # str keys only, and that is the wire rather than a shortcut:
+        # a protobuf map key is an integral or a string, so a map
+        # keyed by anything else has no field to be. The declaration
+        # spells `dict[str, V]` and nothing else parses.
+        #
+        # This replaced a hard-coded `"dict[str, int]": nb::dict`
+        # entry that served one free function. A body that builds an
+        # nb::dict by hand IS the mapping this exists to derive, so
+        # the entry went and `gc_stats` returns the map.
+        return f"std::map<std::string, {held}>", "map"
     if t.bound or inner in known:
         if inner not in known:
             raise TypeError(
@@ -299,8 +320,8 @@ def _param(t: Type, known: dict[str, Class] | None = None
     So `is_valid_path(path: StorePath)` becomes `const nix::StorePath
     &`, and neither declaration repeats the other's C++ name."""
     inner = t.python.removesuffix("| None").strip()
-    if (t.python.endswith("| None") or inner.startswith("list[")
-            or inner in CXX_PYTHON):
+    if (t.python.endswith("| None") or inner in CXX_PYTHON
+            or inner.startswith(("list[", "dict[str, "))):
         spelled, caster = _cxx(t, known)
         # By const reference, because these are the types worth not
         # copying - and, for `nb::bytes`, because a copy would be

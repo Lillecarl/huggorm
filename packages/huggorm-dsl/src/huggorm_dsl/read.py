@@ -649,7 +649,8 @@ def type_of(node: ast.expr, vocab: dict[str, str]) -> Type:
         raise DeclarationError(
             node, f"'{node.id}' is vocabulary but carries no C++ spelling. "
                   f"Annotate the alias with Cxx(...) in declare.py.")
-    bare = spelled.replace(" | None", "").removeprefix("list[").rstrip("]")
+    bare = (spelled.replace(" | None", "")
+            .removeprefix("list[").removeprefix("dict[str, ").rstrip("]"))
     if bare in vocab:
         # A QUOTED annotation means what the same annotation means
         # unquoted. `-> I64` and `-> "I64 | None"` name one width, and
