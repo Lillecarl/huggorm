@@ -1,6 +1,6 @@
 # A vocabulary checked against its C++ enum
 
-**OPEN.** Two vocabularies ship today and neither is checked against
+**MOSTLY DONE.** Two vocabularies ship today and neither is checked against
 the C++ enum it stands for. Nix has more of them coming, so the
 check belongs in the emitter rather than in a reviewer's eye.
 
@@ -87,7 +87,102 @@ way `tasks/067` did for the union - so a signature names
 `nix::HashAlgorithm`, `@reads("algo")` works, and the caster's
 from-C++ half IS the defaultless switch.
 
+## Built, and then broken three ways
+
+`@words` gained `enumerated=Enumerated("nix::HashAlgorithm")`. The
+Python surface did not change: still a StrEnum, still `str` on the
+wire, still `str` in every nanobind signature. What changed is that
+the emitter now writes the direction `parsed_by` never had.
+
+`hash.cpp`, emitted:
+
+    namespace huggorm {
+
+    /** A HashAlgorithm, as the word Python has. */
+    inline std::string as_word(nix::HashAlgorithm value)
+    {
+        switch (value) {
+        case nix::HashAlgorithm::MD5: return "md5";
+        case nix::HashAlgorithm::SHA1: return "sha1";
+        case nix::HashAlgorithm::SHA256: return "sha256";
+        case nix::HashAlgorithm::SHA512: return "sha512";
+        case nix::HashAlgorithm::BLAKE3: return "blake3";
+        }
+        throw nix::Error("unknown nix::HashAlgorithm");
+    }
+
+    }  // namespace huggorm
+
+and the declaration lost a mapping. `Hash.algorithm` was
+
+    Cxx("return std::string(nix::printHashAlgo(self.algo));")
+
+and is now `@reads("algo")`, which emits
+`return huggorm::as_word(self.algo);`.
+
+### P1: a word removed from the declaration
+
+`SHA512` deleted from `decl/words.py`, `nix build --file .
+huggorm-bindings`:
+
+    huggorm_bindings/hash.cpp:14:12: error: enumeration value 'SHA512'
+    not handled in switch [-Werror=switch]
+
+The build FAILS. This is the gate: it is the same diagnostic upstream
+adding a sixth algorithm would produce, because a switch cannot tell
+the two cases apart.
+
+### P3: the same break, with the flag taken off
+
+`-Werror=switch` removed from `setup.py`, `SHA512` still missing:
+
+    BUILDS. Exit 0.
+
+So the flag is what does the work. `-Wall` was already in the compile
+line and was not enough - it makes the missing case a warning, and a
+warning in a build that prints thousands of lines is a warning nobody
+reads.
+
+### P2: a word MISSPELLED
+
+`SHA256 = "sha256"` changed to `"sha-256"`. It compiles, because the
+enumerator is unchanged and only the string literal moved. The
+failure comes at run time, from libstore:
+
+    huggorm_bindings.errors.UsageError: error: unknown hash algorithm
+    'sha-256', expect 'blake3', 'md5', 'sha1', 'sha256', or 'sha512'
+
+**And this half was already covered, incidentally.** The failure above
+is the existing smoke test inside the `huggorm-generated` build, not
+the new test file. Anything that hands a word to libstore checks that
+word's spelling as a side effect.
+
+What it does NOT cover is every word. Counted: `SHA256` and `SHA1`
+reach `nix::parseHashAlgo` from the suite today. `MD5`, `SHA512` and
+`BLAKE3` reach it from nowhere, so three of five spellings were
+unchecked. `tests/test_words.py` parametrises over the vocabulary, so
+the coverage is by construction rather than by coincidence.
+
+## What the two gates each hold
+
+    upstream ADDS an enumerator      P1. compile time, hard failure.
+    upstream RENAMES or REMOVES one  the switch names it. compile time.
+    a word we declare is MISSPELLED  P2. test time, through upstream's
+                                     own parser.
+    a word is GATED by a feature     test time. `blake3` is refused
+                                     because the binding hands the
+                                     string to upstream rather than
+                                     mapping it - goal 1.
+    upstream REORDERS or RENUMBERS   not checked, and not API.
+
 ## What is NOT done
 
-Everything below the proof. The measurements above are from a scratch
-file, not from the emitter.
+`ContentAddressMethod` is the second vocabulary with an enum behind
+it, and it is a harder shape: `nix::ContentAddressMethod` is a STRUCT
+holding `Raw raw`, and one word is spelled differently
+(`NAR` is `NixArchive`). `Enumerated` carries `spelled` for the second
+half; the first half is untested.
+
+`BuildMode`, `BuildResultSuccessStatus`, `BuildResultFailureStatus`,
+`TrustedFlag`, `GCAction` and `FileIngestionMethod` are the queue
+behind that.
