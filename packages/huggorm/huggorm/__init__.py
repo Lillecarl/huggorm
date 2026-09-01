@@ -39,6 +39,7 @@ having to check.
 
 from huggorm_bindings import BuildFailureStatus as BuildFailureStatus
 from huggorm_bindings import BuildMode as BuildMode
+from huggorm_bindings import BuildSuccess as BuildSuccess
 from huggorm_bindings import BuildSuccessStatus as BuildSuccessStatus
 from huggorm_bindings import ContentAddress as ContentAddress
 from huggorm_bindings import ContentAddressMethod as ContentAddressMethod
@@ -47,6 +48,7 @@ from huggorm_bindings import DrvOutput as DrvOutput
 from huggorm_bindings import EvalState as EvalState
 from huggorm_bindings import Hash as Hash
 from huggorm_bindings import HashAlgorithm as HashAlgorithm
+from huggorm_bindings import KeyedBuildResult as KeyedBuildResult
 from huggorm_bindings import MissingPaths as MissingPaths
 from huggorm_bindings import OutputsSpec as OutputsSpec
 from huggorm_bindings import PathInfo as PathInfo
@@ -94,6 +96,7 @@ __all__ = [
     "AsyncValue",
     "BuildFailureStatus",
     "BuildMode",
+    "BuildSuccess",
     "BuildSuccessStatus",
     "ConnectionExpired",
     "ContentAddress",
@@ -105,6 +108,7 @@ __all__ = [
     "EvalStateLike",
     "Hash",
     "HashAlgorithm",
+    "KeyedBuildResult",
     "MissingPaths",
     "NixClient",
     "OutputsSpec",

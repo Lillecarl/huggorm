@@ -10,6 +10,7 @@ what makes this testable in a build sandbox.
 # Declarations this one names. A declaration names another
 # declaration's type by importing it, and the reader follows the
 # import - nothing here runs, so this costs a parse.
+from huggorm_decl.decl.build_result import KeyedBuildResult
 from huggorm_decl.decl.derived_path import DerivedPath
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.pathinfo import PathInfo
@@ -613,6 +614,35 @@ return nix::Realisation{*found, id};
         derivations only, and the shape a Python caller wants for
         that is a question rather than a parameter to pass through."""
         Cxx("self.buildPaths(targets, mode);")
+
+    @needs("nix/store/build-result.hh")
+    @cxx_name("buildPathsWithResults")
+    def build_paths_with_results(
+            self, targets: "list[DerivedPath]",
+            mode: "BuildMode" = BuildMode.NORMAL,
+    ) -> "list[KeyedBuildResult]":
+        """Build or fetch every one of these, and report on each.
+
+        The same work `build_paths` does, and the other shape of the
+        answer. Upstream's own comment says the difference: this does
+        not throw on a build error, it returns a result carrying the
+        message. So a caller building twenty targets gets twenty
+        results and finds out what happened to each, where
+        `build_paths` raises on the first failure and says nothing
+        about the rest.
+
+        One result per target, in the order the targets were given.
+        Each holds the target it is about, so a caller can match them
+        up without relying on that order.
+
+        It still raises for the things that are not a build failure -
+        an invalid path, a store that cannot do this. The value shape
+        is for a build that RAN and did not produce the outputs, and
+        not for a caller who asked something incoherent.
+
+        No `evalStore`, the same third parameter `build_paths` leaves
+        out and for the same reason."""
+        Cxx("return self.buildPathsWithResults(targets, mode);")
     @cxx_name("ensurePath")
     def ensure_path(self, path: "StorePath") -> None:
         """Make this path valid, by substituting it if it is not.

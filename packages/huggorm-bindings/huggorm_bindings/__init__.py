@@ -44,6 +44,7 @@ before real Nix was linked; every module here binds libstore or
 libexpr now, and the stand-in is deleted (tasks/060).
 """
 
+from .build_result import BuildSuccess, KeyedBuildResult
 from .content_address import ContentAddress
 from .derived_path import (
     DerivedPathBuilt,
@@ -68,6 +69,7 @@ from .words import (
 __all__ = [
     "BuildFailureStatus",
     "BuildMode",
+    "BuildSuccess",
     "BuildSuccessStatus",
     "ContentAddress",
     "ContentAddressMethod",
@@ -76,6 +78,7 @@ __all__ = [
     "EvalState",
     "Hash",
     "HashAlgorithm",
+    "KeyedBuildResult",
     "MissingPaths",
     "OutputsSpec",
     "PathInfo",
