@@ -14,12 +14,16 @@ from typing import Any, cast
 import pytest
 
 from huggorm_bindings import (
+    BuildFailureStatus,
     BuildMode,
+    BuildSuccess,
+    BuildSuccessStatus,
     ContentAddress,
     DerivedPathBuilt,
     DrvOutput,
     Hash,
     HashAlgorithm,
+    KeyedBuildResult,
     MissingPaths,
     OutputsSpec,
     PathInfo,
@@ -33,6 +37,7 @@ from huggorm_bindings import (
 from huggorm_bindings import ContentAddressMethod as CA
 from huggorm_bindings.errors import (
     BadStorePath,
+    BuildError,
     InvalidPath,
     NixError,
     Unsupported,
@@ -1452,6 +1457,29 @@ def _rebuild(kind: Any, *parts: Any) -> Any:
     return kind._from_parts(*parts)
 
 
+def _failed_result() -> Any:
+    """One KeyedBuildResult holding the FAILURE arm, as libstore
+    renders it.
+
+    Built rather than written out, and asked rather than tabulated.
+    An error's two message forms are libstore's own rendering: it
+    writes "error: " in front of the text and it writes the colour
+    whether or not anything is a terminal. Neither is a string this
+    file could state without restating libstore, which is the fault
+    the whole suite exists to avoid.
+
+    So a seed goes in, `error()` renders it, and the rendering is
+    what the round trip runs on. The seed's own `colored` is ignored
+    on the way through, which is the point: what a producer makes is
+    what has to survive."""
+    seed = _rebuild(
+        KeyedBuildResult, StorePath("dc7sp11s8vykw8xq6a64hn9kzpvhdpji-x"),
+        None, BuildError("it timed out", "", BuildFailureStatus.TIMED_OUT,
+                         True),
+        2, 300, 400)
+    return _rebuild(KeyedBuildResult, *seed._parts())
+
+
 def test_every_wire_value_survives_its_own_round_trip(
         chroot: Store, tmp_path: pathlib.Path) -> None:
     """A wire value must rebuild from the parts it hands over.
@@ -1587,6 +1615,29 @@ def test_every_wire_value_survives_its_own_round_trip(
         "StoreLocation": (
             chroot.to_store_path(chroot.print_store_path(held)),
             [(other, "/bin/sh")]),
+        # The success ARM of a build result. Both constructed: a
+        # hermetic store builds nothing, so no producer here answers
+        # one - and `built_outputs` is only ever non-empty under
+        # `ca-derivations`, which is off.
+        "BuildSuccess": (
+            _rebuild(BuildSuccess, BuildSuccessStatus.BUILT, {}),
+            [(BuildSuccessStatus.SUBSTITUTED,
+              {"out": _rebuild(Realisation,
+                               DrvOutput(Hash(HashAlgorithm.SHA256,
+                                              bytes(32)), "out"),
+                               held, [])})]),
+        # The two ARMS, one case each, because a result holds exactly
+        # one of them and a single case would leave the other dark.
+        #
+        # The failure case is why the error field crosses at all. It
+        # goes out as a Python exception and comes back as one, which
+        # is the whole of what `error()` promises - and it compares
+        # equal because a declared error compares by its parts.
+        "KeyedBuildResult": (
+            _rebuild(KeyedBuildResult, held,
+                     _rebuild(BuildSuccess, BuildSuccessStatus.BUILT, {}),
+                     None, 1, 100, 200),
+            [_failed_result()._parts()]),
     }
 
     declared = _wire_values()

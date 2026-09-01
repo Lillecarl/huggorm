@@ -210,7 +210,119 @@ What is left to write, roughly in order:
    of whose fields is a declared ERROR class. `tasks/036` made an
    error CROSS as an error; nothing yet makes one be PART of
    something else;
-4. `Store.build_paths_with_results`.
+4. **DONE.** `Store.build_paths_with_results`, which needed nothing new: a list of a declared value, and the same
+   `BuildMode` `build_paths` takes.
+
+The ORDER changed while 3 was written. 2 emits nothing until
+something names it, the same way 1 does, so a commit of it alone
+proves nothing. `Duration` now lands WITH its first user, which is
+`cpu_user`/`cpu_system` on the result, after 3 and 4 work without
+them.
+
+### Where 3 stands, 2026-09-01
+
+Declared: `decl/build_result.py` with `BuildSuccess` over
+`nix::BuildResult::Success` and `KeyedBuildResult` over
+`nix::KeyedBuildResult`. Only the KEYED one, because only it is ever
+produced - `buildPathsWithResults` returns a vector of them - so a
+Python caller never meets a result that has forgotten what it is
+about. `errors.py` declares `BuildError` with two parts more than a
+NixError, and no `cxx`: a catch clause would change what
+`build_paths` raises today, and this task is about the method that
+does not raise at all.
+
+One reader bug found and fixed on the way. An imported UNION did not
+bring its arms: `DerivedPath` is declared in `derived_path.py` and
+one arm of it is the `StorePath` that file imported from `path.py`,
+so a third file naming the union could NAME it and not spell it. It
+failed as `KeyError: 'StorePath'` inside the emitter, a long way from
+the import that caused it. `_uses` now takes the imported file's own
+`uses` first, one level deep.
+
+The one hand-written C++ line was ASKED FOR and granted. The
+accessor hands back a live Python exception OBJECT rather than
+raising one, and `cpp/errors.hpp` already did all of that except the
+last step - so `raise_as` splits into `as_error`, which builds the
+instance, and a `PyErr_SetObject` that raises it. Net +8 lines, and
+it DELETES the hand-rolled `PyObject_GetAttrString` /
+`PyObject_CallFunction` refcounting in favour of nanobind's own API.
+The fallback stays, because the translator calls this from inside
+`catch(...)` where letting nanobind's exception out would lose the
+error entirely.
+
+Carl's reasoning matched `pyerrors.py`'s own: turning a
+`std::exception` into a live Python exception is nanobind's protocol
+rather than anything a declaration knows.
+
+### What the codegen had to learn, 2026-09-01
+
+Four things, and each has a gate.
+
+1. **An imported UNION did not bring its arms.** `DerivedPath` is
+   declared in `derived_path.py` and one arm of it is the `StorePath`
+   that file imported from `path.py`, so a THIRD file naming the
+   union could name it and not spell it. It failed as `KeyError:
+   'StorePath'` inside the emitter, a long way from the import that
+   caused it. `_uses` takes the imported file's own `uses` first, one
+   level, its own classes winning on a clash.
+
+2. **The reader skipped every EXCEPTION class.** An error declaration
+   wears no decorator - `cxx = "nix::Error"` is a bare assignment -
+   and the class loop takes only decorated ones, so `read()` on
+   `errors.py` returned no classes at all. Fine while only the errors
+   emitter read the file; not fine once a VALUE had a field of one.
+   `Module.errors` is read from the BASE - a class deriving from
+   `Exception`, or from one the file already recognised - so nothing
+   is listed and no decorator is invented.
+
+   `pyerrors.declared()` was already returning `[]` because of this,
+   which makes it a gate that has never tested anything. Not fixed
+   here; it is a task.
+
+3. **`@spells`.** A vocabulary a BODY names and a signature does not.
+   `error()` builds an exception carrying a failure word, and `->
+   BuildError | None` says nothing about it, so the twelve-word
+   switch was never emitted. `@needs` one level up. It takes NAMES
+   rather than classes, because a decorator argument is a constant
+   here, and the emitter refuses a name that is not an enum-backed
+   vocabulary - which is the gate the typed argument would have been.
+
+4. **An error is a wire field.** `_wire_kinds` gains an `error` kind,
+   `_msg_arg_type` points it at the `<Class>Fault` message the status
+   details already carry, `check_wire_contract` takes the names, and
+   the codec gains `error_to_msg`/`error_from_msg` reading the same
+   `ERROR_FIELDS` the fault codec reads. One shape for one error
+   class, whether it arrives as a failed call or as a field.
+
+### Three things the build refuted
+
+**nanobind refuses `None` for an `nb::object` PARAMETER.** A
+KeyedBuildResult with no failure arm could not be rebuilt at all, and
+the message listed every parameter as compatible - `Invoked with
+types: StorePath, BuildSuccess, NoneType, int, int, int` against a
+signature reading `error: object`. The caster accepts anything; the
+ARGUMENT is what refuses, so `"error"_a.none()`. Found by passing a
+real BuildError and watching the same call succeed.
+
+**`what()` cannot be round-tripped through `HintFmt`.** `nix::Error`
+writes "error: " in front of its hint when it renders, and `what()`
+is what crosses - so rebuilding from the crossed string and
+rendering again says "error: error: ...", once more per hop. The
+`_from_parts` body takes the prefix off. Caught by the round-trip
+gate, which is what that gate is for.
+
+**A declared error compared by IDENTITY.** Python's default, right
+for an exception and wrong for this hierarchy: every class here
+declares `_wire_fields`, which says it is rebuilt from its parts on
+the far side. It became load-bearing the moment a value held one -
+`KeyedBuildResult.__eq__` is over its parts. `NixError` gains
+`__eq__` and `__hash__` over `to_dict()`, same class only.
+
+And one thing the TEST had wrong. Its sample wrote the error's two
+message forms out by hand, which is restating libstore - the prefix
+and the colour are both libstore's own rendering. It asks instead:
+a seed goes in, `error()` renders it, and the rendering is what the
+round trip runs on.
 
 ### DECIDED, 2026-09-01: two vocabularies, not one merged list
 
