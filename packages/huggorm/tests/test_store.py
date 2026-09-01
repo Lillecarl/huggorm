@@ -397,6 +397,108 @@ def test_a_closure_is_the_whole_chain(chroot: Store) -> None:
     assert chroot.compute_fs_closure([]) == []
 
 
+def test_a_closure_sorts_so_a_path_precedes_what_it_needs(
+        chroot: Store) -> None:
+    """topo_sort_paths, which is what makes a closure actionable.
+
+    `compute_fs_closure` answers WHICH paths; this answers in what
+    order. If p refers to q then p comes first - so this is the order
+    to delete in, and reversed it is the order to register in.
+
+    Asserted by POSITION rather than against a literal list, because
+    only the relative order is upstream's promise: b may sit either
+    side of an unrelated path, and pinning the whole sequence would
+    make this fail on a change that kept every promise."""
+    a, b, c = _chain(chroot)
+
+    order = chroot.topo_sort_paths([a, b, c])
+    assert set(order) == {a, b, c}
+    assert order.index(c) < order.index(b) < order.index(a)
+
+    # The input ORDER does not decide the output order; the references
+    # do. Same answer from the reverse ask.
+    assert chroot.topo_sort_paths([c, b, a]) == order
+
+    # A single path sorts to itself, and nothing sorts to nothing.
+    assert chroot.topo_sort_paths([b]) == [b]
+    assert chroot.topo_sort_paths([]) == []
+
+
+@pytest.mark.live
+def test_a_path_no_cache_has_is_not_substitutable(chroot: Store) -> None:
+    """query_substitutable_paths, and why it cannot be hermetic.
+
+    The answer is about the SUBSTITUTERS, not about this store. Those
+    come from `settings.substituters`, which is GLOBAL - not a store
+    URI parameter - so a chroot store still asks whatever caches this
+    machine is configured with, over the network.
+
+    Marked `live` for exactly that: a build sandbox has no network,
+    and a test that reaches three caches is not one the hermetic half
+    can run (tasks/037).
+
+    What it pins is the distinction worth having: a path this store
+    already HOLDS is still not substitutable, because the question was
+    never about this store. The path was just added here and no cache
+    has ever seen it."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+
+    assert chroot.query_substitutable_paths([held]) == []
+    # An empty ask asks nobody, so this one costs no round trip.
+    assert chroot.query_substitutable_paths([]) == []
+
+
+def test_a_path_is_kept_from_the_collector_while_the_store_is_open(
+        chroot: Store) -> None:
+    """add_temp_root, and ensure_path beside it.
+
+    Both are void, so what they PROMISE is the whole of what can be
+    asserted. `add_temp_root` is accepted and the path stays valid;
+    `ensure_path` is a no-op for a path that is already there.
+
+    This does not prove the root holds against a collector - that
+    needs a GC run and a second process, which is the `live` half
+    (tasks/037). What it does prove is that the calls reach libstore
+    and that neither disturbs the store, which is what a caller
+    reading the docstring would expect.
+
+    A chroot store DOES support a temporary root; upstream's silent
+    no-op is for stores with no collector, such as a binary cache."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    before = set(chroot.query_all_valid_paths())
+
+    chroot.add_temp_root(held)
+    assert chroot.is_valid_path(held)
+
+    # Already valid, so there is nothing to substitute and nothing to
+    # do. Twice, because a no-op that is only a no-op once is not one.
+    chroot.ensure_path(held)
+    chroot.ensure_path(held)
+    assert set(chroot.query_all_valid_paths()) == before
+
+
+@pytest.mark.live
+def test_ensuring_a_path_no_cache_has_raises(chroot: Store) -> None:
+    """ensure_path is the NARROW half of build_paths.
+
+    It will only fetch, never build. A path no substituter has cannot
+    be fetched, so it is a failure rather than a wait - and a caller
+    who wanted a cache hit finds out by the raise instead of by a
+    build starting.
+
+    `live`, for the same reason as the test above: substituters are a
+    global setting, so this asks the network before it can answer.
+
+    The parse is asserted first, so this cannot pass because that
+    line threw instead."""
+    absent = chroot.parse_store_path(
+        "/nix/store/00000000000000000000000000000000-nothing")
+    assert not chroot.is_valid_path(absent)
+
+    with pytest.raises(NixError):
+        chroot.ensure_path(absent)
+
+
 def test_a_store_filters_the_paths_it_holds(chroot: Store) -> None:
     """query_valid_paths, the set form of is_valid_path.
 
