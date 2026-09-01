@@ -14,8 +14,9 @@ either.
 
 There is no `DerivedPathOpaque` on this surface. Upstream's is a
 struct holding one `StorePath` and nothing else, so the opaque arm IS
-a StorePath and a caller never learns a wrapper existed. The
-conversion is a decision and lives in `cpp/derived_path.hpp`.
+a StorePath and a caller never learns a wrapper existed. Each union
+says so on its own alias, and the emitter writes the conversion both
+ways from that (tasks/063).
 
 Nothing here prints itself. `DerivedPath::to_string` takes a
 `StoreDirConfig &` by upstream's own signature, so rendering is
@@ -23,14 +24,17 @@ Nothing here prints itself. `DerivedPath::to_string` takes a
 already makes for a StorePath (tasks/040, tasks/042).
 """
 
+from typing import Annotated
+
 from huggorm_decl.decl.path import StorePath
 from huggorm_dsl.declare import (
     Bint,
     Cxx,
     Str,
+    Variant,
+    Wrap,
     binding,
     header,
-    needs,
     reads,
     wire_value,
 )
@@ -108,7 +112,6 @@ return {};
 
 
 @header("nix/store/derived-path.hh")
-@needs("huggorm_decl/cpp/derived_path.hpp")
 @binding(
     cxx="nix::SingleDerivedPathBuilt",
     threading="pool",
@@ -140,7 +143,27 @@ new (self) nix::SingleDerivedPathBuilt{
         """Which output - `out`, `dev`, `man`."""
 
 
-SingleDerivedPath = StorePath | SingleDerivedPathBuilt
+SingleDerivedPath = Annotated[
+    StorePath | SingleDerivedPathBuilt,
+    Variant(
+        "nix::SingleDerivedPath",
+        # Upstream's union PUBLICLY INHERITS its std::variant and
+        # re-exposes it through this. NOT needed to compile: dropping
+        # it emits `&p`, and `std::get_if` deduces the variant from
+        # the derived class anyway. Stated because it is upstream's
+        # own accessor - `&p` leans on the inheritance being public,
+        # which is a detail of the header rather than an API of it.
+        raw="raw()",
+        header="nix/store/derived-path.hh",
+        # Upstream's opaque arm is `DerivedPathOpaque`, whose only
+        # member is the StorePath Python is given. Both unions
+        # alias the SAME struct, and each says so for itself: a
+        # union that borrowed the fact from its neighbour would
+        # stop being readable on its own.
+        wraps={"StorePath": Wrap("nix::DerivedPathOpaque",
+                                 holds="path")},
+    ),
+]
 """A path, or ONE output of a derivation.
 
 The recursion lives here: a `SingleDerivedPathBuilt` holds one of
@@ -150,7 +173,6 @@ derivation's output, and so on down.
 
 
 @header("nix/store/derived-path.hh")
-@needs("huggorm_decl/cpp/derived_path.hpp")
 @binding(
     cxx="nix::DerivedPathBuilt",
     threading="pool",
@@ -183,7 +205,21 @@ new (self) nix::DerivedPathBuilt{huggorm::held(drv_path), outputs};
         """Which of its outputs are wanted."""
 
 
-DerivedPath = StorePath | DerivedPathBuilt
+DerivedPath = Annotated[
+    StorePath | DerivedPathBuilt,
+    Variant(
+        "nix::DerivedPath",
+        raw="raw()",
+        header="nix/store/derived-path.hh",
+        # Upstream's opaque arm is `DerivedPathOpaque`, whose only
+        # member is the StorePath Python is given. Both unions
+        # alias the SAME struct, and each says so for itself: a
+        # union that borrowed the fact from its neighbour would
+        # stop being readable on its own.
+        wraps={"StorePath": Wrap("nix::DerivedPathOpaque",
+                                 holds="path")},
+    ),
+]
 """A path to fetch, or outputs to build.
 
 What `Store.query_missing` and `Store.build_paths` take. The opaque
