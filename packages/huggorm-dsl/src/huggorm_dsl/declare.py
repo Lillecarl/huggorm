@@ -22,6 +22,7 @@ be copied before it reaches Python is the emitter's rule, because it
 is a fact about the boundary rather than about nix::StorePath.
 """
 
+import datetime
 import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -137,6 +138,17 @@ I64 = Annotated[int, Cxx("int64_t")]
 # directory this machine does not have, and `real_path` answers where
 # the bytes are here. Only the second is a path a caller can open.
 Path = Annotated[pathlib.Path, Cxx("string"), Async("anyio.Path")]
+# A SPAN of time, and the resolution is the fact this states.
+# Upstream keeps a build's CPU time as `std::chrono::microseconds`, and
+# nanobind's own chrono caster hands one to Python as a
+# datetime.timedelta - so the caller gets Python's own duration type
+# and this binding writes no conversion at all.
+#
+# Not the same as I64, and `start_time` beside `cpu_user` is the pair
+# that shows why: a Unix time is a POINT, which is an integer and
+# means nothing without an epoch, while a span is a quantity a caller
+# can add up. Declaring both as `int` would have made them look alike.
+Duration = Annotated[datetime.timedelta, Cxx("microseconds")]
 
 
 @dataclass(frozen=True)

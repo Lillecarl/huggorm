@@ -24,6 +24,7 @@ live wrapper and registers new ones; the client turns an id into a
 RemoteObj and reads ids back off one.
 """
 
+import datetime
 import importlib
 from collections.abc import Callable
 from types import ModuleType
@@ -40,11 +41,11 @@ from huggorm_generated._policy import (
 )
 from huggorm_generated._wiretypes import (
     MAX_UNION_DEPTH,
-    SCALAR_NAMES,
     arm_field,
     list_value,
     map_value,
     optional_value,
+    scalar_spelling,
 )
 
 # The scalars as a lookup. Annotated because the inferred value type is
@@ -56,6 +57,38 @@ from huggorm_generated._wiretypes import (
 # answer for file contents whose hash names a store path.
 _SCALARS: dict[str, Callable[[Any], Any]] = {
     "str": str, "int": int, "bool": bool, "bytes": bytes}
+
+# The unit a duration crosses in, as the timedelta that is one of it.
+# Microseconds, which is both Carl's decision and the only lossless
+# answer: a timedelta's finest unit IS the microsecond, and upstream
+# keeps a build's CPU time as std::chrono::microseconds.
+_MICROSECOND = datetime.timedelta(microseconds=1)
+
+
+def _duration_out(value: datetime.timedelta) -> int:
+    """A duration as the whole microseconds a field carries.
+
+    Floor division by one microsecond, which is exact: a timedelta
+    holds days, seconds and microseconds as integers, so there is no
+    remainder to lose."""
+    return value // _MICROSECOND
+
+
+def _duration_in(raw: int) -> datetime.timedelta:
+    """The microseconds a field carried, as a duration again."""
+    return datetime.timedelta(microseconds=raw)
+
+
+# What a SPELLED scalar becomes at each end. `_wiretypes.SPELLED` says
+# which builtin field one goes in; this says what to put there and what
+# to make of it coming back, which is the half only the codec needs.
+#
+# Two entries per type rather than one, unlike a vocabulary: a StrEnum
+# member IS a str, so one constructor serves both directions. A
+# timedelta is not an int, so the two directions differ.
+_SPELLED: dict[str, tuple[Callable[[Any], Any], Callable[[Any], Any]]] = {
+    "datetime.timedelta": (_duration_out, _duration_in),
+}
 
 
 def _no_proxy(type_str: str, fname: str) -> Callable[[Any], Any]:
@@ -121,7 +154,21 @@ class WireCodec:
         if type_str in self.enums:
             kls: Callable[[Any], Any] = getattr(self.bindings, type_str)
             return kls
+        if (spelled := _SPELLED.get(type_str)) is not None:
+            return spelled[1]
         return _SCALARS[type_str]
+
+    def to_wire(self, type_str: str) -> Callable[[Any], Any]:
+        """What turns a declared value into the raw scalar it goes as.
+
+        The other direction of `scalar`, and the same function for
+        almost everything: `str(x)` of a StrEnum member is its value,
+        and an int is an int. A SPELLED scalar is where the two part -
+        a datetime.timedelta goes in an int field, and an int does not
+        come back as a timedelta by itself."""
+        if (spelled := _SPELLED.get(type_str)) is not None:
+            return spelled[0]
+        return self.scalar(type_str)
 
     # -- classification ---------------------------------------------------
     @staticmethod
@@ -139,7 +186,7 @@ class WireCodec:
         """"none", "scalar", "map", "list", "value", "error" or "proxy"."""
         if type_str == "None":
             return "none"
-        if type_str in SCALAR_NAMES or type_str in self.enums:
+        if scalar_spelling(type_str) is not None or type_str in self.enums:
             return "scalar"
         if type_str in self.unions:
             return "union"
@@ -243,7 +290,7 @@ class WireCodec:
             # does not hold. Indexing it directly raised KeyError on
             # the first dict[str, HashAlgorithm] to be encoded - a
             # declaration the schema accepts (tasks/047).
-            cast = self.scalar(vtype)
+            cast = self.to_wire(vtype)
             for key, val in obj.items():
                 msg[key] = cast(val)
 
@@ -282,7 +329,7 @@ class WireCodec:
                 # place, never assigned.
                 fill(itype, item, field.add(), depth)
         else:
-            cast = self.scalar(itype)
+            cast = self.to_wire(itype)
             field.extend(cast(v) for v in seq)
 
     def list_from_msg(self, type_str: str, field: Any,
@@ -474,7 +521,7 @@ class WireCodec:
         if kind == "scalar":
             # str() of a StrEnum member is its value, so an enum needs
             # no special case going out.
-            setattr(container, field, self.scalar(type_str)(value))
+            setattr(container, field, self.to_wire(type_str)(value))
         elif kind == "map":
             self.map_to_msg(type_str, value, getattr(container, field))
         elif kind == "list":

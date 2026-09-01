@@ -36,6 +36,7 @@ from huggorm_gen.payload.wiretypes import (
     list_value,
     map_value,
     optional_value,
+    scalar_spelling,
 )
 
 Proto = dict[str, Any]
@@ -370,8 +371,12 @@ def _msg_arg_type(type_str: str,
     """Surface type string -> (proto_type_const|None, message_name|None)."""
     if type_str == "None":
         return None, None
-    if type_str in SCALARS:
-        return _scalar_const(SCALARS[type_str]), None
+    if (builtin := scalar_spelling(type_str)) is not None:
+        # A declared type that goes in a field as a builtin. `str` is
+        # itself; `datetime.timedelta` is an int of microseconds,
+        # which is a fact about the WIRE and lives with the other
+        # wire spellings rather than here.
+        return _scalar_const(SCALARS[builtin]), None
     kind = kinds.get(type_str)
     if kind == UNION:
         # A SUM, as protobuf's own tagged union. One message per

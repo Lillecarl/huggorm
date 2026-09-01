@@ -41,6 +41,37 @@ import ast
 # path would be a hash of the wrong thing.
 SCALAR_NAMES = ("str", "int", "bool", "bytes")
 
+# A declared type that is not a builtin and still goes in a field as
+# one, with the builtin it goes in as.
+#
+# `datetime.timedelta` is the only one, and it is what a DURATION is
+# above every boundary: nanobind's own chrono caster hands a
+# `std::chrono::microseconds` over as one, so the in-process surface
+# needs nothing of ours (tasks/071).
+#
+# It crosses as an int of MICROSECONDS. Carl's decision, and the two
+# reasons agree: a timedelta's own finest unit IS the microsecond, so
+# nothing is rounded, and upstream holds the same resolution - a
+# coarser wire would lose a build's CPU time on the way through and
+# the round-trip gate would say so.
+#
+# Not a protobuf well-known `Duration`. That message is seconds plus
+# nanos, which is a second representation to convert through and a
+# precision neither end has.
+SPELLED = {"datetime.timedelta": "int"}
+
+def scalar_spelling(type_str: str) -> str | None:
+    """The builtin one type goes in a field as, or None for the rest.
+
+    A builtin answers itself, so a caller asks this instead of asking
+    two tables in the right order. Read by the schema builder, by the
+    contract check and by the codec, which is why it is here rather
+    than in whichever of the three needed it first."""
+    if type_str in SCALAR_NAMES:
+        return type_str
+    return SPELLED.get(type_str)
+
+
 # Every Nix attribute name is a string, so a map key is always one.
 # That is what makes an attribute set representable as a protobuf map
 # at all (tasks/030).

@@ -23,12 +23,12 @@ from typing import Any, get_args, get_origin
 
 from huggorm_gen.payload.wiretypes import (
     CONTAINERS,
-    SCALAR_NAMES,
     head,
     list_value,
     map_value,
     names_in,
     optional_value,
+    scalar_spelling,
 )
 
 # One class or function, reflected into the plain dict every layer
@@ -280,15 +280,19 @@ def check_wire_contract(protos: list[Proto],
                         f"be optional. A repeated field has no presence, so "
                         f"an absent one IS an empty one - drop the '?'.")
                 ftype = element
-            # SCALAR_NAMES, not `_PRIMITIVES.values()`. The two nearly
-            # agree and the difference is the whole of this check:
-            # _PRIMITIVES maps a C++ SPELLING onto a Python name for a
-            # signature, so it knows `float` and `None` - neither of
-            # which a field can be - and it does not know `bytes`,
+            # `scalar_spelling`, not `_PRIMITIVES.values()`. The two
+            # nearly agree and the difference is the whole of this
+            # check: _PRIMITIVES maps a C++ SPELLING onto a Python name
+            # for a signature, so it knows `float` and `None` - neither
+            # of which a field can be - and it does not know `bytes`,
             # which one can. A field is checked against what the WIRE
             # carries, which is the list the schema and the codec both
             # read. Found when Hash's `digest` crossed as bytes.
-            if ftype not in SCALAR_NAMES and ftype not in known:
+            #
+            # It answers for a SPELLED scalar too - a
+            # `datetime.timedelta` goes in an int field - which is why
+            # this asks a function rather than a tuple.
+            if scalar_spelling(ftype) is None and ftype not in known:
                 bad.append(f"{name}._wire_fields {fname!r}: unknown field type {ftype!r}")
             elif kinds.get(ftype) == "proxy":
                 # The schema would carry it: _msg_arg_type turns a proxy
