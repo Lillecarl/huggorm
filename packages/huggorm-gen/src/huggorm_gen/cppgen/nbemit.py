@@ -537,6 +537,49 @@ def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str
     return "".join(f", {x}" for x in out)
 
 
+def words_from_word(cls: Class) -> list[str]:
+    """A word going TO an enum upstream gives no parser for.
+
+    `nix::BuildMode` has none, and it has no rendering either: it
+    crosses Nix's own worker protocol as an integer, so the words
+    `normal`, `repair` and `check` are this binding's and not
+    upstream's. There is nothing to hand the string to, so the
+    mapping is written here.
+
+    ONLY when `parsed_by` is empty. Where upstream has a parser, that
+    parser is the one to call - it is the only thing that knows a
+    word is behind an experimental feature, and a second mapping
+    beside it would be the same list twice.
+
+    A chain rather than a switch, because C++ cannot switch on a
+    string. So this direction has NO exhaustiveness check, and it
+    does not need one: it names every enumerator, which catches a
+    rename, and `as_word` beside it is the switch that catches an
+    addition.
+
+    The refusal is spelled the way upstream spells its own -
+    `parseHashAlgo` throws UsageError and lists the words it takes -
+    so a caller who mistypes gets the same shape of answer wherever
+    the word came from."""
+    enum = cls.decl.enumerated
+    assert enum is not None
+    listed = ", ".join(f"'{w.value}'" for w in cls.members)
+    out = [f"/** A word, as the {cls.name} libstore holds. */",
+           "template <typename T> T from_word(std::string_view word);",
+           f"template <> inline {enum.held}",
+           f"from_word<{enum.held}>(std::string_view word)",
+           "{"]
+    for word in cls.members:
+        out += [f'{INDENT}if (word == "{word.value}")',
+                f"{INDENT * 2}return {{{enum.enumerator(word.name)}}};"]
+    out += [f'{INDENT}throw nix::UsageError(',
+            f'{INDENT * 2}"unknown {cls.name} \'%1%\', expect {listed}",'
+            if listed else f'{INDENT * 2}"unknown {cls.name} \'%1%\'",',
+            f"{INDENT * 2}word);",
+            "}", ""]
+    return out
+
+
 def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
     """The C++ that turns this vocabulary's string into its type.
 
@@ -552,6 +595,13 @@ def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
     other = known.get(t.python.removesuffix("| None").strip())
     if other is None or not other.is_words:
         return ""
+    if not other.decl.parsed_by and other.decl.enumerated:
+        # Upstream has no parser for this enum, so the emitter wrote
+        # one. `from_word` is a template because a return type does
+        # not overload - `as_word` going the other way needs no such
+        # thing, which is why the two names are not symmetrical.
+        return (f"{NAMESPACE}::from_word"
+                f"<{other.decl.enumerated.held}>")
     return other.decl.parsed_by
 
 
@@ -1229,19 +1279,23 @@ def _unions_used(classes: Sequence[Class],
 def _vocabularies_used(classes: Sequence[Class],
                        functions: Sequence[Method],
                        known: dict[str, Class] | None) -> list[Class]:
-    """Every enum-backed vocabulary this unit READS BACK from C++.
+    """Every enum-backed vocabulary this unit NAMES, either way round.
 
-    Returns only. A vocabulary going the other way is a string handed
-    to `parsed_by`, which upstream already knows how to refuse - so a
-    unit that only takes words needs no conversion at all.
+    Every site, not only the returns. A unit that only TAKES a word
+    needs no read-back conversion to work, and gets one anyway,
+    because the read-back conversion is the switch and the switch is
+    the gate. `Store.build_paths` takes a BuildMode and returns none,
+    so without this the day upstream adds a fourth mode would pass
+    silently. The emitted function is `inline` and unused, which
+    costs a compiler nothing.
 
     By name and sorted, for the reason `_unions_used` is: a
-    vocabulary read twice is converted once, and the order two
+    vocabulary named twice is converted once, and the order two
     methods happen to be declared in is not an order for a
     translation unit."""
     out: dict[str, Class] = {}
-    for pr, t in _sites(classes, functions):
-        if pr is not None or t is None:
+    for _, t in _sites(classes, functions):
+        if t is None:
             continue
         cls = (known or {}).get(t.python.removesuffix("| None").strip())
         if cls is not None and cls.is_words and cls.decl.enumerated:
@@ -2098,6 +2152,8 @@ def module(classes: Sequence[Class],
             head += [*HASHABLE.strip().splitlines(), ""]
         for v in vocabularies:
             head += words_conversion(v)
+            if not v.decl.parsed_by:
+                head += words_from_word(v)
         for u in unions:
             head += conversions(u, known or {})
         head += [f"}}  // namespace {NAMESPACE}", ""]
