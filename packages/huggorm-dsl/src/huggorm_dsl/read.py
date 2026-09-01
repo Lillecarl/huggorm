@@ -103,6 +103,87 @@ FROM_PARTS = "_from_parts"
 _READING: list[str] = []
 
 
+class Diagnostics:
+    """Every refusal one read produced, and what it made unsound.
+
+    A declaration author fixing three mistakes wants three messages,
+    not three runs. What stops that being an improvement is BOGUS
+    messages - a consequence reported as a cause - so this carries the
+    means to tell them apart rather than only a list.
+
+    `unsound` is the name of every class whose reading failed. There
+    is exactly ONE cross-class check in this reader - `_check_arms`,
+    over the `resolvable` map `read` builds - so that set has exactly
+    one consumer, and suppression is a single precise rule instead of
+    a blanket.
+
+    `blind` says an IMPORT failed. Then this file cannot know what the
+    other declared, so an unresolvable arm here means nothing and the
+    arm check says so once rather than guessing per arm.
+
+    Deduplicated, because `_uses` calls `read` for each import and
+    nothing caches it: `decl/path.py` is read by five declarations, so
+    one mistake in it would otherwise be reported five times."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self.unsound: set[str] = set()
+        self.blind = False
+        self._seen: set[str] = set()
+
+    def record(self, err: Exception, unsound: str = "") -> None:
+        text = str(err)
+        if text not in self._seen:
+            self._seen.add(text)
+            self.messages.append(text)
+        if unsound:
+            self.unsound.add(unsound)
+
+    def raise_if_any(self) -> None:
+        if not self.messages:
+            return
+        if len(self.messages) == 1:
+            raise DeclarationError.already(self.messages[0])
+        joined = "\n  ".join(self.messages)
+        raise DeclarationError.already(
+            f"{len(self.messages)} declaration errors:\n  {joined}")
+
+
+# The collector in force, or None to raise on the first refusal.
+#
+# None is the DEFAULT and it is the honest one: a caller that reads a
+# single declaration wants the exception, and every test that asserts
+# a refusal keeps working unchanged. Collection is something the
+# generator opts into for a whole corpus read.
+_COLLECTING: Diagnostics | None = None
+
+
+@contextlib.contextmanager
+def collecting() -> Iterator[Diagnostics]:
+    """Gather refusals across one corpus read, then report them together.
+
+    Re-entrant by design: the outermost collector wins, so `_uses`
+    recursing into `read` contributes to one report rather than
+    starting a second."""
+    global _COLLECTING
+    if _COLLECTING is not None:
+        yield _COLLECTING
+        return
+    _COLLECTING = Diagnostics()
+    try:
+        yield _COLLECTING
+    finally:
+        done, _COLLECTING = _COLLECTING, None
+        done.raise_if_any()
+
+
+def _survive(err: DeclarationError, unsound: str = "") -> None:
+    """Record and continue, or re-raise when nothing is collecting."""
+    if _COLLECTING is None:
+        raise err
+    _COLLECTING.record(err, unsound)
+
+
 @contextlib.contextmanager
 def reading(path: str) -> Iterator[None]:
     """Name the declaration a diagnostic raised in here belongs to.
@@ -145,6 +226,17 @@ class DeclarationError(Exception):
             if col is not None:
                 where += f":{col + 1}"
         super().__init__(f"{where}: {message}")
+
+    @classmethod
+    def already(cls, text: str) -> DeclarationError:
+        """One already-formatted message, for the collector's report.
+
+        `__init__` builds the position from a node, and a report has
+        several positions in it - so this is the way to make one
+        without a node to point at."""
+        err = cls.__new__(cls)
+        Exception.__init__(err, text)
+        return err
 
 
 @dataclass(frozen=True)
@@ -690,7 +782,21 @@ def _apply(decorators: list[ast.expr], vocab: dict[str, str],
             args = [_value(a, vocab) for a in node.args]
             kwargs = {k.arg: _value(k.value, vocab)
                       for k in node.keywords if k.arg is not None}
-            target = fn(*args, **kwargs)(target)
+            # The marker's OWN signature, enforced by calling it. The
+            # table says where a marker is legal and how often; how
+            # many arguments it takes is written once, in `declare.py`,
+            # as the decorator's parameter list - so restating it as
+            # data would be the same fact twice.
+            #
+            # Wrapped, because Python's own message has no position on
+            # it: `@reads("a", "b")` said "reads() takes 1 positional
+            # argument but 2 were given" and named neither the file nor
+            # the line.
+            try:
+                target = fn(*args, **kwargs)(target)
+            except TypeError as exc:
+                raise DeclarationError(
+                    node, f"@{node.func.id}: {exc}") from exc
         elif isinstance(node, ast.Name):
             if node.id in BUILTIN_DECORATORS:
                 # Python's own words, and they mean here what they
@@ -962,7 +1068,17 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
         elif not item.name.startswith("__"):
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.
-            methods.append(_method(item, vocab))
+            #
+            # SIBLINGS, like the classes in `read`. Two mistakes in
+            # one class are two mistakes, and stopping at the first
+            # made a class as coarse a boundary as a file. Nothing
+            # cross-checks methods BETWEEN classes, so a class short
+            # one method produces no bogus diagnostic - the collector
+            # refuses the whole read before any emitter sees it.
+            try:
+                methods.append(_method(item, vocab))
+            except DeclarationError as e:
+                _survive(e)
     out = Class(
         name=node.name,
         doc=ast.get_docstring(node, clean=False) or "",
@@ -1174,28 +1290,56 @@ def _read(path: str) -> Module:
     body = _resolve(tree.body, live)
     vocab = _vocabulary(tree)
     stem = pathlib.Path(path).stem
-    classes = tuple(_class(n, vocab, stem, live) for n in body
-                    if isinstance(n, ast.ClassDef) and n.decorator_list)
+    # SIBLINGS, so one bad class does not hide the next. A class is
+    # read in full or not at all - the failure is recorded, its name
+    # is marked unsound, and the loop goes on.
+    classes = []
+    for n in body:
+        if not (isinstance(n, ast.ClassDef) and n.decorator_list):
+            continue
+        try:
+            classes.append(_class(n, vocab, stem, live))
+        except DeclarationError as e:
+            _survive(e, unsound=n.name)
     # Module-level functions are FREE bindings - nanopynix has 72 of
     # them, `m.def("open_store", &open_store_uri, "uri"_a)` and its
     # kind. Only decorated ones: an undecorated def at module level is
     # a helper the declaration wrote for itself.
-    functions = tuple(_method(n, vocab, bound=False, bound_kind=False)
-                      for n in body
-                      if isinstance(n, ast.FunctionDef) and n.decorator_list)
+    functions = []
+    for n in body:
+        if not (isinstance(n, ast.FunctionDef) and n.decorator_list):
+            continue
+        try:
+            functions.append(
+                _method(n, vocab, bound=False, bound_kind=False))
+        except DeclarationError as e:
+            _survive(e)
     unions = _unions(body, stem)
     uses = _uses(tree, pathlib.Path(path).parent)
     # ...checked once the arms can be resolved, which needs the
     # imports this file made and the classes it declares itself.
+    #
+    # THE ONE CROSS-CLASS CHECK IN THIS READER, which is why bogus
+    # errors have one source and one cure. Every other refusal above
+    # is about a single class or this file's own vocabulary.
     resolvable = {**uses, **{c.name: c for c in classes},
                   **{u.name: u for u in unions}}
+    # The assignment each union was written as, so a refusal points at
+    # the line rather than at the file. `_unions` builds a `Class`,
+    # which carries no position - and the alternative was a field on
+    # the dataclass for the benefit of one message.
+    at = {t.id: item for item in body if isinstance(item, ast.Assign)
+          for t in item.targets if isinstance(t, ast.Name)}
     for u in unions:
-        _check_arms(u, resolvable, tree)
+        try:
+            _check_arms(u, resolvable, at.get(u.name, tree))
+        except DeclarationError as e:
+            _survive(e, unsound=u.name)
     return Module(
         name=stem,
         doc=ast.get_docstring(tree, clean=False) or "",
-        classes=classes,
-        functions=functions,
+        classes=tuple(classes),
+        functions=tuple(functions),
         vocabulary=vocab,
         unions=unions,
         uses=uses,
@@ -1266,6 +1410,16 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
     for arm in cls.decl.arms:
         other = known.get(arm)
         if other is None:
+            # UNKNOWN, not wrong. The arm names a class this reader
+            # failed to read, or one an import did not deliver, so
+            # whether it is a legal arm is a question nothing here can
+            # answer - and answering it anyway is the bogus message.
+            # A union with one unsound arm and one genuinely bad arm
+            # still reports the bad one, because this skips the arm
+            # rather than the union.
+            if _COLLECTING is not None and (
+                    arm in _COLLECTING.unsound or _COLLECTING.blind):
+                continue
             raise DeclarationError(
                 node, f"{cls.name}: '{arm}' is not a declared class. A "
                       f"union names types some declaration declares - a "
@@ -1305,10 +1459,32 @@ def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
         stem = (node.module or "").rsplit(".", 1)[-1]
         source = here / f"{stem}.py"
         if not source.exists():
-            raise DeclarationError(
+            _survive(DeclarationError(
                 node, f"no declaration at {source}. A declaration may only "
-                      f"import another declaration beside it.")
-        other = read(str(source))
+                      f"import another declaration beside it."))
+            _blinded()
+            continue
+        try:
+            other = read(str(source))
+        except DeclarationError as e:
+            # The imported file refused. Its own diagnostics are
+            # already recorded by the boundaries inside it; this is
+            # the case where nothing was collecting, or where the
+            # refusal was file-level.
+            _survive(e)
+            _blinded()
+            continue
         for cls in (*other.classes, *other.unions):
             out[cls.name] = cls
     return out
+
+
+def _blinded() -> None:
+    """Say that an import did not read, so this file knows less.
+
+    Without it the arm check below would report every type the missing
+    declaration owned as "not a declared class" - which is true of
+    what this reader can see and false about the tree, and is exactly
+    the bogus message collection has to avoid."""
+    if _COLLECTING is not None:
+        _COLLECTING.blind = True
