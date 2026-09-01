@@ -1,6 +1,6 @@
 # One table for the markers
 
-**DONE, except collected diagnostics.** Where each declaration
+**DONE.** Where each declaration
 marker is legal, how many times, and what it conflicts with - as
 DATA, driving validation and emission instead of being restated in
 prose and in scattered `if`s.
@@ -204,6 +204,54 @@ asking the corpus for `store`:
 The file named is the IMPORTED one, not the one asked for, and column
 2 is the `h` past the `@`.
 
-**Collected errors, not the first one.** Still raises on the first
-diagnostic. Fine for a build gate, worse for a person fixing three
-mistakes in one declaration.
+**Collected errors, not the first one - DONE.**
+
+Carl asked the right question first: *"considering that we're
+supporting imports now which can tie different modules together I
+believe it'll be hard to have multiple errors collected without the
+possibility of bogus errors?"* I had recommended closing the item for
+that reason. Measuring it changed the answer.
+
+**The reader has exactly ONE cross-class check**: `_check_arms`, over
+the `resolvable` map `read` builds from its own classes plus
+`_uses`. Every other refusal is about a single class, a single
+method, or this file's own vocabulary. So bogus errors have one
+source, and the cure is one precise rule rather than a blanket.
+
+The rule: an arm whose class FAILED to read is UNKNOWN, not wrong,
+and says nothing. `Diagnostics.unsound` is the set of those names. A
+union with one unsound arm and one genuinely bad arm still reports
+the bad one - verified, not assumed.
+
+Imports get their own answer. When one does not read, `blind` is set,
+because this file then cannot know what the other declared and every
+type it owned would otherwise be reported as undeclared.
+
+Boundaries are the siblings: per class and per free function in
+`read`, per method in `_class`, per union, per import. Deduplicated,
+because `_uses` calls `read` per import and nothing caches it, so
+`decl/path.py` is read by five declarations.
+
+Opt-in. `_COLLECTING` is None by default, so a caller reading one
+declaration still gets the exception and every test asserting a
+refusal is unchanged. `Corpus.read_all` is what a generator calls,
+and both do, before emitting anything.
+
+Proved by breaking three unrelated things across two files - one of
+which imports the other - and building:
+
+    3 declaration errors:
+      .../decl/derived_path.py:181:6: @reads: reads() takes 1
+        positional argument but 2 were given
+      .../decl/store.py:181:6: @instant may appear once
+      .../decl/store.py:194:6: unknown marker @cxx_namez - did you
+        mean @cxx_name?
+
+And by the converse: breaking a class that two unions name as an arm
+reports ONE error, not three.
+
+Two diagnostics improved on the way, both pre-existing. A decorator
+called with the wrong argument count raised a bare TypeError with no
+position at all. And a union arm refusal pointed at the file rather
+than the line, because `_unions` builds a `Class` and a `Class`
+carries no position.

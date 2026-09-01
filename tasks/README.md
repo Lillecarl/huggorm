@@ -80,13 +80,13 @@ which was superseded rather than fixed.
   which is 063's last residue.
 - 060 (the mock goes) is done. `fake-library/` is deleted and no
   binding names a mock.
-- 061 (one table for the markers) is OPEN on two diagnostics
-  niceties only. The table is built and drives validation, and the
-  `@abstract` split landed: a declaration states the C++ FACT and
-  `Class.constructs` answers "is there a door", so nix::Store says it
-  is abstract AND keeps its factory, and a diagnostic now says
-  `path:line:col`. What is left is collecting errors rather than
-  raising on the first. 063's union marker no longer waits on it.
+- 061 (one table for the markers) is done. The table drives
+  validation, the `@abstract` split landed - a declaration states the
+  C++ FACT and `Class.constructs` answers "is there a door", so
+  nix::Store says it is abstract AND keeps its factory - and
+  diagnostics carry `path:line:col` and are collected. The reader has
+  one cross-class check, which is why collection produces no bogus
+  errors.
 - 062 (the suite fills the disk) is OPEN.
 - 063 (the hpp files hold mappings) is OPEN, and down to one residue.
   Its three original fronts are closed, `errors.hpp` no longer names
