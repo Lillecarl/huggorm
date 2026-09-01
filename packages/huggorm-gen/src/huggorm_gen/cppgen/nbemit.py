@@ -1280,15 +1280,6 @@ def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
     out += [f"{INDENT}return {alt + '{' + got + '}' if member else got};",
             "}", ""]
 
-    # `nix::ref` is non-nullable by construction, so a member declared
-    # as one cannot be built from a value without allocating. Upstream's
-    # spelling, not a decision here - and generated beside the two
-    # conversions because it is the same fact reaching a member.
-    out += [f"/** A {cls.name} in the `ref` upstream stores one through. */",
-            f"inline nix::ref<const {variant.cxx}> held(const {held} & a)",
-            "{",
-            f"{INDENT}return nix::make_ref<{variant.cxx}>(from_arms(a));",
-            "}", ""]
     return out
 
 
