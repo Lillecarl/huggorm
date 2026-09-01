@@ -145,10 +145,27 @@ which was superseded rather than fixed.
   mapping. Four perturbations, all in the real build: a word removed
   fails the compile, the same break BUILDS without the flag, a
   misspelling compiles and fails a test, and a wrong enumerator name
-  is refused by name. The queue behind it is BuildMode,
-  BuildResult's two status enums, TrustedFlag, GCAction and
-  FileIngestionMethod - none has a binding that RETURNS one yet, so
-  none has a site for the conversion.
+  is refused by name. BuildMode is bound on `Store.build_paths` and
+  is the first vocabulary whose words are OURS: nix::BuildMode has no
+  parser and no rendering, so the emitter writes both directions and
+  emits the read-back switch even though nothing returns one - the
+  switch IS the gate. The queue behind it is BuildResult's two status
+  enums, TrustedFlag, GCAction and FileIngestionMethod.
+
+  The wire question is settled: a word crosses as a STRING, with a
+  generated mapping at both ends, because a word is easier to read
+  off a wire than a number and these calls are far too expensive for
+  the bytes to matter. Protobuf's own enums would have worked; the
+  argument written against them was aimed at C++'s numbering rather
+  than at a proto's, and it fell.
+- 071 (a build result is a sum with an exception in it) is OPEN, and
+  it needs a decision before code. `buildPathsWithResults` is the
+  last shape of build_paths left, and upstream's `BuildResult` is a
+  variant whose failure arm IS `BuildError`, a throwable class. So
+  the question is how a failed result reaches Python - as a status
+  word, as a raise, or as a value CARRYING the typed error - and the
+  three are different APIs. Its two status enums are the easy half
+  and need nothing new from 070.
 - 068 (what a spike actually costs) is OPEN. A jj workspace is 2.5 MB
   and is deleted on exit; 1792 dead build outputs are 1.8 GB. The
   junk is the builds a worktree invites, not the worktree - and
