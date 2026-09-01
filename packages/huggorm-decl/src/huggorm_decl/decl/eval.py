@@ -380,23 +380,24 @@ return self.wrap_builder(made);
 
 @needs("huggorm_decl/cpp/eval.hpp")
 @threading("pool")
-def gc_stats() -> "dict[str, int]":
+def gc_stats() -> "dict[str, I64]":
     """Live collector counters, bound straight from gc.h.
 
     These prove the collector is ACTIVE: a no-op integration cannot
     fake them."""
     Cxx("""
-nb::dict out;
-out["heap_size"] = GC_get_heap_size();
-out["total_bytes"] = GC_get_total_bytes();
-out["bytes_since_gc"] = GC_get_bytes_since_gc();
-out["collections"] = static_cast<std::size_t>(GC_get_gc_no());
-out["used_bytes"] = GC_get_heap_size() - GC_get_free_bytes();
-// OURS, not the collector's: how many roots this process holds. A
-// root that is never dropped keeps its value alive forever, and no
-// heap counter can tell that from a heap that simply grew.
-out["live_roots"] = huggorm::live_roots().load();
-return out;
+return {
+    {"heap_size", static_cast<std::int64_t>(GC_get_heap_size())},
+    {"total_bytes", static_cast<std::int64_t>(GC_get_total_bytes())},
+    {"bytes_since_gc", static_cast<std::int64_t>(GC_get_bytes_since_gc())},
+    {"collections", static_cast<std::int64_t>(GC_get_gc_no())},
+    {"used_bytes",
+     static_cast<std::int64_t>(GC_get_heap_size() - GC_get_free_bytes())},
+    // OURS, not the collector's: how many roots this process holds. A
+    // root that is never dropped keeps its value alive forever, and no
+    // heap counter can tell that from a heap that simply grew.
+    {"live_roots", huggorm::live_roots().load()},
+};
     """)
 
 

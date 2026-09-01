@@ -548,6 +548,38 @@ return nix::Realisation{*found, id};
         not hold cannot be planned around, and saying so is different
         from saying it needs building."""
         Cxx("return self.queryMissing(targets);")
+    # The first declared MAP over a bound class, and the method that
+    # was waiting for it. `OutputPathMap` is a
+    # `std::map<std::string, StorePath>` upstream, and until the
+    # emitter could spell one the only dict the DSL had was a
+    # hard-coded `dict[str, int]` serving one free function.
+    @cxx_name("queryDerivationOutputMap")
+    def query_derivation_output_map(
+            self, path: "StorePath") -> "dict[str, StorePath]":
+        """Which path each of this derivation's outputs has.
+
+        Keyed by output NAME - `out`, `dev`, `man` - because that is
+        how a derivation names them and how a caller asks. The order
+        is the map's, which is upstream's, which is alphabetical.
+
+        Assumes every output has a path and raises otherwise, and
+        that is upstream's own contract rather than a choice here:
+        `queryStaticPartialDerivationOutputMap` is the one that
+        answers with holes in it, and it is a different method.
+
+        A path that is NOT a derivation answers TWO ways, measured:
+        an empty dict inside a build sandbox, and libstore's "is not
+        a valid derivation path" outside one. The difference is where
+        `readInvalidDerivation` reaches its name check, not anything
+        this binding does - so a caller gets one or the other and
+        should not depend on which.
+
+        No `evalStore`, the same second parameter `build_paths`
+        leaves out and for the same reason. A body rather than a
+        method pointer only because of that: upstream takes two
+        arguments and this binds one, so there is a call to write."""
+        Cxx("return self.queryDerivationOutputMap(path);")
+
     # `query_missing` says what building these WOULD do; this does it.
     # The pair is upstream's own, and it is why the union exists
     # (tasks/059): both take the same list, and only one of them
