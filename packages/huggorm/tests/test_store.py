@@ -1103,6 +1103,64 @@ def test_a_store_says_what_building_these_would_have_to_do(
     assert chroot.query_missing([]).unknown() == []
 
 
+def test_building_what_is_already_there_does_nothing(chroot: Store) -> None:
+    """build_paths, which is what query_missing plans for.
+
+    The pair is upstream's own: both take the same list of targets,
+    and only one of them changes the store. This is the half that
+    does.
+
+    Hermetic on purpose. A target that is ALREADY VALID is a no-op -
+    upstream's own word - so a chroot store holding the path can be
+    asked to build it with no daemon, no builder and no network. That
+    is the whole of what can be asserted without a derivation, and it
+    is not nothing: it proves the union crosses, the call reaches
+    libstore, and the no-op really is one.
+
+    Building a derivation belongs to the `live` half (tasks/037),
+    because it needs a real builder."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    before = set(chroot.query_all_valid_paths())
+
+    chroot.build_paths([held])
+    assert chroot.is_valid_path(held)
+    # The point of "no-op": the store is the same store afterwards.
+    assert set(chroot.query_all_valid_paths()) == before
+
+    # Twice costs nothing the second time.
+    chroot.build_paths([held])
+    assert set(chroot.query_all_valid_paths()) == before
+
+    # An empty ask is a real ask here too, and does nothing at all.
+    chroot.build_paths([])
+    assert set(chroot.query_all_valid_paths()) == before
+
+
+def test_building_a_path_the_store_lacks_is_libstores_error(
+        chroot: Store) -> None:
+    """A target that cannot be reached RAISES, and says so as Nix does.
+
+    This is the difference from `buildPathsWithResults`, which reports
+    a failure per target and throws nothing. A caller of this one gets
+    an exception or gets the paths, and never has to read a result to
+    find out which.
+
+    The path is well-formed and absent, so there is nothing to
+    substitute and nothing to build from - which is a failure rather
+    than a no-op, and the message is libstore's rather than this
+    binding's."""
+    absent = chroot.parse_store_path(
+        "/nix/store/00000000000000000000000000000000-nothing")
+    # Parsing SUCCEEDS - the name is well-formed. Asserted, because
+    # without it a `raises` below would pass just as happily if this
+    # line were the thing that threw.
+    assert absent.to_string().endswith("-nothing")
+    assert not chroot.is_valid_path(absent)
+
+    with pytest.raises(NixError, match="no substituter that can build it"):
+        chroot.build_paths([absent])
+
+
 def test_a_union_nested_past_the_limit_is_refused_by_name() -> None:
     """The wire is a trust boundary, and recursion has no natural end.
 
