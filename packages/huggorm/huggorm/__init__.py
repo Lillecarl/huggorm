@@ -37,7 +37,9 @@ reaches this front door, and a test says so rather than a reader
 having to check.
 """
 
+from huggorm_bindings import BuildFailureStatus as BuildFailureStatus
 from huggorm_bindings import BuildMode as BuildMode
+from huggorm_bindings import BuildSuccessStatus as BuildSuccessStatus
 from huggorm_bindings import ContentAddress as ContentAddress
 from huggorm_bindings import ContentAddressMethod as ContentAddressMethod
 from huggorm_bindings import DerivedPathBuilt as DerivedPathBuilt
@@ -90,7 +92,9 @@ __all__ = [
     "AsyncEvalState",
     "AsyncStore",
     "AsyncValue",
+    "BuildFailureStatus",
     "BuildMode",
+    "BuildSuccessStatus",
     "ConnectionExpired",
     "ContentAddress",
     "ContentAddressMethod",

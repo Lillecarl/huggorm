@@ -142,3 +142,29 @@ def test_a_gated_word_is_refused_the_way_libstore_refuses_it(
     see GATED."""
     with pytest.raises(NixError, match=feature):
         TRIPS[type(word).__name__][2](word)
+
+
+def test_the_two_build_statuses_keep_upstream_disjoint() -> None:
+    """Upstream's own invariant, asserted rather than assumed.
+
+    `BuildResultSuccessStatus` and `BuildResultFailureStatus` each
+    carry the comment "Names must be disjoint with" the other. That
+    disjointness is the licence to publish one Python vocabulary of
+    sixteen words over two C++ switches, and tasks/071 declined it -
+    two vocabularies, because `Enumerated` names one C++ enum and the
+    arms carry different things.
+
+    Declining it does not make the invariant stop mattering. If
+    upstream ever adds a name to one enum that the other already has,
+    a merged list becomes impossible and this repo should find out
+    from a test rather than from the day somebody tries.
+    """
+    from huggorm_bindings import BuildFailureStatus, BuildSuccessStatus
+
+    won = {w.name for w in BuildSuccessStatus}
+    lost = {w.name for w in BuildFailureStatus}
+    assert not won & lost, f"upstream's names collide: {won & lost}"
+
+    said = {w.value for w in BuildSuccessStatus}
+    meant = {w.value for w in BuildFailureStatus}
+    assert not said & meant, f"our words collide: {said & meant}"

@@ -147,3 +147,136 @@ class BuildMode:
     This is how a derivation is shown to be non-reproducible: the
     second build's outputs are compared with the first's and a
     difference is an error."""
+
+
+@header("nix/store/build-result.hh")
+@words(
+    # No `parsed_by`, the same way `BuildMode` has none. Upstream
+    # parses neither status enum from a string: both cross Nix's own
+    # protocol as an integer, so these words are this binding's own
+    # and the emitter writes both directions.
+    enumerated=Enumerated(
+        "nix::BuildResultSuccessStatus",
+        # Every word, because upstream spells an enumerator the way
+        # C++ spells a type and a word is spelled the way a store URI
+        # spells one. Neither derives the other.
+        spelled={
+            "BUILT": "Built",
+            "SUBSTITUTED": "Substituted",
+            "ALREADY_VALID": "AlreadyValid",
+            "RESOLVES_TO_ALREADY_VALID": "ResolvesToAlreadyValid",
+        },
+    ),
+)
+class BuildSuccessStatus:
+    """How a target came to be valid.
+
+    Four ways, and they are not degrees of the same thing: one of
+    them ran a builder and three of them did not. A caller measuring
+    a cache asks this and nothing else.
+    """
+
+    BUILT = "built"
+    """A builder ran here and produced the outputs."""
+
+    SUBSTITUTED = "substituted"
+    """The outputs came from a binary cache, and no builder ran."""
+
+    ALREADY_VALID = "already-valid"
+    """The outputs were in the store before the call. Nothing ran and
+    nothing was fetched."""
+
+    RESOLVES_TO_ALREADY_VALID = "resolves-to-already-valid"
+    """The derivation resolved - its input derivations were replaced
+    by the paths they built - and THAT derivation's outputs were
+    already valid.
+
+    Only reachable with `ca-derivations`, because resolving is what a
+    content-addressed derivation does before it is built."""
+
+
+@header("nix/store/build-result.hh")
+@words(
+    enumerated=Enumerated(
+        "nix::BuildResultFailureStatus",
+        spelled={
+            "PERMANENT_FAILURE": "PermanentFailure",
+            "INPUT_REJECTED": "InputRejected",
+            "OUTPUT_REJECTED": "OutputRejected",
+            "TRANSIENT_FAILURE": "TransientFailure",
+            "CACHED_FAILURE": "CachedFailure",
+            "TIMED_OUT": "TimedOut",
+            "MISC_FAILURE": "MiscFailure",
+            "DEPENDENCY_FAILED": "DependencyFailed",
+            "LOG_LIMIT_EXCEEDED": "LogLimitExceeded",
+            "NOT_DETERMINISTIC": "NotDeterministic",
+            "NO_SUBSTITUTERS": "NoSubstituters",
+            "HASH_MISMATCH": "HashMismatch",
+        },
+    ),
+)
+class BuildFailureStatus:
+    """Why a target did not become valid.
+
+    Separate from BuildSuccessStatus rather than one list of sixteen
+    words, and that is a decision (tasks/071). Upstream's own comment
+    on both enums says "Names must be disjoint with" the other, which
+    WOULD license one Python vocabulary over two C++ switches. Two
+    reasons not to take it. `Enumerated` names one C++ enum, so a
+    merged list would have to say which of two `from_word` a word
+    belongs to, and the answer is the arm - which the caller already
+    has. And the arms carry different things: a success has outputs
+    and a failure has a message, so a caller branches whatever the
+    word list looks like.
+
+    The disjointness is still upstream's invariant, so a test asserts
+    it rather than this assuming it.
+    """
+
+    PERMANENT_FAILURE = "permanent-failure"
+    """The builder ran and failed. Running it again will fail again."""
+
+    INPUT_REJECTED = "input-rejected"
+    """A remote builder would not accept one of the inputs."""
+
+    OUTPUT_REJECTED = "output-rejected"
+    """The build produced an output the store will not take."""
+
+    TRANSIENT_FAILURE = "transient-failure"
+    """The build failed for a reason that may not hold next time -
+    a network, a disk, a machine that went away."""
+
+    CACHED_FAILURE = "cached-failure"
+    """No longer used, in upstream's own words. Kept because the
+    enumerator is still there and the switch names every one."""
+
+    TIMED_OUT = "timed-out"
+    """The builder passed its timeout and was killed."""
+
+    MISC_FAILURE = "misc-failure"
+    """Anything else. The default a BuildError carries when nothing
+    set a narrower one."""
+
+    DEPENDENCY_FAILED = "dependency-failed"
+    """This target never ran, because something it needs failed."""
+
+    LOG_LIMIT_EXCEEDED = "log-limit-exceeded"
+    """The builder wrote more log than the limit allows, and was
+    killed for it."""
+
+    NOT_DETERMINISTIC = "not-deterministic"
+    """A check build produced different outputs from the first one.
+    Only reachable with BuildMode.CHECK."""
+
+    NO_SUBSTITUTERS = "no-substituters"
+    """Nothing could supply the outputs, and this call was not allowed
+    to build them."""
+
+    HASH_MISMATCH = "hash-mismatch"
+    """A fixed-output derivation produced a different hash from the
+    one it declared.
+
+    Upstream calls this a certain type of OUTPUT_REJECTED and turns it
+    back into one before serialising, because the protocols do not
+    know this word. So a result read over a daemon connection may say
+    `output-rejected` where a local one says this."""

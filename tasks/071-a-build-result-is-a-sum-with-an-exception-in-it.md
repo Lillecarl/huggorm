@@ -184,9 +184,26 @@ the duration is decided, and the result does not raise.
 
 What is left to write, roughly in order:
 
-1. the two status vocabularies, which need nothing new from 070 -
-   and which emit NOTHING until something names them, because
-   `_vocabularies_used` walks sites;
+1. **DONE.** The two status vocabularies. `BuildSuccessStatus` has
+   four words and `BuildFailureStatus` has twelve, both with every
+   enumerator named in `spelled` - upstream spells them CamelCase and
+   a word is kebab-case, so the default spelling is right for none of
+   the sixteen. Neither carries `parsed_by`, the same way `BuildMode`
+   carries none: upstream parses neither from a string.
+
+   The claim that a vocabulary emits nothing until something names it
+   is MEASURED, not assumed. `bindings-src` after this commit has one
+   occurrence of the string "BuildResult" in the whole tree, and it
+   is inside `build_paths`'s docstring, which already said this task
+   was coming. No `as_word`, no `from_word`, no include.
+
+   What it DOES emit is the Python half: the StrEnum in
+   `huggorm_bindings/words.py` and its stub entry. That found the
+   thing `tasks/064` is about - both front doors carry hand-written
+   re-export lines, so the stub gate failed with `__init__.pyi
+   exports [...BuildFailureStatus...], the package exports [...]`
+   until two names were added to each by hand. Four lines of a fact
+   the emitter already knows.
 2. the `Duration` alias, its `<nanobind/stl/chrono.h>` caster, and
    the microsecond form on the wire;
 3. `BuildResult` itself, which is where the new DSL is: a value one
@@ -195,10 +212,33 @@ What is left to write, roughly in order:
    something else;
 4. `Store.build_paths_with_results`.
 
-One shape question is still open inside 3, and it is not Carl's - it
-is a reading of upstream. The two status enums are declared with
-"Names must be disjoint with" each other, in upstream's own comment,
-which is a licence to publish ONE Python vocabulary of sixteen words
-and let `status()` answer from whichever arm is held. Two C++ enums,
-two defaultless switches, one word list. Decide it against the code
-when 3 is written, and record which way.
+### DECIDED, 2026-09-01: two vocabularies, not one merged list
+
+The open shape question, which was a reading of upstream rather than
+Carl's call. Upstream's own comment on both status enums says "Names
+must be disjoint with" the other, which WOULD license one Python
+vocabulary of sixteen words over two defaultless switches.
+
+Declined, for two reasons found in the code.
+
+`Enumerated` names ONE C++ enum, and both directions are keyed by it.
+A merged list would have to answer which `from_word<T>` the word
+"built" belongs to, and the only thing that knows is the arm the
+result holds - which the caller already has. So the merge buys a
+shorter word list and pays with an ambiguity the DSL has no way to
+say.
+
+And the arms carry different things. A success holds `builtOutputs`;
+a failure holds a message and `isNonDeterministic`. A caller branches
+on which arm it got whatever the word list looks like, so a single
+`status` would let a caller THINK the branch was optional.
+
+The shape that follows is upstream's own: `tryGetSuccess` and
+`tryGetFailure` return pointers, so Python gets two optional arms
+rather than one flat value with empty fields.
+
+Declining the merge does not make the invariant stop mattering, so
+`test_the_two_build_statuses_keep_upstream_disjoint` asserts it -
+both the enumerator names and our sixteen words. PERTURBED: setting
+`MISC_FAILURE = "built"` in the declaration fails it with `our words
+collide: {'built'}`, so the gate is known to test something.
