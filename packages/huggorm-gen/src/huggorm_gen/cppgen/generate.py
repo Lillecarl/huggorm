@@ -325,7 +325,8 @@ def emit_module(mod: Module, dotted: str, out: str,
     if not bound:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    pathlib.Path(out).write_text(extension(mod, dotted, chain=chain))
+    pathlib.Path(out).write_text(
+        extension(mod, dotted, chain=chain, errors=errors_module()))
     names = ", ".join(c.name for c in bound)
     print(f"{decl} -> {out} (module {dotted}): {names}")
     # How much of each class the declaration derived, and how much a

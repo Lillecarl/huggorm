@@ -352,6 +352,10 @@ class Method:
     # Headers this method's BODY needs, beyond its class's, from
     # @needs. Empty when the signature already names everything.
     headers: tuple[str, ...] = ()
+    # Vocabularies this method's BODY spells, beyond its signature,
+    # from @spells. `@needs` one level up: a body that builds a word
+    # the signature never mentions still wants the conversion.
+    spells: tuple[str, ...] = ()
     # Run once at module import, and do not export, from @startup.
     startup: bool = False
     # Register as the module's exception translator, from @translator.
@@ -538,6 +542,16 @@ class Module:
     # file and several bindings take one, so the alternative was
     # every emitter guessing which other files to read.
     uses: dict[str, Class] = field(default_factory=dict)
+    # The EXCEPTION classes this declaration declares. Apart from
+    # `classes` because nothing binds one either: an exception class
+    # is plain Python that the errors emitter copies through, and it
+    # carries no C++ object, no header and no methods a binding calls.
+    #
+    # Read at all because a VALUE may now hold one. A BuildResult's
+    # failure arm is a `nix::BuildError`, so the accessor answers a
+    # live Python exception - and an emitter that could not see the
+    # name had nothing to resolve the annotation against.
+    errors: tuple[Class, ...] = ()
 
     @property
     def startup(self) -> tuple[Method, ...]:
@@ -569,6 +583,7 @@ class Module:
         way."""
         return {**self.uses,
                 **{c.name: c for c in self.classes},
+                **{e.name: e for e in self.errors},
                 **{u.name: u for u in self.unions}}
     # Local name -> name in declare. `from declare import Str as S`
     # is legal Python, so the reader follows the import rather than
@@ -949,6 +964,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         cxx_body=_body(node),
         local=bool(getattr(marked, "_local", False)),
         headers=tuple(getattr(marked, "_needs", ())),
+        spells=tuple(getattr(marked, "_spells", ())),
         startup=bool(getattr(marked, "_startup", False)),
         translator=bool(getattr(marked, "_translator", False)),
         policy=getattr(marked, "_policy", ""),
@@ -1352,6 +1368,7 @@ def _read(path: str) -> Module:
         name=stem,
         doc=ast.get_docstring(tree, clean=False) or "",
         classes=tuple(classes),
+        errors=_errors(body, stem),
         functions=tuple(functions),
         vocabulary=vocab,
         unions=unions,
@@ -1507,6 +1524,47 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
                       f"make every union a bulk-lease problem (tasks/031).")
 
 
+def _errors(body: list[ast.stmt], stem: str) -> tuple[Class, ...]:
+    """The EXCEPTION classes this file declares, in declared order.
+
+    An error declaration wears no decorator - `cxx = "nix::Error"` is
+    a bare assignment, because there is no behaviour to mark - so the
+    class loop above skips every one of them. That was fine while
+    nothing but the errors emitter read the file, and it stopped
+    being fine when a VALUE gained a field of one.
+
+    Derived from the BASE, which is the only thing that says what an
+    exception is: a class deriving from `Exception`, or from one this
+    file already recognised. Nothing is listed and no decorator is
+    invented; the hierarchy the file already writes IS the answer.
+
+    A NAME and nothing else. These carry no C++ object, no header and
+    no methods a binding calls, so an emitter wants them to resolve an
+    annotation and for nothing else - the errors emitter reads the
+    tree itself and is untouched by this.
+    """
+    out: list[Class] = []
+    known = {"Exception"}
+    for node in body:
+        if not isinstance(node, ast.ClassDef) or node.decorator_list:
+            continue
+        bases = {b.id for b in node.bases if isinstance(b, ast.Name)}
+        if not bases & known:
+            continue
+        known.add(node.name)
+        decl = Decl()
+        decl.name = node.name
+        decl.kind = "error"
+        out.append(Class(
+            name=node.name,
+            doc=ast.get_docstring(node, clean=False) or "",
+            decl=decl,
+            ctor=None,
+            module=stem,
+        ))
+    return tuple(out)
+
+
 def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
     """Declarations this one imported, read.
 
@@ -1539,7 +1597,23 @@ def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:
             _survive(e)
             _blinded()
             continue
-        for cls in (*other.classes, *other.unions):
+        # What the imported file itself imported, FIRST, so its own
+        # classes win where a name appears twice.
+        #
+        # One level, and it is a union's arms that need it. A union is
+        # `A | B` over classes that may live in a third file:
+        # `DerivedPath` is declared in `derived_path.py` and one arm
+        # of it is the `StorePath` that file imported from `path.py`.
+        # Taking the union without its arms gives a module that can
+        # NAME the union and cannot spell it - which failed as
+        # `KeyError: 'StorePath'` inside the emitter, a long way from
+        # the import that caused it.
+        #
+        # Not recursive. A second level would be a file naming a type
+        # nothing in its own imports mentions, and there is no case
+        # for it; the day there is, it is this line and a cycle guard.
+        out.update(other.uses)
+        for cls in (*other.classes, *other.unions, *other.errors):
             out[cls.name] = cls
     return out
 

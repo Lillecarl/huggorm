@@ -210,7 +210,8 @@ def default_source(value: Any, type_str: str, where: str) -> str | None:
 
 def check_wire_contract(protos: list[Proto],
                         enums: set[str] | None = None,
-                        unions: set[str] | None = None) -> list[str]:
+                        unions: set[str] | None = None,
+                        errors: set[str] | None = None) -> list[str]:
     """The wire policy and the serialization contract must agree.
 
     A "value" type promises the RPC layer it can be rebuilt from its
@@ -231,7 +232,13 @@ def check_wire_contract(protos: list[Proto],
     # themselves are checked where they are declared - the reader
     # refuses a scalar, a vocabulary or a proxy arm - so by the time a
     # name reaches here, being a union is enough.
-    known = {p["name"] for p in protos} | (enums or set()) | (unions or set())
+    # An ERROR class is a legal field type too, and the last of the
+    # three that is not a class in the groups. A KeyedBuildResult's
+    # failure arm IS a declared exception (tasks/071), and one
+    # already has a message of its own - the fault detail every typed
+    # error crosses in - so the field points at that.
+    known = ({p["name"] for p in protos} | (enums or set())
+             | (unions or set()) | (errors or set()))
     kinds = {p["name"]: p["wire"] for p in protos}
     bad = []
     for proto in protos:

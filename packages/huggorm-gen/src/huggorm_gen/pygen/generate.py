@@ -365,8 +365,17 @@ def build_manifest() -> Proto:
     # Python in the declaration, so the only route here is the
     # declaration itself.
     unions = declared_unions()
+    # The exception hierarchy, from the module the C++ emitter writes
+    # it into. An error crosses the wire as a NAME, and this is the set
+    # that makes a name safe to construct (tasks/036).
+    #
+    # Read before the contract check rather than after it: an error
+    # class is a legal FIELD type now, so the check has to know the
+    # names (tasks/071).
+    errors = declared_errors()
     complaints = check_wire_contract(
-        protos + returned_protos, enum_names, set(unions))
+        protos + returned_protos, enum_names, set(unions),
+        set(errors["classes"]))
     if complaints:
         for c in complaints:
             print(f"wire contract: {c}", file=sys.stderr)
@@ -375,10 +384,6 @@ def build_manifest() -> Proto:
     for proto in protos + returned_protos:
         proto.pop("_helpers", None)
 
-    # The exception hierarchy, from the module the C++ emitter writes
-    # it into. An error crosses the wire as a NAME, and this is the set
-    # that makes a name safe to construct (tasks/036).
-    errors = declared_errors()
     # String vocabularies libstore parses. A member is a str, so this
     # table says only "this NAME is a scalar" - to the schema, to the
     # codec, and to the stub generator, which needs to import it.

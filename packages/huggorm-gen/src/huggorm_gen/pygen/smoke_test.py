@@ -1359,9 +1359,17 @@ def _same(spelling: str) -> str:
       SingleDerivedPathBuilt` by declaration, so the alias expands to
       exactly that and the two sides meet. Expanded REPEATEDLY,
       because an arm may itself name one - `_UNIONS` is read from the
-      manifest, so nothing here lists an alias by hand."""
+      manifest, so nothing here lists an alias by hand.
+    - an EXCEPTION a value holds crosses as `nb::object`, so nanobind
+      says `object` and can say nothing else: a Python exception is
+      not a bound C++ type and has no signature to render. The `|
+      None` goes with it, because `nb::none()` IS the absent value
+      there and the emitter writes no `std::optional` around it.
+      `_ERRORS` is read from the manifest, like the two above."""
     out = re.sub(r"huggorm_bindings\.\w+\.", "", spelling)
     out = out.replace("collections.abc.Sequence[", "list[")
+    for name in _ERRORS:
+        out = re.sub(rf"\b{re.escape(name)}\b(\s*\|\s*None)?", "object", out)
     for name in _VOCABULARIES:
         out = re.sub(rf"\b{re.escape(name)}\b", "str", out)
     for _ in range(len(_UNIONS) + 1):
@@ -1376,6 +1384,8 @@ def _same(spelling: str) -> str:
 _VOCABULARIES: set[str] = set()
 # {alias: [arm, ...]}, from the manifest. See `_same`.
 _UNIONS: dict[str, list[str]] = {}
+# Declared EXCEPTION classes, from the manifest. See `_same`.
+_ERRORS: set[str] = set()
 
 
 def test_a_declared_type_is_the_type_nanobind_BINDS(
@@ -1417,6 +1427,8 @@ def test_a_declared_type_is_the_type_nanobind_BINDS(
     _VOCABULARIES.clear()
     _VOCABULARIES.update(manifest.get("enums", {}))
     _UNIONS.update(manifest.get("unions", {}))
+    _ERRORS.clear()
+    _ERRORS.update((manifest.get("errors") or {}).get("classes", {}))
 
     bad, checked = [], 0
     for group in ("wrappers", "returned_types"):

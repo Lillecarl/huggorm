@@ -422,6 +422,7 @@ MARKERS: dict[str, Marker] = {
                      # the other says it cannot.
                      excludes=frozenset({"instant"})),
     "cxx_name": Marker(_t("method"), "once"),
+    "spells": Marker(_t("method"), "once"),
     "fills": Marker(_t("method"), "once"),
     "guard": Marker(_t("method"), "once"),
     "names": Marker(_t("method"), "flag"),
@@ -819,6 +820,34 @@ def needs[F: Callable[..., Any]](*headers: str) -> Callable[[F], F]:
     about a type nobody can find the declaration for."""
     def apply(fn: F) -> F:
         fn._needs = headers  # type: ignore[attr-defined]
+        return fn
+    return apply
+
+
+def spells[F: Callable[..., Any]](*words: str) -> Callable[[F], F]:
+    """Vocabularies this method's BODY spells, beyond its signature.
+
+    Not `@names`, which is taken: that one says an accessor ANSWERS
+    which arm of a tagged union is held.
+
+    `@needs` for headers, and the same fact one level up. A body
+    reaches further than a signature: `KeyedBuildResult.error` builds
+    a Python exception carrying a failure word, and the word appears
+    nowhere in `-> BuildError | None` for an emitter to derive from.
+
+    Without it the emitted unit has no conversion for that vocabulary
+    and fails to COMPILE, which is a real gate rather than a silence -
+    but it fails naming a `huggorm::as_word` overload, a long way from
+    the declaration that wanted it.
+
+    NAMES, not the classes. A decorator argument here is a constant -
+    a declaration holds facts, not expressions - and the class object
+    is an expression the reader refuses. So the emitter checks
+    instead: a name no declaration declares as an enum-backed
+    vocabulary is refused rather than skipped, which is the gate the
+    typed argument would have been."""
+    def apply(fn: F) -> F:
+        fn._spells = words  # type: ignore[attr-defined]
         return fn
     return apply
 

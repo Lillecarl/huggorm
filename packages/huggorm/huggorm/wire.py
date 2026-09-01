@@ -32,6 +32,8 @@ from typing import Any, ClassVar
 from huggorm_generated._callspec import Arg
 from huggorm_generated._policy import (
     ENUMS,
+    ERROR_FIELDS,
+    ERROR_MODULE,
     UNION_ARMS,
     WIRE_FIELDS,
     WIRE_KIND,
@@ -95,6 +97,12 @@ class WireCodec:
         self.unions: dict[str, tuple[str, ...]] = UNION_ARMS
         self.kinds: dict[str, str] = WIRE_KIND
         self.fields: dict[str, tuple[Arg, ...]] = WIRE_FIELDS
+        # EXCEPTION classes, and what each is rebuilt from. A value
+        # may hold one: a KeyedBuildResult's failure arm IS a declared
+        # error, answered rather than raised (tasks/071). Same table
+        # the fault codec reads, because it is the same message.
+        self.errors: dict[str, tuple[Arg, ...]] = ERROR_FIELDS
+        self.error_module: str = ERROR_MODULE
 
     @property
     def bindings(self) -> ModuleType:
@@ -128,13 +136,15 @@ class WireCodec:
         return (inner, True) if inner is not None else (type_str, False)
 
     def kind(self, type_str: str) -> str:
-        """"none", "scalar", "map", "list", "value" or "proxy"."""
+        """"none", "scalar", "map", "list", "value", "error" or "proxy"."""
         if type_str == "None":
             return "none"
         if type_str in SCALAR_NAMES or type_str in self.enums:
             return "scalar"
         if type_str in self.unions:
             return "union"
+        if type_str in self.errors:
+            return "error"
         if map_value(type_str) is not None:
             return "map"
         if list_value(type_str) is not None:
@@ -184,6 +194,36 @@ class WireCodec:
                 continue  # proto3 default stands in for "unset"
             self.encode(msg, field.name, ftype, val,
                         _no_proxy(type_str, field.name), depth)
+
+    # -- errors as fields -------------------------------------------------
+    # An exception a VALUE holds, rather than one a call failed with.
+    # The message is the same either way - `<Class>Fault`, carrying the
+    # declared `_wire_fields` - so a peer that can rebuild a failure
+    # can rebuild this, and there is one shape for one error class.
+    def error_to_msg(self, type_str: str, err: Any, msg: Any) -> None:
+        """Fill msg from an exception, one declared part at a time.
+
+        The parts by NAME, not through `_parts()`: an exception is
+        Python's own object and carries no such helper, and its parts
+        are attributes the class already publishes."""
+        for f in self.errors[type_str]:
+            self.encode(msg, f.name, f.type, getattr(err, f.name),
+                        _no_proxy(type_str, f.name))
+
+    def error_from_msg(self, type_str: str, msg: Any) -> Any:
+        """Rebuild the exception a message describes.
+
+        `cls(*parts)` in declared order, which is why that order is
+        the constructor's - the same rule the fault codec follows,
+        and the same table.
+
+        The class comes from the emitted error module and from
+        nowhere else. A name off the wire never selects an importable
+        class: it selects an entry in a table this build wrote
+        (tasks/036)."""
+        kls = getattr(importlib.import_module(self.error_module), type_str)
+        return kls(*(self.decode(msg, f.name, f.type, _no_proxy(type_str, f.name))
+                     for f in self.errors[type_str]))
 
     # -- maps -------------------------------------------------------------
     # An attribute set has string keys, always, so `map<string, V>`
@@ -445,6 +485,8 @@ class WireCodec:
         elif kind == "union":
             self.union_to_msg(type_str, value, getattr(container, field),
                               depth)
+        elif kind == "error":
+            self.error_to_msg(type_str, value, getattr(container, field))
         else:
             getattr(container, field).id = proxy_id(value)
 
@@ -490,4 +532,6 @@ class WireCodec:
             return self.value_from_msg(type_str, raw, depth)
         if kind == "union":
             return self.union_from_msg(type_str, raw, depth)
+        if kind == "error":
+            return self.error_from_msg(type_str, raw)
         return proxy_obj(raw.id)

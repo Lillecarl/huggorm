@@ -339,6 +339,7 @@ def annotate(manifest: Proto) -> Proto:
 
 ENUM = "enum"
 UNION = "union"
+ERROR = "error"
 
 
 def _wire_kinds(manifest: Proto) -> dict[str, str]:
@@ -355,6 +356,12 @@ def _wire_kinds(manifest: Proto) -> dict[str, str]:
     }
     out.update({name: ENUM for name in manifest.get("enums", {})})
     out.update({name: UNION for name in manifest.get("unions", {})})
+    # An EXCEPTION class, which is a declared name and not a class in
+    # the groups either. It already has a message - the fault detail
+    # every typed error crosses in (tasks/036) - so a field of one
+    # points at that rather than inventing a second shape.
+    out.update({name: ERROR
+                for name in (manifest.get("errors") or {}).get("classes", {})})
     return out
 
 
@@ -375,6 +382,11 @@ def _msg_arg_type(type_str: str,
         # A StrEnum member IS a str. Nothing about the transport
         # changes; the type exists for the caller, not for the wire.
         return _scalar_const(SCALARS["str"]), None
+    if kind == ERROR:
+        # The same message the status details carry. One shape for one
+        # error class, whether it arrives as the failure of a call or
+        # as a field of a value that is reporting one.
+        return None, fault_msg_name(type_str)
     if kind == "value":
         return None, value_msg_name(type_str)
     if kind == "proxy":

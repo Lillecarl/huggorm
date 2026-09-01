@@ -232,6 +232,19 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
     `_param` adds the reference where a parameter wants one."""
     known = known or {}
     inner = t.python.removesuffix("| None").strip()
+    other = (known or {}).get(inner)
+    if other is not None and other.decl.kind == "error":
+        # A live Python EXCEPTION, handed over rather than raised. A
+        # BuildResult's failure arm is a nix::BuildError, and reading
+        # a failed result is not an exception (tasks/071) - so what
+        # crosses is the object.
+        #
+        # `nb::object` whether or not the declaration wrote `| None`,
+        # and the optional is dropped on purpose: `nb::none()` IS the
+        # absent value here, and `std::optional<nb::object>` would
+        # give a Python caller one spelling for absent and the emitter
+        # two.
+        return "nb::object", None
     if t.python.endswith("| None"):
         held, _ = _cxx(Type(python=inner, cxx=t.cxx, bound=t.bound), known)
         return f"std::optional<{held}>", "optional"
@@ -1315,12 +1328,33 @@ def _vocabularies_used(classes: Sequence[Class],
     methods happen to be declared in is not an order for a
     translation unit."""
     out: dict[str, Class] = {}
-    for _, t in _sites(classes, functions):
-        if t is None:
-            continue
-        cls = (known or {}).get(t.python.removesuffix("| None").strip())
+    spelled = [t.python.removesuffix("| None").strip()
+               for _, t in _sites(classes, functions) if t is not None]
+    # ...and what a BODY spells, from `@spells`. A signature does not
+    # reach everything: `KeyedBuildResult.error` builds an exception
+    # carrying a failure word, and `-> BuildError | None` says
+    # nothing about it.
+    spelled += [n for cls in classes for m in cls.methods for n in m.spells]
+    spelled += [n for cls in classes if cls.from_parts is not None
+                for n in cls.from_parts.spells]
+    spelled += [n for fn in functions for n in fn.spells]
+    for name in spelled:
+        cls = (known or {}).get(name)
         if cls is not None and cls.is_words and cls.decl.enumerated:
             out[cls.name] = cls
+    # A `@spells` name has to BE one, and this is where that is
+    # checked. The decorator takes a string because a declaration
+    # holds constants, so nothing above catches a typo - and a
+    # silently skipped name fails much later, as a missing
+    # `huggorm::as_word` overload in the emitted C++.
+    for cls in classes:
+        for m in (*cls.methods, *([cls.from_parts] if cls.from_parts else [])):
+            for name in m.spells:
+                if name not in out:
+                    raise TypeError(
+                        f"{cls.name}.{m.name}: @spells({name!r}) names no "
+                        f"enum-backed vocabulary this declaration can see. "
+                        f"Import the declaration that declares it.")
     return [out[name] for name in sorted(out)]
 
 
@@ -1550,7 +1584,16 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     layer asks for."""
     fields = record_fields(cls, known)
     held = _held(cls)
-    args = "".join(f', "{name}"_a' for name, _ in fields)
+    # `.none()` on an `nb::object` part, and nothing else needs it.
+    # nanobind refuses None for a parameter unless the argument says
+    # it takes one, and an `nb::object` caster accepts anything - so
+    # the refusal is the ARGUMENT's, not the caster's. Measured: a
+    # KeyedBuildResult with no failure arm could not be rebuilt at
+    # all, and the message named every parameter as compatible
+    # (tasks/071).
+    args = "".join(f', "{name}"_a' + (".none()" if spelling == "nb::object"
+                                      else "")
+                   for name, spelling in fields)
     made = ", ".join(f"{spelling} {name}" for name, spelling in fields)
     values = ", ".join(name for name, _ in fields)
     return [
@@ -1759,7 +1802,15 @@ def _from_parts(cls: Class, known: dict[str, Class] | None = None
     types = part_types(cls, known)
     args = ", ".join(f"{t} {n}" for (n, _, _), t in zip(fields, types,
                                                         strict=True))
-    keywords = "".join(f', "{n}"_a' for n, _, _ in fields)
+    # `.none()` on an `nb::object` part, and nothing else needs it.
+    # nanobind refuses None for a parameter unless the ARGUMENT says
+    # it takes one, and an nb::object caster accepts anything - so the
+    # refusal is the argument's rather than the caster's. Measured: a
+    # KeyedBuildResult with no failure arm could not be rebuilt at
+    # all, and the message listed every parameter as compatible
+    # (tasks/071).
+    keywords = "".join(f', "{n}"_a' + (".none()" if t == "nb::object" else "")
+                       for (n, _, _), t in zip(fields, types, strict=True))
     written = cls.from_parts
     if written is not None and written.cxx_body:
         body = [f"{INDENT * 3}{ln}".rstrip()
@@ -2146,9 +2197,30 @@ def bindable(mod: Module) -> tuple[Class, ...]:
     return tuple(c for c in mod.classes if c.decl.cxx or c.is_value)
 
 
+def _errors_used(classes: Sequence[Class],
+                 functions: Sequence[Method],
+                 known: dict[str, Class] | None) -> bool:
+    """Whether this unit names a declared EXCEPTION class anywhere.
+
+    One site is enough. A unit that answers with an exception has to
+    look the Python class up by module and name, and the module name
+    is not a literal any declaration may write - `tasks/063` is the
+    day a stale copy of it turned every nix error into a
+    RuntimeError. So the emitter states it once per unit that needs
+    it, and the declaration's body reads it by name."""
+    for _, t in _sites(classes, functions):
+        if t is None:
+            continue
+        cls = (known or {}).get(t.python.removesuffix("| None").strip())
+        if cls is not None and cls.decl.kind == "error":
+            return True
+    return False
+
+
 def module(classes: Sequence[Class],
            functions: Sequence[Method] = (),
-           known: dict[str, Class] | None = None) -> str:
+           known: dict[str, Class] | None = None,
+           errors: str = "") -> str:
     """One translation unit: the includes, then a bind function each.
 
     Several classes, not one. A declaration file owns a module and
@@ -2158,6 +2230,14 @@ def module(classes: Sequence[Class],
     head = [*includes(classes, functions, known), "",
             "namespace nb = nanobind;",
             "using namespace nb::literals;", ""]
+    if errors and _errors_used(classes, functions, known):
+        # Where `huggorm::as_error` looks a class up. Emitted, never
+        # written: the same string the catch chain is given, from the
+        # same derivation, so a renamed declaration moves both.
+        head += ["namespace huggorm {", "",
+                 "/** Where this build put the exception classes. */",
+                 f'constexpr const char * errors_module = "{errors}";', "",
+                 "}  // namespace huggorm", ""]
     if _crosses_container(classes):
         head += [*CONTAINERS.strip().splitlines(), ""]
     # `as_tuple`, for a value whose hash covers a list part. In its own
@@ -2216,7 +2296,8 @@ def imports(mod: Module) -> list[str]:
 
 def extension(mod: Module, dotted: str,
               known: dict[str, Class] | None = None,
-              chain: list[str] | None = None) -> str:
+              chain: list[str] | None = None,
+              errors: str = "") -> str:
     """One whole extension module: includes, bindings, entry point.
 
     `module` stops at the `bind_<name>` functions because that is the
@@ -2241,7 +2322,7 @@ def extension(mod: Module, dotted: str,
                for stem in imports(mod)]
     translators = [translator(fn, chain) for fn in mod.translators]
     return "\n".join([
-        module(classes, mod.functions, known),
+        module(classes, mod.functions, known, errors),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
         # The declaration file's own docstring, which is the only
