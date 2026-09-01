@@ -8,8 +8,10 @@ either. So the two facts cross, and the rendering stays available as
 what it is: a way to print one.
 
 The words of `HashAlgorithm` are in `decl/words.py`, with the other
-vocabularies. They have no C++ behind them, so they have no extension
-to live in.
+vocabularies. `nix::HashAlgorithm` is behind them and the declaration
+says so, which is what lets `algorithm` read a member instead of
+converting - but a StrEnum compiles to nothing, so it has no
+extension of its own to live in.
 """
 
 from huggorm_decl.decl.words import HashAlgorithm

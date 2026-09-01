@@ -12,8 +12,10 @@ rendered string carried three facts glued together and made every
 reader take them apart again.
 
 The words of `ContentAddressMethod` are in `decl/words.py`, with the
-other vocabularies. They have no C++ behind them, so they have no
-extension to live in.
+other vocabularies. `nix::ContentAddressMethod` is behind them and
+the declaration says so, which is what lets `method` read a member
+instead of converting - but a StrEnum compiles to nothing, so it has
+no extension of its own to live in.
 """
 
 from huggorm_decl.decl.hash import Hash

@@ -10,10 +10,16 @@ call.
 
 Collected here because the split that matters is COMPILES or does not.
 `decl/hash.py` binds nix::Hash and `decl/content_address.py` binds
-nix::ContentAddress, one header each; the words those two headers also
-declare have no C++ behind them and no extension to live in, so a file
-named after either header would have been the wrong home for the
-other's.
+nix::ContentAddress, one header each; a StrEnum compiles to nothing
+and has no extension to live in, so a file named after either header
+would have been the wrong home for the other's.
+
+A C++ enum IS behind both of these, and `enumerated=` says which
+(tasks/070). That does not make either one a binding - the type
+Python sees is still a StrEnum and the wire still carries the string.
+What it buys is that the compiler holds the LIST and a test holds the
+SPELLING, where before this the list was two people reading two
+repositories.
 """
 
 from huggorm_dsl.declare import Enumerated, Wrap, header, words

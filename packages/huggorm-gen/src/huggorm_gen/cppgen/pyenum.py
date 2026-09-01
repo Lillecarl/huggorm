@@ -19,10 +19,15 @@ What changes is small and all of it derived:
 Nothing else moves. The words, their order, and every docstring are
 the declaration's own nodes.
 
-There is no C++ here and nothing to compile. That is what makes a
-vocabulary worth declaring rather than binding: `Store.add_to_store`
-hands the string straight to a Nix parser, so the module is a name for
-what libstore already accepts and a typo fails before the call.
+There is no C++ IN THIS MODULE and nothing to compile. That is what
+makes a vocabulary worth declaring rather than binding:
+`Store.add_to_store` hands the string straight to a Nix parser, so the
+module is a name for what libstore already accepts and a typo fails
+before the call.
+
+`enumerated=` does not change that. The C++ enum it names is emitted
+into the extension that READS one, as a switch, and none of it
+reaches here - a member is still the word and nothing else.
 """
 
 import ast
