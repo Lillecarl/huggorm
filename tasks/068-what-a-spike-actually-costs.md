@@ -42,12 +42,18 @@ frees space DURING a build instead of the build dying:
 This is the one that removes the `tasks/062` failure class rather
 than measuring it. It lives in croshome, so it is Carl's.
 
-### 2. Reclaim the 1.8 GB now
+### 2. Reclaim the 1.8 GB now - DONE, 2026-09-01
 
-    nix store gc
+Carl said to run it. `nix-collect-garbage -d`:
 
-21763 dead paths. It is global - it drops other projects' build
-caches too - so it is a decision rather than a chore.
+    22557 store paths deleted, 5.5 GiB freed
+    83% -> 77%, 9.3 GB -> 14 GB free
+    note: hard linking is currently saving 4.3 GiB
+
+More than the 1.8 GB this task predicted, because `-d` drops old
+profile generations too and the estimate counted only huggorm's
+share. It is global - it dropped other projects' build caches - which
+is why it was a decision rather than a chore.
 
 ### 3. Iterate on the EMITTED C++, not on the compiled module
 

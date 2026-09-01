@@ -166,11 +166,21 @@ which was superseded rather than fixed.
   word, as a raise, or as a value CARRYING the typed error - and the
   three are different APIs. Its two status enums are the easy half
   and need nothing new from 070.
-- 068 (what a spike actually costs) is OPEN. A jj workspace is 2.5 MB
-  and is deleted on exit; 1792 dead build outputs are 1.8 GB. The
-  junk is the builds a worktree invites, not the worktree - and
-  nix's own min-free/max-free are unset, which is the one change that
-  prevents 062's failure rather than measuring it.
+
+  Two of its smaller questions are ANSWERED. The DSL learned maps:
+  `dict[str, T]` over a declared class spells
+  `std::map<std::string, T>`, so `builtOutputs` needs nothing new,
+  `Store.query_derivation_output_map` is bound, and the hard-coded
+  `dict[str, int]` entry that served one free function is gone. And
+  cpuUser/cpuSystem become `datetime.timedelta` - decided, not built,
+  and what the WIRE carries for one is still open.
+- 068 (what a spike actually costs) is OPEN on its recommendations,
+  and the second one is DONE: `nix-collect-garbage -d` on 2026-09-01
+  freed 5.5 GiB across 22557 paths, 83% -> 77%. The jj workspace is
+  still 2.5 MB and still deleted on exit, so the junk is the builds a
+  worktree invites rather than the worktree. nix's own
+  min-free/max-free are still unset, which is the one change that
+  PREVENTS 062's failure rather than cleaning up after it.
 - 064 (the manifest is a runtime interpreter) is MOSTLY DONE.
   `manifest.json` is deleted; the front door's thirty re-export lines
   are what remain, and they need a decision rather than a patch.
