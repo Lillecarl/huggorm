@@ -74,6 +74,38 @@ class NixError(Exception):
         can already ask the class."""
         return type(self).__name__
 
+    def __eq__(self, other: object) -> bool:
+        """Two errors are equal when they are the same class carrying
+        the same parts.
+
+        Python compares exceptions by IDENTITY, which is right for an
+        exception and wrong for this hierarchy: every class here
+        declares `_wire_fields`, which says it is a thing rebuilt from
+        its parts on the far side of a wire. Two of them carrying the
+        same parts ARE the same answer, and a round trip that produced
+        an unequal object would be reporting a bug it does not have.
+
+        It became load-bearing when a VALUE gained an error field. A
+        KeyedBuildResult's `__eq__` is over its parts, and one of its
+        parts is an exception - so without this, two results reporting
+        the same failure compare unequal (tasks/071).
+
+        Same CLASS, not a subclass: BadStorePathName is not a
+        BadStorePath carrying the same message, and `except` is the
+        place a hierarchy is meant to be read."""
+        if type(other) is not type(self):
+            return NotImplemented
+        return self.to_dict() == other.to_dict()
+
+    def __hash__(self) -> int:
+        """As `__eq__`, over the same parts.
+
+        Defining `__eq__` alone would set this to None and make every
+        declared error unhashable, which is a thing a caller may
+        reasonably want to do with one."""
+        return hash((type(self).__name__,
+                     tuple(sorted(self.to_dict().items()))))
+
     def to_dict(self) -> dict[str, str]:
         """This error as its declared parts, for a peer to rebuild.
 
@@ -148,3 +180,37 @@ class BadStorePathName(BadStorePath):
     """nix::BadStorePathName - a store path whose name part is invalid."""
 
     cxx = "nix::BadStorePathName"
+
+
+class BuildError(NixError):
+    """nix::BuildError - a build that did not produce its outputs.
+
+    Two things at once in C++, and that is upstream's own design:
+    `nix::BuildError` inherits `nix::Error` and is throwable, AND it
+    is the failure arm of `BuildResult`'s variant. So the same class
+    is what `buildPaths` throws and what `buildPathsWithResults`
+    RETURNS.
+
+    No `cxx`, which means no catch clause, which means `build_paths`
+    still raises a plain NixError today. That is deliberate: adding a
+    catch here would change what an existing method raises, and this
+    task is about the method that does not raise at all (tasks/071).
+    The class exists so a RESULT can carry one.
+
+    Carries two parts more than a NixError. `status` says which of
+    the twelve failure words this is - a `BuildFailureStatus` member,
+    typed as `str` because a StrEnum member IS one and this module
+    cannot import the vocabulary. `is_non_deterministic` is upstream's
+    own hedge: False does not mean the build IS deterministic, only
+    that nothing here saw evidence otherwise.
+    """
+
+    _wire_fields = (("message", "str"), ("colored", "str"),
+                    ("status", "str"), ("is_non_deterministic", "bool"))
+
+    def __init__(self, message: str, colored: str | None = None,
+                 status: str = "misc-failure",
+                 is_non_deterministic: bool = False) -> None:
+        super().__init__(message, colored)
+        self.status = status
+        self.is_non_deterministic = is_non_deterministic
