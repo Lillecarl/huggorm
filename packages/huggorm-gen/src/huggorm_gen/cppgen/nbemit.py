@@ -52,7 +52,7 @@ becomes the place the real code lives.
 
 import ast
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from huggorm_dsl.declare import Field
 from huggorm_dsl.read import Class, Method, Module, Param, Type
@@ -320,6 +320,39 @@ def _param(t: Type, known: dict[str, Class] | None = None
     return CXX_PARAM[t.cxx.spelling]
 
 
+def _sites(classes: Sequence[Class],
+           functions: Sequence[Method] = (),
+           ) -> Iterator[tuple[Param | None, Type | None]]:
+    """Every place this translation unit names a declared type.
+
+    One walk, because two things read the same sites and a second
+    walk would be the same list written twice: the includes need
+    every type's caster, and the conversions need every union.
+
+    A parameter comes with the `Param` it was declared as, because a
+    container that reads None arrives as an optional and only the
+    Param says so. A return yields None in its place.
+
+    A free function belongs to no class, so its types reach a caller
+    of this only from the last loop - and `open_store` is the one
+    that brings <nanobind/stl/shared_ptr.h> in.
+    """
+    for cls in classes:
+        for m in cls.methods:
+            for pr in m.params:
+                yield pr, pr.type
+            yield None, m.ret
+        if cls.ctor is not None:
+            for pr in cls.ctor.params:
+                yield pr, pr.type
+        if cls.from_parts is not None:
+            yield None, cls.from_parts.ret
+    for fn in functions:
+        for pr in fn.params:
+            yield pr, pr.type
+        yield None, fn.ret
+
+
 def includes(classes: Sequence[Class],
              functions: Sequence[Method] = (),
              known: dict[str, Class] | None = None) -> list[str]:
@@ -365,33 +398,16 @@ def includes(classes: Sequence[Class],
             for arm in held.decl.arms:
                 note(Type(python=arm, bound=True))
 
-    def note_params(fn: Method) -> None:
-        for pr in fn.params:
-            note(pr.type)
-            # A CONTAINER that reads None arrives as a
-            # std::optional, so it needs that caster even though no
-            # declared type here is optional. `_signature` builds the
-            # optional; this is the only place that can know it will.
-            # Missed until a module had one and nothing else optional
-            # in it - `store` had returns to hide it, `derived_path`
-            # had not.
-            if absent(pr, known):
-                casters.add("optional")
-
-    for cls in classes:
-        for m in cls.methods:
-            note_params(m)
-            note(m.ret)
-        if cls.ctor is not None:
-            note_params(cls.ctor)
-        if cls.from_parts is not None:
-            note(cls.from_parts.ret)
-    # A free function belongs to no class, so its types reach this
-    # list only from here - and `open_store` is the one that brings
-    # <nanobind/stl/shared_ptr.h> in.
-    for fn in functions:
-        note_params(fn)
-        note(fn.ret)
+    for pr, t in _sites(classes, functions):
+        note(t)
+        # A CONTAINER that reads None arrives as a std::optional, so
+        # it needs that caster even though no declared type here is
+        # optional. `_signature` builds the optional; this is the
+        # only place that can know it will. Missed until a module had
+        # one and nothing else optional in it - `store` had returns
+        # to hide it, `derived_path` had not.
+        if pr is not None and absent(pr, known):
+            casters.add("optional")
     # A hook has no signature worth casting, and it still names the
     # header its C++ lives in. `wanted` below is where that lands.
 
@@ -405,6 +421,11 @@ def includes(classes: Sequence[Class],
     # header is normal and the order of a declaration's methods is
     # not an order for includes.
     wanted = {cls.decl.header for cls in classes}
+    # A union's own type, which no `@header` names: the alias carries
+    # it, because a unit that only PASSES one declares none of its
+    # arms and would otherwise include nothing that spells it.
+    wanted |= {u.decl.variant.header for u in _unions_used(
+        classes, functions, known) if u.decl.variant is not None}
     wanted |= {h for cls in classes for h in cls.decl.headers}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
     wanted |= {h for cls in classes if cls.from_parts is not None
@@ -1143,6 +1164,106 @@ def _lists(cls: Class) -> list[str]:
     return [f.name for f, _ in cls.parts if f.type.startswith("list[")]
 
 
+def _unions_used(classes: Sequence[Class],
+                 functions: Sequence[Method],
+                 known: dict[str, Class] | None) -> list[Class]:
+    """Every union with a declared C++ variant this unit names.
+
+    By name, so a union named twice is converted once. Sorted,
+    because the order two methods happen to be declared in is not an
+    order for a translation unit."""
+    out: dict[str, Class] = {}
+    for _, t in _sites(classes, functions):
+        if t is None:
+            continue
+        inner = t.python.removesuffix("| None").strip()
+        if inner.startswith("list["):
+            inner = inner[len("list["):-1]
+        cls = (known or {}).get(inner)
+        if cls is not None and cls.is_union and cls.decl.variant is not None:
+            out[cls.name] = cls
+    return [out[name] for name in sorted(out)]
+
+
+def _alternative(cls: Class, arm: str,
+                 known: dict[str, Class]) -> tuple[str, str]:
+    """One arm as the C++ variant holds it: the type, and the member.
+
+    The member is empty when the variant holds the arm as itself,
+    which is every arm no `wraps` names. `SingleDerivedPathBuilt` is
+    an alternative of `nix::SingleDerivedPath` outright, so nothing
+    has to be said about it - and saying it for every arm would make
+    the one arm that IS wrapped read like the others."""
+    variant = cls.decl.variant
+    assert variant is not None
+    wrap = variant.wraps.get(arm)
+    if wrap is not None:
+        return wrap.cxx, wrap.holds
+    return _bare(known[arm], known), ""
+
+
+def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
+    """One union, in both directions, from what its alias declares.
+
+    THE BODIES DO NOT SAY THIS. They call `as_arms` and `from_arms`
+    by name, and every line below comes from the `Variant(...)` the
+    declaration carries - the union's C++ type, how to reach the
+    std::variant inside it, and which arm the variant wraps.
+
+    It was a hand-written header (tasks/063). Two unions wrote the
+    same visit four times, and the two `drv_path` bodies that called
+    it were identical text in two classes that differ in nothing the
+    line touches. One declared fact answers all of it.
+
+    The last arm is `std::get` rather than another `std::get_if`.
+    A variant holds exactly one alternative, so once every other has
+    been ruled out the last one is what is there - and `std::get`
+    says that, where a fourth `if` would leave a fall-through with
+    nothing to return.
+    """
+    variant = cls.decl.variant
+    assert variant is not None
+    arms = cls.decl.arms
+    held = _bare(cls, known)
+    reach = f"p.{variant.raw}" if variant.raw else "p"
+    out = [f"/** The arms of a {cls.name}, as Python has them. */",
+           f"inline {held} as_arms(const {variant.cxx} & p)",
+           "{"]
+    for arm in arms[:-1]:
+        alt, member = _alternative(cls, arm, known)
+        out += [f"{INDENT}if (auto * arm = std::get_if<{alt}>(&{reach}))",
+                f"{INDENT * 2}return {'arm->' + member if member else '*arm'};"]
+    alt, member = _alternative(cls, arms[-1], known)
+    got = f"std::get<{alt}>({reach})"
+    out += [f"{INDENT}return {got + '.' + member if member else got};",
+            "}", ""]
+
+    out += [f"/** A {cls.name}'s arms, as the C++ union holds them. */",
+            f"inline {variant.cxx} from_arms(const {held} & a)",
+            "{"]
+    for arm in arms[:-1]:
+        alt, member = _alternative(cls, arm, known)
+        out += [f"{INDENT}if (auto * arm = "
+                f"std::get_if<{_bare(known[arm], known)}>(&a))",
+                f"{INDENT * 2}return {alt + '{*arm}' if member else '*arm'};"]
+    last = arms[-1]
+    alt, member = _alternative(cls, last, known)
+    got = f"std::get<{_bare(known[last], known)}>(a)"
+    out += [f"{INDENT}return {alt + '{' + got + '}' if member else got};",
+            "}", ""]
+
+    # `nix::ref` is non-nullable by construction, so a member declared
+    # as one cannot be built from a value without allocating. Upstream's
+    # spelling, not a decision here - and generated beside the two
+    # conversions because it is the same fact reaching a member.
+    out += [f"/** A {cls.name} in the `ref` upstream stores one through. */",
+            f"inline nix::ref<const {variant.cxx}> held(const {held} & a)",
+            "{",
+            f"{INDENT}return nix::make_ref<{variant.cxx}>(from_arms(a));",
+            "}", ""]
+    return out
+
+
 # A list field, as something a hash can hold.
 #
 # One function rather than a cast at each call site, because
@@ -1806,10 +1927,14 @@ def module(classes: Sequence[Class],
     # in that namespace too and a class that binds a real Nix type
     # needs the helper just the same - which is what put it inside
     # `records()` and left `pathinfo.cpp` without it.
-    if any(_lists(cls) for cls in classes):
-        head += [f"namespace {NAMESPACE} {{", "",
-                 *HASHABLE.strip().splitlines(), "",
-                 f"}}  // namespace {NAMESPACE}", ""]
+    unions = _unions_used(classes, functions, known)
+    if any(_lists(cls) for cls in classes) or unions:
+        head += [f"namespace {NAMESPACE} {{", ""]
+        if any(_lists(cls) for cls in classes):
+            head += [*HASHABLE.strip().splitlines(), ""]
+        for u in unions:
+            head += conversions(u, known or {})
+        head += [f"}}  // namespace {NAMESPACE}", ""]
     # The structs first: a bind function returns one, so the type has
     # to be complete before the compiler reads the lambda.
     head += records(classes, known)
