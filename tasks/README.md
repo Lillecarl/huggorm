@@ -110,11 +110,18 @@ which was superseded rather than fixed.
   the shape Carl asked about and the file records why it is not:
   inheritance says "is a", which is the reverse of a sum type. cpp/
   is 290 code lines in three files, all helpers.
-- 067 (a caster instead of a named conversion) is OPEN. Eleven
-  declaration bodies name a conversion - `as_arms`, `from_arms`,
-  `held`, a `ref` deref - that a generated nanobind type_caster would
-  do once. It needs the same declared fact 063 landed, and it writes
-  C++ shapes this repo has not written, so it waits on Carl.
+- 067 (a caster instead of a named conversion) is DONE. A generated
+  nanobind type_caster casts `nix::DerivedPath` to the arms Python
+  has, so no declaration body converts and a signature says what
+  libstore says. `huggorm::held` went with it. The Python surface did
+  not move: the stubs still read `-> DerivedPath`. Spiked in a jj
+  workspace first (068), which is why the main tree never carried a
+  version that did not work.
+- 068 (what a spike actually costs) is OPEN. A jj workspace is 2.5 MB
+  and is deleted on exit; 1792 dead build outputs are 1.8 GB. The
+  junk is the builds a worktree invites, not the worktree - and
+  nix's own min-free/max-free are unset, which is the one change that
+  prevents 062's failure rather than measuring it.
 - 064 (the manifest is a runtime interpreter) is MOSTLY DONE.
   `manifest.json` is deleted; the front door's thirty re-export lines
   are what remain, and they need a decision rather than a patch.

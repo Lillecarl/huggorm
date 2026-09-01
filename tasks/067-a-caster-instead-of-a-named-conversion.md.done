@@ -1,8 +1,8 @@
 # A caster, instead of a conversion named at every call site
 
-**OPEN.** Eleven sites in the declarations name a conversion by hand
-that a nanobind `type_caster` would do once. This says which, and what
-it would cost.
+**DONE.** Eleven sites in the declarations named a conversion by
+hand that a nanobind `type_caster` now does once. Merged from the
+spike workspace; `check` and 205 tests pass in the main tree.
 
 ## Where it comes from
 
@@ -160,9 +160,20 @@ C++ fact about the member rather than about the binding, and the
 alternative is a marker with two users that has to teach the emitter
 a handle type.
 
-### The decision left
+## Merged
 
-Merging this puts a nanobind `type_caster` specialisation in the
-emitter's output - a shape this repo has not emitted before. It is
-generated, not hand-written, and it is 40 lines per union. That is
-Carl's call.
+The two spike commits landed with `jj duplicate`, and the gate is
+green in the main tree. `.claude/worktrees/caster-spike` is forgotten.
+
+The argument that decided it: the caster needs no new declared fact -
+`Variant(...)` already carries the union's cxx, its `raw()`, its
+header and its wrapped arm - so it is the same fact reaching one more
+output. It costs 40 generated lines per union, and generated lines
+are not a budget (CLAUDE.md); what it buys is that no declaration
+body names a conversion, and that a signature says what libstore
+says.
+
+The one argument against was that a wrong caster fails late rather
+than at compile time. That is true and it is COVERED: the signature
+gate in `huggorm-generated` catches a missing one, which is exactly
+how the failed perturbation was found.
