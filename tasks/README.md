@@ -13,6 +13,11 @@ grep finds it. The word and the filename suffix say the same thing,
 and checking one against the other is how the tracker is audited: 063
 reached DONE in its text while its filename still said open.
 
+Files numbered 051 and below predate the convention and carry no
+status word. The audit in CLAUDE.md reports each of them as
+``line=none``, which is the audit saying it cannot confirm rather
+than the two answers disagreeing. Every file from 052 up has one.
+
 Keep files short: problem, evidence, fix sketch. A closed file keeps
 its original text and gains a "## Done" section, so the fix stays
 readable next to what it fixed.
@@ -127,10 +132,23 @@ which was superseded rather than fixed.
   `query_substitutable_paths`, `topo_sort_paths` - so a caller can
   now build a thing, keep it from the collector, ask what could be
   fetched instead, and walk a closure in reference order. What is
-  left needs a C++ ENUM on the surface, which this DSL has no marker
-  for: the build MODE, and `buildPathsWithResults` through the
-  `BuildResult` it would have to declare. That marker has ONE ready
-  user today, so it waits for its second (CLAUDE.md).
+  left needs a C++ ENUM on the surface: the build MODE, and
+  `buildPathsWithResults` through the `BuildResult` it would have to
+  declare. The marker for that is 070, and the "ONE ready user" this
+  file used to give as the reason to wait was WRONG - two shipped
+  vocabularies already had a C++ enum behind them.
+- 070 (a vocabulary checked against its enum) is MOSTLY DONE.
+  `@words` takes `enumerated=Enumerated(...)`, and the emitter writes
+  the direction `parsed_by` never had: a word coming BACK from
+  libstore, as a switch with no `default:` under `-Werror=switch`.
+  Both shipped vocabularies use it and both lost a hand-written
+  mapping. Four perturbations, all in the real build: a word removed
+  fails the compile, the same break BUILDS without the flag, a
+  misspelling compiles and fails a test, and a wrong enumerator name
+  is refused by name. The queue behind it is BuildMode,
+  BuildResult's two status enums, TrustedFlag, GCAction and
+  FileIngestionMethod - none has a binding that RETURNS one yet, so
+  none has a site for the conversion.
 - 068 (what a spike actually costs) is OPEN. A jj workspace is 2.5 MB
   and is deleted on exit; 1792 dead build outputs are 1.8 GB. The
   junk is the builds a worktree invites, not the worktree - and
