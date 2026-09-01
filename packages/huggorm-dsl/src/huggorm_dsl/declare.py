@@ -140,6 +140,38 @@ Path = Annotated[pathlib.Path, Cxx("string"), Async("anyio.Path")]
 
 
 @dataclass(frozen=True)
+class Enumerated:
+    """The C++ enum a vocabulary's words stand for.
+
+    A vocabulary is a StrEnum because a member IS the string libstore
+    parses, and that stays true. This says what libstore holds once it
+    has parsed one, which is the fact that makes the list CHECKABLE:
+    the emitted conversion is a switch over `cxx` with no `default`,
+    so a compiler with `-Werror=switch` refuses to build the day
+    upstream adds an enumerator, and naming each one refuses the day
+    upstream removes or renames one.
+
+    `cxx` is the enum's own type. `spelled` names any word whose
+    enumerator is spelled differently - `NAR` is `NixArchive`
+    upstream - by the word's own name. A word not named here is
+    `{cxx}::{word}`, which is every word in the usual case.
+
+    Not an `nb::enum_`. Measured (`tasks/070`): a chain of
+    `.value("MD5", ...)` calls with an enumerator left out compiles
+    silently, because `.value` is a runtime call and there is nothing
+    for the compiler to check it against. A switch is the whole
+    difference.
+    """
+
+    cxx: str
+    spelled: dict[str, str] = field(default_factory=dict)
+
+    def enumerator(self, word: str) -> str:
+        """The C++ enumerator for one word, by the word's own name."""
+        return f"{self.cxx}::{self.spelled.get(word, word)}"
+
+
+@dataclass(frozen=True)
 class Wrap:
     """How a C++ variant holds an arm the Python surface names directly.
 
@@ -243,9 +275,14 @@ class Decl:
     # no C++ object behind it at all; "union" is a sum of other
     # declared types, written as an alias and named on the wire.
     kind: str = "class"
-    # Where the words come from, for a vocabulary. Prose only: the
-    # emitted module names it so a reader can check the list.
+    # Where the words go, for a vocabulary. The emitter writes this
+    # call at each site that takes one, so an experimental word is
+    # refused by upstream rather than accepted by us.
     parsed_by: str = ""
+    # The C++ enum a vocabulary's words stand for, from `@words`.
+    # None for a vocabulary with no enum behind it, which gets the
+    # Python surface and no check. See `Enumerated`.
+    enumerated: Enumerated | None = None
     # The class this one derives from, by DECLARED name. One base:
     # every hierarchy this binds is single inheritance, and C++
     # multiple inheritance through a Python type is a different
@@ -468,7 +505,8 @@ def produced(by: str) -> Callable[[type], type]:
     return apply
 
 
-def words(parsed_by: str = "") -> Callable[[type], type]:
+def words(parsed_by: str = "", enumerated: Enumerated | None = None,
+          ) -> Callable[[type], type]:
     """This class is a VOCABULARY: the words a Nix parser takes.
 
     A StrEnum, so a member IS the string libstore parses. Passing
@@ -477,18 +515,22 @@ def words(parsed_by: str = "") -> Callable[[type], type]:
     a layer - it names what libstore already accepts, so an editor
     can offer the words and a typo fails before the call.
 
-    There is nothing to compile. The values are Nix's words, and the
-    binding hands one straight to a parser rather than translating
-    it, so the emitted module is plain Python: no pointer, no header,
-    no shim.
+    The Python surface is plain: no pointer, no header, no shim. What
+    goes TO libstore is the string, handed to `parsed_by`.
 
-    `parsed_by` names the C++ that takes them. Prose only - the
-    emitted module says it so a reader can check the list against
-    upstream - but it is the one fact that says where the words came
-    from, which is not derivable from the members."""
+    `parsed_by` names the C++ that takes them. It is a call the
+    emitter writes at each site rather than prose: upstream's parser
+    is the only thing that knows a word is behind an experimental
+    feature, and a binding that mapped the string itself would accept
+    `blake3` where libstore refuses it.
+
+    `enumerated` names the C++ enum the words stand for, when there is
+    one. It buys the direction `parsed_by` does not have - a word
+    coming BACK from libstore - and, because that direction is a
+    switch, it makes the compiler check the list."""
     def apply(cls: type) -> type:
         d = _decl(cls)
-        d.kind, d.parsed_by = "words", parsed_by
+        d.kind, d.parsed_by, d.enumerated = "words", parsed_by, enumerated
         return cls
     return apply
 

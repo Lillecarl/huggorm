@@ -440,6 +440,11 @@ def includes(classes: Sequence[Class],
     # arms and would otherwise include nothing that spells it.
     wanted |= {u.decl.variant.header for u in _unions_used(
         classes, functions, known) if u.decl.variant is not None}
+    # A vocabulary's enum, for the same reason. `hash.cpp` returns a
+    # HashAlgorithm and declares no class from `nix/util/hash.hh`
+    # beyond its own - the words live in another declaration file.
+    wanted |= {v.decl.header for v in _vocabularies_used(
+        classes, functions, known)}
     wanted |= {h for cls in classes for h in cls.decl.headers}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
     wanted |= {h for cls in classes if cls.from_parts is not None
@@ -678,6 +683,14 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # right whether the call answered a set or a vector.
     if m.ret is not None and m.ret.python.strip('"').startswith("list["):
         return [*head, f"{INDENT * 4}return as_list({call});"]
+    # A declared VOCABULARY return. The enumerator libstore answers
+    # with is not the word Python has, and `as_word` is the switch
+    # that says which - emitted beside this, not written by hand.
+    # Before this, `Hash.algorithm` carried the conversion as a `Cxx`
+    # body, which is a MAPPING written into a declaration.
+    voc = (known or {}).get(m.ret.python.removesuffix("| None").strip())
+    if voc is not None and voc.is_words and voc.decl.enumerated:
+        return [*head, f"{INDENT * 4}return {NAMESPACE}::as_word({call});"]
     # A width the DECLARATION spells. `size()` answers a size_t and
     # the declaration says I64, so the cast is what makes the emitted
     # C++ say what the declaration says rather than what this
@@ -1211,6 +1224,67 @@ def _unions_used(classes: Sequence[Class],
         if cls is not None and cls.is_union and cls.decl.variant is not None:
             out[cls.name] = cls
     return [out[name] for name in sorted(out)]
+
+
+def _vocabularies_used(classes: Sequence[Class],
+                       functions: Sequence[Method],
+                       known: dict[str, Class] | None) -> list[Class]:
+    """Every enum-backed vocabulary this unit READS BACK from C++.
+
+    Returns only. A vocabulary going the other way is a string handed
+    to `parsed_by`, which upstream already knows how to refuse - so a
+    unit that only takes words needs no conversion at all.
+
+    By name and sorted, for the reason `_unions_used` is: a
+    vocabulary read twice is converted once, and the order two
+    methods happen to be declared in is not an order for a
+    translation unit."""
+    out: dict[str, Class] = {}
+    for pr, t in _sites(classes, functions):
+        if pr is not None or t is None:
+            continue
+        cls = (known or {}).get(t.python.removesuffix("| None").strip())
+        if cls is not None and cls.is_words and cls.decl.enumerated:
+            out[cls.name] = cls
+    return [out[name] for name in sorted(out)]
+
+
+def words_conversion(cls: Class) -> list[str]:
+    """One vocabulary coming BACK from C++, as the switch that checks it.
+
+    The direction `parsed_by` does not have. A word going to libstore
+    is a string upstream parses; a word coming back is an enumerator,
+    and something has to say which word it is.
+
+    That something is a SWITCH WITH NO `default`, and the missing
+    `default` is the point rather than a style. With `-Werror=switch`
+    the compiler refuses to build the day upstream adds an
+    enumerator, and naming `nix::HashAlgorithm::MD5` refuses the day
+    upstream removes or renames one. Both were measured before this
+    was written (`tasks/070`).
+
+    Not upstream's own `printHashAlgo`. It would render correctly and
+    check nothing, and the words this repo publishes would drift from
+    the enum with no diagnostic. The suite closes the other half: it
+    round-trips every declared word through upstream's parser and back
+    through this, so our SPELLING is checked against upstream's too.
+
+    The throw past the switch is unreachable and a compiler still
+    wants it: every enumerator returns above, and control falling off
+    the end of a non-void function is what `-Wreturn-type` is for."""
+    enum = cls.decl.enumerated
+    assert enum is not None
+    out = [f"/** A {cls.name}, as the word Python has. */",
+           f"inline std::string as_word({enum.cxx} value)",
+           "{",
+           f"{INDENT}switch (value) {{"]
+    for word in cls.members:
+        out.append(f"{INDENT}case {enum.enumerator(word.name)}: "
+                   f'return "{word.value}";')
+    out += [f"{INDENT}}}",
+            f'{INDENT}throw nix::Error("unknown {enum.cxx}");',
+            "}", ""]
+    return out
 
 
 def _alternative(cls: Class, arm: str,
@@ -2017,10 +2091,13 @@ def module(classes: Sequence[Class],
     # needs the helper just the same - which is what put it inside
     # `records()` and left `pathinfo.cpp` without it.
     unions = _unions_used(classes, functions, known)
-    if any(_lists(cls) for cls in classes) or unions:
+    vocabularies = _vocabularies_used(classes, functions, known)
+    if any(_lists(cls) for cls in classes) or unions or vocabularies:
         head += [f"namespace {NAMESPACE} {{", ""]
         if any(_lists(cls) for cls in classes):
             head += [*HASHABLE.strip().splitlines(), ""]
+        for v in vocabularies:
+            head += words_conversion(v)
         for u in unions:
             head += conversions(u, known or {})
         head += [f"}}  // namespace {NAMESPACE}", ""]

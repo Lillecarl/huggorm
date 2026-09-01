@@ -114,8 +114,15 @@ def nanobind_extension(module: str) -> Extension:
         # two extensions in one process must not export each other's
         # symbols, and its internals are shared through a capsule
         # rather than through the dynamic linker.
+        #
+        # `-Werror=switch` is the gate under every emitted switch over
+        # a Nix enum. Each one is written with no `default:`, so the
+        # day upstream adds an enumerator this build FAILS instead of
+        # silently rendering it as something else. It is an error
+        # rather than a warning because a warning in a build that
+        # prints thousands of lines is a warning nobody reads.
         extra_compile_args=[*flags.pop("extra_compile_args", []),
-                            "-fvisibility=hidden"],
+                            "-fvisibility=hidden", "-Werror=switch"],
         **flags,
     )
 
