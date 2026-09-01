@@ -158,8 +158,8 @@ which was superseded rather than fixed.
   the bytes to matter. Protobuf's own enums would have worked; the
   argument written against them was aimed at C++'s numbering rather
   than at a proto's, and it fell.
-- 071 (a build result is a sum with an exception in it) is OPEN with
-  one piece left. `Store.build_paths_with_results` is bound and
+- 071 (a build result is a sum with an exception in it) is DONE.
+  `Store.build_paths_with_results` is bound and
   answers a `KeyedBuildResult` per target: two arms, `success` and
   `error`, exactly one present, and it never raises. Carl decided
   that - a BuildResult does not raise in Nix - so `error` ANSWERS
@@ -178,11 +178,14 @@ which was superseded rather than fixed.
   an `error` kind pointing at the fault message it already had. Three
   claims were refuted by the build and are recorded there.
 
-  LEFT: the `Duration` alias. cpuUser/cpuSystem become
-  `datetime.timedelta`, through nanobind's own chrono caster, and an
-  int64 of MICROSECONDS on the wire - both Carl's. Ordered last on
-  purpose: like a vocabulary, it emits nothing until something names
-  it, so it lands with its first user rather than alone.
+  The `Duration` alias landed last, with its first user.
+  cpuUser/cpuSystem are `datetime.timedelta` through nanobind's own
+  chrono caster, and an int of MICROSECONDS on the wire - both
+  Carl's, and microseconds is lossless in both directions because it
+  is a timedelta's own finest unit. `datetime.timedelta` is the first
+  DOTTED type to cross; `pathlib.Path` is still blocked. A fourth
+  claim was refuted, and it was mine: a spelling collapse written
+  into `smoke_test._same` that no gate needed.
 - 072 (a gate that has never tested anything) is OPEN, and cheap.
   `pyerrors.declared()` reads `mod.classes`, which is empty for the
   errors declaration because the reader takes only DECORATED classes

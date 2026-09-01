@@ -1365,7 +1365,16 @@ def _same(spelling: str) -> str:
       not a bound C++ type and has no signature to render. The `|
       None` goes with it, because `nb::none()` IS the absent value
       there and the emitter writes no `std::optional` around it.
-      `_ERRORS` is read from the manifest, like the two above."""
+      `_ERRORS` is read from the manifest, like the two above.
+
+    A DURATION needed none of this, which was measured rather than
+    assumed. nanobind's chrono caster reads `datetime.timedelta |
+    float` and writes `datetime.timedelta`, so a PARAMETER of one
+    would disagree with the declaration - and no gate here compares
+    one, because the only duration parameters are `_from_parts`'s and
+    an `_`-prefixed name reaches no stub. A collapse of the input
+    spelling was written here, passed, and was removed when taking it
+    out changed nothing (tasks/071)."""
     out = re.sub(r"huggorm_bindings\.\w+\.", "", spelling)
     out = out.replace("collections.abc.Sequence[", "list[")
     for name in _ERRORS:

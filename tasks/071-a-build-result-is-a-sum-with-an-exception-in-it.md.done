@@ -1,6 +1,7 @@
 # A build result is a sum with an exception in it
 
-**OPEN, and it is now unblocked.** The decision below is made. `buildPathsWithResults`
+**DONE.** All four stages are written and the gate is green.
+`buildPathsWithResults`
 is the last shape of `Store.build_paths` that is not bound, and it
 cannot be declared the way the other returns were. The reason is one
 line of upstream:
@@ -145,7 +146,7 @@ the sync one does about the same failure.
 
 - `cpuUser`/`cpuSystem` are `std::optional<std::chrono::microseconds>`.
 
-  **DECIDED, not yet done.** Carl, twice: Python's own time
+  **DECIDED, and DONE.** Carl, twice: Python's own time
   representation - `datetime.timedelta` - and MICROSECONDS on the
   wire.
 
@@ -204,12 +205,12 @@ What is left to write, roughly in order:
    exports [...BuildFailureStatus...], the package exports [...]`
    until two names were added to each by hand. Four lines of a fact
    the emitter already knows.
-2. the `Duration` alias, its `<nanobind/stl/chrono.h>` caster, and
-   the microsecond form on the wire;
-3. `BuildResult` itself, which is where the new DSL is: a value one
-   of whose fields is a declared ERROR class. `tasks/036` made an
-   error CROSS as an error; nothing yet makes one be PART of
-   something else;
+2. **DONE.** The `Duration` alias, its `<nanobind/stl/chrono.h>`
+   caster, and the microsecond form on the wire.
+3. **DONE.** `BuildResult` itself, which is where the new DSL is: a
+   value one of whose fields is a declared ERROR class. `tasks/036`
+   made an error CROSS as an error; nothing yet made one be PART of
+   something else.
 4. **DONE.** `Store.build_paths_with_results`, which needed nothing new: a list of a declared value, and the same
    `BuildMode` `build_paths` takes.
 
@@ -354,3 +355,83 @@ Declining the merge does not make the invariant stop mattering, so
 both the enumerator names and our sixteen words. PERTURBED: setting
 `MISC_FAILURE = "built"` in the declaration fails it with `our words
 collide: {'built'}`, so the gate is known to test something.
+
+### Where 2 stands, 2026-09-02
+
+Done, and it landed with its two users the way the order above says.
+`Duration = Annotated[datetime.timedelta, Cxx("microseconds")]` in
+`declare.py`, and `cpu_user`/`cpu_system` on `KeyedBuildResult`.
+
+**Four tables, one word each, and no fifth.** `microseconds` is the
+alias's `Cxx` spelling, so every layer translates it the way it
+translates `string` or `int64_t`: `nbemit.CXX_PARAM` says
+`std::chrono::microseconds` and the `chrono` caster,
+`manifest.PYTHON` says `datetime.timedelta`, and the wire says
+`int`. Nothing keyed by the PYTHON name, which was the other shape
+considered - `CXX_PYTHON` is for a type with no alias behind it, and
+a duration has one.
+
+**The in-process half is nanobind's, entirely.** The chrono caster
+maps `std::chrono::duration<Rep, Period>` to a `datetime.timedelta`
+both ways, so `@reads("cpuUser")` emits a lambda returning
+`std::optional<std::chrono::microseconds>` and nothing of ours
+converts anything. Read at `nanobind/stl/chrono.h:225`.
+
+**The wire half is two functions and one table.** `_wiretypes.SPELLED`
+says a `datetime.timedelta` goes in an int field, which is what the
+schema builder, the contract check and the codec all needed; the
+codec's `_SPELLED` says what to put there and what to read back.
+Two entries per type rather than one, unlike a vocabulary: a StrEnum
+member IS a str, so one constructor serves both directions, and a
+timedelta is not an int.
+
+`scalar()` gained a sibling rather than a flag. It answers the
+INCOMING direction and three call sites read it that way; `to_wire()`
+is the outgoing one and defaults to it, so only a spelled scalar ever
+has two.
+
+**Microseconds is not a preference.** A timedelta's finest unit IS
+the microsecond, so an int of them is lossless in both directions,
+and upstream keeps the same resolution. A coarser wire would round a
+build's CPU time silently.
+
+**`datetime.timedelta` is the first DOTTED type to cross.**
+`pathlib.Path` is declared and blocked - `wire_blocker` says it "is
+not in the manifest, so it has no wire policy" - so nothing had ever
+put a module-qualified name in a protobuf field. It needed no new
+machinery: `dotted_heads` already writes `import datetime` into an
+emitted module that annotates with one.
+
+### The gate, PERTURBED both ways
+
+`test_a_duration_crosses_as_whole_microseconds` builds the real
+`KeyedBuildResultMsg`, reads the int off it and reads the timedelta
+back. The round-trip gate above it cannot see this boundary: it never
+builds a message.
+
+- `_duration_out` divided by a millisecond: `assert 1000 == 1000250`.
+- `_duration_in` reading milliseconds: the timedelta comes back a
+  thousand times too long.
+
+The sample carries `timedelta(seconds=1, microseconds=250)` on
+purpose. A wire that carried whole SECONDS would round-trip a whole
+second happily, so a case that is a whole second proves nothing.
+
+Absence is asserted separately, and the round-trip gate's own
+"no part holds one value in every case" check forces it: the success
+sample carries two durations and the failure sample carries None, so
+neither field can be dropped from `_from_parts` unseen.
+
+### One thing this refuted, and it was mine
+
+**A collapse in `smoke_test._same` that no gate needs.** nanobind's
+chrono caster reads `datetime.timedelta | float` and writes
+`datetime.timedelta`, so a duration PARAMETER renders wider than the
+declaration - and I wrote the collapse before seeing it fire.
+Removing the line changed nothing: the only duration parameters are
+`_from_parts`'s, and an `_`-prefixed name reaches no stub. Removed,
+and the reason is recorded in `_same`'s own docstring so the next
+reader does not add it back.
+
+That is `tasks/072`'s failure mode in miniature, and it was caught
+this time because the line was taken out and the build was run again.
