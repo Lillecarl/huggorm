@@ -84,9 +84,9 @@ which was superseded rather than fixed.
   niceties only. The table is built and drives validation, and the
   `@abstract` split landed: a declaration states the C++ FACT and
   `Class.constructs` answers "is there a door", so nix::Store says it
-  is abstract AND keeps its factory. What is left is `path:line:col`
-  in a diagnostic, and collecting errors rather than raising on the
-  first. 063's union marker no longer waits on it.
+  is abstract AND keeps its factory, and a diagnostic now says
+  `path:line:col`. What is left is collecting errors rather than
+  raising on the first. 063's union marker no longer waits on it.
 - 062 (the suite fills the disk) is OPEN.
 - 063 (the hpp files hold mappings) is OPEN, and down to one residue.
   Its three original fronts are closed, `errors.hpp` no longer names

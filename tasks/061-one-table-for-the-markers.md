@@ -1,6 +1,6 @@
 # One table for the markers
 
-**DONE, except two diagnostics niceties.** Where each declaration
+**DONE, except collected diagnostics.** Where each declaration
 marker is legal, how many times, and what it conflicts with - as
 DATA, driving validation and emission instead of being restated in
 prose and in scattered `if`s.
@@ -178,10 +178,31 @@ MissingPaths and Value - with Store correctly excluded.
 The refusal sentence is derived too. There are three ways to have no
 door and it used to say "is abstract" for all of them.
 
-**`path:line:col` in diagnostics.** `DeclarationError` still carries
-`line N: message` and no path. It matters once a declaration imports
-another and the error is in the imported one - which is now normal,
-because `decl/store.py` imports five others.
+**`path:line:col` in diagnostics - DONE.** It said "line 183:" and
+left a reader to work out which of nine declarations that was.
+
+`_READING` is a stack of paths that `read` pushes and
+`DeclarationError` reads, so all 36 raise sites in `read.py` are
+unchanged - threading a path through 36 signatures to print it in one
+place is the shape this repo spends its effort removing. A stack
+rather than one path, because `_uses` calls `read` for every
+declaration a file imports.
+
+The column is 1-based. `ast` counts columns from 0 and lines from 1,
+which is nobody's convention on either count.
+
+`reading()` exposes the stack for an emitter that refuses a tree the
+corpus already parsed. `pyerrors.entries` was the only one and had
+been printing `<declaration>`.
+
+Proved by renaming `@header` to `@headerr` in `decl/path.py` and
+asking the corpus for `store`:
+
+    .../decl/path.py:32:2: unknown marker @headerr - did you mean
+    @header?
+
+The file named is the IMPORTED one, not the one asked for, and column
+2 is the `h` past the `@`.
 
 **Collected errors, not the first one.** Still raises on the first
 diagnostic. Fine for a build gate, worse for a person fixing three
