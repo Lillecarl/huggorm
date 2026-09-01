@@ -736,6 +736,33 @@ def _guard_head(cls: Class, m: Method,
     ]
 
 
+def _returns(m: Method, known: dict[str, Class] | None) -> str:
+    """A lambda's return type, SPELLED, for every body that has one.
+
+    It started as an optional-only rule - a lambda with two return
+    paths, the value and std::nullopt, cannot deduce one - and the
+    same argument covers more than optionals. A body ending
+    `return {};` for an empty container cannot deduce either, and
+    neither can two returns whose types merely convert. The
+    declaration already said which type it is, so saying it in the
+    lambda costs nothing and removes the whole class of "cannot
+    deduce".
+
+    Both branches of `_method`, because the argument never was about
+    who WROTE the body. A declared body had it and a derived body did
+    not, so `@reads` over a `list[T]` deduced `as_list`'s return
+    where the same accessor with a `Cxx` line spelled it - one fact,
+    stated in one branch of two.
+
+    Empty for a method that returns nothing. `force` and the
+    builders' setters do, and a lambda with no return statement is
+    void.
+    """
+    if m.ret is None:
+        return ""
+    return f" -> {_cxx(m.ret, known)[0]}"
+
+
 def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
             ) -> list[str]:
     """One `.def`, bound by POINTER wherever nanobind allows it.
@@ -758,21 +785,8 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         # A method the declaration could not derive, carried verbatim.
         obj = _self(cls)
         args, opening = _signature(cls, m, known)
-        # The return type, SPELLED, for every body that declares one.
-        #
-        # It started as an optional-only rule - a lambda with two
-        # return paths, the value and std::nullopt, cannot deduce one
-        # - and the same argument covers more than optionals. A body
-        # ending `return {};` for an empty container cannot deduce
-        # either, and neither can two returns whose types merely
-        # convert. The declaration already said which type it is, so
-        # saying it in the lambda costs nothing and removes the whole
-        # class of "cannot deduce" from bodies a person writes.
-        ret = ""
-        if m.ret is not None:
-            ret = f" -> {_cxx(m.ret, known)[0]}"
         head = (f'{INDENT * 2}.def("{m.name}", '
-                f"[]({_held(cls)} &{obj}{args}){ret} {{")
+                f"[]({_held(cls)} &{obj}{args}){_returns(m, known)} {{")
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in m.cxx_body.strip().splitlines()]
         # The tag check goes in FRONT of a declared body. A body says
@@ -785,7 +799,7 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
         obj = _self(cls)
         args, opening = _signature(cls, m, known)
         return [f'{INDENT * 2}.def("{m.name}", '
-                f"[]({_held(cls)} &{obj}{args}) {{",
+                f"[]({_held(cls)} &{obj}{args}){_returns(m, known)} {{",
                 *opening, *derived,
                 f"{INDENT * 2}}}{_extras(cls, m, known)}{tail})"]
     spelled = m.cxx_name or m.name
