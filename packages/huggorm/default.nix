@@ -17,7 +17,20 @@ python3Packages.buildPythonPackage {
   pyproject = true;
   src = ./.;
 
-  build-system = with python3Packages; [ setuptools ];
+  # The generator too, because `setup.py` writes `huggorm/__init__.py`
+  # before setuptools resolves the package list. The front door is a
+  # mapping of Python names onto the two packages behind it, so it is
+  # derived rather than tracked by hand (tasks/064).
+  #
+  # protobuf comes with it: `build_manifest()` reaches the schema
+  # builder, which builds a FileDescriptorSet.
+  build-system = with python3Packages; [
+    setuptools
+    protobuf
+    huggorm-gen
+    huggorm-decl
+    huggorm-dsl
+  ];
 
   # generated is propagated so anyone writing code in/downstream of
   # huggorm sees huggorm_generated in their environment.

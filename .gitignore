@@ -33,6 +33,12 @@ venv/
 # the directory is empty in the checkout and `generate.main` makes it.
 packages/huggorm-bindings/huggorm_bindings/*
 packages/huggorm-generated/huggorm_generated/
+# The library's front door, and the ONLY generated file in an
+# otherwise hand-written package. `setup.py` writes it into the
+# build's copy; `nix run test` writes it into the tree, because with
+# no `__init__.py` here Python prefers the store's regular package
+# and the dev loop would lose every other file in the directory too.
+packages/huggorm/huggorm/__init__.py
 packages/huggorm-generated/huggorm_bindings-stubs/
 
 # generated C++

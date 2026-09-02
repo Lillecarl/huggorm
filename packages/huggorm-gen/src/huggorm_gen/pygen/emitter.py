@@ -1675,13 +1675,35 @@ def init_module(all_names: list[str], free_names: list[str] | None = None) -> as
         ast.Assign(
             targets=[ast.Name(id="__all__")],
             value=ast.List(
-                elts=[ast.Constant(value=f(n))
-                      for n in all_names
-                      for f in (async_class_name, protocol_name, rpc_class_name)]
-                + [ast.Constant(value=REGISTRY)]
-                + [ast.Constant(value=n) for n in free_names]
-            ),
+                elts=[ast.Constant(value=n)
+                      for n in package_exports(all_names, free_names)]),
         )
     )
     ast.fix_missing_locations(mod)
     return mod
+
+
+def package_exports(all_names: list[str],
+                    free_names: list[str] | None = None) -> list[str]:
+    """Everything `huggorm_generated` offers, in `__all__` order.
+
+    Apart from `init_module` because a second file needs the same
+    list: `huggorm.__init__` re-exports this package whole, and the
+    front door is emitted too (tasks/064). Computing it there as well
+    would be one list stated twice, which is exactly the thing that
+    front door existed as.
+
+    `RPC_CLASSES` is in it. It is a registry the client uses to turn a
+    handle into an object rather than surface, and the front door
+    drops it - but this package does export it, and saying otherwise
+    here would be a lie a reader of `__all__` could measure."""
+    from huggorm_gen.pygen.surface import (
+        REGISTRY,
+        async_class_name,
+        protocol_name,
+        rpc_class_name,
+    )
+
+    return ([f(n) for n in all_names
+             for f in (async_class_name, protocol_name, rpc_class_name)]
+            + [REGISTRY] + list(free_names or []))

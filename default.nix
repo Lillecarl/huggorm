@@ -184,6 +184,10 @@ rec {
     ];
     text = ''
       cd "''${HUGGORM_ROOT:-.}/packages/huggorm"
+      # -P, or this copies the file onto itself. Without it Python puts
+      # the cwd first, so once the tree copy exists `import huggorm`
+      # finds THAT one and the source and destination are one file.
+      python3 -P -c 'import huggorm, shutil; shutil.copyfile(huggorm.__file__, "huggorm/__init__.py")'
       export PYTHONPATH="$PWD''${PYTHONPATH:+:$PYTHONPATH}"
       exec pytest "$@"
     '';
