@@ -324,10 +324,13 @@ which was superseded rather than fixed.
   Nix error reaches the caller as itself on all three surfaces, so
   `except BadStorePath` works against the protocol and not only
   against the compiled binding.
-- 050 (shim methods hand-type their signatures) is PARKED, not fixed.
-  Its steps 1-2 are scaffolding for a hand-written pyx, which a
-  generated one obsoletes. Its "end state" section survives and is
-  what the Python-IDL idea arrives at.
+- 050 (shim methods hand-type their signatures) is CLOSED, on a
+  premise Cython took with it. Its steps 1-2 are scaffolding for a
+  hand-written pyx, and there is no pyx or pxd left to scaffold; its
+  "end state" section survives and is what the declaration arrived
+  at. This line said PARKED until 2026-09-02, and the file had said
+  CLOSED since 077 - the two disagreed, which is the drift the check
+  at the top of CLAUDE.md exists to catch.
 - 049 (ping resurrects dead connections) is done. Ping asks a lookup
   that does not create, answers ok=False, and takes its token from the
   metadata like every other rpc. The client stops rather than
@@ -418,6 +421,9 @@ which was superseded rather than fixed.
   and 051 (the front door) are the DX and maintainability half of
   the 2026-08-26 review. 050 is the one that grows with every bound
   method; 046 and 051 are cheapest before there are users.
+  SUPERSEDED: all three are settled. 050 closed with Cython rather
+  than being done, and a signature is stated once now - in the
+  declaration.
 - 014 (transport shims) and 016 (evaluation server) are the
   destinations. 016's lifecycle contract is settled and executable -
   a detached evaluator survives its creator's death and a successor
