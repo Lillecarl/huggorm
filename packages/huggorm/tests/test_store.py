@@ -22,6 +22,9 @@ from huggorm_bindings import (
     ContentAddress,
     DerivedPathBuilt,
     DrvOutput,
+    GCAction,
+    GCOptions,
+    GCResults,
     Hash,
     HashAlgorithm,
     KeyedBuildResult,
@@ -1678,6 +1681,24 @@ def test_every_wire_value_survives_its_own_round_trip(
                      datetime.timedelta(seconds=1, microseconds=250),
                      datetime.timedelta(microseconds=7)),
             [_failed_result()._parts()]),
+        # The options a caller BUILDS, so both cases are constructed
+        # and neither is a producer's answer. Every field differs
+        # between them, the two widths included.
+        #
+        # `max_freed` crosses as the NUMBER the struct holds, not as
+        # the absence the constructor takes: the parameter is None to
+        # leave upstream's default alone, and what the member then
+        # holds is what has to survive.
+        "GCOptions": (
+            GCOptions(GCAction.DELETE_SPECIFIC, True,
+                      sorted([held, other]), 1 << 30),
+            [(GCAction.RETURN_LIVE, False, [held], 4096)]),
+        # Strings, not store paths - the field is a `StringSet`
+        # upstream, because a root can be a path outside the store.
+        # Sorted, because the set's order is what comes back.
+        "GCResults": (
+            _rebuild(GCResults, sorted(["/nix/store/a", "/nix/store/b"]), 8192),
+            [(["/other/root"], 1)]),
     }
 
     declared = _wire_values()
@@ -1825,3 +1846,196 @@ def test_a_real_store_object_survives_its_own_round_trip(
         f"a store's own PathInfo loses {lost} on the round trip:\n"
         f"  sent:      {parts}\n"
         f"  came back: {back}")
+
+
+def test_gc_options_take_every_default_from_upstream() -> None:
+    """An options struct built with no arguments is upstream's own.
+
+    Four defaults, and this repo restates none of them: the
+    constructor writes `nix::GCOptions{}` and assigns only what the
+    caller passed. `max_freed` is the one that proves it - upstream's
+    default is the largest u64, which has no Python literal a
+    declaration could carry, so the parameter takes None and the
+    member is left alone.
+
+    It reads back as None too. That number is a SENTINEL meaning "do
+    not stop" rather than a size, so None is what it means on both
+    sides - and it is also the only spelling that crosses the wire
+    (tasks/079)."""
+    options = GCOptions()
+    assert options.action() == GCAction.DELETE_DEAD
+    assert options.ignore_liveness() is False
+    assert options.paths_to_delete() == []
+    assert options.max_freed() is None
+
+
+def test_gc_options_read_back_what_was_asked_for() -> None:
+    """Every field crosses the constructor and comes back.
+
+    A set of store paths goes in as a list and comes back as one,
+    sorted, because libstore holds them in a `nix::StorePathSet`."""
+    path = StorePath("00000000000000000000000000000000-a")
+    options = GCOptions(action=GCAction.DELETE_SPECIFIC,
+                        ignore_liveness=True,
+                        paths_to_delete=[path],
+                        max_freed=1 << 30)
+    assert options.action() == GCAction.DELETE_SPECIFIC
+    assert options.ignore_liveness() is True
+    assert [p.to_string() for p in options.paths_to_delete()] == \
+        [path.to_string()]
+    assert options.max_freed() == 1 << 30
+
+
+def test_a_store_with_no_collector_refuses_to_collect() -> None:
+    """`nix::GCStore` is a separate interface, and a store may not be
+    one.
+
+    The refusal is libstore's own wording, from the same
+    `dynamic_cast` shape `real_path` uses. `dummy://` holds paths in
+    memory and has no collector, so this is the honest answer rather
+    than an empty result."""
+    with pytest.raises(Unsupported, match="not supported by store"):
+        Store("dummy://").collect_garbage(GCOptions())
+
+
+def test_a_path_this_process_added_is_not_garbage(chroot: Store) -> None:
+    """`RETURN_DEAD` answers nothing here, and that is the right answer.
+
+    Measured rather than expected. This test was written asserting the
+    opposite - that a path nothing points at is dead the moment it
+    lands - and the collector disagreed: it ran, said "finding garbage
+    collector roots... deleting garbage...", and returned no paths and
+    no bytes.
+
+    `LocalStore::addToStore` calls `addTempRoot` on what it adds, and
+    a temp root belongs to the PROCESS that took it. So this
+    interpreter holds the path alive for as long as it runs, and a
+    second `Store` on the same root would not help - the root is the
+    process's, not the object's.
+
+    That is the protection working, and it is worth a gate: a
+    collection running in one process must not delete what another
+    process is in the middle of adding.
+
+    Both halves are asserted. The path is absent from the answer, and
+    it is still valid afterwards."""
+    path = chroot.add_to_store(
+        "kept", b"this process is holding me\n", CA.TEXT, HashAlgorithm.SHA256)
+
+    results = chroot.collect_garbage(GCOptions(action=GCAction.RETURN_DEAD))
+    assert chroot.print_store_path(path) not in results.paths()
+    assert results.bytes_freed() == 0
+    assert chroot.is_valid_path(path)
+
+
+def test_deleting_a_path_this_process_holds_is_refused(chroot: Store) -> None:
+    """`DELETE_SPECIFIC` on a live path raises, and says why.
+
+    The other side of the temp root above. `RETURN_DEAD` answers with
+    nothing, which reads like an empty store; naming the path outright
+    gets libstore's own refusal, which names the two queries a person
+    would run next.
+
+    `ignore_liveness` does NOT get past this, and the reading that
+    said it would was wrong. `gc.cc:520` guards `findRootsNoTemp` with
+    it - "NoTemp", the PERMANENT roots - and the temporary roots are
+    read unconditionally on the next lines. So the flag drops the
+    permanent-root check only, and a path another process might be
+    part-way through adding is protected either way. That is the
+    right design and it is why this test asserts a raise rather than
+    a deletion."""
+    path = chroot.add_to_store(
+        "doomed", b"nothing points at me\n", CA.TEXT, HashAlgorithm.SHA256)
+
+    with pytest.raises(NixError, match="still alive"):
+        chroot.collect_garbage(GCOptions(
+            action=GCAction.DELETE_SPECIFIC,
+            ignore_liveness=True,
+            paths_to_delete=[path]))
+    assert chroot.is_valid_path(path)
+
+
+@pytest.mark.live
+def test_asking_a_real_store_what_is_dead_deletes_nothing(
+        ambient_store: Store) -> None:
+    """`RETURN_DEAD` against a store with real content in it.
+
+    What this proves, exactly: the call runs against a LocalStore
+    holding tens of thousands of paths, it frees nothing, and every
+    string it answers with is a store path. The hermetic cases run
+    against a store that has never held anything dead, so the code
+    path that walks a real root set has no other cover.
+
+    What it does NOT prove is `bytes_freed`, and nothing here can. A
+    chroot store holds nothing dead - every path the run adds is held
+    by the run's own temp root until the interpreter exits - and the
+    only call that would free bytes is one a test must never make
+    against a developer's store. So the deleting arm is unproven on
+    purpose, and `tasks/037` holds the question of what a live test
+    gets to assume.
+
+    The answer may legitimately be EMPTY, on a machine collected a
+    moment ago. So emptiness is not asserted either way: what is
+    asserted is that nothing was freed, and that whatever came back
+    is something this store can read back as one of its own paths.
+
+    `parse_store_path` is the check rather than a string prefix. It
+    is the store's own answer to "is this mine", and it refuses a
+    path under another store directory - which a prefix written here
+    would have to guess at."""
+    results = ambient_store.collect_garbage(
+        GCOptions(action=GCAction.RETURN_DEAD))
+    assert results.bytes_freed() == 0
+    for printed in results.paths():
+        assert ambient_store.parse_store_path(printed).to_string()
+
+
+def test_the_default_max_freed_crosses_the_wire() -> None:
+    """`GCOptions()` must survive a message, and "no limit" is where
+    it nearly did not.
+
+    The round-trip gate above cannot see this: it calls `_from_parts`
+    in process and never builds a message.
+
+    Upstream spells "no limit" as the largest u64. Reading that back
+    as a number and sending it refused:
+
+        ValueError: Value out of range: 18446744073709551615
+
+    Every wire field spelled `int` is one proto type and that type is
+    signed, so the DEFAULT options could not cross an RPC at all -
+    which is what a caller who wants "collect everything" sends. The
+    accessor answers None for the sentinel now, and an absence
+    crosses.
+
+    `nar_size` never reached this. A real NAR size stays under 2**63,
+    so the width has been academic until now. The width question
+    itself is not answered here; tasks/079 holds it."""
+    from google.protobuf import message_factory
+
+    from huggorm.grpc_pb import load_pool
+    from huggorm.wire import WireCodec
+
+    codec = WireCodec()
+    pool = load_pool()
+    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
+        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+            "huggorm.v1.GCOptionsMsg"))
+
+    sent = GCOptions()
+    assert sent.max_freed() is None, (
+        "no limit is an absence, not the sentinel upstream stores")
+
+    msg = kls()
+    codec.value_to_msg("GCOptions", sent, msg)
+    assert not msg.HasField("max_freed")
+    back = codec.value_from_msg("GCOptions", msg)
+    assert back.max_freed() is None
+    assert back == sent
+
+    # ...and a real limit still crosses as itself.
+    limited = GCOptions(max_freed=1 << 30)
+    other = kls()
+    codec.value_to_msg("GCOptions", limited, other)
+    assert other.max_freed == 1 << 30
+    assert codec.value_from_msg("GCOptions", other).max_freed() == 1 << 30
