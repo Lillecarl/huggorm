@@ -201,9 +201,10 @@ which was superseded rather than fixed.
   evaluate a file, delete it, evaluate it again, and the answer comes
   from the cache. A fresh state asked the same thing in the same
   moment says "opening file ... No such file or directory", which is
-  the control. What is left of the milestone is proving the cache
-  survives a HANDOVER - the lifecycle test detaches and claims, and
-  does not yet evaluate a file across it.
+  the control. The MILESTONE is reached: a successor claims the state
+  after a sweep and answers for a file deleted before it, while a
+  fresh state on the same server cannot. What is left is watched
+  files and background eager evaluation.
 - 078 (a declaration nobody lists reaches nothing) is DONE. `corpus()`
   censuses `decl/` against the lists and the build fails when they
   disagree. The plan in the file was wrong: "every `*.py` in exactly

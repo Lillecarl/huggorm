@@ -103,12 +103,36 @@ cache belongs to the STATE. A fresh evaluator reads; a state that
 dies takes the warm work with it. So the handover is not a
 convenience over restarting - restarting is what loses the work.
 
-### What is still missing
+### The milestone, reached the same day
 
-The gate proves the cache exists and is state-local. It does not
-prove it survives a HANDOVER, which is the milestone itself: the
-lifecycle test does the detach-and-claim, and it does not yet
-evaluate a file across it. That is the next piece.
+`test_a_claimed_state_answers_for_a_file_it_can_no_longer_read`.
+
+The creator evaluates a file over RPC, deletes it, detaches and stops
+pinging. The sweeper reaps the connection. A successor claims the
+token, asks the same state for the same path, and gets 42 - from a
+file that has not existed since before the sweep. A FRESH state on
+the same server, asked in the same moment, says
+
+    SysError: error: opening file '.../answer.nix':
+    No such file or directory
+
+That is `CLAUDE.md`'s milestone sentence, executable.
+
+Two things it does NOT prove, and the first is the same caveat the
+sibling test above carries. A handle id is the access capability, so
+this shows the OBJECT survived, not that the CLAIM is what kept it -
+`tasks/031`. And "does no re-evaluation" is shown by the file being
+gone, not by counting evaluations: a cache hit that somehow
+re-evaluated from a parsed expression it had kept would pass this.
+Both are worth a better instrument, neither is worth a weaker claim.
+
+One thing measured on the way. `wrapper_error` does not see this
+failure: a declared Nix error crosses as ITSELF (`tasks/066`), so the
+cold state's SysError went straight past a helper that catches only
+`InternalError`. Written the wrong way first, and the traceback is
+what said so.
+
+### What is still missing
 
 Watched files and background eager evaluation are still untouched.
 `resetFileCache` is deliberately NOT bound: nothing but a test would
