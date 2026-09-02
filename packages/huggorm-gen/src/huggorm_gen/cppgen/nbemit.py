@@ -1766,6 +1766,43 @@ def _field_cxx(wire: str, known: dict[str, Class] | None = None) -> str:
         f"nbemit.FIELD_CXX, or declare the class it names.")
 
 
+def _rebuilt(m: Method | None, known: dict[str, Class] | None) -> str:
+    """One part, converted back to what the C++ member IS, or "".
+
+    A part arrives as the wire carries it, and a `list[T]` is a
+    vector. Where the member is a SET, aggregate initialisation does
+    not convert - `could not convert 'paths' from
+    'std::vector<std::string>' to 'nix::StringSet'` is what the
+    compiler says, and it says it about a line this emitter wrote.
+
+    Two declarations answer, and they are one fact stated at two
+    scopes. `@binding(collection=...)` on the ELEMENT class says every
+    `list[StorePath]` is a `nix::StorePathSet`. `@reads(member,
+    collection=...)` says THIS member is, and it exists for the case
+    with no element class to ask: `str` is a builtin, and
+    `nix::GCResults::paths` is a `StringSet`.
+
+    The field's own answer wins. It is the more specific of the two,
+    and a class-wide rule that could not be overridden would make the
+    exception unsayable.
+
+Both branches have a user. `GCResults.paths` needs the field's,
+    and `MissingPaths` needs the class's - its three path lists are
+    `StorePathSet`s, and it used to carry a declared `_from_parts`
+    whose whole body was the three `as_set` calls this now writes.
+    That body is gone, which is the point: it was a mapping, and a
+    mapping is derived.
+
+    `PathInfo` still writes its own, for reasons that are not this
+    one - a virtual base, so it is not an aggregate at all."""
+    if m is None or m.ret is None:
+        return ""
+    held = m.member_collection or _collection(m.ret, known)
+    if not held:
+        return ""
+    return f"as_set<{held}>({m.name})"
+
+
 def _from_parts(cls: Class, known: dict[str, Class] | None = None
                 ) -> list[str]:
     """`_from_parts`, for a value nothing constructs.
@@ -1810,7 +1847,9 @@ def _from_parts(cls: Class, known: dict[str, Class] | None = None
         body = [f"{INDENT * 3}{ln}".rstrip()
                 for ln in written.cxx_body.strip().splitlines()]
     else:
-        names = ", ".join(n for n, _, _ in fields)
+        names = ", ".join(_rebuilt(m, known) or n
+                          for (n, _, _), (_, m) in zip(fields, cls.parts,
+                                                       strict=True))
         body = [f"{INDENT * 3}return {_held(cls)}({names});"]
     doc = _doc(written.doc) if written is not None and written.doc \
         else FROM_PARTS_DOC

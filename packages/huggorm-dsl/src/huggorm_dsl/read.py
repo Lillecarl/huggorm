@@ -336,6 +336,10 @@ class Method:
     # The C++ data member behind this name, from @reads. Empty when
     # the accessor is a call rather than a field.
     reads: str = ""
+    # The C++ container that member IS, from @reads(collection=...).
+    # Empty for a plain vector, and for every accessor whose element
+    # class already states it. See `reads` in declare.py.
+    member_collection: str = ""
     # Verbatim C++ for an accessor nothing can derive, from @cxx_body.
     cxx_body: str = ""
     # The arm NAME this accessor needs, from @guard. Resolved to an
@@ -967,6 +971,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         overload=any(isinstance(d, ast.Name) and d.id == "overload"
                      for d in node.decorator_list),
         reads=getattr(marked, "_reads", ""),
+        member_collection=getattr(marked, "_member_collection", ""),
         cxx_body=_body(node),
         local=bool(getattr(marked, "_local", False)),
         headers=tuple(getattr(marked, "_needs", ())),

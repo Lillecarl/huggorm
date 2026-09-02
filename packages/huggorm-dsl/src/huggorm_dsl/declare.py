@@ -799,20 +799,32 @@ def local[F: Callable[..., Any]](fn: F) -> F:
     return fn
 
 
-def reads[F: Callable[..., Any]](member: str) -> Callable[[F], F]:
+def reads[F: Callable[..., Any]](member: str,
+                                 collection: str = "") -> Callable[[F], F]:
     """This accessor reads a C++ DATA MEMBER, not a method.
 
     The distinction is not pedantry, it decides what gets emitted. A
-    member read binds as `def_ro("name", &Cls::member)` and nanobind
-    writes the accessor itself; a method call needs a lambda or a
-    method pointer. `@cxx_name` says what C++ calls a FUNCTION, this
-    says which FIELD is behind a name.
+    member is reached - `self.narSize` - where a method is called, and
+    `.def` takes a function so `&T::narSize` cannot be bound directly.
+    `@cxx_name` says what C++ calls a FUNCTION, this says which FIELD
+    is behind a name.
 
     One word, because which of the two it is is a fact about C++
     rather than about the surface: a caller writes `info.name()`
-    either way."""
+    either way.
+
+    `collection` is the C++ type this member is, where a
+    `list[T]` reaches a container that is not a vector.
+    `@binding(collection=...)` states the same fact about an ELEMENT
+    class - every `list[StorePath]` is a `nix::StorePathSet` - and
+    this is for the case that has no element class to state it on:
+    `nix::GCResults::paths` is a `StringSet`, and `str` is a builtin.
+
+    Only the WRITE direction needs it. Reading goes through `as_list`,
+    which is a template over any range."""
     def apply(fn: F) -> F:
         fn._reads = member  # type: ignore[attr-defined]
+        fn._member_collection = collection  # type: ignore[attr-defined]
         return fn
     return apply
 
