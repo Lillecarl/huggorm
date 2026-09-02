@@ -327,3 +327,66 @@ class TrustedFlag:
     An untrusted client cannot repair paths, cannot add signatures of
     its own, and cannot import a path claiming a signature it does not
     have. A daemon decides this from the connecting user."""
+
+
+@header("nix/store/gc-store.hh")
+@words(
+    # No `parsed_by`, CHECKED rather than assumed. The only
+    # conversions upstream are the worker protocol's, and they read
+    # and write a NUMBER - `readNum<unsigned>` and a switch back
+    # (`worker-protocol.cc:83`). Nothing turns a string into one, so
+    # both directions are this binding's own.
+    enumerated=Enumerated(
+        "nix::GCAction",
+        # Upstream prefixes every enumerator with the type it is
+        # already inside - `gcDeleteDead` on a `GCAction`. The word
+        # drops the prefix, so the spelling has to be stated.
+        spelled={
+            "RETURN_LIVE": "gcReturnLive",
+            "RETURN_DEAD": "gcReturnDead",
+            "DELETE_DEAD": "gcDeleteDead",
+            "DELETE_SPECIFIC": "gcDeleteSpecific",
+        },
+    ),
+)
+class GCAction:
+    """What a garbage collection should DO.
+
+    Four answers, and only two of them delete anything. That is the
+    reason this is a word rather than a flag: `nix-store --gc
+    --print-dead` and `nix-store --gc` are the same call with this
+    field changed, and a caller who wants the list must not be one
+    typo away from the deletion.
+
+    A scoped enum upstream - `enum class GCAction` - so
+    `nix::GCAction::gcDeleteDead` is how a body spells one, which is
+    the emitter's usual `{cxx}::{word}` with the spelling above.
+    """
+
+    RETURN_LIVE = "return-live"
+    """Answer with the paths reachable from the roots, and delete
+    nothing.
+
+    The closure of everything something still points at. `nix-store
+    --gc --print-live`."""
+
+    RETURN_DEAD = "return-dead"
+    """Answer with the paths NOT reachable from the roots, and delete
+    nothing.
+
+    What a collection would remove, without removing it. `nix-store
+    --gc --print-dead`."""
+
+    DELETE_DEAD = "delete-dead"
+    """Delete everything the roots do not reach.
+
+    Upstream's default, and what `nix-store --gc` does with no other
+    argument."""
+
+    DELETE_SPECIFIC = "delete-specific"
+    """Delete the listed paths, and only those that nothing reaches.
+
+    The list is `GCOptions.paths_to_delete`. A path something still
+    points at survives, so this asks rather than orders - `nix-store
+    --delete` is the same operation and fails loudly on a path with
+    referrers."""
