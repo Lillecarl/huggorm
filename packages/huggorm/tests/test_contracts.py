@@ -598,3 +598,47 @@ def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
                 type(f"Sub{name}", (cls,), {})
             checked.append(name)
     assert checked, "the manifest declares no wire value"
+
+
+def test_each_64_bit_width_reaches_its_own_proto_type(
+        manifest: dict[str, Any]) -> None:
+    """A `uint` field is a uint64 and an `int` field is a sint64.
+
+    Python has one integer type and C++ has two of 64 bits, so the
+    declaration is the only place the width lives. It used to stop
+    there: every int field became one proto type, `sint64`, which
+    holds an int64_t and half of a uint64_t.
+
+    The half it drops is not hypothetical. Upstream spells "no limit"
+    as the largest uint64_t, and sending `GCOptions()` raised
+    `ValueError: Value out of range: 18446744073709551615` -
+    the default options object could not cross an RPC (tasks/079).
+
+    Derived from the manifest, so a field that changes width is
+    checked by the same run that emits it. Both counts are asserted:
+    a manifest that stopped spelling `uint` would otherwise pass this
+    by having nothing to check."""
+    from google.protobuf.descriptor import FieldDescriptor
+
+    from huggorm.grpc_pb import PKG, load_pool
+
+    pool = load_pool()
+    want = {"uint": FieldDescriptor.TYPE_UINT64,
+            "int": FieldDescriptor.TYPE_SINT64}
+    seen = {"uint": 0, "int": 0}
+    for group in ("wrappers", "returned_types"):
+        for name, proto in manifest[group].items():
+            if proto["wire"] != "value":
+                continue
+            desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+                f"{PKG}.{proto['message']}")
+            for fname, ftype in proto["wire_fields"]:
+                ftype = ftype.removesuffix("?")
+                if ftype not in want:
+                    continue
+                seen[ftype] += 1
+                assert desc.fields_by_name[fname].type == want[ftype], (
+                    f"{name}.{fname} is declared {ftype} and the schema "
+                    f"disagrees")
+    assert seen["uint"], "no field crosses unsigned; the width is unproven"
+    assert seen["int"], "no field crosses signed; the width is unproven"

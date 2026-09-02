@@ -2039,3 +2039,40 @@ def test_the_default_max_freed_crosses_the_wire() -> None:
     codec.value_to_msg("GCOptions", limited, other)
     assert other.max_freed == 1 << 30
     assert codec.value_from_msg("GCOptions", other).max_freed() == 1 << 30
+
+
+def test_a_limit_above_the_signed_range_crosses_as_itself() -> None:
+    """The top half of a uint64_t survives a message.
+
+    This is the whole of `tasks/079`, and it fails without it:
+
+        ValueError: Value out of range: 9223372036854775809
+
+    `max_freed` is a `U64`, and every wire field spelled `int` was one
+    proto type - `sint64`, which holds an int64_t. A u64 above 2**63
+    had nowhere to go, so the codec refused it on the way out. It now
+    crosses as `uint`, which is a `uint64`.
+
+    2**63 + 1 rather than the largest u64, and the difference matters:
+    the largest IS upstream's "no limit" sentinel, so the accessor
+    answers None for it and an absence would cross instead. This is a
+    number a caller meant."""
+    from google.protobuf import message_factory
+
+    from huggorm.grpc_pb import load_pool
+    from huggorm.wire import WireCodec
+
+    codec = WireCodec()
+    pool = load_pool()
+    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
+        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+            "huggorm.v1.GCOptionsMsg"))
+
+    huge = (1 << 63) + 1
+    sent = GCOptions(max_freed=huge)
+    assert sent.max_freed() == huge, "the binding keeps it before the wire does"
+
+    msg = kls()
+    codec.value_to_msg("GCOptions", sent, msg)
+    assert msg.max_freed == huge
+    assert codec.value_from_msg("GCOptions", msg).max_freed() == huge

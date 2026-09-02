@@ -240,6 +240,152 @@ def test_the_reader_sees_an_accessor_the_import_kept_as_a_descriptor(
     assert cls.methods[0].prop
 
 
+# One value carrying both 64-bit widths. Written here because the
+# corpus has each width but never both on one class, and the fact
+# under test is the DIFFERENCE between them (tasks/079).
+WIDTHS = '''"""One value that carries both 64-bit widths."""
+
+from huggorm_dsl.declare import (
+    I64,
+    U64,
+    Cxx,
+    binding,
+    header,
+    wire_value,
+)
+
+
+@header("nix/store/path-info.hh")
+@binding(cxx="nix::Sizes", threading="pool", blocking=False)
+@wire_value()
+class Sizes:
+    """Two numbers, one of each width."""
+
+    def total(self) -> U64:
+        """How many bytes there are."""
+        Cxx("return self.total;")
+
+    def when(self) -> I64:
+        """When it happened, as a Unix time."""
+        Cxx("return self.when;")
+'''
+
+# The same width inside a CONTAINER. `type_of` attaches the alias's
+# C++ spelling to the whole `dict[str, U64]`, so a reader that took
+# it at face value would call the dict a uint.
+HELD = '''"""One value whose field is a container of a width."""
+
+from huggorm_dsl.declare import U64, Cxx, binding, header, wire_value
+
+
+@header("nix/store/path-info.hh")
+@binding(cxx="nix::Sizes", threading="pool", blocking=False)
+@wire_value()
+class Sizes:
+    """One number per name."""
+
+    def by_name(self) -> "dict[str, U64]":
+        """How many bytes each one holds."""
+        Cxx("return self.by_name;")
+'''
+
+# A PROXY whose method takes the unsigned width. A proxy is reached
+# through a service, so this parameter is a message field - and the
+# manifest has one string for it, read as a Python annotation by the
+# stubs and as a wire type by the schema.
+TAKES = '''"""One proxy whose method takes a width."""
+
+from huggorm_dsl.declare import U64, Bint, Cxx, binding, header
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Sizes", threading="pool", blocking=True)
+class Sizes:
+    """A thing a caller keeps a handle on."""
+
+    def fits(self, limit: U64) -> Bint:
+        """Whether it fits under the limit."""
+        Cxx("return self.fits(limit);")
+'''
+
+
+def test_a_field_says_which_64_bit_integer_it_is(
+        tmp_path: pathlib.Path) -> None:
+    """`U64` crosses as `uint` and `I64` as `int`, and Python sees
+    `int` for both.
+
+    One proto type carried every integer before this, and it was
+    `sint64` - which holds every int64_t and half of a uint64_t. The
+    half it does not hold is not hypothetical: upstream spells "no
+    limit" as the largest uint64_t, so `GCOptions()` - the DEFAULT -
+    could not cross an RPC at all:
+
+        ValueError: Value out of range: 18446744073709551615
+
+    The width was already in the declaration, in the C++ spelling the
+    alias carries. `Type.wire` threw it away.
+
+    Both halves are asserted. The wire tells the two apart, and the
+    manifest's Python spelling does NOT - a caller holds an `int`
+    either way, and a stub that said `uint` would name a type Python
+    does not have."""
+    from huggorm_dsl.read import read
+    from huggorm_gen.cppgen import manifest
+
+    cls = read(_declaration(tmp_path, WIDTHS)).classes[0]
+    assert [(f.name, f.type) for f, _ in cls.parts] == [
+        ("total", "uint"), ("when", "int")]
+
+    entry = manifest.entry(cls, "pkg", "mod")
+    assert entry["wire_fields"] == [["total", "uint"], ["when", "int"]]
+    assert [(m["name"], m["return_type"]) for m in entry["methods"]] == [
+        ("total", "int"), ("when", "int")]
+
+
+def test_a_container_of_a_width_is_refused_rather_than_guessed(
+        tmp_path: pathlib.Path) -> None:
+    """`dict[str, U64]` has no wire spelling, and says so.
+
+    The reader attaches an alias's C++ spelling to the whole
+    annotation, so the uint64_t on this field describes what the dict
+    HOLDS. Naming the dict `uint` would be wrong and calling it a
+    plain `dict[str, int]` would lose the top half of every value in
+    it - so it refuses, which is the only one of the three that
+    cannot be silently wrong.
+
+    No declaration writes one today. That is why it is written here:
+    the branch would otherwise be unread."""
+    from huggorm_dsl.read import read
+
+    cls = read(_declaration(tmp_path, HELD)).classes[0]
+    with pytest.raises(TypeError, match="tasks/079"):
+        _ = cls.parts
+
+
+def test_a_service_refuses_a_parameter_whose_width_it_cannot_spell(
+        tmp_path: pathlib.Path) -> None:
+    """A proxy method may not take a `U64`.
+
+    A FIELD says its own width; a parameter does not. `params[].type`
+    is one string, read by the stub emitter as a Python annotation and
+    by the schema builder as a wire type, and `int` cannot be both
+    right for the first and right for the second.
+
+    Refused at build time rather than carried, because carrying it
+    means a second key beside `type` that `model.py` cannot reflect
+    off a compiled class - so `check.py` would diff the manifest
+    against a shape reflection has no way to produce. Nothing declares
+    such a parameter, so the refusal costs nothing and the wrong
+    answer would have been a silently truncated number."""
+    from huggorm_dsl.read import read
+    from huggorm_gen.cppgen import manifest
+
+    cls = read(_declaration(tmp_path, TAKES)).classes[0]
+    assert not cls.decl.wire, "a plain @binding is a proxy"
+    with pytest.raises(TypeError, match="tasks/079"):
+        manifest.entry(cls, "pkg", "mod")
+
+
 def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
         tmp_path: pathlib.Path) -> None:
     """`@property` is refused, because a binding alone cannot honour it.
