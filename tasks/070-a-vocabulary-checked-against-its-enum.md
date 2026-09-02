@@ -307,7 +307,23 @@ One mode of three is observably different, and one is enough.
 
 ## What is NOT done
 
-`TrustedFlag`, `GCAction` and `FileIngestionMethod` are the queue.
+`GCAction` and `FileIngestionMethod` are the queue, and neither is
+just a vocabulary any more:
+
+- **`GCAction`** wants `Store.collect_garbage`, which takes a
+  `GCOptions` a caller BUILDS and answers a `GCResults`. Every record
+  in this repo today is `@produced(by=...)` - something libstore
+  made - so an input record is a shape the DSL does not have. That
+  is `tasks/074`, with the name clash it also has.
+- **`FileIngestionMethod`** has no binding that takes one.
+  `add_to_store` takes `ContentAddressMethod`, and
+  `ContentAddressMethod::parse` reaches
+  `parseFileIngestionMethod` internally - so the word never appears
+  on a signature. It stays queued, and a commit of it alone would
+  emit nothing at all.
+
+`TrustedFlag` came off the queue on 2026-09-02, with
+`Store.is_trusted_client` as its first user. Details below.
 
 `BuildResultSuccessStatus` and `BuildResultFailureStatus` came off
 it on 2026-09-01. The larger question this file named was right:
@@ -327,3 +343,83 @@ of one alone would prove nothing.
 The two front doors that gained a `BuildMode` re-export line each by
 hand are fixed: `tasks/064` is done and both are emitted. A new
 vocabulary reaches them with no line written.
+
+## TrustedFlag, 2026-09-02
+
+`Store.is_trusted_client` binds `isTrustedClient`, whose upstream
+return is `std::optional<TrustedFlag>`. So the vocabulary landed with
+its first user, the way the queue rule says.
+
+**Three answers, not two, and that is why it is a vocabulary rather
+than a `bool`.** A store can say yes, no, or nothing at all: an HTTP
+binary cache has no notion of who is asking. A `bool` return would
+have had to pick a side for the third.
+
+**No `parsed_by`, and it was CHECKED.** BuildMode's case made it
+likely and the source settled it: the only conversions upstream are
+the JSON pair in `misc.cc`, which read and write a BOOLEAN. There is
+no string parser and no renderer, so both words are this binding's
+own.
+
+**An unscoped enum over `bool`** - `enum TrustedFlag : bool {
+NotTrusted = false, Trusted = true }` - and nothing in the
+declaration says so. `nix::TrustedFlag::Trusted` is how upstream
+itself writes one, so the emitter's usual `{cxx}::{word}` spelling is
+right with no `Wrap` and no special case.
+
+### The optional return needed nothing, and why that is worth keeping
+
+A `Vocab | None` return is a first here, and the expectation was that
+it would hit `CXX_OPTIONAL` - the table `_accessor` reads to give a
+two-return-path lambda an explicit type. It did not. A METHOD's
+return is spelled by `_cxx`, which resolves a words class to
+`std::string` and wraps it, so the emitted lambda already says `->
+std::optional<std::string>`.
+
+The gap is real and it is in the other emitter: `_accessor` still
+reads `CXX_OPTIONAL` by literal string, so a PRODUCED VALUE whose
+accessor returns `Vocab | None` would get no return type and fail to
+compile. Nothing declares one, so this is a code reading rather than
+a measurement. `tasks/075`.
+
+### PERTURBED, three ways
+
+1. **A `spelled` entry removed.** `error: 'NOT_TRUSTED' is not a
+   member of 'nix::TrustedFlag'` - the word falls back to the default
+   `{cxx}::{word}` spelling, which does not exist. That is 070's own
+   P3 gate firing on a new vocabulary.
+2. **The WORD removed from the class.** `error: enumeration value
+   'NotTrusted' not handled in switch [-Werror=switch]`. This is the
+   one worth doing: the enum's underlying type is `bool` with exactly
+   two enumerators, and the switch gate had never been shown to hold
+   for that shape.
+3. **The optional inverted in the C++ body** (`if (flag)` for `if
+   (!flag)`): `assert None == <TrustedFlag.TRUSTED: 'trusted'>`. The
+   test has teeth on the arm a store actually answers.
+
+### Both arms of the optional are hermetic
+
+Which was not obvious and decided the test. `dummy://` answers
+`Trusted` - upstream's comment says it is "incapable of *not*
+trusting" - and `ssh://` answers `std::nullopt` unconditionally,
+because the legacy SSH protocol has no way to ask. Opening an
+`ssh://` store CONNECTS TO NOTHING, so the host in the test does not
+exist and the test needs no network and no daemon.
+
+`not-trusted` is the third word and no store reachable from a test
+produces it: it takes a daemon that decided from the connecting
+user, or the restricted store an evaluation builds internally. The
+compile gate is what covers it.
+
+### All four surfaces carry it, which was worth checking
+
+`TrustedFlag | None` is the first OPTIONAL SCALAR return here - a
+vocabulary rides the string scalar, and absence rides the synthetic
+one-field oneof from `tasks/048`. Two gated pieces, in a composition
+nothing had used, and an unrepresentable return is REPORTED rather
+than raised: the method would have kept its in-process wrapper, lost
+its rpc, and said so in a build warning nobody was reading.
+
+It did not. `is_trusted_client` is in `_policy.py`, `async_store.py`,
+`protocols.py` and `rpc.py`, and the protocol spells it `async def
+is_trusted_client(self) -> TrustedFlag | None`.
