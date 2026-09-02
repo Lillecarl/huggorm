@@ -1053,7 +1053,7 @@ def targets_name(item: ast.Assign) -> str:
 
 
 def _class(node: ast.ClassDef, vocab: dict[str, str],
-           where: str = "", live: set[int] | None = None) -> Class:
+           where: str, live: set[int]) -> Class:
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}),
                     "class")
     decl: Decl = holder.__dict__.get("_decl", Decl())
@@ -1203,7 +1203,7 @@ def _mentions(cls: Class, node: ast.AST) -> None:
 
 
 @functools.cache
-def load(path: str) -> ModuleType | None:
+def load(path: str) -> ModuleType:
     """One declaration, IMPORTED.
 
     A declaration is read twice, and this is the second reading. The
@@ -1218,27 +1218,52 @@ def load(path: str) -> ModuleType | None:
     while executing the file, and a reader that keeps the module gets
     all of it for free instead of walking the tree again.
 
-    `None` when the file will not import. That is not a failure: a
-    declaration is a document first, and one that cannot be imported
-    still parses - so a caller falls back to the tree alone.
+    A file that will not import is REFUSED, with the reason it gave.
+    This used to answer None, on the reading that a declaration is a
+    document first and one that cannot be imported still parses - so
+    a caller fell back to the tree alone.
+
+    That fallback is silent, and it is silent in the way this repo
+    has now been bitten by four times. A `@property` under any other
+    marker raises `AttributeError: 'property' object has no attribute
+    '_instant'` while the module executes, and the file then read
+    tree-only - as did every file importing from it. The tree read is
+    not obviously wrong: a declaration with no `NIX_VERSION` branch
+    keeps exactly the same nodes either way, so nothing anywhere
+    said a word (tasks/082).
+
+    Nothing wanted the fallback. Every declaration in `decl/`
+    imports, and the one emitter that already asked - `pyerrors` -
+    refused a non-importing file rather than guessing at a hierarchy
+    it could not read. This says the same thing for all of them, and
+    says WHY, which that refusal could not.
 
     CACHED by path, because two readers now want the same module and
     executing a declaration twice would run its decorators twice."""
     import importlib.util
 
     name = f"_huggorm_decl_{pathlib.Path(path).stem}"
+    here = pathlib.Path(path).name
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise DeclarationError.already(
+            f"{here}: Python will not load this file as a module at all.")
+    mod = importlib.util.module_from_spec(spec)
     try:
-        spec = importlib.util.spec_from_file_location(name, path)
-        if spec is None or spec.loader is None:
-            return None
-        mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-    except Exception:
-        return None
+    except Exception as e:
+        # The cause, verbatim. A declaration fails to import for
+        # reasons that are one line to fix and impossible to guess
+        # at: a marker decorator over a `@property` sets an attribute
+        # on a descriptor and raises, and "it did not import" alone
+        # would send a reader to the wrong file.
+        raise DeclarationError.already(
+            f"{here}: the declaration does not import, so nothing says "
+            f"which definitions exist. {type(e).__name__}: {e}") from e
     return mod
 
 
-def _live(path: str) -> set[int] | None:
+def _live(path: str) -> set[int]:
     """The first line of every class and function the IMPORT kept.
 
     A declaration may branch on `NIX_VERSION`, and Python resolves
@@ -1251,14 +1276,10 @@ def _live(path: str) -> set[int] | None:
     has decorators and the `def`/`class` line when it has none, so a
     caller matches either.
 
-    `None` when the file will not import. That is not a failure here:
-    a declaration is a document first, and one that cannot be
-    imported still parses - so the reader falls back to the tree
-    alone and every `if` arm is read. `_resolve` says what that
-    costs."""
+    Always a set. `load` refuses a file that will not import, so
+    "the import kept nothing because there was no import" is no
+    longer one of the answers (tasks/082)."""
     mod = load(path)
-    if mod is None:
-        return None
     name = mod.__name__
 
     # Only what THIS file defines. A declaration imports its
@@ -1299,7 +1320,7 @@ def _live(path: str) -> set[int] | None:
     return lines
 
 
-def _reconcile(tree: ast.Module, live: set[int] | None, path: str) -> None:
+def _reconcile(tree: ast.Module, live: set[int], path: str) -> None:
     """Every definition the import kept must exist in the tree.
 
     The two readings come from one file in one call, so they cannot
@@ -1337,16 +1358,20 @@ def _reconcile(tree: ast.Module, live: set[int] | None, path: str) -> None:
             f"`co_firstlineno` no longer points where this assumes.")
 
 
-def _resolve(body: list[ast.stmt], live: set[int] | None) -> list[ast.stmt]:
+def _resolve(body: list[ast.stmt], live: set[int]) -> list[ast.stmt]:
     """One body with its `if` arms already chosen.
 
     Nothing here evaluates a condition. Python did that during the
     import, and this keeps what Python kept - matched by the line a
     definition starts on.
 
-    With `live` unknown the `if` is flattened whole, which reads both
-    arms and will usually declare a name twice. That is loud rather
-    than silent: the emitter binds it twice and the build says so."""
+    There used to be a third answer here: with `live` unknown the
+    `if` was flattened whole, both arms read, the name usually
+    declared twice. It was defended as loud rather than silent, and
+    it was neither - a declaration with no `if` in it keeps exactly
+    the same nodes that way, so a file that did not import read as a
+    file that did. `load` refuses one now, so `live` is always known
+    (tasks/082)."""
     out: list[ast.stmt] = []
 
     def walk(nodes: list[ast.stmt]) -> None:
@@ -1356,7 +1381,7 @@ def _resolve(body: list[ast.stmt], live: set[int] | None) -> list[ast.stmt]:
                 walk(n.orelse)
             elif isinstance(n, ast.ClassDef | ast.FunctionDef):
                 own = {n.lineno} | {d.lineno for d in n.decorator_list}
-                if live is None or own & live:
+                if own & live:
                     out.append(n)
             else:
                 out.append(n)
@@ -1409,7 +1434,7 @@ def resolved(path: str) -> ast.Module:
         _READING.pop()
 
 
-def _chosen(path: str) -> tuple[ast.Module, set[int] | None]:
+def _chosen(path: str) -> tuple[ast.Module, set[int]]:
     """One declaration parsed, its `if` arms chosen, and which lines
     the import kept.
 

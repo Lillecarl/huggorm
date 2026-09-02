@@ -124,7 +124,7 @@ class Corpus:
             self._chosen[name] = resolve_tree(str(self.path(name)))
         return self._chosen[name]
 
-    def imported(self, name: str) -> ModuleType | None:
+    def imported(self, name: str) -> ModuleType:
         """One declaration, as the module Python built from it.
 
         The reading a tree cannot give: Python resolved every base
@@ -138,9 +138,12 @@ class Corpus:
         cached by path, so this shares that one execution rather than
         running the decorators a second time.
 
-        `None` when the file will not import, which is a legitimate
-        answer: `read()` falls back to the tree alone and so must a
-        caller here."""
+        A file that will not import is refused by `load`, with the
+        reason it gave. It used to answer None here, and `read()`
+        used to fall back to the tree alone - which read a
+        non-importing declaration as a working one for every file
+        with no `NIX_VERSION` branch in it, which is all of them
+        (tasks/082)."""
         return load(str(self.path(name)))
 
     # -- the three groups ------------------------------------------

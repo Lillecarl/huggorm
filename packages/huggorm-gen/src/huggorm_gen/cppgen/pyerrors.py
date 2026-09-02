@@ -140,7 +140,7 @@ WIRE_FIELDS = "_wire_fields"
 
 
 def entries(tree: ast.Module,
-            mod: ModuleType | None) -> dict[str, dict[str, Any]]:
+            mod: ModuleType) -> dict[str, dict[str, Any]]:
     """Every declared exception, as the manifest carries it.
 
     Two readings of one file, each answering what it is good for. The
@@ -160,17 +160,15 @@ def entries(tree: ast.Module,
     version this replaced meant the same thing by
     `b.__module__ == module_name`.
 
-    Without the module there is nothing to fall back on, and this
-    says so rather than guessing: a declaration that will not import
-    has no inheritance to read, and inventing one would put a wrong
-    answer in four generated files at once.
+    A module, never None. This refused a missing one itself, on the
+    reading that inventing a hierarchy would put a wrong answer in
+    four generated files at once - which was right, and was the only
+    place that asked. `load` refuses a declaration that will not
+    import now, for every reader rather than this one, and says the
+    reason Python gave rather than only that there was one
+    (tasks/082).
     """
     declared = [n.name for n in _body(tree) if isinstance(n, ast.ClassDef)]
-    if mod is None:
-        raise DeclarationError(
-            tree, "the exception declaration does not import, so nothing "
-                  "says what each class inherits. Fix the import: the "
-                  "hierarchy is the point of the file.")
     here = mod.__name__
     out = {}
     for name in sorted(declared):
