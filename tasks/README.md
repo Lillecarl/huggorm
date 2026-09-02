@@ -225,7 +225,7 @@ which was superseded rather than fixed.
   worktree invites rather than the worktree. nix's own
   min-free/max-free are still unset, which is the one change that
   PREVENTS 062's failure rather than cleaning up after it.
-- 064 (the manifest is a runtime interpreter) is MOSTLY DONE.
+- 064 (the manifest is a runtime interpreter) is DONE.
   `manifest.json` is deleted, and ONE of the two front doors is now
   emitted: `huggorm_bindings/__init__.py` comes off `cppgen/pyinit.py`
   and the package directory is empty in the checkout. The derivation
@@ -235,11 +235,22 @@ which was superseded rather than fixed.
   function of its own, so naming `open_store` on the front door fails
   to IMPORT rather than merely repeating itself.
 
-  `huggorm/__init__.py` is what remains, and it needs a decision
-  rather than a patch. The reason the two halves differ is in
-  `default.nix`: nothing puts a tree copy of `huggorm_bindings` ahead
-  of the store's, while `nix run test` puts `$PWD` ahead for
-  `huggorm/` on purpose.
+  `huggorm/__init__.py` followed, on Carl's call: emitted into the
+  store copy only, from a `setup.py` of its own. Forty-two names,
+  again reproducing the hand-written list exactly, of which six are
+  the hand-written layer's own API and cannot be derived from
+  anything.
+
+  The dev loop that cost is wider than it sounds and was measured: a
+  directory with no `__init__.py` is a NAMESPACE portion, and Python
+  prefers a regular package found later on the path - so the store's
+  whole `huggorm` would win, not just its front door. `nix run test`
+  copies the file into the tree first.
+
+  One perturbation found an ungated decision that arrived with the
+  change: dropping `RPC_CLASSES` from the plumbing filter passed
+  every gate, because the front-door test only asked what reaches it
+  and never what should not. It asserts both now.
 - 065 (the declaration becomes the only source) is done, in four
   phases. `Corpus` reads each declaration once, the import resolves
   inheritance the tree cannot, and the emitted `_policy.py` carries

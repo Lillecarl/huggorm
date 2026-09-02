@@ -1,6 +1,6 @@
 # The manifest is a runtime interpreter, not an IR
 
-**MOSTLY DONE.** `manifest.json` is not an intermediate between the
+**DONE.** `manifest.json` is not an intermediate between the
 two codegen stages. It was a table that three hand-written modules
 read on every call, and that made it the same pathology as
 hand-written C++ mapping - in a different language, and better
@@ -11,16 +11,9 @@ phases landed: every reader calls `build_manifest()` instead, and the
 tables the library needs are emitted into
 `huggorm_generated/_policy.py` where a typechecker can see them.
 
-One of the two front doors is DONE. `huggorm_bindings/__init__.py`
-is emitted, and the whole package directory is empty in the checkout
-now - see the last section but one.
-
-What is left is `huggorm/__init__.py` - about thirty hand-written
-re-export lines that track the declarations by hand. Smaller than the
-manifest and independent of it, and it needs a decision rather than
-an implementation: a generated file inside the hand-written package
-would break the trick `nix run test` uses to put the tree's
-`huggorm/` ahead of the store copy.
+Both front doors are emitted now. `huggorm_bindings/__init__.py`
+came first because it had no blocker; `huggorm/__init__.py` needed
+Carl's call on the dev loop and got it.
 
 Deferred on purpose. Carl: *"Let's begin with a conservative
 restructuring and renaming, once we're done with that we'll discuss
@@ -182,7 +175,69 @@ is still there behind them, and it is now a real cross-check rather
 than a check against a hand-written list: cppgen derives the front
 door from the corpus and pygen derives the stub from the manifest.
 
-## What is left
+## The library front door, DONE 2026-09-02
 
-`huggorm/__init__.py`, and the decision above. Everything else in
-this task is done.
+Carl: *"It should be emitted into the store copy only, our PYTHONPATH
+trick isn't important for the generated code, it was just a dev loop
+optimization."*
+
+`pygen/frontdoor.py` writes it, from `packages/huggorm/setup.py` -
+the third `setup.py` here that runs a generator at import, for the
+reason the other two give. Forty-two names, and the derivation
+reproduced the hand-written `__all__` exactly.
+
+Three derived groups and one that is not.
+
+- Everything `huggorm_bindings` exports, read from `cppgen/pyinit.py`
+  rather than derived again.
+- Everything `huggorm_generated` exports, read from
+  `emitter.package_exports`, which `init_module` now shares with this
+  rather than computing the list inline. Minus `RPC_CLASSES`.
+- The UNION aliases, from `manifest["unions"]`.
+- `LOCAL`: `connect`, `NixClient`, `ConnectionExpired`, `serve`,
+  `errors`, `set_pool_size`. Six names of the HAND-WRITTEN layer's
+  own API, which no declaration knows about and nothing can derive
+  them from. That list changes when that layer changes rather than
+  when a declaration does, which was the whole complaint.
+
+### The dev loop, which is what the decision cost
+
+Carl's answer scoped the loss to the generated file. It is wider
+than that, and it was measured rather than reasoned about: a
+directory with no `__init__.py` is a NAMESPACE portion, and Python's
+finder prefers a regular package found LATER on the path. So with the
+tree's copy gone, the store's whole `huggorm` wins and an edit to
+`wire.py` or `remote.py` stops being testable without a rebuild -
+not just an edit to the front door.
+
+`nix run test` copies the store's file into the tree before pytest
+runs, which restores it exactly and is what both other `setup.py`
+files already do with their own output. `-P` on that python3, or it
+copies the file onto itself: without it the cwd goes first on
+sys.path, so once the tree copy exists `import huggorm` finds THAT
+one. `shutil.SameFileError`, on the second run only.
+
+### One thing lint could not take
+
+`ast.unparse` writes one long line per import group and a 42-name
+`__all__`, which is E501 twelve times over. `ruff.toml` excludes the
+file, and its comment already had the policy: the generated package
+is not linted either, because the smoke gates ask stricter questions
+than a linter can.
+
+### PERTURBED, three ways
+
+- Drop the unions: `the manifest declares ['DerivedPath',
+  'SingleDerivedPath'], ...` from
+  `test_every_name_the_manifest_DECLARES_reaches_the_front_door`.
+- Drop `RPC_CLASSES` from `PLUMBING`: **passed every gate.** The
+  subtraction is a decision - plumbing is not surface - and the gate
+  only asked whether everything behind reaches the front door, never
+  whether anything extra did. `test_the_front_door_covers_the_surface`
+  now asserts the name is held back, and the same perturbation fails
+  it.
+- The bindings front door's two, recorded above.
+
+The second is the useful one. It was an ungated decision that arrived
+WITH this change: while the file was hand-written the omission was a
+person's, and emitting it made it the emitter's.
