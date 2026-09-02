@@ -1,0 +1,139 @@
+# An accessor's optional return reads a table, not the emitter
+
+**DONE.** The table went, and so did the function that read it. The
+reading was right about the table and wrong about how it was reached,
+and what the perturbation found on the way is the larger half of this
+file.
+
+## What the reading said
+
+`nbemit._accessor` gave a produced value's `Cxx`-bodied accessor an
+explicit C++ return type from a two-entry table:
+
+    CXX_OPTIONAL = {
+        "str | None": "std::optional<std::string>",
+        "int | None": "std::optional<std::int64_t>",
+    }
+
+...keyed by the literal annotation STRING, where a METHOD's return
+goes through `_cxx` and derives the same answer for every type the
+emitter knows. Two mechanisms for one rule, agreeing only because the
+table has the two rows that came up first.
+
+That part holds. `_cxx` gives `std::optional<std::string>` for
+`"str | None"` and `std::optional<std::int64_t>` for an `I64 | None`,
+and it REFUSES a bare `int | None`, which is the right answer to the
+width question step 3 asked about and the one the table answered by
+silently choosing signed. Run rather than remembered - the optional
+branch recurses on the inner type, so the message names the inner one:
+
+    'int' has no C++ spelling. A bound class names types through an
+    Annotated alias in declare.py.
+
+## What it got wrong
+
+Step 1 said to confirm it by adding a computed accessor returning
+`HashAlgorithm | None` to a produced value and watching the compile
+fail. That would not have failed. A plain computed accessor -
+`PathInfo.registration_time`, `Store.is_trusted_client` - goes through
+`_method`, and `_returns` has derived its type since `tasks/070`.
+
+`_accessor` is reached only behind `m.prop`, which only a `@property`
+in a declaration sets. The emitted C++ in the store holds no `def_ro`
+and no `def_prop_ro` at all, so the whole function was unreached and
+the table with it.
+
+## What the perturbation found instead
+
+Marking `PathInfo.registration_time` with `@property` and emitting:
+
+    .def_static("_from_parts", [](... std::optional<nix::StorePath> deriver,
+                                  bool ultimate, ...
+
+The accessor was GONE. Not bound, not in `_parts`, not in `__repr__`,
+not in `__hash__`, not in `_wire_fields`, and not a parameter of
+`_from_parts` - while the hand-written `_from_parts` body still named
+it. That is the only reason the build said anything:
+
+    pathinfo.cpp:99:34: error: 'registration_time' was not declared
+                               in this scope
+       99 |    u.registrationTime = registration_time.value_or(0);
+
+A produced value whose `_from_parts` the emitter DERIVES would have
+lost the field with no diagnostic at all.
+
+### Why
+
+`_live` asks every definition the import kept for its
+`co_firstlineno`, and reads it off `__code__`. A `property` object has
+no `__code__`. So the accessor named no live line, and `_resolve`
+dropped its node exactly the way it drops the arm of a `NIX_VERSION`
+branch the import did not take.
+
+`_reconcile` could not see it. It checks `live - nodes` and its
+docstring said the other direction "cannot happen, because `_resolve`
+keeps only what `live` already named" - which is true of a dead branch
+arm and false of a definition `_live` failed to name. That claim is
+now corrected in place.
+
+### A second shape, and a nastier one
+
+`@property` under another decorator does not reach `_live` at all:
+
+    @local
+    @instant
+    @property
+    def base16(self) -> Str:
+
+    AttributeError: 'property' object has no attribute '_instant'
+                    and no __dict__ for setting new attributes
+
+`@instant` sets an attribute on what it is handed. `load` catches
+every exception and returns None, so the file "will not import" and
+the reader falls back to the tree alone - for THAT file and for every
+file that imports from it. `hash.py` broke this way and took
+`pathinfo.py` with it, which is why the same perturbation gave two
+different answers depending on what else was perturbed.
+
+In that fallback `live` is None, every node survives, and `_accessor`
+finally ran. `.def_prop_ro("registration_time", ...) ->
+std::optional<std::int64_t>` is the only time this repo has seen the
+table fire.
+
+## What was done
+
+1. `_live` asks a descriptor for the function it holds - `fget`, then
+   `__func__`, then the object. The accessor now survives the read.
+2. `_accessor` and `CXX_OPTIONAL` are deleted. `nbemit` refuses a
+   bound class that sets `prop`, naming the four outputs that would
+   have to change together.
+3. Two gates in `test_declarations.py`, over a bound declaration the
+   corpus does not have. The first was proved by breaking: without the
+   `_live` fix it reads no methods at all.
+
+`Method.prop` stays. The word is real, the reader is where it is read,
+and the refusal is what reads it. `tasks/076` says what teaching it
+would take.
+
+The emitted C++ is byte-identical to what it was before any of this -
+`diff -r` over the two `bindings-src` store paths reports nothing.
+That is the deletion's own proof: a path no declaration reaches emits
+the same file whether it is there or not.
+
+## Why refuse rather than teach
+
+Four outputs read an accessor as a CALL, and only one of them is this
+emitter:
+
+- `_identity_semantics` writes `h.attr("nar_size")()` into `__repr__`,
+  `__hash__` and `_parts`, once per part;
+- `pyi.py` writes `def nar_size(self) -> int`;
+- `wire.py` and the generated wrappers read a part the way `_parts`
+  sends it;
+- `nbemit` binds `.def`.
+
+A `def_prop_ro` alone would make the binding the only one that agreed
+with the declaration - a Python caller would get an attribute, the
+stub would promise a method, and the value would drop off the wire.
+Nothing asks for the word today, so the refusal is the honest answer
+and the task records the price of the other one.

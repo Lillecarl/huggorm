@@ -165,12 +165,16 @@ which was superseded rather than fixed.
   into keyword parameters or teach the declaration an input record;
   do not decide from GC alone. It also collides by name with the
   evaluator's own `collect_garbage`, which sweeps a different heap.
-- 075 (an accessor reads a table the emitter can derive) is OPEN, and
-  is a code READING rather than a measurement. `_accessor` gets a
-  two-return-path lambda's type from a two-row `CXX_OPTIONAL` keyed
-  by the literal annotation, while a method's return goes through
-  `_cxx` and derives it. Confirm by breaking it first; the task says
-  how.
+- 075 (an accessor reads a table the emitter can derive) is DONE.
+  `_accessor` and its two-row `CXX_OPTIONAL` are gone. The reading was
+  right about the table and wrong about how it was reached: the
+  function was unreached, and the perturbation that showed it found a
+  `@property` accessor being dropped from every emitted output in
+  silence. Read the file for that half.
+- 076 (an accessor that is an attribute) is OPEN. `@property` in a
+  declaration is refused, and the file says what honouring it would
+  cost - four emitters reading one predicate. Do it when a declaration
+  needs an attribute, not for prettiness.
 
   The wire question is settled: a word crosses as a STRING, with a
   generated mapping at both ends, because a word is easier to read
