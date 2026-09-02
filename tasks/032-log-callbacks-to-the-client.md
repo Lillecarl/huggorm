@@ -1,5 +1,8 @@
 # Logs flow back to the client
 
+**OPEN.** No log stream exists. `nix::Logger` is not bound and nothing
+carries a line back to a client.
+
 Carl, 2026-08-25: "Nix will emit logs on a callback that flows back to
 the client."
 

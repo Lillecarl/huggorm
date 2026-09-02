@@ -1,5 +1,8 @@
 # Registering primops from Python
 
+**OPEN.** No primop can be registered from Python. `eval.py` binds the
+evaluator, not its extension points.
+
 Carl, 2026-08-25: "Nix allows registering primops. These should be
 implementable in Python."
 

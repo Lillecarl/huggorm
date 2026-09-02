@@ -1,5 +1,8 @@
 # Proto field numbers are positional and unstable
 
+**OPEN.** Field numbers are still positional. There is no lockfile and
+nothing reads the manifest's `"schema": 1`.
+
 Found in the 2026-08-25 review. Low priority while everything is
 built together; a correctness trap the moment it is not.
 

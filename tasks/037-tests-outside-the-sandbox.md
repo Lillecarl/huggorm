@@ -1,5 +1,9 @@
 # Most of this suite cannot run in the Nix sandbox
 
+**OPEN.** The split landed and the live suite is one test. The file's
+own "Still open" question - what a live test gets to assume - is
+unanswered.
+
 Carl, 2026-08-25: "Something that's going to become quite important
 and obvious soon is that not much of this test suite can run inside
 the Nix sandbox, it must run on the live system (in the future it can

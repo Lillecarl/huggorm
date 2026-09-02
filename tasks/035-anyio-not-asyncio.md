@@ -1,5 +1,9 @@
 # anyio, not asyncio
 
+**OPEN.** The suite runs under anyio; the runtime does not.
+`payload/runtime.py` still calls `loop.run_in_executor` in four places,
+which is the half this file calls movable now.
+
 Carl, 2026-08-25: "We should use anyio instead of asyncio where
 possible, this includes anyio's test runner instead of pytest-asyncio.
 This is what my other related projects do and what we should continue

@@ -1,5 +1,9 @@
 # Wrap iff it needs a home thread or can block
 
+**OPEN.** The contract check landed. Deriving the BLOCKING half rather
+than being told it did not - and the `nogil` spelling this file names
+went with Cython, so the derivation needs a new source.
+
 Found while deciding 017's return types (2026-08-25), verified against
 the real Nix source at
 /nix/store/2ijv0g6069dsh55z3bdr5ln2iv69mw7r-source.

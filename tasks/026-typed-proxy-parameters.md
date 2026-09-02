@@ -1,5 +1,8 @@
 # A proxy parameter has no location-independent type
 
+**OPEN.** A proxy METHOD argument resolves. A proxy CONSTRUCTOR argument
+still cannot, and no build-time check refuses one.
+
 Raised by Carl (2026-08-25), while 017 was landing: "making sure the
 'handle' RPC is always resolved for all methods. On the RPC client
 someone should be able to store.is_valid_path(mystorepath) where

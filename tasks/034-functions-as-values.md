@@ -1,5 +1,9 @@
 # A value can be a function
 
+**OPEN.** A function value has no Python shape yet. Carl aborted the
+MOCK version of this to link real Nix (tasks/015), which removed the
+reason it was blocked rather than the work.
+
 Carl, 2026-08-25: "Values can be functions as well. Can we return
 Callable/Coroutine (sync/async) and which types are most appropriate
 to be able to introspect in Python to be able to call cleanly?"

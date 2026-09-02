@@ -1,5 +1,8 @@
 # Evaluation server: persistent state, watched files, background eval
 
+**OPEN.** The lifetime contract landed; the service did not. No warm
+cache, no inotify graph, no background evaluation.
+
 Carl's vision (2026-08-23). The remote layer stops being a method
 façade and becomes a long-lived evaluation service:
 

@@ -1,5 +1,8 @@
 # A StorePath should be easy to open, read and walk
 
+**OPEN.** A StorePath still hands back a string. No `__fspath__`, no
+pathlib construction, nothing that opens one.
+
 Carl, 2026-08-26: "Something that'd be really cool is if StorePath
 could inherit from pathlib.Path / anyio.Path (or have a method to
 construct them easily) so there's an easy API for interacting with

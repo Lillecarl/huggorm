@@ -1,5 +1,8 @@
 # Test blind spots
 
+**OPEN.** The file's own "Still open" section lists what is left: a
+concurrent first-call on one handle, driven through the server.
+
 Review finding 14.
 
 ## Closed 2026-08-25

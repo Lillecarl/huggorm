@@ -1,5 +1,9 @@
 # Transitive policy enforcement; returned_module adoption
 
+**OPEN.** The transitive half of the finding stands. No returned type
+returns another wrapper type, so nothing exercises it and nothing tests
+it.
+
 Review finding 8. Pool-wrapper policy drops affine returns by DIRECT
 return_type match only, and returned_module always emits bare
 hop-returns - a pool wrapper returning a pool type whose methods

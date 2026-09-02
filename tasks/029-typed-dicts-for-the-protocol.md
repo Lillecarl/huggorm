@@ -1,5 +1,8 @@
 # Should the protocol dicts be TypedDicts?
 
+**OPEN.** The protocol dict is still `dict[str, Any]`, named `Proto` per
+module so the decision lands in one place when it is made.
+
 Raised 2026-08-25 while annotating the generator for 013.
 
 ## The state
