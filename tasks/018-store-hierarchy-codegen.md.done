@@ -1,5 +1,9 @@
 # Store hierarchy: one ABC, shared surface through every layer
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Carl's call (2026-08-23): Store/LocalStore/RemoteStore share
 practically all API surface - Store IS the ABC, mirroring upstream
 Nix. Today that shape survives C++ -> pxd (CLocalStore(CStore)) but

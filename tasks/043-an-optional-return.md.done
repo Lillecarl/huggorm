@@ -1,5 +1,9 @@
 # A return type may be optional
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Found binding `queryPathFromHashPart`. It answers with
 `std::optional<StorePath>`, and libstore does that all over: "the
 store does not have it" is a normal answer, not a failure.

@@ -1,5 +1,9 @@
 # A dropped client object should release its lease
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Raised by Carl (2026-08-25): "The RPC client is keeping server-side
 values alive, once they go out of scope/destroyed/whatever on the RPC
 client it should send an RPC that it's been forgotten by the client so

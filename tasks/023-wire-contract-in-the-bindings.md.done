@@ -1,5 +1,9 @@
 # Wire contract declared in the bindings, not the layers above
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Found and fixed in the 2026-08-25 review. Recorded because it is a
 design decision, not just a fix.
 

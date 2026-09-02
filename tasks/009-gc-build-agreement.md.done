@@ -1,5 +1,9 @@
 # GC build agreement: explicit, not luck
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review findings 9 + 10. ODR safety currently rests on __has_include
 agreeing across TUs; the no-GC fallback branch is unreachable dead
 code in this build graph (c_eval.pxd includes gc/gc.h

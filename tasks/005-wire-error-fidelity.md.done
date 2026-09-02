@@ -1,5 +1,9 @@
 # Wire error fidelity
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review finding 5. remote.py `raise ... from None` clobbers the cause
 chain from_dict just rebuilt (cause_type becomes NoneType). Server
 guard() lets non-WrapperError exceptions vanish into anonymous

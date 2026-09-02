@@ -1,5 +1,9 @@
 # Protocol/ABC unifying the async API and the RPC API
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Carl's call (2026-08-23): the async wrappers and the RPC client
 surface will share API shape in practice, so user code must be able
 to consume either interchangeably. remote.py already promises

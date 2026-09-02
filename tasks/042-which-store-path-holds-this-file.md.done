@@ -1,5 +1,9 @@
 # Which store path holds this file
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Noticed while writing the live test for `query_path_info`. The
 interpreter running the suite lives at `<store path>/bin/python3.14`,
 and `parse_store_path` refuses that string: it takes a store path and

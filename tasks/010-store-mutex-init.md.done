@@ -1,5 +1,9 @@
 # Store mutex init data race
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review finding 11. store.cpp register_/lookup do check-then-assign on
 void* lock_ unsynchronized; two concurrent pool adds is C++ UB and can
 create two mutexes over one set.

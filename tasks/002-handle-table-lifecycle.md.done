@@ -1,5 +1,9 @@
 # Handle table lifecycle: leased graph with connection-backed holders
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review findings 2 + 13, shaped by Carl's design calls (2026-08-23,
 revised same day): lifetimes form a GRAPH, holders are CONNECTIONS,
 and disconnect reaps what only the dead connection held.

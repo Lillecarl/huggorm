@@ -1,5 +1,9 @@
 # runtime.py hygiene: symbol-contract check
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review finding 12, second half. The duplicate WrapperError.to_dict is
 removed (2026-08-23). Remaining: the emitter-runtime import contract
 (attach_runner/unwrap_arg/runners) is validated nowhere except

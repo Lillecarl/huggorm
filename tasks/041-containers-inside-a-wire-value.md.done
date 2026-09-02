@@ -1,5 +1,9 @@
 # A wire value cannot hold a list
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Found binding `query_path_info`. `PathInfo` carries what a store knows
 about a path, and two of the fields Nix gives are sets:
 

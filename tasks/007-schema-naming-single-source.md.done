@@ -1,5 +1,9 @@
 # Schema naming: single source of truth
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review finding 7. _resp() exists in three copies (grpc_schema.py,
 server.py, remote.py); a rename breaks dispatch only at first RPC.
 StrMsg/Int64Msg/BoolMsg are declared but never referenced; server

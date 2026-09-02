@@ -1,5 +1,9 @@
 # A typed error has to survive the wire
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Carl, 2026-08-25: "We need to build some kind of conversion that
 converts exceptions to something that can travel over gRPC."
 

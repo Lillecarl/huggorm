@@ -1,5 +1,9 @@
 # Add lint + typecheck to the toolchain
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 The project has no ruff/mypy/pyright setup and no C++ static analysis;
 the 2026-08-23 review found dead code, duplicate definitions and
 type leaks that linters would have flagged.

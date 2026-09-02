@@ -1,5 +1,9 @@
 # A parameter's default should reach every generated surface
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Found while binding `add_to_store`. The codegen carried a parameter's
 NAME and TYPE and nothing else, so a Cython default would have existed
 on the sync binding and on none of the four surfaces above it. That is

@@ -1,5 +1,9 @@
 # The vocabularies Nix parses should be types, not bare strings
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Carl, 2026-08-25: "I'd like to make a stringenum for things that are
 stringenums if possible without ruining codegen."
 

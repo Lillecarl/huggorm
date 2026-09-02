@@ -1,5 +1,9 @@
 # Returned-type protos skip pxd backfill
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review finding 4 (MEDIUM-HIGH, proven). generate.py builds
 returned_protos without api=/bindings=, so Derivation.set_env ships
 'Any' params: uncallable over the wire while looking alive locally.

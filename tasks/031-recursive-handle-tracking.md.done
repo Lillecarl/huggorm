@@ -1,5 +1,9 @@
 # Track every handle that crosses, however deeply nested
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Carl, 2026-08-25: "As soon as the server sends or receives a valid
 handle to a client it should be lifetime tracked against that client,
 preferably entirely automatic by scanning inbound and outgoing

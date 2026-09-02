@@ -1,5 +1,9 @@
 # Escrow claim double-counted its lease
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Found in the 2026-08-25 review, one day after 002 landed. Recorded
 because the SUITE WAS GREEN.
 

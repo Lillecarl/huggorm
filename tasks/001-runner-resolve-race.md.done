@@ -1,5 +1,9 @@
 # Runner lazy-construction race
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review finding 1 (HIGH, proven). `BaseRunner._resolve` checks
 `self._obj is None` without a lock; concurrent first-calls ran the
 factory 4 times out of 8 probes. Pool-wrapped handles then diverge

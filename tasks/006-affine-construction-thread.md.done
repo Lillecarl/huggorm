@@ -1,5 +1,9 @@
 # Affine construction on wrong thread; kwargs unwrap gap
 
+**DONE.** Closed before these files carried a status word. The `.done`
+suffix is the record; this line is that same answer in the second place
+the check reads, and no new judgement.
+
 Review finding 6 (proven). runtime.unwrap_arg calls ensure()
 synchronously on the caller's worker, constructing affine objects off
 their home thread (violates the documented invariant). Emitted lazy
