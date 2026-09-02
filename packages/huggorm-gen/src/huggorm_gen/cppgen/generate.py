@@ -27,7 +27,7 @@ from typing import Any
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
 from huggorm_dsl.read import Module, reading
-from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors
+from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors, pyinit
 from huggorm_gen.cppgen.nbemit import bindable, extension
 
 # Which package the emitted bindings land in. The one fact a
@@ -448,6 +448,10 @@ def census_markers(have: Any) -> None:
 
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
+    # The package directory is EMPTY in the checkout - every file in
+    # it is written here, `__init__.py` included (tasks/064) - so an
+    # empty directory is not something git can carry.
+    out.mkdir(parents=True, exist_ok=True)
     have = corpus()
     # Read everything first, so a build reports every refusal it can
     # see rather than the first one. Emission below then runs against
@@ -473,6 +477,13 @@ def main(out_dir: str) -> int:
             pyenum.module(mod, have.tree(name), mod.doc) + "\n")
         words = [c.name for c in mod.classes if c.is_words]
         print(f"{name} -> {target}: {', '.join(words)}")
+    # LAST, because it re-exports what everything above emitted.
+    # Nothing reads it during the build - setuptools does - so the
+    # order is for a reader rather than for correctness.
+    target = out / "__init__.py"
+    target.write_text(pyinit.module(have) + "\n")
+    names = sum(len(v) for v in pyinit.exports(have).values())
+    print(f"front door -> {target}: {names} name(s)")
     census_cpp(set(have.module_names))
     census_markers(have)
     return 0

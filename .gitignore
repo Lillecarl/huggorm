@@ -28,8 +28,10 @@ venv/
 # tree. Everything below is written, never hand-edited - and an
 # untracked generated file that the build quietly depends on is a bug
 # this repo has already had once.
+# EVERY file, with no exception left. `__init__.py` was the one
+# hand-written thing in here and it is emitted now (tasks/064), so
+# the directory is empty in the checkout and `generate.main` makes it.
 packages/huggorm-bindings/huggorm_bindings/*
-!packages/huggorm-bindings/huggorm_bindings/__init__.py
 packages/huggorm-generated/huggorm_generated/
 packages/huggorm-generated/huggorm_bindings-stubs/
 
