@@ -185,3 +185,78 @@ def test_a_declaration_that_does_not_branch_reads_the_same_either_way(
     raw = ast.parse(FLAT)
     assert pyerrors.module(resolved(path), "emitted") == \
         pyerrors.module(raw, "emitted")
+
+
+# A bound class with one accessor written as an ATTRIBUTE. The word is
+# Python's own and the reader keeps it (`Method.prop`); no emitter
+# honours it. Written here because no declaration in the corpus uses
+# it, which is how the emitter path behind it went unread from the day
+# it was written until it was deleted (tasks/075).
+ATTRIBUTE = '''"""One bound class whose accessor is a @property."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    @property
+    def base16(self) -> Str:
+        """The digest as lowercase hex."""
+        Cxx("""
+return self.to_string(nix::HashFormat::Base16, /*includeAlgo=*/false);
+        """)
+'''
+
+
+def test_the_reader_sees_an_accessor_the_import_kept_as_a_descriptor(
+        tmp_path: pathlib.Path) -> None:
+    """A `@property` accessor survives the read, and says it is one.
+
+    `_live` asks each definition the import kept for its
+    `co_firstlineno`, and a `property` object has no `__code__` to ask
+    - so the accessor named no live line and `_resolve` dropped its
+    node as if a version branch had. Silently.
+
+    Measured before the fix, on `PathInfo.registration_time` marked
+    `@property`: the accessor was gone from the emitted binding, from
+    `_parts`, from `__repr__`, from `__hash__` and from
+    `_wire_fields`, and the build's only complaint came from the
+    hand-written `_from_parts` body that still named it -
+    `pathinfo.cpp:99: 'registration_time' was not declared in this
+    scope`. A class whose `_from_parts` the emitter derives would have
+    lost the field with no diagnostic at all.
+
+    Both halves are asserted. That the accessor is there, and that it
+    still reads as a property - a reader that kept it by forgetting
+    what it is would pass the first and fail the class below."""
+    from huggorm_dsl.read import read
+
+    path = _declaration(tmp_path, ATTRIBUTE)
+    cls = read(path).classes[0]
+    assert [m.name for m in cls.methods] == ["base16"]
+    assert cls.methods[0].prop
+
+
+def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
+        tmp_path: pathlib.Path) -> None:
+    """`@property` is refused, because a binding alone cannot honour it.
+
+    Three other outputs read an accessor as a CALL: the emitted
+    `_parts`, `__repr__` and `__hash__` write `h.attr(name)()`, the
+    stub writes `def name(self)`, and the wire reads the parts the way
+    `_parts` sends them. A `def_prop_ro` here would make this file the
+    only one that agreed with the declaration.
+
+    The refusal replaced an `_accessor` function that emitted exactly
+    that, and that no declaration had ever reached - which is why its
+    two-row table of optional return spellings was never seen to be
+    wrong (tasks/075)."""
+    from huggorm_dsl.read import read
+    from huggorm_gen.cppgen import nbemit
+
+    cls = read(_declaration(tmp_path, ATTRIBUTE)).classes[0]
+    with pytest.raises(TypeError, match="ATTRIBUTE"):
+        nbemit.bind_function(cls, {cls.name: cls})
