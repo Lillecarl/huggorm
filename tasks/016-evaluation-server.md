@@ -57,3 +57,60 @@ warm in any meaningful sense: nothing is cached, so "the same state"
 means the same object rather than the same work avoided. Warm caches,
 the inotify file graph and background eager evaluation all still wait
 on tasks/015. The lifetime contract they will need does not.
+
+## 2026-09-02: the warm cache is reachable, and it is state-local
+
+`eval_file` is declared. It was the missing half of "warm": libexpr
+caches an evaluation by RESOLVED PATH, and nothing in this binding
+took a path.
+
+    EvalState::evalFile (eval.cc:1118)
+      resolvedPath <- importResolutionCache, or resolveExprPath
+      if fileEvalCache has it: forceValue, copy, RETURN
+      else: parse, thunk, force, and put it in the cache
+
+Read from Nix's own source rather than assumed. Two things follow.
+A hit never opens the file. And `eval_expr` has no cache at all - a
+string is not a key - so every warm claim this project makes is about
+files.
+
+### The gate, and its own negative control
+
+`test_a_file_evaluated_twice_is_read_once`, on all three surfaces.
+
+Evaluate a file, DELETE it, evaluate the same path again. The second
+call is answered, because a cache hit never goes to disk. Then open a
+fresh state and ask it for the same path, in the same moment, with
+the file still gone:
+
+    SysError: error: opening file
+    '.../answer.nix': No such file or directory
+
+Identical on sync, async and rpc. That message is the control: it is
+the cold state SAYING it went to disk, which is the half the warm
+call is claimed not to do. The test needs no timing and no counter.
+
+An int, not an attribute set. `evalFile` forces to WHNF, so a value
+that is not complete there leaves a thunk that may still want the
+file - and a failure would then mean the wrong thing.
+
+### What it says about the milestone
+
+`CLAUDE.md` names the milestone: a second client claims a live
+EvalState, and re-evaluating unchanged input does no re-evaluation.
+The third part of this gate is the reason that wording is right. The
+cache belongs to the STATE. A fresh evaluator reads; a state that
+dies takes the warm work with it. So the handover is not a
+convenience over restarting - restarting is what loses the work.
+
+### What is still missing
+
+The gate proves the cache exists and is state-local. It does not
+prove it survives a HANDOVER, which is the milestone itself: the
+lifecycle test does the detach-and-claim, and it does not yet
+evaluate a file across it. That is the next piece.
+
+Watched files and background eager evaluation are still untouched.
+`resetFileCache` is deliberately NOT bound: nothing but a test would
+call it today, and 070 is the standing example of a binding with no
+user. It becomes real surface when inotify invalidation needs it.

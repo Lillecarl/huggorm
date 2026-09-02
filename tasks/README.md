@@ -196,6 +196,14 @@ which was superseded rather than fixed.
   fear it was opened with is wrong and the gate is buildable. What is
   left is the design: ask the emitters what they consumed rather than
   searching the text they wrote.
+- 016 (evaluation server) is OPEN, and has its first warm cache.
+  `eval_file` is declared, so libexpr's `fileEvalCache` is reachable:
+  evaluate a file, delete it, evaluate it again, and the answer comes
+  from the cache. A fresh state asked the same thing in the same
+  moment says "opening file ... No such file or directory", which is
+  the control. What is left of the milestone is proving the cache
+  survives a HANDOVER - the lifecycle test detaches and claims, and
+  does not yet evaluate a file across it.
 - 078 (a declaration nobody lists reaches nothing) is DONE. `corpus()`
   censuses `decl/` against the lists and the build fails when they
   disagree. The plan in the file was wrong: "every `*.py` in exactly
