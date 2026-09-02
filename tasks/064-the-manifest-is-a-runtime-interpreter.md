@@ -11,12 +11,16 @@ phases landed: every reader calls `build_manifest()` instead, and the
 tables the library needs are emitted into
 `huggorm_generated/_policy.py` where a typechecker can see them.
 
-What is left is the last section below, `huggorm/__init__.py` - about
-thirty hand-written re-export lines that track the declarations by
-hand. Smaller than the manifest and independent of it, and it needs a
-decision rather than an implementation: a generated file inside the
-hand-written package would break the trick `nix run test` uses to put
-the tree's `huggorm/` ahead of the store copy.
+One of the two front doors is DONE. `huggorm_bindings/__init__.py`
+is emitted, and the whole package directory is empty in the checkout
+now - see the last section but one.
+
+What is left is `huggorm/__init__.py` - about thirty hand-written
+re-export lines that track the declarations by hand. Smaller than the
+manifest and independent of it, and it needs a decision rather than
+an implementation: a generated file inside the hand-written package
+would break the trick `nix run test` uses to put the tree's
+`huggorm/` ahead of the store copy.
 
 Deferred on purpose. Carl: *"Let's begin with a conservative
 restructuring and renaming, once we're done with that we'll discuss
@@ -126,6 +130,59 @@ Python names - the same species as a hand-written C++ mapping, and it
 should be emitted for the same reason. Smaller than the manifest and
 independent of it.
 
-## What was NOT done
+## The bindings front door, DONE 2026-09-02
 
-Nothing. This is the finding, not the fix.
+`huggorm_bindings/__init__.py` is emitted by `cppgen/pyinit.py`. The
+package directory is EMPTY in the checkout - `.gitignore` has no
+exception left in it - and `generate.main` makes the directory before
+it writes into it.
+
+**Why this half had no blocker and the other does.** `default.nix`
+says it, and the sentence was already there: *"huggorm_bindings and
+huggorm_generated still come from the store: one is compiled and the
+other is generated, so neither exists in the tree."* Nothing puts a
+tree copy of `huggorm_bindings` ahead of the store's, so emitting
+into it costs nothing. `huggorm/` is the opposite - `nix run test`
+exports `PYTHONPATH="$PWD"` precisely so an edit there is testable
+without a rebuild - and that is the whole of the remaining decision.
+
+**The derivation, and it reproduced the hand-written list exactly.**
+Twenty-five names, no exceptions and no special cases: every class a
+declaration binds, every exported free function, every vocabulary's
+words, and the module for each is the declaration's own stem - the
+same fact that names the `.cpp` beside it.
+
+**One subtraction, and it is forced rather than stylistic.** A free
+function a class names with `@produced(by=...)` is dropped.
+`open_store` builds a Store, and `nbemit` binds it as
+`Store._ctor_from` and as NO module-level function - so
+`huggorm_bindings.store` has no `open_store` in it at all. A front
+door naming it does not offer a redundant spelling; it fails to
+import. The hand-written file omitted the name too and had nothing
+that could say why.
+
+That last fact refuted a claim in the first draft of the emitter's
+own docstring, which said the name was "still in
+`huggorm_bindings.store` for anything that wants it". The
+perturbation below is what said otherwise.
+
+### PERTURBED, both halves
+
+Both fail the BUILD rather than a test, and harder than expected -
+`huggorm_generated` imports these names from the front door, so a
+wrong list stops the generated package from importing at all.
+
+- Drop the producer subtraction: `ImportError: cannot import name
+  'open_store' from 'huggorm_bindings.store'`.
+- Drop the vocabulary half: `ImportError: cannot import name
+  'BuildMode' from 'huggorm_bindings'`.
+
+The stub gate (`__init__.pyi exports ..., the package exports ...`)
+is still there behind them, and it is now a real cross-check rather
+than a check against a hand-written list: cppgen derives the front
+door from the corpus and pygen derives the stub from the manifest.
+
+## What is left
+
+`huggorm/__init__.py`, and the decision above. Everything else in
+this task is done.

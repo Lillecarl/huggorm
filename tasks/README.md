@@ -226,8 +226,20 @@ which was superseded rather than fixed.
   min-free/max-free are still unset, which is the one change that
   PREVENTS 062's failure rather than cleaning up after it.
 - 064 (the manifest is a runtime interpreter) is MOSTLY DONE.
-  `manifest.json` is deleted; the front door's thirty re-export lines
-  are what remain, and they need a decision rather than a patch.
+  `manifest.json` is deleted, and ONE of the two front doors is now
+  emitted: `huggorm_bindings/__init__.py` comes off `cppgen/pyinit.py`
+  and the package directory is empty in the checkout. The derivation
+  reproduced the hand-written list exactly - twenty-five names, no
+  special cases - with one forced subtraction: a free function a class
+  names with `@produced(by=...)` is bound as `_ctor_from` and as no
+  function of its own, so naming `open_store` on the front door fails
+  to IMPORT rather than merely repeating itself.
+
+  `huggorm/__init__.py` is what remains, and it needs a decision
+  rather than a patch. The reason the two halves differ is in
+  `default.nix`: nothing puts a tree copy of `huggorm_bindings` ahead
+  of the store's, while `nix run test` puts `$PWD` ahead for
+  `huggorm/` on purpose.
 - 065 (the declaration becomes the only source) is done, in four
   phases. `Corpus` reads each declaration once, the import resolves
   inheritance the tree cannot, and the emitted `_policy.py` carries
