@@ -406,3 +406,112 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
     cls = read(_declaration(tmp_path, ATTRIBUTE)).classes[0]
     with pytest.raises(TypeError, match="ATTRIBUTE"):
         nbemit.bind_function(cls, {cls.name: cls})
+
+
+def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A directory shaped like `decl/`: two declarations and two
+    things that are not one.
+
+    The README and the `__pycache__` are the point of the second
+    pair. The census globs `*.py`, so neither needs a rule of its
+    own - and a census that grew an exclusion list would be a second
+    statement of what a declaration is."""
+    (tmp_path / "a.py").write_text("")
+    (tmp_path / "b.py").write_text("")
+    (tmp_path / "README.md").write_text("")
+    (tmp_path / "__pycache__").mkdir()
+    return tmp_path
+
+
+def test_a_declaration_in_no_list_fails_the_build(
+        tmp_path: pathlib.Path) -> None:
+    """A file nobody lists is an error, not a silence.
+
+    `decl/gc.py` was written, was well-formed, imported, parsed and
+    emitted nothing at all: `nix build bindings-src` succeeded and
+    wrote no `gc.cpp`, because the name was not in `NANOBIND`
+    (tasks/074). The failure looked exactly like a declaration with
+    no classes in it.
+
+    Third silent drop in three tasks, after a version-branched class
+    (073) and a `@property` accessor (075). The pattern is that an
+    emitter SKIPS what it does not recognise, and a skip reads as an
+    absence."""
+    from huggorm_decl import census
+
+    root = _corpus_dir(tmp_path)
+    census(root, (("ONE", ("a.py",)), ("TWO", ("b.py",))))
+
+    with pytest.raises(TypeError, match="in no list"):
+        census(root, (("ONE", ("a.py",)),))
+
+
+def test_a_list_naming_a_deleted_declaration_fails_the_build(
+        tmp_path: pathlib.Path) -> None:
+    """The other direction, and a different mistake.
+
+    A file nobody listed emits nothing. A name with no file behind it
+    is a reader opening a path that is not there, which fails later
+    and says less. Both are the lists and the directory disagreeing,
+    and a message that said only that would not say what to do."""
+    from huggorm_decl import census
+
+    root = _corpus_dir(tmp_path)
+    with pytest.raises(TypeError, match="listed and not on disk"):
+        census(root, (("ONE", ("a.py", "b.py", "gone.py")),))
+
+
+def test_a_declaration_in_two_lists_fails_the_build(
+        tmp_path: pathlib.Path) -> None:
+    """One document, one group.
+
+    The groups say how the BUILD treats a declaration - a compiled
+    module, a plain-Python vocabulary, the error hierarchy, or
+    nothing at all. A file in two of them is two answers to one
+    question, and the census counts every name once, so without this
+    a duplicate would make the totals agree by accident."""
+    from huggorm_decl import census
+
+    root = _corpus_dir(tmp_path)
+    with pytest.raises(TypeError, match="in both ONE and TWO"):
+        census(root, (("ONE", ("a.py", "b.py")), ("TWO", ("b.py",))))
+
+
+def test_the_real_declaration_set_agrees_with_its_directory() -> None:
+    """The corpus this build reads passes its own census.
+
+    Through the same call the build makes, so a disagreement in
+    `decl/` fails here as well as there. It says nothing about
+    whether that call is still in `corpus()`; the test below is what
+    says that."""
+    import huggorm_decl
+
+    huggorm_decl.corpus()
+
+
+def test_the_census_runs_when_the_corpus_is_built(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """`corpus()` calls the census, and this notices when it stops.
+
+    The three tests above drive a temporary directory. They prove the
+    function and say nothing about the one line that reaches it, so
+    deleting that line would leave every one of them passing - which
+    is the same shape as the bug this whole task is about: a thing
+    that stopped happening and said nothing.
+
+    `cache_clear` twice, and both matter. `corpus()` is
+    `functools.cache`d, so without the first the census may already
+    have run in an earlier test and this would call nothing; without
+    the second, every later test gets a corpus built while the stub
+    was in place."""
+    import huggorm_decl
+
+    ran = []
+    monkeypatch.setattr(huggorm_decl, "census",
+                        lambda *args: ran.append(args))
+    huggorm_decl.corpus.cache_clear()
+    try:
+        huggorm_decl.corpus()
+    finally:
+        huggorm_decl.corpus.cache_clear()
+    assert ran, "corpus() no longer runs the census"
