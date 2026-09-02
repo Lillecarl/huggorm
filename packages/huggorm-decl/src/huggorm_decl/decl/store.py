@@ -15,7 +15,12 @@ from huggorm_decl.decl.derived_path import DerivedPath
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
-from huggorm_decl.decl.words import BuildMode, ContentAddressMethod, HashAlgorithm
+from huggorm_decl.decl.words import (
+    BuildMode,
+    ContentAddressMethod,
+    HashAlgorithm,
+    TrustedFlag,
+)
 from huggorm_dsl.declare import (
     U64,
     Bint,
@@ -719,6 +724,32 @@ return nix::Realisation{*found, id};
         different answer from `query_path_info`, which raises
         InvalidPath: there the caller named a path and was wrong,
         here the caller asked whether one exists."""
+
+    @cxx_name("isTrustedClient")
+    def is_trusted_client(self) -> "TrustedFlag | None":
+        """Whether this store trusts US, or None if it cannot say.
+
+        Not a bool, because the answer has three values and upstream
+        says so with `std::optional<TrustedFlag>`. A binary cache over
+        HTTP returns nothing at all - it has no notion of who is
+        asking - and that is a different answer from being untrusted.
+
+        Whether the STORE trusts the client, which is upstream's own
+        clarification and reads backwards at first. A store's
+        `trusted` setting is the other question, whether we trust
+        what comes out of it, and neither implies the other.
+
+        Worth asking before a call that an untrusted client cannot
+        make: repairing a path, or adding one with signatures. A
+        local store trusts everyone, and a daemon decides from the
+        connecting user."""
+        Cxx("""
+auto flag = self.isTrustedClient();
+if (!flag)
+    return std::nullopt;
+return huggorm::as_word(*flag);
+        """)
+
     def follow_links_to_store(self, path: Str) -> Str:
         """Follow symlinks until the path lands in the store, and
         stop there.

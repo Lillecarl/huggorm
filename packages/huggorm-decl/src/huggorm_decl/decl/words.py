@@ -280,3 +280,50 @@ class BuildFailureStatus:
     back into one before serialising, because the protocols do not
     know this word. So a result read over a daemon connection may say
     `output-rejected` where a local one says this."""
+
+
+@header("nix/store/store-api.hh")
+@words(
+    # No `parsed_by`, and this one was CHECKED rather than assumed
+    # from BuildMode's case. Upstream has no string parser and no
+    # renderer for it: the only conversions in libstore are the JSON
+    # pair in `misc.cc`, and they read and write a BOOLEAN. So these
+    # two words are this binding's own and the emitter writes both
+    # directions.
+    enumerated=Enumerated(
+        "nix::TrustedFlag",
+        # Both, because neither default is right: upstream spells an
+        # enumerator the way C++ spells a type, and a word is
+        # kebab-case.
+        spelled={"TRUSTED": "Trusted", "NOT_TRUSTED": "NotTrusted"},
+    ),
+)
+class TrustedFlag:
+    """Whether a store trusts the client talking to it.
+
+    Upstream's own note is worth repeating, because the name reads the
+    other way round at first: this is whether the STORE trusts US. The
+    `trusted` setting on a store is the opposite question - whether we
+    trust the store - and the two have no bearing on each other.
+
+    An UNSCOPED enum upstream, and over `bool` at that:
+    `enum TrustedFlag : bool { NotTrusted = false, Trusted = true }`.
+    Neither fact reaches this declaration. `nix::TrustedFlag::Trusted`
+    is how upstream itself writes one, so the emitter's usual
+    `{cxx}::{word}` spelling is right with nothing said here.
+
+    Two words rather than a bool on the Python side, and that is the
+    point of declaring it: the answer is a THREE-way one.
+    `Store.is_trusted_client` says None when the store cannot tell,
+    and a bool would have to pick a side for that.
+    """
+
+    TRUSTED = "trusted"
+    """The store accepts what this client asks of it."""
+
+    NOT_TRUSTED = "not-trusted"
+    """The store limits what this client may do.
+
+    An untrusted client cannot repair paths, cannot add signatures of
+    its own, and cannot import a path claiming a signature it does not
+    have. A daemon decides this from the connecting user."""
