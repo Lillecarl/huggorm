@@ -306,6 +306,42 @@ self.state().forceValue(*made, nix::noPos);
 return self.wrap(made);
         """)
 
+    def eval_file(self, path: Str) -> "Value":
+        """Evaluate a file, and remember it.
+
+        The one call that is CHEAP the second time. `evalFile` keeps a
+        `fileEvalCache` keyed by resolved path, and a hit forces the
+        value it already has and copies it - no open, no parse, no
+        evaluation (`eval.cc:1118`). `eval_expr` has no such cache: a
+        string is not a key, so the same text evaluated twice is
+        evaluated twice.
+
+        That cache is what "warm" means for this project, and it is
+        why the state has to outlive the client that filled it.
+
+        A `str`, not a `pathlib.Path`, and the reason is
+        `add_path_to_store`'s: the file is read on the machine the
+        EVALUATOR runs on. In process that is here; over RPC it is the
+        server's filesystem, and no client path crosses - the argument
+        goes as the string it is.
+
+        `rootPath` takes a relative path too, and resolves it against
+        the process's own directory. Left to libexpr rather than
+        refused here: a caller who passes one gets upstream's answer,
+        which is the same answer `nix-instantiate` gives them.
+
+        Forced to WHNF, like every other `evalFile` caller: upstream
+        forces the thunk before it hands the value back. Not deeply -
+        an attribute set comes back with its members unforced, which
+        is what makes the call cheap enough to be worth caching."""
+        Cxx("""
+if (path.empty())
+    throw std::invalid_argument("empty path");
+auto * made = self.alloc();
+self.state().evalFile(self.state().rootPath(path), *made);
+return self.wrap(made);
+        """)
+
     def force(self, v: "Value") -> None:
         """Force a value in place. Idempotent.
 
