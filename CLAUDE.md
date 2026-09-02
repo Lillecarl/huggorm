@@ -1,8 +1,63 @@
+# What this is for
+
+huggorm binds Nix to Python, and generates the binding itself from a
+declaration. One file per Nix class decides six surfaces: the C++
+binding, the type stub, the manifest entry, the async wrapper, the RPC
+client and the gRPC schema.
+
+**The destination is an evaluation service, not a binding.** A binding
+that opens a store and evaluates an expression is the floor. What this
+is built toward is a service that outlives its callers: one
+`EvalState` serving many connections over days, clients that detach
+and later reclaim the same warm state, no re-evaluation of unchanged
+input, every non-store file an evaluation touched under a watch, and
+registered expressions evaluated eagerly in the background so a
+user-triggered eval is already in progress or already done.
+
+That is what the RPC layer is for. Not other languages - the
+evaluator has to outlive the process that asked for it, and a socket
+is how a later client finds the state an earlier one left warm.
+`tasks/016` holds the detail and the lifecycle contract.
+
+The binding exists because that service needs Nix in-process. The
+codegen exists because that service needs six surfaces to agree, and a
+fact stated six times disagrees once.
+
+Three audiences, and the order is not a ranking - all three are real:
+Carl's own Nix tooling, editor and direnv-style workflows that want a
+warm evaluation behind them, and other people who want Nix from Python
+as a library. The third is what makes a breaking change expensive.
+
+## The goal reached
+
+A second client claims a live `EvalState`, and re-evaluating unchanged
+input does no re-evaluation.
+
+That is the smallest thing that proves the service is real: it needs
+the handle to outlive its creator, the state to still be warm, and the
+evaluator to know that nothing it depends on has changed. Watched
+files and background eager evaluation come after it, and 014's
+transports after that.
+
+## Picking the next thing
+
+In order:
+
+1. A defect that can corrupt a value, or drop one silently. This
+   repo's named failure mode is the SILENT SKIP - an emitter skips
+   what it does not recognise, and a skip is indistinguishable from an
+   absence. Four found so far: `tasks/073`, `075`, `078`, `082`.
+2. Whatever the destination above needs next and does not have.
+3. A task that is outstanding and blocks nothing.
+
+`tasks/README.md` is the board.
+
 # Goals
 
-Three, in priority order. Each carries the check that catches it being
-cheated - because the codegen goal was already written here, and was
-cheated anyway.
+Three, in priority order. They are how the work is done, not what it
+is for - the destination is above. Each carries the check that catches
+it being cheated, because the codegen goal was already written here,
+and was cheated anyway.
 
 ## 1. Correctness, measured against Nix
 

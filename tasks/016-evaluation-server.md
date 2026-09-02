@@ -3,6 +3,13 @@
 **OPEN.** The lifetime contract landed; the service did not. No warm
 cache, no inotify graph, no background evaluation.
 
+This is the project's DESTINATION, and it is stated as one in
+`CLAUDE.md` under "What this is for" - including the milestone that
+counts as reaching it: a second client claims a live EvalState, and
+re-evaluating unchanged input does no re-evaluation. This file used to
+be the only place the vision was written down, which is why nothing
+above it steered by it.
+
 Carl's vision (2026-08-23). The remote layer stops being a method
 façade and becomes a long-lived evaluation service:
 

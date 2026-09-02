@@ -1,5 +1,11 @@
 # Task tracker
 
+WHAT this is all for is in `CLAUDE.md`, under "What this is for": an
+evaluation service that outlives its callers, and the milestone that
+says it is real. This file is the board - what is open, what is done,
+and the design decisions behind each. It says how, and the purpose
+says why.
+
 One file per issue, named `NNN-short-name.md`. When done, append the
 `.done` suffix to the filename instead of deleting:
 
