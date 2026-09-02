@@ -1222,6 +1222,21 @@ def _live(path: str) -> set[int] | None:
     lines: set[int] = set()
 
     def note(obj: object) -> None:
+        # A DESCRIPTOR holds the function rather than being one, so
+        # the function is asked for it. `property`, `staticmethod` and
+        # `classmethod` are the three a declaration can write, and
+        # none of them carries `__code__`.
+        #
+        # Without this a `@property` accessor named no line, `_resolve`
+        # dropped its node as if the import had dropped it, and the
+        # accessor vanished from the binding, from `_parts`, from
+        # `__repr__` and from `_wire_fields`. Measured on
+        # `PathInfo.registration_time`: the only complaint was
+        # `'registration_time' was not declared in this scope`, from
+        # the hand-written `_from_parts` body that still named it - so
+        # a class whose `_from_parts` is derived would have lost the
+        # field in silence (tasks/075).
+        obj = getattr(obj, "fget", None) or getattr(obj, "__func__", obj)
         code = getattr(obj, "__code__", None)
         if code is not None and code.co_filename == here:
             lines.add(code.co_firstlineno)
@@ -1246,9 +1261,17 @@ def _reconcile(tree: ast.Module, live: set[int] | None, path: str) -> None:
 
     Then nothing matches, `_resolve` keeps nothing, and the module
     emits an empty binding. Silently. This is the check that makes it
-    loud, and it is the only failure mode worth a gate: the other
-    direction cannot happen, because `_resolve` keeps only what `live`
-    already named."""
+    loud.
+
+    It reads one direction only, and the reason it gives for that -
+    "the other direction cannot happen" - was wrong. A tree node the
+    import KEPT can still name no live line, because `_live` reads
+    `__code__` and a descriptor has none. That is `nodes - live`, and
+    nothing here would have seen it: a `@property` accessor was
+    dropped in silence until `_live` learnt to look through the
+    descriptor (tasks/075). The direction is still not worth a gate -
+    a dead `if` arm is exactly `nodes - live` and is not an error -
+    so the fix belongs in `_live` rather than here."""
     if not live:
         return
     nodes = {n.lineno for n in ast.walk(tree)
