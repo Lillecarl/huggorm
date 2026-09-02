@@ -1,0 +1,239 @@
+# Garbage collection needs a record a CALLER builds
+
+**DONE.** A store collects its own garbage. `GCOptions` is a class a
+caller builds, `GCResults` is one libstore made, and `GCAction` is the
+word between them - which closes the last entry in `tasks/070`'s
+queue.
+
+The two answers below were both partly wrong, and the section "What it
+actually took" at the end says how.
+
+Originally: `GCAction` is the last vocabulary in `tasks/070`'s queue
+that has a binding waiting for it, and the binding is not a method
+with a few parameters. Upstream:
+
+    virtual void collectGarbage(const GCOptions & options,
+                                GCResults & results) = 0;
+
+Two records, and only one of them is a shape this repo has.
+
+## What the DSL does not have yet
+
+`GCResults` is easy: two fields, and it is something libstore MADE,
+which is exactly `@produced(by=...)`.
+
+    struct GCResults {
+        StringSet paths;      // roots, or what was/would be deleted
+        uint64_t bytesFreed;
+    };
+
+`GCOptions` is the new thing. A caller BUILDS one:
+
+    struct GCOptions {
+        GCAction action{gcDeleteDead};
+        bool ignoreLiveness{false};
+        StorePathSet pathsToDelete;   // for gcDeleteSpecific
+        uint64_t maxFreed{max};
+    };
+
+Every record in this repo today is produced. `PathInfo`,
+`KeyedBuildResult`, `Realisation` - libstore made each one and Python
+reads it. Nothing yet is a struct Python fills in and hands DOWN.
+
+## The two answers, and the first is not obviously wrong
+
+**Flatten it into keyword parameters.**
+
+    def collect_garbage(self, action: GCAction = GCAction.DELETE_DEAD,
+                        ignore_liveness: Bint = False,
+                        paths_to_delete: "list[StorePath]" = None,
+                        max_freed: U64 = ...) -> "GCResults":
+
+The DSL needs nothing new: these are four parameters of types it
+already spells, and the `Cxx` body fills the struct. It reads well
+from Python - `store.collect_garbage(max_freed=1 << 30)` - and the
+struct never reaches a caller.
+
+Against it: `max_freed`'s default is
+`std::numeric_limits<uint64_t>::max()`, which has no Python literal a
+`default_source` would accept, so the default has to be spelled some
+other way. And every future options struct repeats the flattening by
+hand in a `Cxx` body, which is the mapping this repo exists to
+derive.
+
+**Teach the declaration an INPUT record.** A class whose fields
+Python sets and whose C++ the emitter fills, the mirror of
+`@produced`. More machinery, and it earns itself the second time an
+options struct appears - `BuildOptions`, `SubstitutablePathInfo`'s
+callers, and the fetch settings are candidates.
+
+Do not decide this from GC alone. Count the input structs upstream
+actually has before building the general answer.
+
+### The count, taken 2026-09-02
+
+Every `const X{Options,Settings,Params,Config,Request} &` parameter in
+`src/libstore/include/nix/store/*.hh`:
+
+    86  const StoreDirConfig &
+    13  const ExperimentalFeatureSettings &
+     5  const FileTransferRequest &
+     4  const GCOptions &
+     2  const WorkerSettings &
+     2  const NarInfoDiskCacheSettings &
+     2  const LocalSettings &
+     1  const LogFileSettings &
+     1  const GCSettings &
+     1  const FileTransferSettings &
+     1  const DerivationOptions &
+
+Most of that is not input. `StoreDirConfig` is the store's own config
+passed as CONTEXT - the store has one and a caller never builds one -
+and every `*Settings` is global configuration, which `tasks/062`
+already found is not reachable from a store URI. The honest
+caller-built count is three: `GCOptions`, `FileTransferRequest`,
+`DerivationOptions`.
+
+So the shape does earn itself a second time, and not soon.
+
+### Carl decided the rule, 2026-09-02
+
+> Generally all classes and structs in C++ should be classes in
+> Python.
+
+Which settles it regardless of the count, and for a reason the count
+does not carry: flattening makes the emitter invent a signature
+upstream does not have, and `maxFreed`'s default is
+`std::numeric_limits<uint64_t>::max()` - a value this repo would then
+restate. As a class the defaults stay upstream's.
+
+One carve-out, and it points the same way: where PYTHON already names
+the concept, use Python's name. `std::chrono::microseconds` is
+`datetime.timedelta`, `std::filesystem::path` is `pathlib.Path`, an
+enum is a vocabulary. The rule is that a struct naming a concept
+Python has no word for becomes a class, and `GCOptions` has none.
+
+## The name clash, which is not cosmetic
+
+`huggorm.collect_garbage` already EXISTS and means something else. It
+is the boehm collector for the evaluator - `decl/eval.py`, a free
+function over `huggorm::gc_collect` - and it collects Values, not
+store paths.
+
+A `Store.collect_garbage` beside it is two unrelated collectors one
+import apart. A caller who reads "collect_garbage" in a traceback
+will not know which. Options: name the store one after what upstream
+calls the operation (`nix-store --gc`, so `gc` or `delete_garbage`),
+or rename the evaluator's to say whose heap it sweeps
+(`collect_value_garbage`). The second is a rename of a published
+name, so it is Carl's call.
+
+## Why it is worth doing
+
+`nix-collect-garbage` is one of the two things a person does to a
+store that this binding cannot do at all (the other is
+`Store.repair_path`). It is also the only remaining USER of a queued
+vocabulary, so `tasks/070` cannot finish without it.
+
+## What it actually took
+
+The second answer won, and it cost far less than this file expected.
+
+**"More machinery" was wrong.** `GCOptions` needed none. `DrvOutput`
+and `Signature` are already wire values a caller BUILDS - a declared
+`__init__` with a `Cxx` body - and defaulted constructor parameters
+already worked, vocabulary-typed fields included. The declaration
+emitted whole on the first try. The mirror of `@produced` was never
+needed, because a constructible wire value already IS one.
+
+**One thing refused, and only under compile.** A derived `_from_parts`
+hands its parts to the C++ constructor, and a `list[T]` part arrives
+as a vector:
+
+    gc.cpp:154:35: error: could not convert 'paths' from
+    'std::vector<std::string>' to 'nix::StringSet'
+
+The emitter knows `as_set`. It learns the TYPE from
+`@binding(collection=...)` on the ELEMENT class, and the element here
+is `str` - a builtin, with no class to state it on. So `@reads(member,
+collection=...)` states it per field, and the field's answer wins over
+the class's. One new keyword, one line of emitted diff.
+
+That change paid for itself immediately. `MissingPaths` carried a
+declared `_from_parts` whose whole body was three
+`as_set<nix::StorePathSet>` calls - a mapping, hand-written - and the
+derived one now emits exactly those. The body is deleted.
+
+**`max_freed` takes None.** Upstream's default is
+`std::numeric_limits<uint64_t>::max()`, which has no Python literal.
+The constructor writes `nix::GCOptions{}` and assigns only what was
+passed, so an absence leaves the member alone and the default stays
+upstream's. It reads back as the number, because that is what the
+struct holds.
+
+**`GCResults.paths` is a StringSet, not a StorePathSet.** A root can
+be a path outside the store, so the type cannot promise more than a
+string. Read from the header rather than assumed from the name.
+
+**And the name is `nix::GcStore`, not `GCStore`.** The source checkout
+this repo reads for reference spells it one way and the packaged
+2.34.8 it BUILDS against spells it the other. Every other name in the
+header matches, which is what made it easy to miss:
+
+    store.cpp:407: error: 'GCStore' in namespace 'nix' does not name
+                          a type; did you mean 'GcStore'?
+
+## What the tests found, which the reading would not have
+
+**A path this process just added is NOT garbage.** The first test was
+written asserting the opposite - nothing points at it, so it is dead -
+and the collector refuted it: it ran, printed "finding garbage
+collector roots... deleting garbage...", and returned no paths and
+zero bytes.
+
+`LocalStore::addToStore` calls `addTempRoot` on what it adds, and a
+temp root belongs to the PROCESS. So the interpreter running the suite
+holds every path it added, for as long as it runs, and a second
+`Store` object on the same root changes nothing - the root is the
+process's, not the object's.
+
+That is the protection working, so it became the gate rather than
+something to work around.
+
+**And `ignore_liveness` does not get past it.** That was the next
+guess and it was also wrong - `DELETE_SPECIFIC` with the flag set
+raised:
+
+    Cannot delete path '...-doomed' since it is still alive. To find
+    out why, use: nix-store --query --roots and --referrers
+
+`gc.cc:520` guards `findRootsNoTemp` with the flag. "NoTemp" - it
+drops the PERMANENT roots, and the temporary ones are read
+unconditionally on the lines after. So no field of GCOptions can
+collect a path a process is holding, which is right: another process
+might be part-way through adding it.
+
+The consequence for the suite is that **`bytes_freed` has no hermetic
+case at all**. A chroot store starts empty and everything the run adds
+is held by the run. The hermetic gates are the refusal and the
+protection; a live test asks the ambient store for `RETURN_DEAD` and
+checks the answer is populated. The DELETING arm stays unproven on
+purpose - a test must not collect a developer's store - and
+`tasks/037` holds the question of what a live test gets to assume.
+
+**The suite already refuses an unproven wire value.**
+`test_every_wire_value_survives_its_own_round_trip` compares the
+manifest's wire values against a hand-written SAMPLES table and fails
+on any it cannot build. Adding these two without samples failed there.
+Nothing had to be written for that; it was already right.
+
+## What is still open
+
+The name clash, which is Carl's and is not blocking. There is no
+import collision - `Store.collect_garbage` is a method and
+`huggorm.collect_garbage` is a free function - so the two coexist.
+The cost is only that a traceback does not say which heap was swept.
+
+Opened 2026-09-02 while landing `TrustedFlag`, because the queue in
+070 said "GCAction" as if it were one more vocabulary and it is not.
+Closed the same day.

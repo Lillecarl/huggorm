@@ -156,15 +156,25 @@ which was superseded rather than fixed.
   over `bool`, and the switch gate was shown to hold for that shape
   rather than assumed to.
 
-  What is left is not two more vocabularies. GCAction needs an input
-  RECORD the DSL does not have (074), and FileIngestionMethod has no
-  binding that takes one at all.
-- 074 (garbage collection needs an input record) is OPEN.
-  `collectGarbage` takes a `GCOptions` a caller BUILDS, and every
-  record here is `@produced` - something libstore made. Flatten it
-  into keyword parameters or teach the declaration an input record;
-  do not decide from GC alone. It also collides by name with the
-  evaluator's own `collect_garbage`, which sweeps a different heap.
+  GCAction landed with 074 and has its switch gate. What is left is
+  FileIngestionMethod alone, and it has no binding that takes one at
+  all - so it would be a vocabulary with no user and no gate.
+- 079 (every int crosses the wire signed) is OPEN. `SCALARS` maps the
+  wire type `int` to `sint64` once, for every field, so a `U64` above
+  2**63 cannot cross. Found by `GCOptions()`, whose "no limit" default
+  is the largest u64; 074 fixed that field by carrying the absence
+  instead, which is right on its own terms and answers nothing about
+  the width.
+- 078 (a declaration nobody lists reaches nothing) is OPEN. A file in
+  `decl/` that appears in none of `__init__.py`'s three lists emits
+  nothing and says nothing. Third silent drop in three tasks, after
+  073 and 075 - the pattern is that an emitter SKIPS what it does not
+  recognise, and a skip reads as an absence.
+- 074 (garbage collection needs an input record) is DONE. A store
+  collects its own garbage. The input record needed no new machinery -
+  a constructible wire value already was one - and the only thing that
+  refused was rebuilding a set member, which cost one keyword on
+  `@reads` and deleted a hand-written `_from_parts` elsewhere.
 - 075 (an accessor reads a table the emitter can derive) is DONE.
   `_accessor` and its two-row `CXX_OPTIONAL` are gone. The reading was
   right about the table and wrong about how it was reached: the
