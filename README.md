@@ -148,11 +148,16 @@ and the place to start if `store.py` is too much at once.
 StrEnums whose members ARE the strings a Nix parser takes. Nothing
 about them compiles.
 
-A declaration not in that list emits nothing: `decl/nixstore.py` and
-`decl/storefns.py` are read only by `gates/nbcheck.py`, which compares
-them against the hand-written nanobind in `~/Code/nanopynix` - a
-corpus to beat rather than a reference to match - and is skipped on a
-machine without it.
+A declaration not in that list emits nothing, so a fourth list says
+which ones are meant to. `GATES` holds `decl/nixstore.py` and
+`decl/storefns.py`: `gates/nbcheck.py` reads them and nothing else
+does, comparing them against the hand-written nanobind in
+`~/Code/nanopynix` - a corpus to beat rather than a reference to
+match - and it is skipped on a machine without it.
+
+Every `*.py` in `decl/` is in exactly one of the four lists, and
+`corpus()` refuses the build when it is not. A file nobody lists used
+to emit nothing and say nothing (`tasks/078`).
 
 ### huggorm-bindings
 

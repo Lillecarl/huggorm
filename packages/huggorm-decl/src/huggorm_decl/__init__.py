@@ -69,6 +69,66 @@ VOCABULARIES = (
 # module a caller catches, and the C++ catch chain that raises it.
 ERRORS = "errors.py"
 
+# Declarations the BUILD does not read at all. `gates/nbcheck.py`
+# reads these two and nothing else does: they declare what
+# `~/Code/nanopynix` binds by hand, so the gate can put the emitter's
+# answer beside a person's. That corpus is one to beat rather than a
+# reference to match, and the gate is skipped on a machine without
+# it.
+#
+# Listed here even though no emitter is handed them, because the
+# census below has to account for every file in the directory. A
+# fourth group is the honest way to say "read by a gate": leaving
+# them out would mean the census could not be exhaustive, and an
+# exhaustive census is the whole point (tasks/078).
+GATES = (
+    "nixstore.py",
+    "storefns.py",
+)
+
+
+def census(root: pathlib.Path,
+           listed: tuple[tuple[str, tuple[str, ...]], ...]) -> None:
+    """Refuse a directory and a set of lists that disagree.
+
+    A declaration in none of the lists is SKIPPED, and a skip reads
+    as an absence: `decl/gc.py` was written, imported, parsed and
+    emitted nothing, and `nix build bindings-src` succeeded without
+    writing `gc.cpp` (tasks/074). The lists are right and stay - what
+    was missing is the check that the directory agrees with them.
+
+    Three disagreements, and they are different mistakes: a file
+    nobody listed, a list naming a file somebody deleted, and a file
+    in two lists at once. Each is named separately, because "the
+    lists and the directory disagree" does not say what to do.
+
+    The glob decides what a declaration IS, and it decides it by
+    suffix: `decl/README.md` is not one, and `__pycache__` is a
+    directory. So the exclusions need no list of their own."""
+    on_disk = {f.name for f in root.glob("*.py")}
+    seen: dict[str, str] = {}
+    twice = []
+    for group, names in listed:
+        for name in names:
+            if name in seen:
+                twice.append(f"{name} is in both {seen[name]} and {group}")
+            seen[name] = group
+    missing = sorted(on_disk - set(seen))
+    gone = sorted(set(seen) - on_disk)
+    bad = []
+    if missing:
+        bad.append(
+            f"in no list, so nothing reads them: {', '.join(missing)}. "
+            f"Add each to the group that describes it, or delete it.")
+    if gone:
+        bad.append(
+            f"listed and not on disk: {', '.join(gone)}. Remove the name "
+            f"or restore the file.")
+    bad += sorted(twice)
+    if bad:
+        raise TypeError(
+            f"{root} and the declaration lists disagree. " + " ".join(bad))
+
 
 @functools.cache
 def corpus() -> Corpus:
@@ -90,6 +150,19 @@ def corpus() -> Corpus:
     changes. A caller that wants a fresh read builds its own
     `Corpus` - `gates/nbcheck.py` already reads declarations that
     are not in this set at all."""
+    # Here rather than inside Corpus, and the reason is corpus.py's
+    # own: "WHICH documents make up the set is a different fact, and
+    # that one stays with the documents." A Corpus is handed a set.
+    # This is where the set is decided, so this is where it has to
+    # answer for the directory it came from.
+    #
+    # `GATES` is not passed on. It is not a build group - no emitter
+    # is handed one - and it exists only so the census can account
+    # for every file.
+    census(DECLARATIONS, (("NANOBIND", NANOBIND),
+                          ("VOCABULARIES", VOCABULARIES),
+                          ("ERRORS", (ERRORS,)),
+                          ("GATES", GATES)))
     return Corpus(DECLARATIONS, nanobind=NANOBIND,
                   vocabularies=VOCABULARIES, errors=ERRORS)
 
