@@ -941,6 +941,13 @@ def _body(node: ast.FunctionDef) -> str:
     return seen
 
 
+# The descriptors a declaration may not write. `property` is not
+# here: it IS read, into `Method.prop`, and refused by the emitter
+# that would have to honour it (tasks/075). These two carry no word
+# at all.
+DESCRIPTORS = ("staticmethod", "classmethod")
+
+
 def _method(node: ast.FunctionDef, vocab: dict[str, str],
             bound: bool = True, bound_kind: bool = True) -> Method:
     """One declared function.
@@ -952,6 +959,31 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
     Reading a free function as a method silently drops its first
     parameter, which is how `open_store(uri)` first emitted without
     the `"uri"_a` that makes the parameter usable by keyword."""
+    for d in node.decorator_list:
+        if isinstance(d, ast.Name) and d.id in DESCRIPTORS:
+            # `@staticmethod` and `@classmethod` say the first
+            # parameter is not `self`, and this reads a bound method
+            # by SKIPPING the first parameter. So the one below would
+            # be dropped, and every emitter would then write a
+            # signature short of an argument - which is the shape of
+            # the `open_store(uri)` bug this function's own docstring
+            # records.
+            #
+            # Refused rather than honoured, because no emitter has a
+            # word for either: nanobind spells them `def_static` and
+            # a classmethod not at all, the stub would need the same
+            # decorator, and `_parts` fetches an accessor off an
+            # INSTANCE. That is four outputs for a shape no
+            # declaration wants yet (tasks/076).
+            #
+            # Reachable only since `_live` learnt to look through a
+            # descriptor: before that a `@staticmethod` named no live
+            # line and was dropped whole, in silence (tasks/075).
+            raise DeclarationError(
+                node, f"{node.name}: @{d.id} has no meaning in a "
+                      f"declaration yet, and this reads a method as one "
+                      f"that takes self - so its first parameter would "
+                      f"be dropped. See tasks/076.")
     args = node.args
     if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         raise DeclarationError(
