@@ -148,3 +148,32 @@ binding surface this repo does not have, for a test-only concern.
 Question 3 alone, and it is a judgement rather than a defect: 464 MB
 per run, three runs retained, 1.4 GB steady. Bounded, and the
 dangerous half is gone.
+
+## The 177 warnings are somebody else's, 2026-09-02
+
+`nix run --file . test` now prints `237 passed, 177 warnings`, every
+one of them `(rm_rf) error removing
+.../test_a_build_lands_in_the_uppe0/lower/nix/store/...`. That is the
+EROFS shape above, from the test this file already records as gone.
+
+It is not this suite's. `/tmp/pytest-of-lillecarl` is keyed by USER,
+not by project, so every pytest this machine runs shares it. The
+directory holding those 2.2 GB also holds `test_get_flake_local_0`,
+`test_call_flake_local_0` and `test_eval_flake_writes_lock_fi0`, and
+this repo has no flake tests at all. Another project left it, this
+suite cannot delete it, and pytest scans the shared basedir on every
+run and warns about it again.
+
+Measured: 5.5 GB across 51 directories, of which
+
+    2.2 GB   one immortal garbage-* dir, another project's
+    1.6 GB   three retained runs of THIS suite, ~536 MB each
+    1.7 GB   older pytest-N husks
+
+So the steady figure above still holds for this suite. What changed
+is only that the noise is now loud enough to be blamed on it - which
+is the reason to write this down rather than to fix anything.
+
+A reader who sees the count should check WHOSE leftovers they are
+before touching a fixture here. `ls /tmp/pytest-of-lillecarl/<dir>`
+answers it in one command.
