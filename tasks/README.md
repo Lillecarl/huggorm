@@ -183,9 +183,13 @@ which was superseded rather than fixed.
   one.
 - 081 (an input that reached no output) is OPEN. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
-  a skip reads as an absence. Hard because a skip is sometimes right
-  - `@local`, a private method - so the gate needs every legitimate
-  one to become something a declaration SAYS.
+  a skip reads as an absence. Measured on 2026-09-02: six of 182
+  declared names reach no output by name, and all six are legitimate
+  for a reason the declaration already states - `@startup`,
+  `_`-private, `@produced(by=...)`, or being a vocabulary. So the
+  fear it was opened with is wrong and the gate is buildable. What is
+  left is the design: ask the emitters what they consumed rather than
+  searching the text they wrote.
 - 078 (a declaration nobody lists reaches nothing) is DONE. `corpus()`
   censuses `decl/` against the lists and the build fails when they
   disagree. The plan in the file was wrong: "every `*.py` in exactly

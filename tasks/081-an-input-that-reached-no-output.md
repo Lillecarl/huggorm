@@ -49,4 +49,49 @@ Instrument one emitter to record what it consumed, diff the two, and
 read the list of the unconsumed. Whatever is on that list and is
 legitimate is the vocabulary this gate needs.
 
-Opened 2026-09-02, while closing `tasks/078`.
+## The first measurement, taken 2026-09-02
+
+A crude probe: every declared class, method, word and free function
+by NAME, searched for in the text of the emitted C++ and the emitted
+Python package. 182 names.
+
+Six did not appear in both. Every one of them is legitimate, and -
+this is the finding - each is legitimate for a reason the declaration
+ALREADY STATES:
+
+| name | says what | consumed as |
+| --- | --- | --- |
+| `_init_libstore` (x2) | `@startup` | `huggorm::init_libstore();` at module init |
+| `_gc_init` | `@startup` | `nix::initGC();` |
+| `_translate_nix_error` (x2) | leading underscore | a registered exception translator |
+| `open_store` | `@produced(by=...)` on Store | `Store`'s `nb::new_` lambda, and `_ctor_from` |
+| every enum MEMBER | a vocabulary | `huggorm_bindings/words.py`, which is the C++ side's output |
+
+So the fear this task was opened with - that legitimate skips are
+undeclared, and each would have to be invented - is not what the
+corpus shows. The vocabulary exists. `@startup`, `_`-private,
+`@produced(by=...)` and "is a vocabulary" cover all of it, and each
+is a fact a person wrote down for its own reasons.
+
+That makes the gate buildable now, at the name grain, with a table of
+four exemptions and no new declaration syntax.
+
+## What the probe is NOT good enough for
+
+It searches TEXT, and that is wrong in both directions.
+
+It passes a name that only appears as a STRING. `open_store` "reached"
+store.cpp as `cls.attr("_ctor_from") = "open_store"` before anyone
+looked at what that meant.
+
+And it passes on substrings. `BUILT` is inside `built_outputs`, so
+several enum members counted as reached by an unrelated word. The
+182-name pass rate is therefore an overstatement, and the six failures
+are the only trustworthy half of the answer.
+
+A real gate asks the emitters what they consumed, rather than
+searching what they wrote. That is the design decision this task
+still holds.
+
+Opened 2026-09-02, while closing `tasks/078`. First measurement the
+same day.
