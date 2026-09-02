@@ -1,0 +1,152 @@
+# Every int crosses the wire signed
+
+**DONE.** The wire has two integers now. `uint` is a `uint64` and
+`int` is a `sint64`, and the C++ spelling the declaration already
+carries is what says which. Above the boundary both are still a
+Python `int`.
+
+## What was measured
+
+`GCOptions.max_freed` is a `U64` whose upstream default is
+`std::numeric_limits<uint64_t>::max()`. Sending it:
+
+    ValueError: Value out of range: 18446744073709551615
+    huggorm/wire.py:524
+
+That is the DEFAULT options object - what a caller sends when they
+want no limit - so the whole class could not cross an RPC
+(`tasks/074`).
+
+## Why it had not fired before
+
+Nothing had ever put a value above 2**63 on the wire. `nar_size` and
+`download_size` are u64s and a real NAR size is nowhere near the
+limit; `registration_time` is an i64 Unix time. The width has been
+academic since the wire existed.
+
+`max_freed` is the first, and only because upstream uses the largest
+u64 as a SENTINEL rather than as a size.
+
+## What 074 did instead, and why it is not this
+
+The accessor answers None for the sentinel, so the absence crosses
+rather than the number. That is right on its own terms - "no limit" is
+not a size, and `PathInfo.registration_time` already reads upstream's
+0-means-unknown the same way - and it happens to sidestep the width.
+
+It fixes one field. The next u64 that legitimately exceeds 2**63 has
+no sentinel to hide behind.
+
+## The decision: TWO
+
+`sint64` and `uint64`. The alternative - one type plus a build-time
+refusal - was written up here as the cheap half worth doing either
+way, and it turned out to be unenforceable. A range is a RUN-TIME
+fact. "Refuse a `U64` that can exceed 2**63" is either every U64 in
+the corpus, which is all six honest ones, or only a literal default,
+which catches nothing now that 074 has absorbed the one sentinel.
+
+Goal 1 settles the rest. Nix's fields are `uint64_t`, so a value Nix
+can hold has to be a value this binding can carry. Refusing half
+their range is not a safe answer that costs a little; it is the
+binding disagreeing with the C++ it binds about what the field is.
+
+## What was wrong in this file before
+
+**"A schema change for every existing int field."** No. Only the
+unsigned ones move; a `sint64` is still right for every `I64`. Six
+fields changed proto type and three did not:
+
+    times_built    nar_size (PathInfo)    nar_size (MissingPaths)
+    bytes_freed    download_size          max_freed
+
+    start_time     stop_time              registration_time
+
+That is the whole diff of the emitted C++, and it is four files of
+`_wire_fields` strings. Nothing else changed shape.
+
+## Where the width lives now
+
+One place, and it was already there: the `Cxx` spelling on the alias.
+`U64` is `Annotated[int, Cxx("uint64_t")]`, and `read.type_of`
+attaches that to the `Type` it builds. `Type.wire` used to answer
+`self.python`, which is `int` for both aliases; it consults `WIDTHS`
+first now.
+
+`Class.parts` is the one reading both the manifest and the emitted
+`_wire_fields` ask, so neither can say a width the other does not.
+
+The name `uint` is stated twice - in `read.WIDTHS` and in
+`wiretypes.SCALAR_NAMES` - because `huggorm-dsl` may not import the
+generator's payload: that file is COPIED into the generated package
+and must import nothing of ours. The two disagreeing is not silent.
+`model.py` checks every emitted field against `scalar_spelling` and
+refuses one it does not know, which is what a renamed `uint` would
+be.
+
+## What a parameter cannot say, and why it refuses
+
+A FIELD says its own width. A parameter does not: `params[].type` is
+one string, read by the stub emitter as a Python annotation AND by
+the schema builder as a wire type. `int` is right for the first and
+half-right for the second, and there is no second string to put the
+width in.
+
+So a proxy method that takes or returns a `uint64_t` is refused at
+build time, by name, pointing here. Nothing declares one - every
+integer a service carries today is an `I64` - so the refusal costs
+nothing and the wrong answer would have been a silently truncated
+number.
+
+Carrying it instead means a second key beside `type`, and `model.py`
+cannot reflect one off a compiled class - so `check.py` would diff
+the manifest against a shape reflection has no way to produce. That
+is `tasks/080`.
+
+A CONTAINER of a width refuses for a different reason. `type_of`
+attaches an alias's C++ spelling to the whole annotation, so the
+`uint64_t` on `dict[str, U64]` describes what the dict holds. Calling
+the dict a `uint` would be wrong and calling it `dict[str, int]`
+would lose the top half of every value in it. No declaration writes
+one; the branch is written against a test declaration, which is the
+only way it is read at all.
+
+## The gates, and which one failed first
+
+- `test_a_limit_above_the_signed_range_crosses_as_itself` sends
+  `2**63 + 1` through a real `GCOptionsMsg`. Before the change it
+  raised `ValueError: Value out of range: 9223372036854775809`. Not
+  the largest u64, on purpose: that one IS the sentinel, so an
+  absence would cross and prove nothing.
+- `test_each_64_bit_width_reaches_its_own_proto_type` reads the
+  descriptor for every value message and checks each declared width
+  against it. Derived from the manifest, and it asserts both counts
+  are non-zero - a manifest that stopped spelling `uint` would
+  otherwise pass by having nothing to check.
+- `test_a_field_says_which_64_bit_integer_it_is` asserts the other
+  half too: the manifest's PYTHON spelling is `int` for both, so a
+  stub never names a type Python does not have.
+- The two refusals each have a test declaration, because the corpus
+  has neither shape.
+
+All four were seen to FAIL. With `read.WIDTHS` emptied, so the width
+reaches nothing:
+
+    4 failed, 239 passed
+    test_a_limit_above_the_signed_range_crosses_as_itself
+      ValueError: Value out of range: 9223372036854775809
+    test_each_64_bit_width_reaches_its_own_proto_type
+      no field crosses unsigned; the width is unproven
+    test_a_field_says_which_64_bit_integer_it_is
+      ('total', 'int') != ('total', 'uint')
+    test_a_container_of_a_width_is_refused_rather_than_guessed
+      DID NOT RAISE TypeError
+
+The two refusals were perturbed on their own as well, and each gave
+the wrong answer it exists to stop: `UNCROSSABLE = ()` let
+`fits(limit)` cross as `int`, and dropping the container guard named
+`dict[str, U64]` a `uint` - a dict declared to be a scalar.
+
+Whole suite: 251 passed, up from 246.
+
+Opened 2026-09-02, while closing `tasks/074`. Closed the same day.

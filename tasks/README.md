@@ -159,12 +159,19 @@ which was superseded rather than fixed.
   GCAction landed with 074 and has its switch gate. What is left is
   FileIngestionMethod alone, and it has no binding that takes one at
   all - so it would be a vocabulary with no user and no gate.
-- 079 (every int crosses the wire signed) is OPEN. `SCALARS` maps the
-  wire type `int` to `sint64` once, for every field, so a `U64` above
-  2**63 cannot cross. Found by `GCOptions()`, whose "no limit" default
-  is the largest u64; 074 fixed that field by carrying the absence
-  instead, which is right on its own terms and answers nothing about
-  the width.
+- 080 (a parameter cannot say its width) is OPEN. `params[].type` is
+  one string read as a Python annotation by the stubs and as a wire
+  type by the schema, so a proxy method may not take a `uint64_t` -
+  the build refuses one by name. A second key beside `type` is the
+  obvious fix and `model.py` cannot reflect one, so `check.py` would
+  diff against a shape reflection cannot produce. Decide with 022.
+- 079 (every int crosses the wire signed) is DONE. The wire has two
+  integers: `uint` is a uint64 and `int` is a sint64, from the C++
+  spelling the alias already carried. Six fields moved and three did
+  not - the file's own claim that every int field would change was
+  wrong, and so was its plan: the "cheap half" it named, a build-time
+  refusal of an out-of-range u64, is unenforceable because a range is
+  a run-time fact.
 - 078 (a declaration nobody lists reaches nothing) is OPEN. A file in
   `decl/` that appears in none of `__init__.py`'s three lists emits
   nothing and says nothing. Third silent drop in three tasks, after
