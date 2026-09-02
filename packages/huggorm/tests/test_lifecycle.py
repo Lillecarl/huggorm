@@ -22,6 +22,7 @@ import pytest
 from conftest import HOST, SHORT_TTL, Server
 
 from huggorm import remote
+from huggorm_bindings.errors import SysError
 
 
 async def wrapper_error(coro: Any) -> dict[str, str]:
@@ -194,13 +195,17 @@ class Swept:
     state_id: str
     bag_id: str
     lazy_id: str
+    # A path the warm state evaluated and that no longer EXISTS. The
+    # milestone in CLAUDE.md is that a claimed state answers for it
+    # anyway, and that is only meaningful because a fresh one cannot.
+    warm_file: str
     doomed_id: str
     doomed_client: Any
     alive: Any
 
 
 @pytest.fixture(scope="session")
-async def swept(ttl_server: Server) -> Any:
+async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
     """Set up everything that needs a sweep, then wait once.
 
     Three scenarios share the wait: leases detached into escrow, an
@@ -227,6 +232,14 @@ async def swept(ttl_server: Server) -> Any:
     lazy = await warm.parse_expr("7")
     assert await lazy.type_name() == "thunk"
     await warm.force(lazy)
+    # ...and a FILE, which is the only warm thing libexpr keeps by
+    # itself. `evalFile` caches by resolved path, so deleting the file
+    # here leaves the cache as the only way to answer for it
+    # (eval.cc:1118, and tasks/016).
+    warm_file = tmp_path_factory.mktemp("warm") / "answer.nix"
+    warm_file.write_text("40 + 2\n")
+    assert await (await warm.eval_file(str(warm_file))).integer() == 42
+    warm_file.unlink()
     state_id, bag_id, lazy_id = warm.handle_id, bag.handle_id, lazy.handle_id
     assert await maker.detach(all=True)
     maker.stop_pinging()
@@ -246,7 +259,7 @@ async def swept(ttl_server: Server) -> Any:
 
     await anyio.sleep(SHORT_TTL * 1.5 + 1.0)
     yield Swept(ttl_server.port, a.token, thunk_id, maker.token,
-                state_id, bag_id, lazy_id, doomed_id, d, alive)
+                state_id, bag_id, lazy_id, str(warm_file), doomed_id, d, alive)
     live.stop_pinging()
 
 
@@ -349,6 +362,42 @@ async def test_the_evaluator_outlives_its_creator(swept: Swept) -> None:
     assert await heir.realize(heir.proxy("Value", swept.bag_id)) == {"answer": 42}
     fresh = await same.eval_expr('"after the handover"')
     assert await fresh.string_value() == "after the handover"
+    heir.stop_pinging()
+
+
+async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
+        swept: Swept) -> None:
+    """The milestone, as `CLAUDE.md` words it: a second client claims a
+    live EvalState, and re-evaluating unchanged input does no
+    re-evaluation.
+
+    The creator evaluated a file and then DELETED it. libexpr caches
+    an evaluation by resolved path and a hit never opens the file, so
+    the claimed state can still answer - and nothing else can. That is
+    what makes the handover worth having: a state that dies takes the
+    warm work with it, so restarting is not a slower way to the same
+    place.
+
+    The control is in the same test, on the same server, in the same
+    moment. A FRESH EvalState asked for the same path goes to disk and
+    says so."""
+    heir = await remote.connect(HOST, swept.port, claim=swept.maker_token)
+    same = heir.proxy("EvalState", swept.state_id)
+
+    warm = await same.eval_file(swept.warm_file)
+    assert await warm.integer() == 42, "the claimed state still has it"
+
+    cold = await heir.acquire("EvalState", "dummy://")
+    # `SysError`, not the wrapper: a declared Nix error crosses as
+    # ITSELF (tasks/066), so `wrapper_error` - which catches only
+    # InternalError - does not see this one. Measured by writing it
+    # that way first and watching the SysError go straight through.
+    with pytest.raises(SysError) as caught:
+        await cold.eval_file(swept.warm_file)
+    # "opening file" is the cold state SAYING it went to disk, which is
+    # the half the claimed state is claimed not to do.
+    assert "opening file" in str(caught.value)
+    assert "answer.nix" in str(caught.value)
     heir.stop_pinging()
 
 
