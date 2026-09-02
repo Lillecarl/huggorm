@@ -217,6 +217,15 @@ copies the file onto itself: without it the cwd goes first on
 sys.path, so once the tree copy exists `import huggorm` finds THAT
 one. `shutil.SameFileError`, on the second run only.
 
+And `nix run check` needs the same line, which is the second half of
+the same finding and was missed the first time. zuban resolves the
+tree's `huggorm` exactly the way Python does, so with no
+`__init__.py` there it typechecks the STORE's copy while printing the
+tree's file names - and reported `test_reflection.py:23: Returning
+Any from function declared to return "str"`, an error that is not in
+the tree it is naming. The copy is a `frontDoor` snippet both
+commands share now.
+
 ### One thing lint could not take
 
 `ast.unparse` writes one long line per import group and a 42-name

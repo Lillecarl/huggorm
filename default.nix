@@ -91,6 +91,28 @@ rec {
       pytest-timeout
     ]
   );
+  # The emitted front door, into the working tree.
+  #
+  # `huggorm/__init__.py` is generated (tasks/064) and the tree keeps
+  # none of it, so `packages/huggorm/huggorm/` is a NAMESPACE portion.
+  # Python's finder - and zuban's - prefer a regular package found
+  # LATER on the path, so without this the tree's `huggorm` is not the
+  # one anything reads: the dev loop `nix run test` exists for is
+  # gone, and `check` typechecks the store's copy while reporting the
+  # tree's file names. Both were measured.
+  #
+  # It writes a gitignored file into the tree, which is what both
+  # `setup.py` files already do with their own output.
+  #
+  # -P, or it copies the file onto itself. Without it the cwd goes
+  # first on sys.path, so once the copy exists `import huggorm` finds
+  # THAT one and source and destination are one file.
+  #
+  # Run from the repository root.
+  frontDoor = ''
+    ${ourPython}/bin/python3 -P -c 'import huggorm, shutil; shutil.copyfile(huggorm.__file__, "packages/huggorm/huggorm/__init__.py")'
+  '';
+
   # nix run --file . check
   #
   # The same two tools the builds gate on, over the whole tree at once,
@@ -108,6 +130,7 @@ rec {
     ];
     text = ''
       cd "''${1:-.}"
+      ${frontDoor}
       echo "--- lint ---"
       ruff check --no-cache packages
       echo "--- typecheck: the generator ---"
@@ -176,6 +199,9 @@ rec {
   # copy, so an edit is testable without a rebuild. huggorm_bindings
   # and huggorm_generated still come from the store: one is compiled
   # and the other is generated, so neither exists in the tree.
+  #
+  # `frontDoor` first, or the tree's huggorm is a namespace portion
+  # and the store's package wins the whole directory. See its comment.
   test = pkgs.writeShellApplication {
     name = "test";
     runtimeInputs = [
@@ -183,11 +209,9 @@ rec {
       ourPython
     ];
     text = ''
-      cd "''${HUGGORM_ROOT:-.}/packages/huggorm"
-      # -P, or this copies the file onto itself. Without it Python puts
-      # the cwd first, so once the tree copy exists `import huggorm`
-      # finds THAT one and the source and destination are one file.
-      python3 -P -c 'import huggorm, shutil; shutil.copyfile(huggorm.__file__, "huggorm/__init__.py")'
+      cd "''${HUGGORM_ROOT:-.}"
+      ${frontDoor}
+      cd packages/huggorm
       export PYTHONPATH="$PWD''${PYTHONPATH:+:$PYTHONPATH}"
       exec pytest "$@"
     '';
