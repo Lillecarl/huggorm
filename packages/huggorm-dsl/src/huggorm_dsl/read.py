@@ -320,6 +320,12 @@ class Method:
     # method and ValidPathInfo.path as an attribute, and both are
     # values. So the declaration says it, in the word Python already
     # has for it.
+    #
+    # NO EMITTER HONOURS IT YET. `nbemit` refuses a bound class that
+    # sets it, because the stub, `_parts` and the wire all call an
+    # accessor and a binding alone cannot change that (tasks/076).
+    # The word stays because the reader is where it is read and the
+    # refusal is what reads it.
     prop: bool = False
     # The C++ function a FREE function binds, from @binds.
     binds: str = ""

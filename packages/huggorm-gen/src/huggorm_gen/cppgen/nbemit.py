@@ -106,18 +106,9 @@ CXX_BUILTIN = {
 
 # Comparison dunders and the C++ operator each one binds. Every entry
 # is emitted with nb::is_operator(); see the module docstring.
-# A produced value's optional field needs an EXPLICIT C++ return type,
-# because a lambda with two return paths - the value and std::nullopt -
-# cannot deduce one. Derived from the declared Python type, so the
-# declaration says `str | None` once and both backends read it.
 # A Python default, spelled for C++. Only where the two differ: a
 # number or a string literal already reads the same in both.
 CXX_DEFAULT = {"True": "true", "False": "false", "None": "nullptr"}
-
-CXX_OPTIONAL = {
-    "str | None": "std::optional<std::string>",
-    "int | None": "std::optional<std::int64_t>",
-}
 
 COMPARISONS = (("__eq__", "==", "value"), ("__lt__", "<", "order"),
                ("__le__", "<=", "order"), ("__gt__", ">", "order"),
@@ -1181,38 +1172,36 @@ def _value_semantics(cls: Class) -> list[str]:
     return out
 
 
-def _accessor(cls: Class, m: Method) -> list[str]:
-    """One accessor of a PRODUCED value, in the smallest form it fits.
+def _attribute(cls: Class, m: Method) -> TypeError:
+    """The refusal a `@property` accessor gets, and why it is one.
 
-    Three forms, and the declaration picks by saying what it knows:
+    `@property` says an accessor is an ATTRIBUTE rather than a call.
+    Nothing here honours that, and the four things that would have to
+    are emitted by three files:
 
-    `@reads("storeDir")` is a plain data member, so `def_ro` binds it
-    and nanobind writes the accessor - `def_ro` IS `def_prop_ro` with
-    a generated lambda (nb_class.h:784), so this is strictly less code
-    for the same result.
+    - this one, which binds `def_prop_ro` instead of `def`;
+    - `_identity_semantics`, which writes `h.attr("nar_size")()` into
+      `__repr__`, `__hash__` and `_parts` - a call, on every part;
+    - `pyi.py`, which emits `def nar_size(self) -> int` in the stub;
+    - `wire.py` and the generated wrappers, which read a part the way
+      `_parts` does.
 
-    A `Cxx(...)` body is an accessor nothing can derive, and it becomes
-    a `def_prop_ro` lambda carrying that source. `nix::ValidPathInfo`
-    renders a store path against its own store directory; that is real
-    logic, not a binding, and pretending otherwise would put a
-    template where a person's decision belongs.
+    So a binding that honoured the word alone would disagree with its
+    own stub and drop the value off the wire. Refusing says that in
+    one place, at the declaration that asked (tasks/076).
 
-    Anything else is refused rather than guessed."""
-    obj = _self(cls)
-    if m.reads:
-        return [f'{INDENT * 2}.def_ro("{m.name}", &{_held(cls)}::{m.reads})']
-    if m.cxx_body:
-        body = m.cxx_body.strip().splitlines()
-        spelled = CXX_OPTIONAL.get(m.ret.python if m.ret else "", "")
-        ret = f" -> {spelled}" if spelled else ""
-        head = (f'{INDENT * 2}.def_prop_ro("{m.name}", '
-                f"[](const {_held(cls)} &{obj}){ret} {{")
-        return [head, *[f"{INDENT * 4}{ln}".rstrip() for ln in body],
-                f"{INDENT * 2}}})"]
-    raise TypeError(
-        f"{cls.name}.{m.name}: a produced value's accessor must say what it "
-        f"reads. Use @reads(\"member\") for a data member, or a Cxx(...) "
-        f"when it is computed.")
+    This used to be an `_accessor` function that emitted `def_ro` and
+    `def_prop_ro`, and no declaration ever reached it. It carried its
+    own two-row table of optional return spellings, keyed by the
+    literal annotation, where `_returns` derives the same answer for
+    every type the emitter knows - so the dead path was also the
+    wrong one (tasks/075)."""
+    return TypeError(
+        f"{cls.name}.{m.name}: @property makes this accessor an ATTRIBUTE, "
+        f"and every reader of this class calls it - the emitted "
+        f"`_parts`, the stub and the wire all spell "
+        f"`obj.{m.name}()`. Drop the @property and declare a plain "
+        f"accessor, or teach all four (tasks/076).")
 
 
 def record_fields(cls: Class,
@@ -2053,7 +2042,9 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     else:
         body = _ctor(cls, known)
     for m in cls.methods:
-        body += _accessor(cls, m) if m.prop else _method(cls, m, known)
+        if m.prop:
+            raise _attribute(cls, m)
+        body += _method(cls, m, known)
     if decl.wire == "value":
         body += _identity_semantics(cls, known)
         body += _round_trip(cls)
