@@ -34,6 +34,7 @@ from huggorm_bindings import (
     Store,
     StoreLocation,
     StorePath,
+    TrustedFlag,
 )
 from huggorm_bindings import ContentAddressMethod as CA
 from huggorm_bindings.errors import (
@@ -80,6 +81,34 @@ def test_parsing_checks_the_store_directory(store: Store) -> None:
 
 def test_an_empty_store_holds_nothing(store: Store) -> None:
     assert store.is_valid_path(StorePath(HELLO)) is False
+
+
+def test_a_store_says_whether_it_trusts_us_or_says_nothing(
+        store: Store) -> None:
+    """Three answers, and two of them are reachable with no daemon.
+
+    `is_trusted_client` is `std::optional<TrustedFlag>` upstream, so
+    the absent answer is a real one: a store that has no notion of who
+    is asking says nothing, and that is different from saying no. A
+    bool return would have had to pick a side for it.
+
+    Both arms without the network, which is what makes this hermetic.
+    A dummy store trusts everybody - upstream's own comment says it is
+    "incapable of *not* trusting" - and a `ssh://` store answers
+    nothing at all, because the legacy SSH protocol has no way to ask.
+    Opening one connects to nothing, so the host need not exist.
+
+    The word compares equal to the vocabulary member because a
+    StrEnum member IS its string. `not-trusted` is the third answer
+    and no store reachable from here gives it: it takes a daemon that
+    decided from the connecting user, or the restricted store an
+    evaluation builds internally. The word is still checked - the
+    emitted switch names every enumerator under `-Werror=switch`, and
+    `test_words` holds the spelling."""
+    assert store.is_trusted_client() == TrustedFlag.TRUSTED
+
+    silent = Store("ssh://no-such-host-this-test-never-connects")
+    assert silent.is_trusted_client() is None
 
 
 def test_a_store_need_not_answer_for_all_its_paths(store: Store) -> None:
