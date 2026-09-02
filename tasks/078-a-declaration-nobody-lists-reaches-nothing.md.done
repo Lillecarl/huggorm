@@ -1,0 +1,92 @@
+# A declaration nobody lists reaches nothing
+
+**DONE.** `corpus()` runs a census over `decl/`, and a build fails
+when the directory and the lists disagree. Three disagreements are
+named separately, because they are different mistakes.
+
+## How it was found
+
+`decl/gc.py` was written, was well-formed, imported, parsed, and
+emitted nothing at all. `nix build bindings-src` succeeded and wrote
+no `gc.cpp`. The file was simply not in `NANOBIND`, and nothing said
+so (`tasks/074`).
+
+The failure looks exactly like a declaration with no classes in it.
+
+## Why the lists are right
+
+They are not the problem and should stay. `__init__.py` says why:
+
+> Which declarations exist, and which of them owns a compiled module,
+> is a fact about this set of documents. An emitter is handed the set;
+> it does not own it.
+
+A glob would decide by filename what the author should decide, and
+`decl/README.md` is already in that directory. The list is the
+statement; what is missing is the check that the directory agrees
+with it.
+
+## What this file got wrong
+
+It named the gate as "every `*.py` in `decl/` appears in exactly one
+of the three lists". That gate fails today, on the corpus it is meant
+to protect. `decl/nixstore.py` and `decl/storefns.py` are in none of
+the three ON PURPOSE: `gates/nbcheck.py` reads them and nothing else
+does, comparing the emitter's answer against the hand-written
+nanobind in `~/Code/nanopynix`. `README.md` already said so, two
+paragraphs above where the plan was written.
+
+So the census needed a fourth group before it could be exhaustive,
+and `GATES` is it. "Read by a gate, not by the build" is a real fact
+about a declaration, and it now has somewhere to live rather than
+being the absence of three other facts.
+
+That is the shape of the whole task in miniature. A file in no list
+meant nothing, and the fix is to make every file mean something.
+
+## What it checks
+
+Three disagreements, each named on its own:
+
+- a file in **no list** - the case that started this;
+- a name **listed with no file** behind it, which is the other
+  direction and fails later and says less;
+- a file in **two lists**, which is two answers to one question. The
+  census counts each name once, so without this a duplicate would
+  make the totals agree by accident.
+
+The glob decides what a declaration IS, by suffix. `decl/README.md`
+is not one and `__pycache__` is a directory, so the exclusions need
+no list of their own.
+
+It sits in `corpus()` rather than in `Corpus`, and `corpus.py`'s own
+docstring is the reason: "WHICH documents make up the set is a
+different fact, and that one stays with the documents." `GATES` is
+not passed to `Corpus` either - no emitter is handed one, and it
+exists only so the census can be exhaustive.
+
+## Proved by breaking it
+
+The three branches have unit tests over a temporary directory. Those
+prove the function and say nothing about the one line that reaches
+it, so a fourth test stubs `census` and asserts `corpus()` called it
+- deleting that line would otherwise leave every other test passing,
+which is the same shape as the bug this task is about.
+
+The call site was perturbed for real as well: an empty
+`decl/extra.py`, and `nix build bindings-src` failed with
+
+    TypeError: .../huggorm_decl/decl and the declaration lists
+    disagree. in no list, so nothing reads them: extra.py. Add each
+    to the group that describes it, or delete it.
+
+That is the build that used to succeed and write nothing.
+
+## What is left
+
+The interesting version is not this. This checks one directory
+against four lists; the general gate is "this input reached no
+output", and it would have caught all three silent drops rather than
+one. `tasks/081` holds it.
+
+Opened 2026-09-02, while closing `tasks/074`. Closed the same day.

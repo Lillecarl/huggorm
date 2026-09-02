@@ -172,11 +172,17 @@ which was superseded rather than fixed.
   wrong, and so was its plan: the "cheap half" it named, a build-time
   refusal of an out-of-range u64, is unenforceable because a range is
   a run-time fact.
-- 078 (a declaration nobody lists reaches nothing) is OPEN. A file in
-  `decl/` that appears in none of `__init__.py`'s three lists emits
-  nothing and says nothing. Third silent drop in three tasks, after
-  073 and 075 - the pattern is that an emitter SKIPS what it does not
-  recognise, and a skip reads as an absence.
+- 081 (an input that reached no output) is OPEN. The general form of
+  073, 075 and 078: an emitter skips what it does not recognise, and
+  a skip reads as an absence. Hard because a skip is sometimes right
+  - `@local`, a private method - so the gate needs every legitimate
+  one to become something a declaration SAYS.
+- 078 (a declaration nobody lists reaches nothing) is DONE. `corpus()`
+  censuses `decl/` against the lists and the build fails when they
+  disagree. The plan in the file was wrong: "every `*.py` in exactly
+  one of the three lists" fails on nixstore.py and storefns.py, which
+  are unlisted on purpose and read only by `gates/nbcheck.py`. They
+  have a fourth list now, so the census can be exhaustive.
 - 074 (garbage collection needs an input record) is DONE. A store
   collects its own garbage. The input record needed no new machinery -
   a constructible wire value already was one - and the only thing that
