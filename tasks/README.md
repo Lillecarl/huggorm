@@ -171,6 +171,11 @@ which was superseded rather than fixed.
   function was unreached, and the perturbation that showed it found a
   `@property` accessor being dropped from every emitted output in
   silence. Read the file for that half.
+- 077 (sixteen tasks answer neither signal) is OPEN. Sixteen task
+  files carry no status word AND no `.done` suffix, so nothing says
+  whether they are finished. That is what made `031` get named as
+  "next" twice after it was closed. Read each one's text before
+  trusting its name.
 - 076 (an accessor that is an attribute) is OPEN. `@property` in a
   declaration is refused, and the file says what honouring it would
   cost - four emitters reading one predicate. Do it when a declaration
