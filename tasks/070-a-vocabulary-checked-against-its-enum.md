@@ -307,12 +307,23 @@ One mode of three is observably different, and one is enough.
 
 ## What is NOT done
 
-`BuildResultSuccessStatus`, `BuildResultFailureStatus`,
 `TrustedFlag`, `GCAction` and `FileIngestionMethod` are the queue.
-The two BuildResult ones sit behind a larger question: upstream's
-`BuildResult` is a sum type whose failure arm IS `BuildError`, an
-exception class, so declaring it is not just an enum.
 
-Two front doors gained a `BuildMode` re-export line each, by hand.
-That is `tasks/064` - thirty such lines already - rather than
-anything this added.
+`BuildResultSuccessStatus` and `BuildResultFailureStatus` came off
+it on 2026-09-01. The larger question this file named was right:
+upstream's `BuildResult` is a sum whose failure arm IS `BuildError`,
+an exception class, so declaring it was not just an enum. It took
+`tasks/071` and four new things in the codegen. Both vocabularies
+are declared, every enumerator `spelled`, and a test asserts the
+disjointness upstream documents between them.
+
+The queue is a queue rather than a batch, and this session is why. A
+vocabulary emits NOTHING until a binding names one - measured in 071,
+where the two status vocabularies added one occurrence of the string
+"BuildResult" to the emitted tree and it was inside a docstring. So
+each of the three lands with the binding that takes it, and a commit
+of one alone would prove nothing.
+
+The two front doors that gained a `BuildMode` re-export line each by
+hand are fixed: `tasks/064` is done and both are emitted. A new
+vocabulary reaches them with no line written.

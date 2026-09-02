@@ -149,8 +149,10 @@ which was superseded rather than fixed.
   is the first vocabulary whose words are OURS: nix::BuildMode has no
   parser and no rendering, so the emitter writes both directions and
   emits the read-back switch even though nothing returns one - the
-  switch IS the gate. The queue behind it is BuildResult's two status
-  enums, TrustedFlag, GCAction and FileIngestionMethod.
+  switch IS the gate. BuildResult's two status enums came off the
+  queue in 071; TrustedFlag, GCAction and FileIngestionMethod are
+  what is left, and each lands with the binding that takes it - a
+  vocabulary emits nothing until one names it.
 
   The wire question is settled: a word crosses as a STRING, with a
   generated mapping at both ends, because a word is easier to read
