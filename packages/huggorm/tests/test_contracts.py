@@ -186,6 +186,15 @@ Everything behind the front door
     assert not missing, f"not reachable from `import huggorm`: {missing}"
     assert all(hasattr(huggorm, n) for n in huggorm.__all__)
 
+    # ...and the one name held BACK is held back. The subtraction above
+    # is a decision - plumbing is not surface - and the front door is
+    # emitted now, so without this line the emitter could publish it
+    # and nothing would say so. Found by trying: dropping the filter
+    # passed every gate (tasks/064).
+    assert "RPC_CLASSES" not in huggorm.__all__, (
+        "RPC_CLASSES is a registry the remote client reads, not "
+        "something to call. It has no place on the front door.")
+
 
 def test_every_name_the_manifest_DECLARES_reaches_the_front_door() -> None:
     """The same question as above, asked of the manifest instead.
