@@ -120,23 +120,6 @@ class MissingPaths:
     def nar_size(self) -> U64:
         """Bytes the substituted paths take once unpacked."""
 
-    def _from_parts() -> "MissingPaths":
-        """Rebuild one from the parts that crossed.
-
-        An aggregate, so this is one brace - but the three path lists
-        cross as LISTS and libstore keeps them in sets, which is the
-        same conversion every set-valued accessor here makes in the
-        other direction."""
-        Cxx("""
-return nix::MissingPaths{
-    as_set<nix::StorePathSet>(will_build),
-    as_set<nix::StorePathSet>(will_substitute),
-    as_set<nix::StorePathSet>(unknown),
-    download_size,
-    nar_size,
-};
-        """)
-
 # The C++ FACT, and it could not be stated until 061 split it from
 # "Python may not construct one". nix::Store has pure virtuals -
 # every store this hands back is really a LocalStore or a
