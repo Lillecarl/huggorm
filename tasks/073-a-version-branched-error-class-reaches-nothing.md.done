@@ -1,0 +1,157 @@
+# A version-branched error class reaches nothing
+
+**DONE.** The branch is READ, which was Carl's call between the two
+answers below. Explored in a worktree first.
+
+Before the fix: `pyerrors.entries` and `pyerrors.chain` read `tree.body`, so
+they see TOP-LEVEL classes only. `pyerrors.module` copies the whole
+document. A class under `if NIX_VERSION >= ...` therefore reaches the
+emitted `errors.py` and reaches nothing else.
+
+Measured on 2026-09-02, while closing `tasks/072`. The perturbation
+was six lines appended to `decl/errors.py`:
+
+    if NIX_VERSION >= (99, 0):
+        class NeverImports(NixError):
+            """A perturbation: the tree names it, the import does not."""
+
+            cxx = "nix::NeverImports"
+
+`nix run --file . check` said **all checks passed**, and the emitted
+module carried this:
+
+    if NIX_VERSION >= (99, 0):
+
+        class NeverImports(NixError):
+            """A perturbation: the tree names it, the import does not."""
+            cxx = 'nix::NeverImports'
+
+Three things are wrong there and each is its own hole.
+
+1. **The class is in no manifest entry and in no catch clause.**
+   `entries()` iterates `tree.body`, so the nested ClassDef is
+   invisible. A caller can `except NeverImports` and nothing will
+   ever raise it, and the wire has no `NeverImportsFault` to carry
+   one.
+
+2. **The `cxx` line is copied through.** `module()` strips a `cxx`
+   assignment from a top-level class body and nothing walks into an
+   `If`, so the emitted class keeps an attribute that names a C++
+   type - in a module whose whole point is to be plain Python.
+
+3. **The emitted module imported `huggorm_dsl`.** The perturbation
+   needed `from huggorm_dsl.declare import NIX_VERSION` to parse, and
+   `module()` copied that import into the runtime package. It IMPORTED
+   at test time, which is the part worth noticing: the build-time DSL
+   is reachable from the emitted bindings, so nothing failed.
+
+## Why it is worth doing
+
+A version branch is a shape the DSL invites. `declare.py` documents
+it for a method, and `read.py` imports every declaration precisely so
+Python resolves the branch. An error declaration is a declaration, so
+the branch is legal there and means nothing.
+
+The failure mode is the quiet one. Nothing crashes: a caller gets a
+class that cannot be raised, and the day upstream splits an error
+behind a version is the day someone writes this and believes it.
+
+## What to do
+
+Decide which of two answers is right, and both are defensible.
+
+- **REFUSE the branch.** `entries()` raises if any ClassDef is nested,
+  saying an error declaration is flat. Cheapest, and honest: no
+  declaration needs the branch today.
+- **READ the branch.** Walk into an `If` the way the import already
+  does, and take the classes the IMPORT defines rather than the ones
+  the tree names. `entries()` already has the module - it uses it for
+  `__bases__` - so this is the reading it half does.
+
+Whichever it is, PROVE it: the perturbation above must stop the build.
+
+Found because `tasks/072` asked for a gate to be shown failing and
+the closest thing to one was measured instead of assumed.
+
+## What was done, 2026-09-02
+
+**Carl chose READ the branch.** The reader has resolved a version
+branch since it was written, and `pyerrors` was the one emitter that
+parsed the file a second time and got a raw tree. So this is not new
+machinery; it is one emitter asking the reader instead of the parser.
+
+### The change, in four pieces
+
+1. **`read.resolved(path)`** hands back the tree with its `if` arms
+   already chosen. Four lines that `_read` already ran - parse,
+   `_live`, `_reconcile`, `_resolve` - now sit in `_chosen`, which
+   both callers share. Stating that twice was the alternative, and
+   the fact stated would have been which arm this build is looking
+   at.
+
+2. **`Corpus.resolved(name)`**, cached beside `Corpus.tree`. Both
+   stay, because they answer different questions: `tree` is the
+   document as WRITTEN, which is what a docstring's exact text and
+   the marker scan want, and `resolved` is the document as this build
+   READS it.
+
+3. **`pyerrors` reads one body.** All three readings went through
+   `tree.body` on their own, which is how they came to disagree - two
+   read the top level and `module()` copied the whole document. They
+   share `_body(tree)` now.
+
+4. **`module()` drops the declaration LANGUAGE's imports.** A branch
+   has to spell `NIX_VERSION` to be written at all, and the arm is
+   chosen by the time this runs - so the name is unreferenced and
+   carrying the import would make the emitted package depend on a
+   build-time one. The package name is read off `read`'s own module
+   rather than spelled. Anything ELSE a declaration imports stays: a
+   class body may legitimately name `typing`, and only the language
+   is knowably build-time.
+
+### The gate, and it is TWO gates
+
+The wiring and the mechanism fail differently, so they are caught
+differently.
+
+**`_body` REFUSES a raw parse.** An `ast.If` cannot survive
+`read.resolved`, so a surviving one means the caller passed the wrong
+tree. This is the only thing that can catch a revert to
+`Corpus.tree`: for a declaration that does not branch the two trees
+are identical, and no declaration in this repo branches.
+
+**`tests/test_declarations.py`** is new, and it is the first suite
+that drives the reader and an emitter on declarations written for the
+test. It can state the case the real corpus does not have. Four
+tests: the branch resolves before an emitter sees it, the emitted
+module keeps no trace of it, all three readings refuse a raw parse,
+and a declaration that does not branch reads the same either way.
+
+### PERTURBED, four ways
+
+1. **`resolved()` stops flattening.** Two tests fail with the
+   emitter's own refusal - which is the two gates meeting, and the
+   right answer: an unresolved tree is refused wherever it comes
+   from.
+2. **`module()` stops dropping the language import.** `assert
+   'huggorm_dsl' not in ...` fails.
+3. **`generate.py` reverts to `have.tree(have.errors)`**, with a
+   branch in the real declaration: the BUILD stops, at
+   `bindings-src`, saying "this exception declaration still has a
+   version branch in it".
+4. **A real class moved behind a live branch.** `Unsupported` was
+   put under `if NIX_VERSION >= (2, 0):` in `decl/errors.py` and the
+   whole build was run: 236 tests pass and `check` says all checks
+   passed. The emitted module carries it flat with the `cxx` line
+   stripped and no `NIX_VERSION` import, `store.cpp` and `path.cpp`
+   catch it, and the dead arm reaches nothing.
+
+That fourth one is the positive proof, and it is what the first
+version of this work lacked. The other three prove the gates.
+
+### What did NOT change
+
+Every emitted file, for the declarations this repo actually has.
+`read.resolved` is a raw parse when nothing branches, which is the
+claim the whole fix rests on - so it is a test rather than a remark
+(`test_a_declaration_that_does_not_branch_reads_the_same_either_way`).

@@ -194,13 +194,30 @@ which was superseded rather than fixed.
   coverage. There is nothing left for it to check either: the module,
   the chain and the manifest come from ONE parse of one file, so they
   cannot disagree.
-- 073 (a version-branched error class reaches nothing) is OPEN, and
-  it is what 072 found. `pyerrors.entries` and `chain` read
-  `tree.body`, so a class under `if NIX_VERSION >= ...` reaches the
-  emitted module and reaches no manifest entry and no catch clause.
-  Measured: the perturbation is in the task, and `check` said "all
-  checks passed" with it in place. Refuse the branch or read it, and
-  either way make that perturbation stop the build.
+- 073 (a version-branched error class reaches nothing) is DONE, and
+  it is what 072 found. `pyerrors` parsed the errors declaration a
+  second time and got a RAW tree, so a class under `if NIX_VERSION
+  >= ...` reached the emitted module unresolved and reached no
+  manifest entry and no catch clause.
+
+  Carl's call was to READ the branch rather than refuse it, and that
+  needed no new machinery: the reader has resolved a version branch
+  since it was written, so `read.resolved` and `Corpus.resolved` hand
+  the same answer to an emitter that wants a tree. `pyerrors`'s three
+  readings share one body now, and the emitted module drops the
+  declaration language's imports because the arm is already chosen.
+
+  Two gates, because the wiring and the mechanism fail differently.
+  `_body` REFUSES a surviving `ast.If`, which is the only thing that
+  can catch a revert to `Corpus.tree` - the two trees are identical
+  for a declaration that does not branch, and none does.
+  `tests/test_declarations.py` is new: the first suite that drives
+  the reader and an emitter on declarations written for the test, so
+  it can state a case the corpus does not have.
+
+  Perturbed four ways, and the fourth is the positive one: a REAL
+  class (`Unsupported`) moved behind a live branch, whole build run,
+  236 tests and `check` green with it there.
 - 068 (what a spike actually costs) is OPEN on its recommendations,
   and the second one is DONE: `nix-collect-garbage -d` on 2026-09-01
   freed 5.5 GiB across 22557 paths, 83% -> 77%. The jj workspace is
