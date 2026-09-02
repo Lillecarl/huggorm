@@ -12,6 +12,7 @@ what makes this testable in a build sandbox.
 # import - nothing here runs, so this costs a parse.
 from huggorm_decl.decl.build_result import KeyedBuildResult
 from huggorm_decl.decl.derived_path import DerivedPath
+from huggorm_decl.decl.gc import GCOptions, GCResults
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
@@ -731,6 +732,45 @@ auto flag = self.isTrustedClient();
 if (!flag)
     return std::nullopt;
 return huggorm::as_word(*flag);
+        """)
+
+    @needs("nix/store/gc-store.hh")
+    @cxx_name("collectGarbage")
+    def collect_garbage(self, options: "GCOptions") -> "GCResults":
+        """Run a garbage collection, and say what it found or removed.
+
+        What `nix-store --gc` does. `options.action` decides whether
+        anything is deleted at all, so `GCAction.RETURN_DEAD` asks the
+        same question without answering it destructively.
+
+        One argument rather than four, because upstream takes one and
+        the four have upstream defaults this file would otherwise
+        restate.
+
+        Only a store that COLLECTS can answer. `nix::GcStore` is a
+        separate interface from `nix::Store` - a binary cache holds
+        paths and has no collector - so a store that is not one raises
+        "not supported by store", which is libstore's own refusal.
+
+        `GcStore`, with that capitalisation. The source checkout this
+        repo reads for reference spells it `GCStore`; the packaged
+        2.34.8 this BUILDS against does not, and the compiler said so:
+        "'GCStore' in namespace 'nix' does not name a type; did you
+        mean 'GcStore'?". Every other name in the header matches.
+
+        Upstream fills a `GCResults` through an out parameter. Python
+        has no out parameters, so the result is the return value and
+        the caller never sees the empty one going in.
+        """
+        Cxx("""
+auto * gc = dynamic_cast<nix::GcStore *>(&self);
+if (gc == nullptr)
+    throw nix::Unsupported(
+        "operation 'collect_garbage' is not supported by store '%s'",
+        self.config.getHumanReadableURI());
+nix::GCResults results;
+gc->collectGarbage(options, results);
+return results;
         """)
 
     def follow_links_to_store(self, path: Str) -> Str:
