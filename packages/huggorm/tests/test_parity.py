@@ -77,23 +77,43 @@ async def store(request: Any, client: Any) -> Any:
     return await client.acquire("Store", URI)
 
 
+async def open_state(surface: str, client: Any) -> Any:
+    """One evaluator of the named surface.
+
+    A function rather than only a fixture, because a test that is
+    ABOUT the state needs a second one - and a second fixture over
+    the same three surfaces would ask for nine combinations to answer
+    a question about three."""
+    if surface == "sync":
+        from huggorm_bindings import EvalState
+
+        return EvalState(URI)
+    if surface == "async":
+        from huggorm_generated import AsyncEvalState
+
+        return AsyncEvalState(URI)
+    return await client.acquire("EvalState", URI)
+
+
 @pytest.fixture(params=SURFACES)
-async def state(request: Any, client: Any) -> Any:
+def surface(request: Any) -> str:
+    """WHICH of the three a test is running against.
+
+    Carries the parameterisation so `state` does not, which lets a
+    test ask for both: `state` for the one under test, and `surface`
+    for opening a second of the same kind."""
+    return str(request.param)
+
+
+@pytest.fixture
+async def state(surface: str, client: Any) -> Any:
     """An evaluator, opened three ways.
 
     The companion to `store` and a different shape of problem: a Store
     is POOL-threaded and an EvalState is AFFINE, so the async and rpc
     surfaces pin it to one thread. A caller cannot tell, and this
     file is where that claim is checked rather than asserted."""
-    if request.param == "sync":
-        from huggorm_bindings import EvalState
-
-        return EvalState(URI)
-    if request.param == "async":
-        from huggorm_generated import AsyncEvalState
-
-        return AsyncEvalState(URI)
-    return await client.acquire("EvalState", URI)
+    return await open_state(surface, client)
 
 
 # -- scalars ----------------------------------------------------------
@@ -243,3 +263,46 @@ async def test_a_bad_expression_raises_the_same_class_everywhere(
 
     with pytest.raises(NixError):
         await call(state, "eval_expr", "not an expression")
+
+
+async def test_a_file_evaluated_twice_is_read_once(
+        surface: str, state: Any, client: Any, tmp_path: Any) -> None:
+    """The warm cache, on every surface.
+
+    `evalFile` keeps a `fileEvalCache` keyed by resolved path, and a
+    hit forces the value it already has and copies it - it never opens
+    the file (`eval.cc:1118`). So DELETING the file is the observable:
+    the second call can only be answered from the cache.
+
+    An int, not an attribute set, and not an expression that imports
+    another file. `evalFile` forces to WHNF, so a value that is not
+    complete there would leave a thunk that might still want the
+    file - which would make a failure mean the wrong thing.
+
+    The third part is why this matters to `tasks/016`: the cache
+    belongs to the STATE. A fresh evaluator has to read, so a state
+    that dies takes the warm work with it - which is what makes "the
+    same state, claimed later" the milestone rather than a
+    convenience."""
+    src = tmp_path / "answer.nix"
+    src.write_text("40 + 2\n")
+
+    first = await call(state, "eval_file", str(src))
+    assert await call(first, "integer") == 42
+
+    src.unlink()
+    again = await call(state, "eval_file", str(src))
+    assert await call(again, "integer") == 42
+
+    cold = await open_state(surface, client)
+    with pytest.raises(Exception) as caught:
+        await call(cold, "eval_file", str(src))
+    # "opening file", not merely the name: it is the cold state SAYING
+    # it went to disk, which is the half the warm call is claimed not
+    # to do. Measured identical on all three surfaces -
+    #   SysError: error: opening file '.../answer.nix':
+    #   No such file or directory
+    # - so this is also where the RPC translation of a libutil error
+    # would stop agreeing.
+    assert "opening file" in str(caught.value)
+    assert "answer.nix" in str(caught.value)
