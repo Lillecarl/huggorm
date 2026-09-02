@@ -17,24 +17,28 @@ one of these a NixError. Python's own inheritance already says which
 class derives from which, so the order is computed rather than
 maintained.
 
-Both readings take every TOP-LEVEL `ast.ClassDef`, with no decorator
-test. That is what an error declaration is: `cxx = "nix::Error"` is a
-bare assignment, because there is no behaviour to mark. A
-`declared()` helper stood here that read `Module.classes` instead -
-the reader's DECORATED classes - so it answered `[]` for this file
-from the day it was written, and nothing ever called it. Deleted
-rather than fixed (tasks/072).
+All three readings take every `ast.ClassDef` in the body, with no
+decorator test. That is what an error declaration is: `cxx =
+"nix::Error"` is a bare assignment, because there is no behaviour to
+mark. A `declared()` helper stood here that read `Module.classes`
+instead - the reader's DECORATED classes - so it answered `[]` for
+this file from the day it was written, and nothing ever called it.
+Deleted rather than fixed (tasks/072), because there is nothing left
+for it to check: the module and the chain come from ONE reading of
+one file, so they cannot disagree.
 
-Deleted rather than fixed because there is nothing left for it to
-check. The module and the chain come from ONE reading of one file, so
-they cannot disagree; that is the whole design, and `declared()` is a
-leftover from when they were two hand-written files.
+The BODY is `read.resolved`, not a raw parse, and the difference is
+`tasks/073`. A raw `tree.body` holds neither arm of an `if
+NIX_VERSION >= ...` - the classes are nested one level down - so a
+branched error class reached no manifest entry and no catch clause,
+while `module()` copied the whole branch through into the emitted
+file. Three holes, none of them loud. The reader has resolved a
+version branch since it was written; this now asks it rather than
+parsing the file again.
 
-TOP-LEVEL is a limit, not a shorthand, and it was measured. A class
-under `if NIX_VERSION >= ...` reaches the emitted module - `module()`
-copies the branch through - and reaches no manifest entry and no
-catch clause, because both of those read `tree.body` alone. Nothing
-in the build says so. That is `tasks/073`.
+So a branch is a BUILD-TIME question here. The emitted module holds
+the classes this build's Nix has, flat, with no condition left to
+evaluate and no `NIX_VERSION` to import.
 """
 
 import ast
@@ -49,6 +53,27 @@ from huggorm_dsl.read import DeclarationError
 CXX = "cxx"
 
 
+# The package a declaration is WRITTEN in. Read off the reader's own
+# module rather than spelled, so a rename of the language moves this
+# with it.
+LANGUAGE = DeclarationError.__module__.split(".")[0]
+
+
+def _is_language_import(node: ast.stmt) -> bool:
+    """Whether this statement imports the declaration language.
+
+    `from huggorm_dsl.declare import NIX_VERSION` and its kind. True
+    for the module itself and for anything under it, because a
+    declaration reaches the vocabulary through `huggorm_dsl.declare`
+    and could reach `NIX_VERSION` through either."""
+    if isinstance(node, ast.ImportFrom):
+        head = (node.module or "").split(".")[0]
+        return head == LANGUAGE
+    if isinstance(node, ast.Import):
+        return any(a.name.split(".")[0] == LANGUAGE for a in node.names)
+    return False
+
+
 def _cxx_of(node: ast.ClassDef) -> str:
     """The C++ class this exception stands for, from its `cxx` line."""
     for item in node.body:
@@ -61,11 +86,40 @@ def _cxx_of(node: ast.ClassDef) -> str:
     return ""
 
 
+def _body(tree: ast.Module) -> list[ast.stmt]:
+    """The declaration's statements, and a refusal if a branch is left.
+
+    Every reading here goes through this, so all three see one list.
+    They each walked `tree.body` on their own, which is how they came
+    to disagree: two read the top level and the third copied the whole
+    document (tasks/073).
+
+    An `ast.If` means the caller passed a RAW parse. `read.resolved`
+    flattens every branch - Python already chose an arm during the
+    import - so a surviving `if` is not a declaration this emitter
+    cannot handle, it is the wrong tree. Refused rather than walked
+    into: walking it would answer for both arms of a branch, which is
+    a build emitting a class its own Nix does not have.
+
+    The check is the WIRING's gate. Nothing else can catch a caller
+    reverting to `Corpus.tree`, because the two trees are identical
+    for a declaration that does not branch - and this repo's does not,
+    today."""
+    for node in tree.body:
+        if isinstance(node, ast.If):
+            raise DeclarationError(
+                node, "this exception declaration still has a version "
+                      "branch in it. Read it with `read.resolved`, which "
+                      "chooses the arm the import kept - a raw parse "
+                      "answers for both.")
+    return tree.body
+
+
 def _bases(tree: ast.Module) -> dict[str, str]:
     """Each declared class to its declared base, by name."""
     return {n.name: (n.bases[0].id if n.bases
                      and isinstance(n.bases[0], ast.Name) else "")
-            for n in tree.body if isinstance(n, ast.ClassDef)}
+            for n in _body(tree) if isinstance(n, ast.ClassDef)}
 
 
 def _depth(name: str, bases: dict[str, str]) -> int:
@@ -111,7 +165,7 @@ def entries(tree: ast.Module,
     has no inheritance to read, and inventing one would put a wrong
     answer in four generated files at once.
     """
-    declared = [n.name for n in tree.body if isinstance(n, ast.ClassDef)]
+    declared = [n.name for n in _body(tree) if isinstance(n, ast.ClassDef)]
     if mod is None:
         raise DeclarationError(
             tree, "the exception declaration does not import, so nothing "
@@ -153,7 +207,7 @@ def chain(tree: ast.Module, raise_as: str, module: str) -> list[str]:
     stays in the module without inventing a catch for it.
     """
     bases = _bases(tree)
-    caught = [(n.name, _cxx_of(n)) for n in tree.body
+    caught = [(n.name, _cxx_of(n)) for n in _body(tree)
               if isinstance(n, ast.ClassDef) and _cxx_of(n)]
     caught.sort(key=lambda pair: -_depth(pair[0], bases))
     out = ["    try {", "        throw;"]
@@ -170,10 +224,26 @@ def module(tree: ast.Module, doc: str) -> str:
     A transform rather than a print, for `pyenum.py`'s reason: the
     output is Python and the declaration already is. What changes is
     only what a caller must not see - the `cxx` lines, which name C++
-    that no Python caller can act on.
+    that no Python caller can act on, and any import of the
+    declaration LANGUAGE.
+
+    The language import goes because the reason for it is gone. A
+    declaration that branches writes `from huggorm_dsl.declare import
+    NIX_VERSION` to spell the condition, and `read.resolved` has
+    already chosen the arm - so the name is unreferenced by the time
+    this runs, and carrying it would make the emitted package import
+    a build-time one. Anything else the declaration imports stays: a
+    class body may legitimately name `typing`, and only the language
+    is knowably build-time.
+
+    Derived rather than spelled. The package is `read`'s own, which
+    is the same module that resolved the branch, so there is no
+    second place for the name to be wrong.
     """
     body: list[ast.stmt] = []
-    for node in tree.body:
+    for node in _body(tree):
+        if _is_language_import(node):
+            continue
         if isinstance(node, ast.ClassDef):
             node.body = [item for item in node.body
                          if not (isinstance(item, ast.Assign)

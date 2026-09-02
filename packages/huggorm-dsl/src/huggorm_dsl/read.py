@@ -1310,13 +1310,52 @@ def read(path: str) -> Module:
         _READING.pop()
 
 
-def _read(path: str) -> Module:
-    """`read` with the path already on the stack."""
-    source = pathlib.Path(path).read_text()
-    tree = ast.parse(source, filename=path)
+def resolved(path: str) -> ast.Module:
+    """One declaration's tree, with its version branches already chosen.
+
+    The reading `Corpus.tree` cannot give. A raw parse holds BOTH arms
+    of an `if NIX_VERSION >= ...`, so an emitter that walks it either
+    reads a class this build does not have or - worse - reads
+    `tree.body` and misses one it does. `read()` has resolved this
+    since it was written; this hands the same answer to an emitter
+    that wants the tree rather than a `Module`.
+
+    Flat, and that is the point rather than a side effect. The `if`
+    is GONE from the body: Python chose an arm during the import, so
+    a branch is a build-time question and the emitted output is what
+    this build links. An emitter downstream never sees a condition
+    and never has to evaluate one.
+
+    Written for `pyerrors`, which reads the tree directly because an
+    exception declaration IS its own output. It read `tree.body` and
+    so saw neither arm of a branch, while the module transform copied
+    both through - three holes at once, and none of them loud
+    (tasks/073)."""
+    _READING.append(path)
+    try:
+        return _chosen(path)[0]
+    finally:
+        _READING.pop()
+
+
+def _chosen(path: str) -> tuple[ast.Module, set[int] | None]:
+    """One declaration parsed, its `if` arms chosen, and which lines
+    the import kept.
+
+    The four lines both readings open with. `resolved` would have
+    been a copy of them - same parse, same `_live`, same reconcile,
+    same `_resolve` - and the fact that copy would have restated is
+    which arm of a branch this build is looking at."""
+    tree = ast.parse(pathlib.Path(path).read_text(), filename=path)
     live = _live(path)
     _reconcile(tree, live, path)
-    body = _resolve(tree.body, live)
+    return ast.Module(body=_resolve(tree.body, live), type_ignores=[]), live
+
+
+def _read(path: str) -> Module:
+    """`read` with the path already on the stack."""
+    tree, live = _chosen(path)
+    body = tree.body
     vocab = _vocabulary(tree)
     stem = pathlib.Path(path).stem
     # SIBLINGS, so one bad class does not hide the next. A class is

@@ -196,7 +196,7 @@ def error_chain() -> list[str]:
     and fills `_policy.ERROR_MODULE`, so the catch chain cannot point
     somewhere the module is not."""
     have = corpus()
-    return pyerrors.chain(have.tree(have.errors), "huggorm::raise_as",
+    return pyerrors.chain(have.resolved(have.errors), "huggorm::raise_as",
                           errors_module())
 
 
@@ -220,7 +220,7 @@ def declared_errors() -> dict[str, Any]:
     # so (tasks/061).
     with reading(str(have.path(have.errors))):
         return {"module": errors_module(),
-                "classes": pyerrors.entries(have.tree(have.errors),
+                "classes": pyerrors.entries(have.resolved(have.errors),
                                             have.imported(have.errors))}
 
 
@@ -457,7 +457,7 @@ def main(out_dir: str) -> int:
     for mod in have.modules:
         target = out / f"{mod.name}.cpp"
         emit_module(mod, f"{PACKAGE}.{mod.name}", str(target), chain)
-    tree = have.tree(have.errors)
+    tree = have.resolved(have.errors)
     doc = ast.get_docstring(tree, clean=False) or ""
     # Named after the declaration, not "errors.py". `errors_module()`
     # derives the import path from the same stem, so a hardcoded file

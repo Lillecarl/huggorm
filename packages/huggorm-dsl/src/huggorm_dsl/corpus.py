@@ -50,6 +50,7 @@ from huggorm_dsl.read import (
     load,
     read,
 )
+from huggorm_dsl.read import resolved as resolve_tree
 
 
 class Corpus:
@@ -75,6 +76,7 @@ class Corpus:
         # files in one directory.
         self._read: dict[str, Module] = {}
         self._parsed: dict[str, ast.Module] = {}
+        self._chosen: dict[str, ast.Module] = {}
 
     # -- one document at a time ------------------------------------
 
@@ -105,6 +107,22 @@ class Corpus:
         if name not in self._parsed:
             self._parsed[name] = ast.parse(self.path(name).read_text())
         return self._parsed[name]
+
+    def resolved(self, name: str) -> ast.Module:
+        """One declaration's tree, with its version branches chosen.
+
+        What `tree` gives, minus the arm this build does not have.
+        Both are here because they answer different questions: `tree`
+        is the document as written, which is what a docstring's exact
+        text and a marker scan want, and this is the document as this
+        build reads it.
+
+        For an emitter whose OUTPUT is the tree. `pyerrors` copies an
+        exception declaration through, so a branch it does not resolve
+        reaches the emitted module unresolved (tasks/073)."""
+        if name not in self._chosen:
+            self._chosen[name] = resolve_tree(str(self.path(name)))
+        return self._chosen[name]
 
     def imported(self, name: str) -> ModuleType | None:
         """One declaration, as the module Python built from it.
