@@ -65,21 +65,31 @@ surface that was one - and not before.
     AttributeError: 'property' object has no attribute '_instant'
 
 `@instant`, `@local`, `@reads` and the rest set an attribute on what
-they are handed, and a `property` object takes none. `load` swallows
-that and returns None, so the file reads tree-only and every file
-importing from it does too - silently. Any work here must decide
-whether the marker decorators look through a descriptor, or whether
-the declaration must write `@property` outermost, and must say which
-in a refusal rather than in a comment.
+they are handed, and a `property` object takes none.
+
+That used to be SILENT: `load` swallowed it, so the file read
+tree-only and so did every file importing from it. `tasks/082` closed
+that half - the import error now reaches a reader with Python's own
+reason attached, so a declaration written this way fails and says
+which line to fix.
+
+The question it leaves is still open, and it is the one this task
+has to answer: do the marker decorators look through a descriptor,
+or must a declaration write `@property` outermost? Whichever it is
+has to be said in a refusal rather than in a comment.
 
 ## One more thing the reader fix changed
 
 `_live` now looks through `staticmethod` and `classmethod` too, for
 the same reason it looks through `property`: none of the three carries
-`__code__`. No declaration writes either, and the emitted C++ is
-byte-identical after the fix, so nothing moved. But the behaviour DID
-change and no gate holds it - a declaration that writes
-`@staticmethod` today is read where before it was dropped, and the
-first one to do so is what will find out what the emitters make of it.
+`__code__`. Before that they named no live line and were dropped
+whole, in silence.
+
+Both are refused in `_method` now (`tasks/082`), and the measurement
+is why: with the refusal removed, `@staticmethod def of(text: Str)`
+read as `of()` with no parameters at all, because `_method` reads a
+bound method by skipping the first one. Teaching them is the same
+four-emitter problem as `@property`, and belongs to this task if
+anybody ever wants one.
 
 Opened 2026-09-02, while closing `tasks/075`.

@@ -1,0 +1,99 @@
+# A failed import reads as a working file
+
+**DONE.** `load` refuses a declaration that will not import, and
+carries the reason Python gave. It used to answer None, and the
+reader fell back to the tree alone.
+
+## Why the fallback was silent
+
+It was written as a principle, and the principle is defensible: a
+declaration is a document first, and one that cannot be imported
+still parses.
+
+What it did in practice is different. `_resolve` uses the import to
+choose between the arms of a `NIX_VERSION` branch, and NO declaration
+in this repo has one. So the tree-only read keeps exactly the same
+nodes the imported read would have kept, and the file reads as a
+working file. Every marker still reads, because markers come off the
+tree. Nothing anywhere says a word.
+
+`_resolve` claimed the opposite in its own docstring - "that is loud
+rather than silent: the emitter binds it twice and the build says
+so". That is true only for a file WITH a branch. For every real
+declaration it was silent.
+
+And it spreads. `load` is asked for one file, so the file that fails
+reads tree-only and so does every file that imports from it.
+
+## How it was found
+
+`tasks/076`, while writing down what honouring `@property` would
+cost. A marker decorator over a `@property` raises while the module
+executes:
+
+    AttributeError: 'property' object has no attribute '_instant'
+    and no __dict__ for setting new attributes
+
+`@instant`, `@local`, `@reads` and the rest set an attribute on what
+they are handed, and a `property` object takes none.
+
+That is the trigger this repo happened to hit. The failure is not
+about `@property` at all: ANY import error does it - a typo in an
+import, a name a declaration got wrong, a C++ body someone left as
+real code.
+
+## What it costs to refuse
+
+Nothing measured. Every one of the fifteen files in `decl/` imports.
+
+The one emitter that already asked the question - `pyerrors.entries`
+- refused a missing module itself, "because inventing a hierarchy
+would put a wrong answer in four generated files at once". Right, and
+the only place that asked. `load` says it for every reader now, and
+says WHY, which that refusal could not.
+
+Three optionals went with it, which is the point of doing it here
+rather than at each caller: `_live` returns a set, `_resolve` lost
+its `live is None` branch, and `Corpus.imported` returns a module.
+Each of those was a second definition of what a failed import means.
+
+## The second half: a descriptor with no word
+
+`@staticmethod` and `@classmethod` are refused in `_method` now.
+
+They became reachable in `tasks/075`, when `_live` learnt to look
+through a descriptor for its `__code__`. Before that they carried no
+live line and were dropped whole, in silence. 075 recorded that the
+behaviour had changed and that no gate held it.
+
+Measured with the refusal removed, on a declaration writing
+`@staticmethod def of(text: Str) -> Str`:
+
+    method of params [] ret str
+
+The parameter is gone. `_method` reads a bound method by skipping the
+first parameter, and a static method's first parameter is not `self`
+- so every emitter would write a signature short of an argument.
+That is the `open_store(uri)` bug `_method`'s own docstring already
+records, reached a second way.
+
+Refused rather than honoured, for the reason `tasks/076` gives about
+`@property`: nanobind spells one `def_static` and the other not at
+all, the stub needs the same decorator, and `_parts` fetches an
+accessor off an INSTANCE. Four outputs for a shape no declaration
+wants yet.
+
+`property` is NOT in that list. It is read, into `Method.prop`, and
+refused by the emitter that would have to honour it - which is where
+the cost is written down.
+
+## Gates
+
+- `test_a_declaration_that_will_not_import_is_refused` asserts both
+  halves: that it refuses, and that the message carries Python's own
+  reason. A refusal that said only "it did not import" would send a
+  reader to the wrong file.
+- `test_an_accessor_declared_static_is_refused` covers both
+  decorators, on two files - `load` caches by path.
+
+Opened and closed 2026-09-02, out of `tasks/076`.

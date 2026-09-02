@@ -172,6 +172,15 @@ which was superseded rather than fixed.
   wrong, and so was its plan: the "cheap half" it named, a build-time
   refusal of an out-of-range u64, is unenforceable because a range is
   a run-time fact.
+- 082 (a failed import reads as a working file) is DONE. `load`
+  refused nothing and answered None, and the reader fell back to the
+  tree - which keeps the same nodes for every declaration here, since
+  none has a `NIX_VERSION` branch. So a file that did not import read
+  as one that did, and so did every file importing from it. It
+  refuses now, with Python's own reason. Second half: `@staticmethod`
+  and `@classmethod` are refused too - reachable since 075, and
+  measured dropping the first parameter of every method that wrote
+  one.
 - 081 (an input that reached no output) is OPEN. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
   a skip reads as an absence. Hard because a skip is sometimes right
