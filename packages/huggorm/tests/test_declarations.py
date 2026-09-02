@@ -515,3 +515,95 @@ def test_the_census_runs_when_the_corpus_is_built(
     finally:
         huggorm_decl.corpus.cache_clear()
     assert ran, "corpus() no longer runs the census"
+
+
+# A marker decorator over a `@property`. The marker sets an attribute
+# on what it is handed and a property object takes none, so the
+# module raises while Python is still executing it.
+UNIMPORTABLE = '''"""One accessor with a marker over a @property."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header, instant
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    @instant
+    @property
+    def base16(self) -> Str:
+        """The digest as lowercase hex."""
+        Cxx("return self.to_string();")
+'''
+
+# One accessor written as a @staticmethod, which no emitter has a
+# word for. Its parameter is the point: a bound method is read by
+# skipping the first one.
+STATIC = '''"""One accessor written as a @staticmethod."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    @staticmethod
+    def of(text: Str) -> Str:
+        """The digest of some text."""
+        Cxx("return nix::hashString(text);")
+'''
+
+
+def test_a_declaration_that_will_not_import_is_refused(
+        tmp_path: pathlib.Path) -> None:
+    """The import error reaches a reader, with Python's own reason.
+
+    `load` used to answer None here and the reader fell back to the
+    tree alone. That reads as a working declaration for every file
+    with no `NIX_VERSION` branch in it, which is all of them: the
+    same nodes survive either way, so nothing said a word - and
+    nothing said it about the files importing from it either
+    (tasks/082).
+
+    The cause is carried because it is one line to fix and impossible
+    to guess at. `@instant` over `@property` sets an attribute on a
+    descriptor, and "it did not import" alone would send a reader to
+    the wrong file."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    path = _declaration(tmp_path, UNIMPORTABLE)
+    with pytest.raises(DeclarationError, match="does not import"):
+        read(path)
+    with pytest.raises(DeclarationError, match="'property' object"):
+        read(path)
+
+
+def test_an_accessor_declared_static_is_refused(
+        tmp_path: pathlib.Path) -> None:
+    """`@staticmethod` says the first parameter is not self, and the
+    reader reads a bound method by skipping the first parameter.
+
+    Measured with the refusal removed: `of(text)` read as `of()`. The
+    parameter was gone, and every emitter would then have written a
+    signature short of an argument - the shape of the `open_store(uri)`
+    bug `_method`'s own docstring records.
+
+    Reachable only since `_live` learnt to look through a descriptor.
+    Before that a `@staticmethod` carried no `__code__`, named no live
+    line, and was dropped whole in silence (tasks/075). The behaviour
+    changed there and no gate held it; this is that gate (tasks/076)."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    with pytest.raises(DeclarationError, match="@staticmethod"):
+        read(_declaration(tmp_path, STATIC))
+
+    # A second directory, because `load` caches by path and `read`
+    # would answer from the first file otherwise.
+    second = tmp_path / "second"
+    second.mkdir()
+    classmethod_too = STATIC.replace("@staticmethod", "@classmethod")
+    with pytest.raises(DeclarationError, match="@classmethod"):
+        read(_declaration(second, classmethod_too))
