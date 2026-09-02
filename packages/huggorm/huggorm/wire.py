@@ -55,8 +55,11 @@ from huggorm_generated._wiretypes import (
 # bytes() is deliberately NOT a converter that accepts anything: given
 # a str it raises rather than guessing an encoding, which is the right
 # answer for file contents whose hash names a store path.
+# `int` and `uint` are both Python's int. The two differ only in the
+# proto type the field has, which is the schema's business and not
+# this table's (tasks/079).
 _SCALARS: dict[str, Callable[[Any], Any]] = {
-    "str": str, "int": int, "bool": bool, "bytes": bytes}
+    "str": str, "int": int, "uint": int, "bool": bool, "bytes": bytes}
 
 # The unit a duration crosses in, as the timedelta that is one of it.
 # Microseconds, which is both Carl's decision and the only lossless

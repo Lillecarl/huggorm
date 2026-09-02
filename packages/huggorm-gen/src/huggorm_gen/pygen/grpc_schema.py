@@ -44,8 +44,12 @@ Proto = dict[str, Any]
 PKG = "huggorm.v1"
 FILE = "huggorm/v1/api.proto"
 
-SCALARS = {"str": "string", "int": "sint64", "bool": "bool",
-           "bytes": "bytes"}
+# `int` is sint64 and `uint` is uint64, which is the whole of what the
+# two widths are for. sint64 zigzags, so a Unix time before the epoch
+# costs one byte rather than ten; uint64 is the only proto type that
+# holds the top half of a uint64_t at all (tasks/079).
+SCALARS = {"str": "string", "int": "sint64", "uint": "uint64",
+           "bool": "bool", "bytes": "bytes"}
 assert set(SCALARS) == set(SCALAR_NAMES), "scalar tables disagree"
 
 HANDLE = "Handle"

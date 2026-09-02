@@ -244,6 +244,13 @@ class DeclarationError(Exception):
         return err
 
 
+# The C++ integer spellings the wire distinguishes, and the wire name
+# for each. Only the unsigned 64-bit one is here: every other width a
+# declaration can name fits a sint64, so `int` is the whole truth
+# about it.
+WIDTHS = {"uint64_t": "uint"}
+
+
 @dataclass(frozen=True)
 class Type:
     """A declared type, from both sides of the boundary.
@@ -265,10 +272,40 @@ class Type:
         """The `_wire_fields` spelling of this type.
 
         Derived, not declared. `T | None` is `T?`, because that is how
-        the wire says presence; everything else crosses as itself."""
+        the wire says presence; everything else crosses as itself -
+        except a WIDTH, which Python does not spell at all.
+
+        Python has one integer type and C++ has two of 64 bits, and
+        the wire needs the difference: a sint64 holds every int64_t
+        and half of a uint64_t. So `int` here means the signed one and
+        `uint` means the unsigned one, and the C++ spelling the alias
+        already carries is what says which. Above the boundary both
+        are still `int`; only the crossing knows the width
+        (tasks/079).
+
+        The name `uint` is `wiretypes.SCALAR_NAMES`', restated here
+        because this package may not import the generator's payload -
+        that file is copied into the generated package and must import
+        nothing of ours. A disagreement is not silent: `model.py`
+        checks every emitted field against `scalar_spelling` and
+        refuses one it does not know."""
         inner, optional = self.python, False
         if inner.endswith("| None"):
             inner, optional = inner[:-len("| None")].strip(), True
+        if self.cxx is not None and self.cxx.spelling in WIDTHS:
+            if inner != "int":
+                # A CONTAINER of the width, such as `dict[str, U64]`.
+                # The alias's C++ spelling reaches here attached to
+                # the whole container - `type_of` puts it there - so
+                # naming the container `uint` would say the dict is
+                # one. Refused rather than passed through as `int`,
+                # which is what it did before and would lose the top
+                # half of every value in it.
+                raise TypeError(
+                    f"'{inner}' holds a {self.cxx.spelling}, and a "
+                    f"container of a width has no wire spelling yet. "
+                    f"See tasks/079.")
+            inner = WIDTHS[self.cxx.spelling]
         return f"{inner}?" if optional else inner
 
 

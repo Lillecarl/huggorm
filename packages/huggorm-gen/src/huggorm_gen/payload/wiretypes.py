@@ -39,7 +39,17 @@ import ast
 # text and must not be encoded as if they were: a str field would
 # round-trip a NAR into mojibake, and the hash that names the store
 # path would be a hash of the wrong thing.
-SCALAR_NAMES = ("str", "int", "bool", "bytes")
+#
+# `uint` is here because C++ has two 64-bit integers and the wire
+# needs both. `int` is a sint64, which holds an int64_t and half of a
+# uint64_t; `uint` is a uint64. Above the boundary both are a Python
+# `int` - the width is a fact about the CROSSING, not about the type a
+# caller sees.
+#
+# Found by `GCOptions.max_freed`, whose upstream default is the
+# largest uint64_t: sending the default options object raised
+# `ValueError: Value out of range: 18446744073709551615` (tasks/079).
+SCALAR_NAMES = ("str", "int", "uint", "bool", "bytes")
 
 # A declared type that is not a builtin and still goes in a field as
 # one, with the builtin it goes in as.
