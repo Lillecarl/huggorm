@@ -130,6 +130,37 @@ def _type(t: Type | None) -> str:
     return t.python if t.python != "bool" else PYTHON[t.cxx.spelling]
 
 
+# The C++ spellings the manifest cannot carry across a SERVICE.
+#
+# A field says its own width - `_wire_fields` spells one `uint` and
+# the other `int` - and a parameter does not: `params[].type` is one
+# string, read by the stub emitter as a Python annotation AND by the
+# schema builder as a wire type. `int` is right for the first and
+# wrong for the second, and there is no second string to put the
+# width in.
+#
+# Refused rather than carried, because nothing declares one today.
+# The alternative is a second key beside `type`, which `model.py`
+# cannot reflect off a compiled class - so `check.py` would diff the
+# manifest against a shape reflection has no way to produce. Adding
+# that for zero callers buys a bug, not a feature (tasks/079).
+UNCROSSABLE = ("uint64_t",)
+
+
+def _crossable(t: Type | None, where: str) -> None:
+    """Refuse a type a service's message cannot spell.
+
+    Called for what a SERVICE carries - a proxy's methods and the
+    parameters that acquire one - and not for a value's accessors. A
+    value crosses as its fields, and a field says its width."""
+    if t is not None and t.cxx is not None and t.cxx.spelling in UNCROSSABLE:
+        raise TypeError(
+            f"{where} is a {t.cxx.spelling}, and a service's message "
+            f"carries no width: every int parameter crosses as sint64, "
+            f"which holds half of one. Teach the manifest to spell a "
+            f"parameter's wire type - see tasks/079.")
+
+
 def _param(p: Param) -> dict[str, Any]:
     """One parameter, as the manifest carries it.
 
@@ -195,6 +226,10 @@ def function_entry(fn: Method, package: str, module: str) -> dict[str, Any]:
     and no rpc. It is still surface, so the stubs still describe it -
     leaving it out would hide a real name from a typechecker."""
     policy = fn.policy or None
+    if policy is not None:
+        for pr in fn.params:
+            _crossable(pr.type, f"{fn.name}({pr.name})")
+        _crossable(fn.ret, f"{fn.name}'s return")
     return {
         "name": fn.name,
         "module": f"{package}.{module}",
@@ -267,6 +302,15 @@ def entry(cls: Class, package: str, module: str,
     decl = cls.decl
     threading = decl.threading
     wire = decl.wire or "proxy"
+    if wire == "proxy":
+        # A proxy is reached through a service, so its methods ARE
+        # messages. A value is not: it crosses whole, as its fields.
+        for pr in _ctor_params(cls, functions):
+            _crossable(pr.type, f"{cls.name}({pr.name})")
+        for m in cls.methods:
+            for pr in m.params:
+                _crossable(pr.type, f"{cls.name}.{m.name}({pr.name})")
+            _crossable(m.ret, f"{cls.name}.{m.name}'s return")
     # The names that follow from the wire kind. A value crosses as a
     # message; a proxy stays where it is and is reached through a
     # service, so it has a service, a way to acquire one, a protocol,
