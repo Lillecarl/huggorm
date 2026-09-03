@@ -421,3 +421,35 @@ async def test_forgetting_only_the_edited_file_leaves_the_importer_stale(
 
     again = await call(state, "eval_file", str(outer))
     assert await call(again, "integer") == 42, "no edge means no cascade"
+
+
+async def test_forgetting_a_directory_forgets_its_default_nix(
+        state: Any, tmp_path: Any) -> None:
+    """The other spelling, which the closure gate cannot reach.
+
+    `fileEvalCache` is keyed by the RESOLVED path and
+    `importResolutionCache` holds the resolution, so the two caches
+    disagree about what a directory is called. Evaluating `/dir`
+    caches `/dir/default.nix`, and forgetting the name the CALLER used
+    would erase a key that was never there.
+
+    The closure gate above never asks this: `outer.nix` and
+    `inner.nix` resolve to themselves, so erasing the given path is
+    enough there and the resolution lookup could be deleted without a
+    test noticing.
+
+    So this forgets the DIRECTORY only, and never names the file. A
+    stale 42 is what an erase of the given spelling alone would
+    leave."""
+    src = tmp_path / "dir"
+    src.mkdir()
+    (src / "default.nix").write_text("40 + 2\n")
+
+    first = await call(state, "eval_file", str(src))
+    assert await call(first, "integer") == 42
+
+    (src / "default.nix").write_text("1 + 1\n")
+    await call(state, "forget_file", str(src))
+
+    again = await call(state, "eval_file", str(src))
+    assert await call(again, "integer") == 2, "the resolved key survived"
