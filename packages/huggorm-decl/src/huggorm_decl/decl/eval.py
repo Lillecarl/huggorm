@@ -30,6 +30,7 @@ from huggorm_dsl.declare import (
     I64,
     Bint,
     Cxx,
+    PyFunc,
     Str,
     StrView,
     binding,
@@ -39,6 +40,7 @@ from huggorm_dsl.declare import (
     fills,
     guard,
     header,
+    instant,
     names,
     needs,
     produced,
@@ -416,6 +418,78 @@ return self.wrap(made);
 if (path.empty())
     throw std::invalid_argument("empty path");
 huggorm::forget_file(self.state(), self.state().rootPath(path));
+        """)
+
+    @instant
+    def register_primop(self, name: Str, arity: I64,
+                        fn: PyFunc) -> None:
+        """Publish a Python callable as `builtins.<name>`.
+
+        The direction every other method here runs the other way.
+        Everything else is Python calling the evaluator; this hands
+        the evaluator a function it calls back, in the middle of an
+        evaluation, on this state's own thread.
+
+        `fn` takes `arity` Values and returns a Value. Its arguments
+        arrive FORCED - a primop receives thunks, and a Python
+        function given an unforced one could do nothing with it and
+        had no way to say so.
+
+        SYNCHRONOUS, and there is no way to make it otherwise. It runs
+        inside evaluation, so it must not await and must not hop
+        threads. That is the exact inverse of every wrapper this repo
+        emits, which exist to get OFF the calling thread - and it is
+        why `tasks/034`, a Nix function called FROM Python, cannot
+        borrow this shape.
+
+        IN-PROCESS ONLY. No rpc surface exists and the manifest
+        refuses to build one, because a remote registration would make
+        the evaluator call back over the socket once per invocation,
+        on its evaluation thread. A decision, in `tasks/033`, rather
+        than something not written yet.
+
+        PERMANENT, and it keeps what it CLOSES OVER. Upstream stores
+        a primop with `new PrimOp(...)` in GC memory and the collector
+        runs no destructors, so the registration and its callable last
+        as long as the process. There is no unregister to add later;
+        upstream has nowhere to put one.
+
+        So a callable that captures this state PINS it forever. The
+        C++ side takes a weak reference for exactly this reason, and a
+        Python closure puts the cycle back:
+
+            state.register_primop(
+                "f", 1, lambda v: state.make_int(1))   # state leaks
+
+        Measured, not feared: adding these gates made nanobind report
+        two leaked instances and the `EvalState` type at shutdown, and
+        removing them made the report go away. Capture what the
+        callable needs and not the state, or accept that the evaluator
+        lives as long as the process.
+
+        The name is not sanitised. Upstream treats a `__` prefix
+        specially - it strips it for the `builtins` attribute and
+        keeps it in the base environment - and this passes the name
+        through so a caller gets Nix's own behaviour rather than
+        ours.
+
+        A base environment holds a fixed number of names, and this
+        build patches that number from 128 to 512
+        (`nix/patches/nix-base-env-size.patch`). Registering past it
+        raises rather than corrupting the heap, which stock Nix does
+        not: `addPrimOp` tests no bound at all."""
+        Cxx("""
+if (name.empty())
+    throw std::invalid_argument("empty name");
+if (arity < 1)
+    // Upstream turns a ZERO-arity primop into a lazy constant: it
+    // sets arity to 1 and registers an application of the primop to
+    // itself (eval.cc:523). A caller asking for 0 would get something
+    // other than what they asked for, and nothing would say so.
+    throw std::invalid_argument(
+        "arity must be at least 1: nix turns a zero-arity primop into "
+        "a lazy constant");
+self.register_primop(name, static_cast<std::size_t>(arity), fn);
         """)
 
     def force(self, v: "Value") -> None:

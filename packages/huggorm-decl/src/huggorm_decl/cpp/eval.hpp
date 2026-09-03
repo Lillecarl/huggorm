@@ -48,6 +48,18 @@
 // `eval.hh` only forward-declares the concurrent map its caches are.
 #include <boost/unordered/concurrent_flat_map.hpp>
 
+// A LINE CROSSED, and worth naming. Everything else in this header is
+// C++ over nix, and nanobind appears only in the emitted modules that
+// include it. `register_primop` cannot be: a primop implemented in
+// Python is a C++ callback that re-enters the interpreter, so the
+// callable and the GIL are part of the fact this header carries.
+//
+// It is the ONLY thing here that needs it, and it stays that way -
+// anything else reaching for nanobind is a mapping in a costume.
+#include <nanobind/nanobind.h>
+
+namespace nb = nanobind;
+
 #include "nix/expr/attr-set.hh"
 #include "nix/expr/eval-gc.hh"
 #include "nix/expr/eval-settings.hh"
@@ -110,6 +122,17 @@ struct ImportResolutionCache
 auto get(ImportResolutionCache);
 
 template struct Reach<ImportResolutionCache, &nix::EvalState::importResolutionCache>;
+
+// `EvalState::addPrimOp` is private too (`eval.hh:837`), so the same
+// rule reaches it. A member FUNCTION this time rather than a data
+// member, which `auto Member` already covers - the shim needed no
+// change to take one.
+struct AddPrimOp
+{
+};
+auto get(AddPrimOp);
+
+template struct Reach<AddPrimOp, &nix::EvalState::addPrimOp>;
 
 /**
  * Every file whose evaluation this state has cached, resolved.
@@ -427,6 +450,17 @@ public:
     Bridge wrap(nix::Value * v) const;
     Bridge wrap_builder(nix::Value * v) const;
 
+    /**
+     * Publishes a Python callable as `builtins.<name>`.
+     *
+     * A MEMBER rather than a free function only because `core_` is
+     * private and a `Bridge` needs it. Nothing else about it belongs
+     * to the class.
+     *
+     * The full argument is beside the definition, below `Bridge`.
+     */
+    void register_primop(const std::string & name, std::size_t arity,
+                         nb::object fn) const;
 
 private:
 
@@ -713,6 +747,126 @@ inline Bridge Evaluator::wrap(nix::Value * v) const
 inline Bridge Evaluator::wrap_builder(nix::Value * v) const
 {
     return Bridge(core_, v, true);
+}
+
+/**
+ * Publishes a Python callable as `builtins.<name>`.
+ *
+ * The direction everything else here runs the other way. Every
+ * emitted binding is Python calling C++; this is C++ calling Python,
+ * in the middle of an evaluation, on Nix's thread. It is the first
+ * such path since the mock went (`tasks/060` deleted the last
+ * trampoline), and the fact it carries - a foreign evaluator's
+ * callback re-entering the interpreter - is one no declaration can
+ * express. Generated code CALLS it, which is what makes it a helper.
+ *
+ * WEAK, not shared. A `Bridge` needs the `EvalCore` that owns this
+ * very state, so a callback capturing a share would make the state
+ * own a callback that owns the state. Nothing would free either, and
+ * `live_roots()` would not see it because no ROOT leaks. An expired
+ * lock means the state is being destroyed, and a primop of a
+ * destroyed state cannot be running - so that branch is unreachable
+ * rather than merely unlikely, and it says so if it ever fires.
+ *
+ * FORCED BEFORE THE GIL. A primop receives thunks, and forcing one is
+ * arbitrary evaluation - it can import files and call other primops.
+ * Doing that while holding the GIL would stall every other Python
+ * thread for the length of it, which is the exact cost every emitted
+ * binding releases the GIL to avoid.
+ *
+ * Arguments cross as `Bridge`, which ROOTS each one, so a Python
+ * object outliving the call retains its argument rather than
+ * dangling. `tasks/033` argued for a borrowed view that refuses to
+ * outlive the call; the root is why none is needed.
+ *
+ * The callable is NEVER RELEASED. `addPrimOp` does `new PrimOp(...)`
+ * into GC memory and Boehm runs no destructors, so the captured
+ * `nb::object` keeps its reference for the life of the process. A
+ * registration is permanent, and that is upstream's shape rather
+ * than a choice here.
+ *
+ * Errors go out the way `primops.cc` sends them
+ * (`primops.cc:481`) - `.atPos(pos)`, because the position is the
+ * half only a primop knows, and a Python failure with no position
+ * points at the whole file.
+ */
+inline void Evaluator::register_primop(const std::string & name,
+                                       std::size_t arity,
+                                       nb::object fn) const
+{
+    std::weak_ptr<EvalCore> weak = core_;
+    nix::PrimOp op{
+        .name = name,
+        // `args` stays empty on purpose. Upstream computes `arity`
+        // from it when it is set, and names there are for
+        // documentation this binding does not carry.
+        .arity = arity,
+        .impl = [weak, fn, arity, name](nix::EvalState & state,
+                                        const nix::PosIdx pos,
+                                        nix::Value ** args,
+                                        nix::Value & out) {
+            auto held = weak.lock();
+            if (!held)
+                state.error<nix::EvalError>("the evaluator is gone")
+                    .atPos(pos)
+                    .debugThrow();
+
+            for (std::size_t i = 0; i < arity; ++i)
+                state.forceValue(*args[i], pos);
+
+            nb::gil_scoped_acquire gil;
+            try {
+                nb::list made;
+                for (std::size_t i = 0; i < arity; ++i)
+                    made.append(nb::cast(Bridge(held, args[i])));
+                out = *nb::cast<Bridge>(fn(*nb::tuple(made))).get();
+            } catch (nb::cast_error &) {
+                // A `cast_error` and not a `python_error`: returning a
+                // plain int fails HERE, and catching only the latter
+                // would let it escape through C++ evaluation frames.
+                state
+                    .error<nix::EvalError>(
+                        "the Python implementation of builtins.%1% did not "
+                        "return a Value",
+                        name)
+                    .atPos(pos)
+                    .debugThrow();
+            } catch (nb::python_error & e) {
+                state.error<nix::EvalError>("%1%", e.what())
+                    .atPos(pos)
+                    .debugThrow();
+            }
+        },
+    };
+    auto & state = core_->state();
+    (state.*get(AddPrimOp{}))(std::move(op));
+
+    // SORT, or the primop is registered and cannot be found.
+    //
+    // `addPrimOp` APPENDS to both structures and sorts neither.
+    // Upstream gets away with it because `createBaseEnv` sorts once
+    // when it has added them all, and says why (`primops.cc:5449`):
+    //
+    //     /* Now that we've added all primops, sort the `builtins'
+    //        set, because attribute lookups expect it to be sorted. */
+    //
+    // Registering on a LIVE state runs after that, so both containers
+    // are left out of order and an attribute lookup binary-searches
+    // past the new name.
+    //
+    // Measured, not reasoned about. Without this, one gate failed and
+    // six passed - the six by luck, because a freshly interned symbol
+    // usually sorts last anyway. The failure is the shape worth
+    // recognising:
+    //
+    //     error: attribute 'wrong' missing
+    //            Did you mean wrong?
+    //
+    // The lookup missed and the SUGGESTION engine found it, because
+    // one binary-searches and the other scans. A binding that shipped
+    // without this would work almost always.
+    const_cast<nix::Bindings *>(state.getBuiltins().attrs())->sort();
+    state.staticBaseEnv->sort();
 }
 
 // ---- Bridge, out of line ------------------------------------------
