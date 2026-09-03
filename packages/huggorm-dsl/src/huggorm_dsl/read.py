@@ -1174,7 +1174,39 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                     f"{decl.built_by} builds one - so {decl.built_by} "
                     f"owns the signature. Move them there and leave "
                     f"the docstring here.")
-        elif not item.name.startswith("__"):
+        elif item.name.startswith("__"):
+            # A SILENT SKIP, until this refusal. The loop kept the
+            # names that are not `__`-prefixed and dropped the rest
+            # with no answer, so a declaration that wrote
+            # `def __call__` got no binding, no stub line, no manifest
+            # entry and no diagnostic - and a skip is
+            # indistinguishable from an absence, which is this repo's
+            # named failure mode (tasks/088).
+            #
+            # `__init__` is the one exception and it is handled above.
+            # The value dunders are DERIVED rather than declared:
+            # `@wire_value` says which ones a class owes - its
+            # `order=` and `text=` are what decide - and the
+            # emitter writes them, so a
+            # declaration that writes `__repr__` is restating a fact
+            # its own decorator already carries.
+            #
+            # A name that starts with `__` and does not end with one
+            # lands here too, and the answer is the same: Python
+            # mangles it, nothing reads it, and the reader says so
+            # rather than dropping it.
+            _survive(DeclarationError(
+                item,
+                f"{node.name}.{item.name}: a name starting with `__` "
+                f"reaches no emitter, and until now was dropped in "
+                f"silence. `__init__` is the one exception. The value "
+                f"dunders are derived from the class decorators - "
+                f"@wire_value writes them, and its `order=` and "
+                f"`text=` decide which - so do not "
+                f"declare one. Anything else needs the emitters taught "
+                f"(tasks/088); declare it under a plain name until "
+                f"then."))
+        else:
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.
             #
