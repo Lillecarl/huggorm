@@ -592,7 +592,7 @@ def _add_service(file_dp: Any, cls_name: str, proto: Proto,
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
-def _add_session(f: Any) -> None:
+def _add_session(f: Any, kinds: dict[str, str]) -> None:
     sess = f.service.add()
     sess.name = "Session"
 
@@ -672,6 +672,7 @@ def _add_session(f: Any) -> None:
     relm.output_type = f".{PKG}.ReleaseManyResp"
 
     _add_value_tree(f, sess)
+    _add_log_stream(f, sess, kinds)
 
 
 # -- the recursive value message ------------------------------------------
@@ -758,6 +759,59 @@ def _add_value_tree(f: Any, sess: Any) -> None:
     rlz.output_type = f".{PKG}.RealizeResp"
 
 
+# -- the log stream --------------------------------------------------------
+
+
+def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
+    """The one rpc that travels the other way, unsolicited.
+
+    Hand-written, like the rest of Session, and for the reason
+    `tasks/032` gives: a log stream is PROTOCOL. Every other rpc came
+    out of a binding declaration, because every other rpc is a call
+    someone made. This one answers records nobody asked for one at a
+    time, so there is no method for it to be the wire form of.
+
+    Three things here are decisions rather than shape.
+
+    **It streams.** `server_streaming` is the first use of it in this
+    schema, and it is what the descriptor has to SAY - reflection and
+    grpcurl read the flag, and a descriptor that calls this unary
+    while dispatch streams is a schema that lies.
+
+    **A message is a DRAIN, not a record.** `LogStream.drain` answers
+    everything waiting in one call, and a batch per drain keeps that
+    shape rather than fanning one drain into forty messages.
+
+    **`dropped` rides with every batch.** The queue is bounded, so it
+    refuses a message when it is full - and a drop the client cannot
+    see is this repo's named failure mode. The count is cumulative, so
+    a client that missed a batch still learns the total.
+
+    `level` gets real presence and `capacity` does not, and the two
+    are not the same question. Level 0 is lvlError, which is a
+    subscription somebody means - "errors only" - so an unset field
+    and a zero one have to differ. Capacity 0 is not a queue at all,
+    so zero is free to mean "the binding's own default" (tasks/048)."""
+    req = f.message_type.add()
+    req.name = "LogsReq"
+    # Which state's thread to subscribe on. The tap routes by thread,
+    # and an EvalState owns one, so the handle names the subscription.
+    _field(req, "state", 1, type_name=HANDLE)
+    _add_field(req, "capacity", 2, "int", kinds)
+    _add_field(req, "level", 3, "int", kinds, optional=True)
+
+    resp = f.message_type.add()
+    resp.name = "LogsResp"
+    _add_field(resp, "records", 1, "list[LogRecord]", kinds)
+    _add_field(resp, "dropped", 2, "int", kinds)
+
+    rpc = sess.method.add()
+    rpc.name = "Logs"
+    rpc.input_type = f".{PKG}.LogsReq"
+    rpc.output_type = f".{PKG}.LogsResp"
+    rpc.server_streaming = True
+
+
 def _add_free_service(file_dp: Any, manifest: Proto,
                       kinds: dict[str, str]) -> None:
     """One service for every free function the wire can represent."""
@@ -798,9 +852,9 @@ def build_fdset(manifest: Proto) -> bytes:
     f.syntax = "proto3"
     _add_common(f, manifest)
     _add_faults(f, manifest)
-    _add_session(f)
-
     kinds = _wire_kinds(manifest)
+    _add_session(f, kinds)
+
     # Returned types expose methods through handles as well: their
     # operations run wherever the producing wrapper put them.
     for group in ("wrappers", "returned_types"):

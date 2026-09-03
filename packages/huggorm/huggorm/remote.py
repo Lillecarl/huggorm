@@ -59,6 +59,17 @@ class ConnectionExpired(RuntimeError):
     decision because only the caller knows what it was holding."""
 
 
+def _no_proxy(handle_id: str) -> Any:
+    """The proxy arm of a decode that has none.
+
+    Every record on the log stream is a wire VALUE, so `decode` never
+    reaches this. Raising says so; a `lambda hid: None` would have
+    turned a schema that drifted into a batch of Nones."""
+    raise TypeError(
+        f"handle {handle_id[:8]} arrived where only wire values were "
+        f"expected")
+
+
 class NixClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 50051) -> None:
         self.pool = schema.load_pool()
@@ -330,6 +341,76 @@ class NixClient:
         resp = await self._rpc(f"/{schema.PKG}.Session/Realize", req,
                                "RealizeResp")
         return self.codec.tree_from_msg(resp.root, self.proxy)
+
+    async def logs(self, obj: Any, capacity: int = 0,
+                   level: int | None = None) -> Any:
+        """Records Nix raises while this state works, as they arrive.
+
+        The only rpc that is not a question. It opens a subscription
+        on the state's own thread and then yields whatever the queue
+        answers until the caller stops iterating - which is what closes
+        the stream, and what ends the subscription with it.
+
+        It yields a BATCH, `(records, dropped)`, because the queue
+        answers a batch: one drain is one message, and fanning a drain
+        of forty into forty messages would restate the shape rather
+        than carry it.
+
+        `dropped` is why it is a pair. The queue is bounded, so a full
+        one refuses a message - and a client that cannot see that
+        cannot tell a quiet evaluation from a lost one. The count is
+        cumulative, so it survives a batch the caller skipped.
+
+        `capacity` 0 takes the binding's default. `level` None does
+        too, and None rather than 0 because level 0 is lvlError - a
+        subscription somebody means, not an absent one.
+
+        One reader per state. A second subscription would replace the
+        first on that state's thread, so the server refuses it with
+        FAILED_PRECONDITION rather than leaving the older stream open
+        and silent.
+
+        The FIRST batch is always empty, and it means the subscription
+        is installed. A caller opens this to watch work it is about to
+        start, so it needs a point where starting is safe; without the
+        empty batch the first message would be the first record, which
+        arrives only after the work it was meant to report."""
+        if self._expired:
+            raise ConnectionExpired(
+                f"connection {self.token!r} was swept by the server; its "
+                f"handles are gone. Call bind() and re-acquire.")
+        if obj.handle_id is None:
+            raise ValueError("this handle was already released")
+        req = self.msg("LogsReq")()
+        req.state.id = obj.handle_id
+        req.capacity = capacity
+        if level is not None:
+            req.level = level
+        metadata = {TOKEN_HEADER: self.token} if self.token else None
+        stream = self.channel.request(
+            f"/{schema.PKG}.Session/Logs",
+            grpclib.const.Cardinality.UNARY_STREAM,
+            type(req), self.msg("LogsResp"), metadata=metadata)
+        try:
+            async with stream as s:
+                await s.send_message(req)
+                await s.end()
+                async for resp in s:
+                    # Through `decode`, so the client reads the field
+                    # by the same declared type the server wrote it
+                    # by. A LogRecord is a wire value, so the proxy
+                    # arm is unreachable and says so.
+                    yield (self.codec.decode(
+                        resp, "records", "list[LogRecord]", _no_proxy),
+                        int(resp.dropped))
+        except grpclib.exceptions.GRPCError as e:
+            # Same contract as _rpc: a typed failure rebuilds into the
+            # error it was. A refusal carries no details and stays a
+            # GRPCError, which is the honest shape for one.
+            rebuilt = self.faults.rebuild(e.details)
+            if rebuilt is not None:
+                raise rebuilt  # noqa: B904
+            raise
 
     async def call_function(self, name: str, *args: Any) -> Any:
         """Call one of the bindings' module-level functions remotely.

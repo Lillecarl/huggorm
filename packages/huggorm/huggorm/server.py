@@ -55,6 +55,14 @@ def _tok(stream: Any) -> str:
 DEFAULT_DEPTH = 8
 DEFAULT_BUDGET = 1000
 
+# How long a log reader waits when the queue answered nothing. A drain
+# is a mutex and a move, so polling costs almost nothing - and the
+# alternative is a condition variable in C++, which would buy latency
+# and cost a hand-written wait (tasks/032). After a NON-empty drain the
+# loop reads again at once, so a burst leaves at full speed and only a
+# quiet stream pays this.
+LOG_POLL = 0.05
+
 
 class TreeWalk:
     """One pass over a value that holds values, on that value's OWN
@@ -133,6 +141,30 @@ class TreeWalk:
         return ("proxy", type(obj).__name__, obj)
 
 
+def _never_a_proxy(obj: Any) -> str:
+    """A proxy id for something the codec promised not to ask about.
+
+    A `LogRecord` is a wire VALUE, so `encode` never reaches the proxy
+    arm. Raising here says that rather than handing out a handle
+    nothing tracks, which is what a `lambda _: ""` would have done."""
+    raise TypeError(
+        f"{type(obj).__name__} crossed as a proxy where only wire values "
+        f"were expected")
+
+
+async def _drop_subscription(target: Any) -> None:
+    """Clear a state's subscription, on the state's own thread.
+
+    Detached rather than awaited, so the `finally` that calls it needs
+    no await of its own - a defence against a cancelled handler that
+    two perturbations failed to prove necessary, and that costs
+    nothing (tasks/032). Failures go nowhere on purpose: the stream
+    this belonged to is already over, and the queue is closed either
+    way."""
+    with contextlib.suppress(Exception):
+        await target.unsubscribe_logs()
+
+
 class Dispatcher:
     def __init__(self, pool: Any, lease_ttl: float = 120.0) -> None:
         """No manifest. Every table it unpacked is emitted, in
@@ -148,6 +180,14 @@ class Dispatcher:
         self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
         self.codec = WireCodec()
+        # Which states already have a log reader. The tap routes by
+        # THREAD and a second subscribe REPLACES the first, so two
+        # readers on one state would leave the older one silent with
+        # nothing said - this repo's named failure mode. Keyed by the
+        # wrapper object, because that is what a subscription belongs
+        # to; a shared handle leases the same id to two connections
+        # and still names one state.
+        self._log_readers: dict[int, Any] = {}
         # A failure crosses the same way a value does: as messages, by
         # what the bindings declare, never by a type this file names
         # (tasks/036).
@@ -175,7 +215,16 @@ class Dispatcher:
             with contextlib.suppress(Exception):
                 await obj.aclose()
 
-        task = asyncio.ensure_future(_close())
+        self._detach(_close())
+
+    def _detach(self, coro: Any) -> None:
+        """Run a coroutine to completion with nobody awaiting it.
+
+        RETAINED, for the reason above: asyncio holds a running task
+        only weakly. Used where the awaiting code is about to stop
+        existing - a dropped handle, and a cancelled log stream whose
+        `finally` cannot await anything."""
+        task = asyncio.ensure_future(coro)
         self._closing.add(task)
         task.add_done_callback(self._closing.discard)
 
@@ -390,6 +439,13 @@ class Dispatcher:
             async def guarded(stream: Any) -> None:
                 try:
                     await fn(stream)
+                except grpclib.exceptions.GRPCError:
+                    # Already the wire shape, and already carrying a
+                    # status somebody chose. Wrapping it would make a
+                    # deliberate refusal - Logs on a state that
+                    # already has a reader - read as an internal bug
+                    # and lose the code that said which it was.
+                    raise
                 except Exception as e:
                     raise self._fault(InternalError(
                         f"Session/{fn.__name__} failed", cause=e)) from e
@@ -505,7 +561,110 @@ class Dispatcher:
             resp.truncated = walk.truncated
             await stream.send_message(resp)
 
+        async def logs(stream: Any) -> None:
+            """Records Nix raised, streamed as they arrive.
+
+            The one rpc that travels the other way. Everything else
+            here answers a question; this answers records nobody asked
+            for one at a time, so it is server-streaming and it is
+            HAND-WRITTEN. No binding declares it, because there is no
+            method it is the wire form of (tasks/032).
+
+            The subscription belongs to the state's THREAD, so the
+            request names an EvalState and the subscribe hops onto
+            that state's own thread. Draining does not: `LogStream` is
+            pool-threaded and holds its own mutex, so the loop below
+            reads it from the event loop while the evaluation it is
+            reporting on is still running. That is the whole reason
+            the queue is a class rather than a method on EvalState.
+
+            Four things it refuses to do quietly.
+
+            A SECOND reader on one state is refused, not accepted. A
+            second subscribe replaces the first in the C++, so
+            accepting would leave the older stream open and empty
+            forever.
+
+            A DROP is reported. `dropped` rides with every batch and
+            is cumulative, so a client that missed a batch still
+            learns the total.
+
+            A SWEPT connection ends the stream with a status. A stream
+            that just stopped would be indistinguishable from a quiet
+            one.
+
+            CLEANUP is synchronous first, which is a cheap defence
+            rather than a measured need. The argument was that grpclib
+            cancels this task when the client goes away, so the first
+            `await` in a `finally` re-raises. Two perturbations say
+            otherwise - awaiting before the pop passed, and an
+            `asyncio.sleep` before it passed - so cancellation is not
+            observed here. The ordering stays because it costs
+            nothing and it holds under a second cancel or a deadline,
+            where delivered-once is not the whole story (tasks/032)."""
+            req = await stream.recv_message()
+            token = _tok(stream)
+            target = self.resolve(req.state.id, token)
+            key = id(target)
+            if key in self._log_readers:
+                raise grpclib.exceptions.GRPCError(
+                    grpclib.const.Status.FAILED_PRECONDITION,
+                    f"{req.state.id[:8]} already has a log stream open. A "
+                    f"second subscription replaces the first on that "
+                    f"state's thread, so the first would go silent "
+                    f"without saying so.")
+            opts: dict[str, int] = {}
+            # Capacity 0 is not a queue, so zero means "the binding's
+            # default". Level 0 IS a subscription - lvlError, errors
+            # only - so it needs the presence the schema gives it.
+            if req.capacity:
+                opts["capacity"] = req.capacity
+            if req.HasField("level"):
+                opts["level"] = req.level
+            sub = await target.subscribe_logs(**opts)
+            self._log_readers[key] = target
+            resp_cls = self.msg("LogsResp")
+            try:
+                # An EMPTY first batch, which is the subscription
+                # saying it is installed. A caller opens the stream to
+                # watch work it is about to start, and without this it
+                # has no way to know when starting is safe: the next
+                # message would otherwise be the first record, which
+                # arrives only after the work it was meant to report.
+                await stream.send_message(resp_cls())
+                while True:
+                    # A read with no side effect. `table.alive` would
+                    # refresh the connection, and a log stream that
+                    # kept a connection alive would disable the sweeper
+                    # for as long as it was open. Liveness is the ping
+                    # loop's job (tasks/049) and stays there.
+                    if req.state.id not in self.table.entries:
+                        raise grpclib.exceptions.GRPCError(
+                            grpclib.const.Status.UNAVAILABLE,
+                            f"the connection holding {req.state.id[:8]} was "
+                            f"swept, so this stream has nothing to read.")
+                    records = sub.drain()
+                    if not records:
+                        await asyncio.sleep(LOG_POLL)
+                        continue
+                    resp = resp_cls()
+                    self.codec.encode(
+                        resp, "records", "list[LogRecord]", records,
+                        _never_a_proxy)
+                    resp.dropped = sub.dropped()
+                    await stream.send_message(resp)
+            except grpclib.exceptions.StreamTerminatedError:
+                # The client is gone. There is nobody to tell.
+                return
+            finally:
+                self._log_readers.pop(key, None)
+                sub.close()
+                self._detach(_drop_subscription(target))
+
         Handle = self.msg("Handle")
+        self.mapping[f"/{schema.PKG}.Session/Logs"] = grpclib.const.Handler(
+            guard_untyped(logs), grpclib.const.Cardinality.UNARY_STREAM,
+            self.msg("LogsReq"), self.msg("LogsResp"))
         for name, fn, req_cls, resp_cls in (
             ("Realize", realize, self.msg("RealizeReq"),
              self.msg("RealizeResp")),
