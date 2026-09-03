@@ -113,9 +113,9 @@ fails a gate. Compile and gate; do not stop at diffing the text.
 A remote gate is warranted if `__call__` reaches the RPC client in
 any form.
 
-## The other thing that loop drops, and does not say
+## Done: the other thing that loop drops
 
-An `async def` in a class body is dropped too, and by the line above
+An `async def` in a class body was dropped too, and by the line above
 the refusal: `if not isinstance(item, ast.FunctionDef): continue`.
 `ast.AsyncFunctionDef` is not a subclass of `ast.FunctionDef`, so it
 falls out with the class-body markers and the docstring.
@@ -133,12 +133,62 @@ Loud, and blaming the wrong thing. Nothing about that message says
 "async", and the cause it names - a Python release moving
 `co_firstlineno` - would send a reader to the wrong file.
 
-The fix is two lines and a gate: an explicit refusal for
-`ast.AsyncFunctionDef` in the class-body loop and in the
-module-level function loop, and `ast.AsyncFunctionDef` added to
-`_reconcile`'s node set so reconcile stops claiming it. Not done
-here, because the refusal above is the silent one and this is a
-diagnostic.
+It is fixed, and the fix has three parts because three readers ask
+the same question and one of them was answering differently.
+
+`DEFINITIONS` is that question, stated once: the node types a
+declaration DEFINES a name with. `_live` reads a definition's
+`co_firstlineno`, `_reconcile` checks the tree has a node at that
+line, and `_resolve` keeps the arm the import chose. Only
+`_reconcile` and `_resolve` were spelling it out, and both spelled it
+`ClassDef | FunctionDef`.
+
+Then a refusal at each loop that drops one - the class body and the
+module-level functions - saying what a declaration is:
+
+    probe.py:13:5: Probe.later: a declaration describes a C++
+    binding, so `async def` says nothing here. The async form is
+    DERIVED - @binding(threading=...) and @blocks decide which
+    methods get one - so write a plain `def`.
+
+An UNDECORATED `async def` at module level is NOT refused. It is a
+helper the declaration wrote for itself, exactly like an undecorated
+`def`, and that loop has always skipped those. It could not be
+written at all before this, because `_reconcile` raised on it first.
+That is the third gate.
+
+### The perturbation the gates were not written for
+
+Dropping `ast.AsyncFunctionDef` from `DEFINITIONS` fails all THREE,
+and the third gate's docstring said it would fail alone:
+
+    FAILED test_an_async_def_says_why_it_is_refused
+      AssertionError: Regex pattern did not match.
+    FAILED test_a_free_async_function_is_refused_too
+      AssertionError: Regex pattern did not match.
+    FAILED test_an_undecorated_async_helper_is_left_alone
+      DeclarationError: ... the import kept definitions at lines
+    3 failed, 361 passed, 10 deselected
+
+The reason is ORDER. `_reconcile` runs before anything reads a class
+body, so without `DEFINITIONS` the two refusals are unreachable -
+they are not weakened, they never run. Recorded rather than
+corrected quietly, because "this gate fails alone" was an assumption
+and the measurement is the answer.
+
+Each refusal removed on its own fails exactly its own gate, with
+`DID NOT RAISE`, one at a time.
+
+### A gate that passed for the wrong reason
+
+The first fixture put all three asyncs in one file, and the class
+test asserted `match="async def"`. Removing the class refusal left
+that test PASSING the regex - the free function's refusal supplied
+the same words - and failing a later assertion instead.
+
+One async per fixture now, each test turning on the one it is about.
+A gate whose regex can be satisfied by a different code path is not
+testing the path it names.
 
 ## What this task is NOT
 

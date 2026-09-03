@@ -644,6 +644,21 @@ which was superseded rather than fixed.
   line and both answers a caller has: the value dunders are DERIVED
   from `@wire_value` - `order=` and `text=` decide which - and
   anything else gets a plain name. Broken on purpose: DID NOT RAISE, one gate.
+  The `async def` half is DONE too. An `async def` in a declaration
+  died in 082's reconcile blaming `co_firstlineno`, which never says
+  "async" and sends a reader to the wrong file. Three readers ask
+  which nodes DEFINE a name and two spelled it out as
+  `ClassDef | FunctionDef`, so `DEFINITIONS` states it once - and
+  each loop that drops one now says a declaration describes a C++
+  binding, where the async form is derived from `@threading` and
+  `@blocks`. An UNDECORATED module-level `async def` is left alone,
+  like an undecorated `def`, and could not be written at all before.
+  Three gates, and dropping `DEFINITIONS` fails all three rather
+  than the one its docstring predicted: reconcile runs first, so the
+  refusals are unreachable without it. One fixture also passed for
+  the wrong reason - three asyncs in one file let the class test's
+  regex be satisfied by the free function's refusal - so each
+  fixture carries one.
   What is left is `__call__` itself, which is `tasks/034`'s residue.
   It is NOT 076's problem, and "one DSL change buys both" was the
   carried assumption that this refuted: `@property` is
