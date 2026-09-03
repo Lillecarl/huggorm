@@ -66,6 +66,7 @@ LOCAL: dict[str, list[str]] = {
     ".server": ["serve"],
     ".watch": ["Watcher"],
     ".notify": ["Notifier"],
+    ".warm": ["Warmer"],
 }
 
 # Imported as a MODULE rather than for the names in it. `huggorm.errors`
