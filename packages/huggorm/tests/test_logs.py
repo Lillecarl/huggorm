@@ -314,6 +314,136 @@ def test_a_stop_is_never_dropped(tmp_path: pathlib.Path) -> None:
         "every start past the bound still got its stop"
 
 
+@pytest.fixture
+def process_sink() -> Iterator[Any]:
+    """A process-wide subscription, and the process left clean.
+
+    The same hazard the `subscribed` fixture guards, one scope wider:
+    a leaked process-wide subscription would record every later
+    test's orphan records, and there is no thread to leave it behind
+    on."""
+    from huggorm_bindings import subscribe_process_logs, unsubscribe_process_logs
+
+    stream = subscribe_process_logs()
+    try:
+        yield stream
+    finally:
+        unsubscribe_process_logs()
+
+
+def test_an_unclaimed_record_reaches_the_process_sink(
+        state: Any, process_sink: Any) -> None:
+    """The gap `tasks/085` named, closed.
+
+    This thread subscribed to NOTHING, so before the sink existed the
+    record reached nobody. `route` falls back now.
+
+    A `builtins.trace` rather than a fetcher, deliberately: the
+    fallback branch is the fact under test and a record raised on
+    this thread with no queue exercises it exactly. Manufacturing a
+    foreign thread would test the same branch through more
+    machinery."""
+    state.eval_expr(TRACE % "unclaimed")
+    assert any("unclaimed" in t for t in texts(process_sink))
+
+
+def test_a_subscribed_thread_claims_its_own_records(
+        state: Any, process_sink: Any) -> None:
+    """A FALLBACK, not a broadcast, and this is the direction that
+    says so.
+
+    The thread has a queue, so the record goes there and the process
+    sink never sees it. Broadcasting to both was the alternative: a
+    caller holding both subscriptions would then see every evaluation
+    record twice, with nothing on a record to deduplicate by.
+
+    So "everything in this process" is NOT what the process sink
+    answers - it answers what nobody claimed. Fan-out over one
+    subscription is the shape that answers the other question, and it
+    is `tasks/085`'s third gap.
+
+    Both halves, because either alone passes for the wrong reason: a
+    `route` that dropped the record entirely would pass the second
+    assertion, and a broadcast would pass the first."""
+    stream = state.subscribe_logs()
+    try:
+        state.eval_expr(TRACE % "claimed")
+        mine = texts(stream)
+    finally:
+        state.unsubscribe_logs()
+
+    assert any("claimed" in t for t in mine), "the thread's queue got it"
+    assert not any("claimed" in t for t in texts(process_sink)), \
+        "and the process sink did not"
+
+
+def test_a_second_process_subscription_replaces_the_first(
+        state: Any) -> None:
+    """REPLACES, like `subscribe_logs`, and closes what it replaced.
+
+    Refusing was the other answer and is wrong at this layer: an
+    in-process caller that drops its `LogStream` without
+    unsubscribing would wedge the sink for the life of the process,
+    with nothing left to take it back. The rpc refuses instead, where
+    a stream ending is what releases it.
+
+    The first queue is filled BEFORE it is replaced, which is what
+    makes `close` load-bearing here. Without those records, "the
+    first drains empty" is true of any queue that merely stopped
+    being the current one, and the gate would pass with the `close`
+    removed."""
+    from huggorm_bindings import subscribe_process_logs, unsubscribe_process_logs
+
+    first = subscribe_process_logs()
+    state.eval_expr(TRACE % "before")
+    second = subscribe_process_logs()
+    try:
+        state.eval_expr(TRACE % "after")
+        assert any("after" in t for t in texts(second))
+        assert texts(first) == [], \
+            "closed, so what it held went too - not merely superseded"
+    finally:
+        unsubscribe_process_logs()
+
+
+def test_unsubscribing_stops_the_process_sink(state: Any) -> None:
+    """And the tap costs nothing again afterwards.
+
+    The mirror of `test_nothing_is_recorded_without_a_subscription`,
+    one scope wider: the fallback branch must find nothing to push
+    to, not push to a closed queue and quietly succeed."""
+    from huggorm_bindings import subscribe_process_logs, unsubscribe_process_logs
+
+    subscribe_process_logs()
+    unsubscribe_process_logs()
+    state.eval_expr(TRACE % "unheard")
+
+    stream = subscribe_process_logs()
+    try:
+        assert stream.drain() == []
+    finally:
+        unsubscribe_process_logs()
+
+
+def test_the_process_sink_has_the_same_rpc_answer(state: Any) -> None:
+    """Derived, and that is the whole claim.
+
+    `subscribe_process_logs` is a FREE function returning a proxy
+    with no service, which is the same shape as
+    `EvalState.subscribe_logs` - and the codegen reached the same
+    answer with no emitter change. Its inverse crosses, for the same
+    reason `unsubscribe_logs` does: it answers nothing.
+
+    Asserted on the emitted reason rather than on the absence, so a
+    function that lost its rpc for some OTHER reason would not pass
+    this."""
+    from huggorm_generated._policy import FREE, NO_RPC
+
+    assert "subscribe_process_logs" in NO_RPC
+    assert "proxy with no service" in NO_RPC["subscribe_process_logs"]
+    assert "unsubscribe_process_logs" in FREE
+
+
 def test_no_rpc_surface() -> None:
     """A log stream does not cross the wire yet, and says so.
 
