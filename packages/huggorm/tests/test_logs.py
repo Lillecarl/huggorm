@@ -22,7 +22,9 @@ import pathlib
 from collections.abc import Iterator
 from typing import Any
 
+import anyio
 import pytest
+from conftest import HOST, SHORT_TTL, Server
 
 URI = "dummy://"
 
@@ -328,10 +330,12 @@ def test_no_rpc_surface() -> None:
     proxy with no service is a `wire_blocker`, so any future case
     reports itself rather than shipping a dead handle.
 
-    The remote half is not missing, it is DEFERRED. A log stream is
-    protocol, like Session: it wants a server-streaming rpc, not a
-    poll, and `tasks/032` says the generator should stay unaware of
-    it."""
+    The remote half is not missing and is no longer deferred: it is
+    `Session/Logs`, hand-written beside the other protocol rpcs, and
+    the tests at the end of this file hold it. A log stream wants a
+    server-streaming rpc rather than a handle to poll, so the
+    generator stays unaware of it - which is what this gate keeps
+    true."""
     from huggorm_generated._policy import ASYNC_CLASS, METHODS
     from huggorm_generated.rpc import RPCEvalState
 
@@ -384,3 +388,247 @@ async def test_the_loop_drains_while_the_evaluator_works() -> None:
         await state.aclose()
 
     assert "from the loop" in seen
+
+
+# -- the stream that crosses ----------------------------------------------
+#
+# Everything above holds the queue in one process. What follows holds
+# the rpc over it: the one thing in this schema that travels the other
+# way, unsolicited, and the only server-streaming method here.
+#
+# It is HAND-WRITTEN, beside Session, and `tasks/032` says why: every
+# other rpc is the wire form of a declared method, and this is the wire
+# form of no method at all. The generator stays unaware of it.
+
+
+async def batch(stream: Any, timeout: float = 20) -> tuple[list[Any], int]:
+    """The next batch, or a failure that names the wait.
+
+    A bare `anext` would hang until pytest's own timeout and report
+    nothing about which stream stopped."""
+    with anyio.fail_after(timeout):
+        return await anext(stream)  # type: ignore[no-any-return]
+
+
+async def opened(client: Any, state: Any, **kw: Any) -> Any:
+    """A stream past its empty first batch.
+
+    That batch is the subscription saying it is installed, and waiting
+    for it is what makes the next line safe: an evaluation started
+    before the subscribe lands raises its records into no queue."""
+    stream = client.logs(state, **kw)
+    records, dropped = await batch(stream)
+    assert records == [], "the first batch says 'subscribed', nothing more"
+    assert dropped == 0
+    return stream
+
+
+async def test_a_trace_reaches_a_remote_client(client: Any) -> None:
+    """The point of the task, in one test.
+
+    Nix raises a record on the evaluation thread inside a server
+    process, and a client in another process reads it while holding
+    nothing but a handle."""
+    state = await client.acquire("EvalState", "dummy://")
+    stream = await opened(client, state)
+    try:
+        await state.eval_expr(TRACE % "over the wire")
+        records, dropped = await batch(stream)
+        assert any("over the wire" in r.text() for r in records), records
+        assert dropped == 0
+    finally:
+        await stream.aclose()
+
+
+async def test_a_record_arrives_as_a_real_local_object(client: Any) -> None:
+    """A LogRecord crosses as a VALUE, so the far side gets the class.
+
+    Not a dict and not a handle. `LogRecord` is a wire value, so the
+    codec rebuilds it from its declared parts - the same round trip
+    `test_store` gates for every other one - and `fields` comes back as
+    a list rather than as a shape this layer invented."""
+    from huggorm_bindings import LogRecord
+
+    state = await client.acquire("EvalState", "dummy://")
+    stream = await opened(client, state)
+    try:
+        await state.eval_expr(TRACE % "typed")
+        records, _ = await batch(stream)
+    finally:
+        await stream.aclose()
+
+    record = next(r for r in records if "typed" in r.text())
+    assert isinstance(record, LogRecord)
+    assert record.action() == "msg"
+    assert isinstance(record.fields(), list)
+
+
+async def test_the_level_narrows_over_the_wire_too(client: Any) -> None:
+    """Level 0 is a subscription, not an absence.
+
+    lvlError is 0, so "errors only" and "no level given" are different
+    requests that a plain proto3 sint64 cannot tell apart. The field
+    has real presence for exactly this, and this is the gate on it: a
+    zero that arrived as unset would take the default of 3 and let the
+    warning through."""
+    state = await client.acquire("EvalState", "dummy://")
+    stream = await opened(client, state, level=0)
+    try:
+        await state.eval_expr(TRACE % "kept")
+        await state.eval_expr(WARN % "refused")
+        records, _ = await batch(stream)
+        seen = " ".join(r.text() for r in records)
+    finally:
+        await stream.aclose()
+
+    assert "kept" in seen
+    assert "refused" not in seen
+
+
+async def test_a_drop_crosses_rather_than_vanishing(client: Any) -> None:
+    """The bound is remote too, and it still says when it was reached.
+
+    A client that cannot tell a quiet evaluation from a lost one is
+    looking at this repo's named failure mode over a socket instead of
+    in a process. `dropped` rides with every batch, cumulative, so it
+    survives a batch the reader skipped.
+
+    ONE expression, and that is the whole reason this reads the way it
+    does. The server drains every 50ms while the test runs, so five
+    sequential `eval_expr` round trips race the poll: a tick landing
+    between two of them empties a capacity-1 queue, the next record is
+    kept rather than refused, and `dropped` comes back short. Nested
+    traces push five records microseconds apart, so no tick fits
+    between them and the count is exact rather than likely.
+
+    The OUTERMOST trace prints first, so "the earliest survives" is
+    still what the bound says."""
+    nest = "1"
+    for i in reversed(range(5)):
+        nest = f'builtins.trace "line{i}" ({nest})'
+
+    state = await client.acquire("EvalState", "dummy://")
+    stream = await opened(client, state, capacity=1)
+    try:
+        await state.eval_expr(nest)
+        records, dropped = await batch(stream)
+    finally:
+        await stream.aclose()
+
+    assert len(records) == 1, "the bound held over the wire"
+    assert "line0" in records[0].text(), records
+    assert dropped == 4, records
+
+
+async def test_one_reader_per_state(client: Any) -> None:
+    """A second stream on one state is REFUSED, not accepted.
+
+    The tap routes by thread and a second subscribe replaces the first
+    in the C++, so accepting this would leave the older stream open,
+    connected, and empty forever - which reads exactly like a state
+    that stopped logging.
+
+    FAILED_PRECONDITION and not an InternalError: the guard around the
+    Session handlers wraps everything it catches, and a deliberate
+    refusal wrapped that way reads as a bug in the server."""
+    from grpclib.const import Status
+    from grpclib.exceptions import GRPCError
+
+    state = await client.acquire("EvalState", "dummy://")
+    first = await opened(client, state)
+    try:
+        second = client.logs(state)
+        with pytest.raises(GRPCError) as caught:
+            await batch(second)
+        assert caught.value.status is Status.FAILED_PRECONDITION
+        assert "already has a log stream" in (caught.value.message or "")
+    finally:
+        await first.aclose()
+
+
+async def test_a_closed_stream_gives_the_state_back(client: Any) -> None:
+    """Closing one reader lets the next one in.
+
+    This is the gate on the registry entry being RELEASED. Drop the
+    `pop` from the handler's `finally` and this is what fails, with a
+    TimeoutError rather than a hang, because the retry below turns a
+    permanent refusal into one.
+
+    It does NOT gate the ORDER of that cleanup. The handler puts the
+    synchronous work first on the argument that a cancelled task
+    cannot await, and two perturbations refute the argument: awaiting
+    before the pop passes, and an `asyncio.sleep` before it passes.
+    Recorded in `tasks/032`, because a defence nothing tests is worth
+    saying out loud."""
+    state = await client.acquire("EvalState", "dummy://")
+    first = await opened(client, state)
+    await first.aclose()
+
+    # The server learns of the close through a stream reset, so the
+    # `finally` runs a moment after aclose() returns here. Retrying is
+    # the honest wait: a fixed sleep would be a guess about a machine.
+    with anyio.fail_after(20):
+        while True:
+            try:
+                second = await opened(client, state)
+            except Exception:
+                await anyio.sleep(0.05)
+            else:
+                break
+    await second.aclose()
+
+
+async def test_a_swept_connection_ends_the_stream(ttl_server: Server) -> None:
+    """A stream that lost its connection SAYS so.
+
+    Transports never report death, so the sweeper is what notices a
+    silent connection and releases what it held (tasks/002). A log
+    stream outlives one poll of that, and a stream that simply stopped
+    would be indistinguishable from a quiet evaluation - this repo's
+    named failure mode, spelled as an absence of messages.
+
+    So the handler ends it with UNAVAILABLE, and the check is a READ:
+    `table.entries`, not `table.alive`. `alive` REFRESHES the
+    connection it is asked about, so a log stream asking it every 50ms
+    would keep its own connection alive forever and quietly disable
+    the sweeper for it. Liveness stays the ping loop's job, which is
+    why this test stops the pinging to get a sweep at all.
+
+    It uses the short-TTL server, so it costs one sweep of wall time
+    rather than the default lease."""
+    from grpclib.const import Status
+    from grpclib.exceptions import GRPCError
+
+    from huggorm import remote
+
+    c = await remote.connect(HOST, ttl_server.port)
+    state = await c.acquire("EvalState", "dummy://")
+    stream = await opened(c, state)
+    # Nothing keeps the connection alive now, so the next sweep takes
+    # it - and the handle with it.
+    c.stop_pinging()
+    with pytest.raises(GRPCError) as caught:
+        await batch(stream, timeout=SHORT_TTL * 4 + 10)
+    assert caught.value.status is Status.UNAVAILABLE
+    assert "swept" in (caught.value.message or "")
+
+
+async def test_the_descriptor_says_it_streams() -> None:
+    """The schema has to SAY server-streaming, not just behave it.
+
+    Reflection and grpcurl read this flag, so a descriptor that calls
+    Logs unary while dispatch streams is a schema that lies - and a
+    client built from it would wait for one message and stop.
+
+    No other Session method carries it, which is asserted rather than
+    assumed: this is the first use of the flag in this schema, so
+    there was no example to copy and nothing to notice a stray one."""
+    from huggorm.grpc_pb import PKG, load_pool
+
+    session = load_pool().FindServiceByName(  # type: ignore[no-untyped-call]
+        f"{PKG}.Session")
+    streaming = {m.name for m in session.methods if m.server_streaming}
+    assert streaming == {"Logs"}, streaming
+    logs = session.FindMethodByName(  # type: ignore[no-untyped-call]
+        "Logs")
+    assert not logs.client_streaming, "the request is one message"
