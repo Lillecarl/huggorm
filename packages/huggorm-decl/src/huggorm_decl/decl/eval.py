@@ -342,6 +342,41 @@ self.state().evalFile(self.state().rootPath(path), *made);
 return self.wrap(made);
         """)
 
+    def cached_files(self) -> "list[Str]":
+        """Every file whose evaluation this state has cached.
+
+        What a watcher watches. `tasks/016` wants a change to a file an
+        evaluation read to invalidate the warm state rather than throw
+        it away, and this is the set that change would touch.
+
+        libexpr keeps it and does not offer it: `fileEvalCache` is
+        private, and the accessor every read goes through is built
+        inside the constructor from the settings alone, so there is
+        nothing to substitute either. `huggorm::cached_files` reaches
+        it the one way the standard allows without patching nixpkgs -
+        the whole argument is in `cpp/eval.hpp`, beside the code.
+
+        `import` goes through `evalFile`, so a file reached from
+        INSIDE an expression is here as surely as the one the caller
+        named. That is the reason this reads libexpr's cache rather
+        than counting what `eval_file` was handed: our own boundary
+        sees one file and an evaluation reads many.
+
+        Resolved paths, so `/foo` appears as `/foo/default.nix`. That
+        is what the cache is keyed by and what a watch has to name.
+
+        NOT every file read. `builtins.readFile` and `builtins.path`
+        do not go through this cache, so a caller who wants those
+        watched needs something else - and would find out here rather
+        than from a stale answer.
+
+        NOT every entry is a file either. libexpr evaluates its own
+        `derivation-internal.nix` out of an in-memory accessor, and it
+        renders as `«nix-internal»/derivation-internal.nix`. A watcher
+        has to skip what it cannot stat; the list is what the cache
+        holds, not a promise that each entry is on disk."""
+        Cxx("return huggorm::cached_files(self.state());")
+
     def force(self, v: "Value") -> None:
         """Force a value in place. Idempotent.
 

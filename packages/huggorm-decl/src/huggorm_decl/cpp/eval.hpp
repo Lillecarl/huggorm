@@ -45,6 +45,9 @@
 #include <string>
 #include <vector>
 
+// `eval.hh` only forward-declares the concurrent map its caches are.
+#include <boost/unordered/concurrent_flat_map.hpp>
+
 #include "nix/expr/attr-set.hh"
 #include "nix/expr/eval-gc.hh"
 #include "nix/expr/eval-settings.hh"
@@ -59,6 +62,68 @@
 #include <gc/gc.h>
 
 namespace huggorm {
+
+// ---- the file cache, which libexpr keeps to itself ----------------
+//
+// `tasks/016` wants the server to watch every file an evaluation
+// read, so a change can invalidate the warm state rather than throw
+// it away. libexpr KNOWS - `EvalState::fileEvalCache` is keyed by
+// resolved path - and offers no way to ask: the member is private
+// (`eval.hh:481`), and the accessor every read goes through is a
+// `const ref<SourceAccessor>` the constructor builds from the
+// settings alone (`eval.cc:267`), so there is nothing to substitute
+// on the way in either. Upstream is moving further this way: 2.36pre
+// makes `rootFS` private too.
+//
+// So the cache is reached the one way the standard allows without a
+// patch. [temp.spec]/6: access checking is NOT performed on the names
+// used in an explicit instantiation, so a template taking the member
+// pointer as a non-type parameter may be instantiated with a private
+// one, and the friend it defines hands it out afterwards. Legal,
+// portable, and the reason Carl chose it over patching nixpkgs.
+//
+// A HELPER, not a mapping. It is the same shape as the GC root above:
+// infrastructure over a foreign library that exposes no API for the
+// fact, which generated code then CALLS. `cached_files` is what the
+// declaration's `Cxx` body says, and the emitter writes the binding.
+//
+// It fails LOUDLY if upstream renames or removes the member: the
+// explicit instantiation stops compiling. That is the right failure
+// for a reach into a private, and better than a silent empty answer.
+
+template <typename Tag, auto Member>
+struct Reach
+{
+    friend auto get(Tag) { return Member; }
+};
+
+struct FileEvalCache
+{
+};
+auto get(FileEvalCache);
+
+template struct Reach<FileEvalCache, &nix::EvalState::fileEvalCache>;
+
+/**
+ * Every file whose evaluation this state has cached, resolved.
+ *
+ * The set a filesystem change would invalidate. `import` goes through
+ * `evalFile` (primops.cc:312), so a file reached from inside an
+ * expression is here as surely as the one the caller named - which is
+ * the whole reason this reads libexpr's cache rather than counting
+ * what our own binding was asked to evaluate.
+ *
+ * Resolved, so `/foo` is here as `/foo/default.nix`: that is what the
+ * cache is keyed by and what a watch has to name.
+ */
+inline std::vector<std::string> cached_files(const nix::EvalState & state)
+{
+    std::vector<std::string> out;
+    (state.*get(FileEvalCache{}))->cvisit_all([&](const auto & entry) {
+        out.push_back(entry.first.to_string());
+    });
+    return out;
+}
 
 // ---- the collector, and the threads Python made -------------------
 
