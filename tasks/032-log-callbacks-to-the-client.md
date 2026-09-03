@@ -82,3 +82,76 @@ This is the first thing the surface cannot generate. Every rpc so far
 came out of the manifest because it came out of a binding declaration;
 a log stream is protocol, like Session. It belongs beside Session, and
 the generator should stay unaware of it.
+
+## Measured, 2026-09-03
+
+Against the same source tree, and each line names where.
+
+**`nix::verbosity` filters before any logger runs.** `printMsg` and
+`logErrorInfo` both test `level <= nix::verbosity` and only then call
+the logger (logging.hh:314, :330). So a subscriber cannot ask for more
+than the global, and raising the global floods every other logger too.
+
+**Activities are not filtered.** `Activity::Activity` calls
+`startActivity` with no test at all (logging.cc:196). The `lvl` it
+passes is a field of the record, not a gate. So the tree always
+arrives in full and the level is a filter on MESSAGES only. Those two
+sentences look like one sentence and are not.
+
+**`curActivity` is `thread_local`** (logging.cc:23). A new activity
+takes the current thread's activity as its parent, so the tree is
+already per-thread upstream.
+
+**This Nix evaluates on one thread.** Nothing under `src/libexpr`
+names `eval-cores` or `evalCores`, so 2.34.8 has no parallel
+evaluation. An `EvalState` therefore evaluates on the thread that owns
+it, and thread identity is enough to say which state a record belongs
+to. Records raised by a fetcher or a file-transfer thread carry no
+such identity, and fall back to a process-wide sink.
+
+**`Logger::Field` is a hand-rolled variant**: an unnamed enum
+`tInt`/`tString`, a `uint64_t i` and a `std::string s`, with upstream's
+own FIXME saying to use `std::variant` (logging.hh:76). A record
+mirrors that rather than inventing a third shape.
+
+## Decided
+
+**The tap is a `Logger` subclass, and NOT `makeJSONLogger`.** Nix
+already ships a backchannel: `makeJSONLogger(Descriptor fd, ...)`
+writes every record as JSON, and `applyJSONLogger` points it at a file
+or a unix socket. Reading that from Python needs no subclass. It was
+rejected for three reasons.
+
+It answers neither scoping question above: one process-wide stream can
+say which connection a record belongs to only if something else tags
+it. It still needs C++ to install, so it does not even save the
+approval. And `JSONLogger::write` DISABLES ITSELF on a write error and
+warns once (logging.cc:262), which is this repo's named failure mode
+sitting in upstream: after that line every later record is gone and
+nothing downstream can tell that from silence.
+
+The JSON record shape is still the model to copy. `action`, `id`,
+`level`, `type`, `text`, `parent`, `fields` (logging.cc:272-333) is
+what a Nix client already expects to read.
+
+**The subscription is a CLASS, not a method on `EvalState`.** An
+`EvalState` is affine: every method on it routes to that state's own
+thread, one at a time. A `drain_logs()` there would queue BEHIND the
+`eval_file` whose progress it wants to report, so the records would
+arrive only after the evaluation they describe had finished. The
+subscription is therefore its own object with its own lock, on the
+pool policy, and `EvalState` only hands one out. That is also the
+shape this file already asked for - "a bounded queue per connection".
+
+**The vocabularies do not become StrEnums.** `decl/words.py` earns its
+shape from one sentence: "a member IS the string libstore parses".
+Nothing parses `Verbosity`, `ActivityType` or `ResultType` from a
+string; they are int-valued C++ enums that travel as ints in Nix's own
+JSON. Forcing them into `words.py` would make that file's rationale
+false. They cross as ints, and an int vocabulary is a DSL question for
+later.
+
+**The streaming rpc is deferred to its own commit.** The in-process
+subscription is the mechanism; the rpc is one reader over it. Carl's
+priority is that the binding and the wrapping agree, and that is the
+in-process half.
