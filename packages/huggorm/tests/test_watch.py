@@ -190,3 +190,58 @@ async def test_forgetting_a_root_stops_watching_its_files(
     # prune removed: 2 entries survive, one of them a file that no
     # longer exists.
     assert w._seen == {}, "a watcher for days cannot keep stamps forever"
+
+
+async def test_a_failed_evaluation_does_not_wedge_the_root(
+        state: Any, tmp_path: Any) -> None:
+    """A syntax error must not outlive the syntax error.
+
+    libexpr caches what a FAILED evaluation read, and the cache is
+    what answers next time - so a file fixed after a bad save raises
+    the OLD error, forever. Measured in `tasks/087`.
+
+    Nothing else could catch it. A failed evaluation records no
+    snapshot, so `changed()` can never implicate that root again: the
+    root is wedged, permanently, and every later call answers an error
+    about a file that no longer says that. An absence would at least
+    be visible; this is a confident wrong answer.
+
+    The last line is the whole gate. Without the cleanup it raises the
+    2:1 syntax error from the middle of this test, about a file that
+    now reads `2 + 2`."""
+    root = write(tmp_path / "root.nix", "1 + 1\n")
+
+    w = Watcher(state)
+    assert await (await w.eval_file(root)).integer() == 2
+
+    write(tmp_path / "root.nix", "1 + \n")
+    assert await w.changed(root) == [root]
+    with pytest.raises(Exception, match="syntax error"):
+        await w.eval_file(root)
+
+    write(tmp_path / "root.nix", "2 + 2\n")
+    assert await (await w.eval_file(root)).integer() == 4
+
+
+async def test_a_failure_keeps_a_healthy_root_warm(
+        state: Any, tmp_path: Any) -> None:
+    """Cleaning up after a failure must not clean up everything.
+
+    The rule is "cached and in no snapshot", not "cached". A root that
+    evaluated successfully has a snapshot holding its files, so a
+    later failure somewhere else leaves it alone - which is what makes
+    the cleanup a repair rather than a reset.
+
+    `good` keeps its snapshot across `bad`'s failure, and that is what
+    this asserts: it is still a root, so a change to a file it never
+    read still implicates it exactly as before."""
+    good = write(tmp_path / "good.nix", "1 + 1\n")
+    bad = write(tmp_path / "bad.nix", "1 + \n")
+
+    w = Watcher(state)
+    assert await (await w.eval_file(good)).integer() == 2
+    with pytest.raises(Exception, match="syntax error"):
+        await w.eval_file(bad)
+
+    assert w.roots == [good], "the failure took nothing else with it"
+    assert good in w.watching()

@@ -140,7 +140,11 @@ class Watcher:
         anything, it reads the cache's key set.
         """
         async with self._lock:
-            value = await self._state.eval_file(path)
+            try:
+                value = await self._state.eval_file(path)
+            except Exception:
+                await self._drop_unrecorded()
+                raise
             files = set(await self._state.cached_files())
             self._snapshots[path] = files
             # `setdefault`, so a file already watched KEEPS the stamp
@@ -152,6 +156,34 @@ class Watcher:
             for real in _watchable(files):
                 self._seen.setdefault(real, _stamp(real))
             return value
+
+    async def _drop_unrecorded(self) -> None:
+        """Forget what a FAILED evaluation cached. Called with the lock.
+
+        A failed evaluation still caches the files it read, and the
+        cache is what answers next time - so the corrected file is
+        never re-read and the root raises the OLD error forever.
+        Measured in `tasks/087`: a file fixed after a syntax error
+        raises that same syntax error until something forgets it, and
+        nothing did.
+
+        Nothing else could. A failed evaluation records no snapshot,
+        so `changed()` can never implicate that root again - the
+        wedge is permanent and silent, which is this repo's named
+        failure mode with no absence to look at.
+
+        What to forget is DERIVED and costs no extra call. Every file
+        a successful evaluation cached is in that root's snapshot, so
+        a file that is cached and in no snapshot was read by an
+        evaluation that failed. Forgetting a good file would cost a
+        re-read and nothing else; leaving a bad one costs the answer.
+        """
+        kept: set[str] = set()
+        for files in self._snapshots.values():
+            kept |= files
+        cached = set(await self._state.cached_files())
+        for stale in sorted(_watchable(cached - kept)):
+            await self._state.forget_file(stale)
 
     async def changed(self, path: str) -> list[str]:
         """Forget every root that could depend on `path`. Returns them.
