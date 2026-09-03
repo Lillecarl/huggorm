@@ -155,3 +155,38 @@ async def test_an_unrelated_path_forgets_nothing(
 
     assert await w.changed(str(tmp_path / "not-a-dependency.nix")) == []
     assert w.roots == [src]
+
+
+async def test_forgetting_a_root_stops_watching_its_files(
+        state: Any, tmp_path: Any) -> None:
+    """A watcher meant to run for days cannot grow without bound.
+
+    Forgetting a root drops its snapshot, and the files only that
+    root depended on are then watched by nothing. Without the prune
+    they would be stat-ed on every rescan for the life of the state.
+
+    Asserted on a PRIVATE, which is unusual here and deliberate. The
+    prune changes what the watcher SPENDS, not what it answers: with
+    it removed every assertion below still passes, because a stamp for
+    a file no root depends on can never implicate a root. So there is
+    nothing in the public surface to hold it to, and the choice is
+    between reaching in and not gating it at all."""
+    inner = write(tmp_path / "inner.nix", "40 + 2\n")
+    outer = write(tmp_path / "outer.nix", f"import {inner}\n")
+
+    w = Watcher(state)
+    await w.eval_file(outer)
+    assert inner in w.watching()
+
+    (tmp_path / "inner.nix").unlink()
+    assert await w.rescan() == [outer]
+
+    # The root is forgotten, so nothing depends on either file now.
+    assert w.roots == []
+    assert w.watching() == []
+    assert await w.rescan() == []
+
+    # The part the public surface cannot see. Seen to fail with the
+    # prune removed: 2 entries survive, one of them a file that no
+    # longer exists.
+    assert w._seen == {}, "a watcher for days cannot keep stamps forever"

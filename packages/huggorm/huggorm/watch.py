@@ -41,10 +41,25 @@ still keeps the fetched flake inputs that `resetFileCache()` drops.
 
 ## What it cannot see
 
+Three limits, and each is named here rather than left to be found.
+
 A file read by `builtins.readFile` or `builtins.path` is in no cache,
 so no snapshot holds it and no change to it invalidates anything. That
 is libexpr's boundary, not this module's, and `EvalState.cached_files`
 says the same thing.
+
+A file DISCOVERED by an evaluation is stamped after that evaluation
+read it, because nothing knew to watch it before. An edit landing in
+between is recorded as the baseline, so no rescan fires for it. The
+window is one evaluation wide and it only applies the FIRST time a
+file is seen; a file already watched keeps its old stamp, which errs
+the other way. Shrinking it further needs libexpr to say what it is
+about to read, and it does not.
+
+`rescan()` stats THIS machine. The bookkeeping and `changed()` treat a
+path as a string and work over RPC unchanged, but a remote state's
+files are on the server. A watcher that polls has to share a
+filesystem with its evaluator; one driven by `changed()` does not.
 """
 
 from __future__ import annotations
@@ -128,6 +143,12 @@ class Watcher:
             value = await self._state.eval_file(path)
             files = set(await self._state.cached_files())
             self._snapshots[path] = files
+            # `setdefault`, so a file already watched KEEPS the stamp
+            # it had. That is the safe direction, not an oversight: an
+            # edit that lands while the evaluation runs then leaves
+            # the stamp disagreeing with the disk, and the next
+            # `rescan` over-forgets. Re-stamping here would record the
+            # NEW file against the OLD cached value and never fire.
             for real in _watchable(files):
                 self._seen.setdefault(real, _stamp(real))
             return value
@@ -156,14 +177,24 @@ class Watcher:
         cached it read it, so its absence is a different answer - and
         `forget_file` on a path the state cannot read is safe, because
         the failure surfaces on the next evaluation rather than here.
+
+        THIS MACHINE'S filesystem, which is the one limit that does
+        not hold for the rest of the class. `changed()` and the
+        bookkeeping work over RPC unchanged, because a path is just a
+        string to them. `rescan` calls `os.stat`, so a remote state
+        whose files live on the server is not what it measures. A
+        watcher using it has to share a filesystem with the evaluator.
         """
         async with self._lock:
+            # Stat everything first, then forget. `_forget` prunes
+            # `_seen`, so acting inside the walk would step on the
+            # collection it is walking.
+            moved = [p for p, was in sorted(self._seen.items())
+                     if _stamp(p) != was]
             forgotten: list[str] = []
-            for real in sorted(self._seen):
-                now = _stamp(real)
-                if now != self._seen[real]:
-                    self._seen[real] = now
-                    forgotten += await self._forget(real)
+            for real in moved:
+                self._seen[real] = _stamp(real)
+                forgotten += await self._forget(real)
             return sorted(set(forgotten))
 
     async def _forget(self, path: str) -> list[str]:
@@ -191,6 +222,14 @@ class Watcher:
 
         for gone in sorted(doomed):
             await self._state.forget_file(gone)
+
+        # Stop watching what no root depends on any more. A state
+        # meant to live for days would otherwise stat every file it
+        # ever touched, forever, and a rescan's cost would only grow.
+        keep: set[str] = set()
+        for files in self._snapshots.values():
+            keep |= files
+        self._seen = {p: s for p, s in self._seen.items() if p in keep}
         return sorted(roots)
 
 
