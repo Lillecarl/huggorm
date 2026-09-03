@@ -209,8 +209,14 @@ which was superseded rather than fixed.
   moment says "opening file ... No such file or directory", which is
   the control. The MILESTONE is reached: a successor claims the state
   after a sweep and answers for a file deleted before it, while a
-  fresh state on the same server cannot. What is left is watched
-  files and background eager evaluation.
+  fresh state on the same server cannot. Watched files have their
+  first half: libexpr will not say which files it read - the caches
+  are private and `rootFS` cannot be substituted - so
+  `EvalState.cached_files()` reaches the cache from our own header,
+  by the explicit-instantiation rule, with nixpkgs untouched. It sees
+  a file reached by `import`, which our own boundary never could.
+  Next is per-path invalidation: `resetFileCache()` clears everything,
+  which defeats the point. Background eager evaluation is untouched.
 - 078 (a declaration nobody lists reaches nothing) is DONE. `corpus()`
   censuses `decl/` against the lists and the build fails when they
   disagree. The plan in the file was wrong: "every `*.py` in exactly

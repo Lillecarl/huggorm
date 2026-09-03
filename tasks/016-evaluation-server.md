@@ -178,3 +178,80 @@ header also in this store, `rootFS` has moved under `private:` too
 
 This is Carl's call. The measurement is here so it is made against
 what libexpr does rather than against what it might.
+
+### Carl chose the second, and it needed no patch
+
+"If we can create a friend class or something in our bindings only it
+would be best, if we need to patch we can patch."
+
+We can. [temp.spec]/6 says access checking is NOT performed on the
+names used in an explicit instantiation, so a template taking the
+member pointer as a non-type parameter may be instantiated with a
+private one, and the friend it defines hands it out afterwards. Legal
+and portable, and it reaches `fileEvalCache` from our own header with
+nixpkgs untouched.
+
+Compiled against the packaged 2.34.8 headers before anything was
+written into the repo. The first attempt failed for a reason worth
+keeping: `eval.hh` only FORWARD-declares
+`boost::concurrent_flat_map`, so the member was reachable and its
+type incomplete - `invalid use of incomplete type`. One include fixed
+it, and the error proved the access half had already worked.
+
+`huggorm::cached_files` is in `cpp/eval.hpp`, and it is a HELPER by
+this repo's own test: generated code CALLS it, and the fact it
+carries - a foreign library's private state - is one no declaration
+can express. `EvalState.cached_files()` is the declaration; the
+emitter writes the binding.
+
+It fails LOUDLY if upstream renames or removes the member: the
+explicit instantiation stops compiling. That is the right failure for
+a reach into a private, and better than a silent empty answer.
+
+**`cpp/eval.hpp` went 238 -> 257 code lines**, by the build's own
+count. Recorded because CLAUDE.md says that number is not a budget to
+spend, and because this file is the one that grew 108 -> 417 a
+reasonable line at a time. Nineteen lines, and the argument for them
+is written above them in the file.
+
+### The gate
+
+`test_a_file_reached_by_import_is_in_the_cache_too`, on all three
+surfaces. A file that imports another is evaluated, and BOTH appear.
+
+The inner one is the assertion that matters. Our own boundary sees
+one path - the one handed to `eval_file` - and an evaluation reads
+many, because `import` goes through `evalFile` too. That difference
+is the whole reason this reads libexpr's cache rather than counting
+what we were asked to evaluate.
+
+Both are asserted absent BEFORE the evaluation, so a state answering
+with a constant, or with every file it had ever seen, fails here
+rather than passing by accident.
+
+Seen to FAIL, by removing the `import` from the outer file:
+
+    assert '.../inner.nix' in ['«nix-internal»/derivation-internal.nix',
+                               '.../outer.nix']
+
+So the discriminating assertion discriminates, and the failure shows
+what the cache actually holds - including one entry that is not a
+file at all. libexpr evaluates its own `derivation-internal.nix` out
+of an in-memory accessor, and it renders as
+`«nix-internal»/derivation-internal.nix`. A watcher has to skip what
+it cannot stat; the declaration says so.
+
+### What this still does not see
+
+`builtins.readFile` and `builtins.path` do not go through
+`fileEvalCache`. A watcher built on this watches every Nix file an
+evaluation imported and no data file it read. The declaration says
+so, which is the difference between a known limit and a wrong answer.
+
+### What is next for the watcher
+
+Invalidation. `resetFileCache()` is public and clears EVERYTHING -
+the whole warm state for one changed file, which defeats the point.
+Per-path invalidation needs an erase from the same private map, by
+the same route, and it is the piece that makes `cached_files` useful
+rather than merely true.
