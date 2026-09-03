@@ -162,3 +162,67 @@ What replaces it is smaller, not bigger - `fun` takes a lambda, so
 nothing needs to be subclassed - but it is the first C++-calls-into-
 Python path since the mock died, and nothing existing demonstrates
 the `gil_scoped_acquire` half of it.
+
+## 2026-09-03: the wall is patched, not worked around
+
+Carl's answer to the design question the measurement raised:
+"/home/lillecarl/Code/nanopynix patches the slots to 512, steal those
+patches. There are tiny patches required to make good bindings for
+now, eventually I'll work on upstreaming dynamic env sizing."
+
+So `nix/patches/nix-base-env-size.patch` is carried here, and
+`default.nix` applies it with `pkgs.nix.appendPatches`. None of the
+four shapes the measurement suggested is needed: registration can be
+an ordinary API again.
+
+### What the patch found that the measurement above MISSED
+
+**There are two containers of 128, not one.** `createBaseEnv` also
+builds the `builtins` attribute set with `buildBindings(128)`, and
+both `addConstant` and `addPrimOp` push into it through a
+`const_cast` that goes around `BindingsBuilder`'s capacity assert.
+`Bindings::push_back` is `attrs[numAttrs++] = attr;` and holds no
+capacity to test at all.
+
+Raising only `BASE_ENV_SIZE` would have moved the corruption from
+`allocEnv` to `Bindings::push_back` rather than removing it. The
+measurement recorded above found the base environment and stopped
+there, so it would have produced a fix that looked right and was not.
+Both sizes go to 512 together.
+
+**The collector HIDES the overflow.** `allocBytes` is `GC_MALLOC` and
+Boehm rounds a request up to a size class, so the out-of-bounds write
+lands in the block's slack and nothing reports it. A build with
+`-Dgc=disabled` gets an exact `calloc` and glibc aborts with
+"corrupted size vs. prev_size". Both builds make the same write; only
+one of them says so. That is why the defect survived - and it is why
+the headroom measured above is a real wall rather than a soft one.
+
+nanopynix caught it under AddressSanitizer, with the frame named:
+`addPrimOp` -> `createBaseEnv` -> the `EvalState` constructor, 0 bytes
+after a 1032-byte region.
+
+### Why the size is a constant at all
+
+Worth keeping, because it says what upstreaming would take. `Env` is
+variable-length, the parser compiles each reference to a (level,
+displacement) pair, and `baseEnv` is a REFERENCE member allocated in
+the constructor's member-initialiser list - before the body runs, and
+so before `createBaseEnv` has counted anything. The size is a constant
+for want of a count, not for a property of the evaluator. Moving the
+allocation into the constructor body and taking the size from the
+registry is the upstream fix, and it is Carl's eventual plan.
+
+### One patch, one version, on purpose
+
+nanopynix keys a patch table by `majorMinor` and builds a scope per
+version, because it supports 2.34 through git. This repository binds
+whatever `pkgs.nix` is and carries one file.
+
+Carl, the same day: nanopynix is production ready, "this is still an
+elaborate spike". A version matrix costs maintenance and buys nothing
+until there is a second version to serve. The patch header records
+that the three hunks have identical context in 2.31, 2.34 and 2.35,
+so a bump moves line numbers only - and if it ever stops applying,
+that failure is the signal to read it again rather than to add a
+matrix.
