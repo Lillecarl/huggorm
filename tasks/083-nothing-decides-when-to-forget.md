@@ -7,7 +7,7 @@ which waits on a dependency decision rather than on effort.
 
     cached_files()          what to watch
     the diff around         which files belong to which
-      one eval_file
+      one eval_file         (WRONG - see 2026-09-03 below)
     forget_file(path)       drop one without dropping the rest
 
 What is missing is the part that NOTICES. A caller must watch the
