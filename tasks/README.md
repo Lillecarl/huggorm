@@ -454,12 +454,23 @@ which was superseded rather than fixed.
 - 034 (functions as values) waits on 015. Its analysis is about the
   Python surface, not the mock, so it survives intact - and against
   libexpr the formals are real.
-- 032 (log callbacks) and 033 (primops in Python) are the two places
-  the flow reverses: C++ calling into Python, on Nix's schedule and
-  Nix's thread. Neither can be generated from a binding declaration,
-  and 033 is the harder one - a primop runs inside evaluation, so it
-  cannot hop threads, cannot await, and its arguments do not outlive
-  the call.
+- 033 (primops in Python) is DONE. `EvalState.register_primop`
+  publishes a Python callable as `builtins.<name>`: `fun<PrimOpFun>`
+  holds a std::function so a capturing lambda goes straight in, and
+  the Reach shim that reached `fileEvalCache` reaches the private
+  `addPrimOp` unchanged. Two of the file's own premises were wrong -
+  there are no trampolines since 060, and arguments DO outlive the
+  call safely because every Bridge roots. Building it found that
+  upstream never sorts after `addPrimOp` (createBaseEnv sorts once at
+  the end), so a registered name could not be found while the
+  suggestion engine still saw it; nine of ten gates passed without
+  the fix. It needs the carried base-env patch, whose first real gate
+  this is.
+- 032 (log callbacks) is the other place the flow reverses: C++
+  calling into Python, on Nix's schedule and Nix's thread. It rested
+  on the same deleted trampoline that 033 did, and 033 is where the
+  replacement now lives - a logger is an abstract CLASS, so unlike a
+  primop it does need a subclass, but the GIL half is settled.
 - 045 (wire names) and 048 (proto3 optional) want doing BEFORE 022:
   both change the schema, and the lockfile should pin the fixed
   names and the synthetic oneofs, not the current ones.

@@ -1,7 +1,7 @@
 # Registering primops from Python
 
-**OPEN.** No primop can be registered from Python. `eval.py` binds the
-evaluator, not its extension points.
+**DONE.** `EvalState.register_primop` publishes a Python callable as
+`builtins.<name>`, in-process, with ten gates.
 
 Carl, 2026-08-25: "Nix allows registering primops. These should be
 implementable in Python."
