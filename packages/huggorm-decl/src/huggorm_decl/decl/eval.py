@@ -1212,6 +1212,66 @@ def gc_release_thread() -> None:
 
 
 @needs("huggorm_decl/cpp/eval.hpp")
+@threading("pool")
+def subscribe_process_logs(capacity: I64 = 1024,
+                           level: I64 = 3) -> "LogStream":
+    """Record what no subscribed thread claims.
+
+    A FREE function, because there is nothing to hang it on. Every
+    other subscription belongs to a thread that an `EvalState` owns;
+    this one belongs to the process, and `EvalState.subscribe_logs`
+    already carries a `(void) self` that says the state was only ever
+    a way to reach the right thread.
+
+    What it sees is what `EvalState.subscribe_logs` names and cannot
+    reach: a record raised on a fetcher thread, a file-transfer
+    thread, or a build. A build's log is the one a Nix user most
+    wants (`tasks/085`).
+
+    NOT "everything in this process". A thread that subscribed CLAIMS
+    its records, so an evaluation with its own subscriber does not
+    appear here at all. Broadcasting to both was the alternative and
+    it was rejected: a caller holding both subscriptions would see
+    every evaluation record twice, with nothing on a record to
+    deduplicate by. One reader over one subscription is the shape
+    that answers the other question, and it is `tasks/085`'s third
+    gap.
+
+    REPLACES any process-wide subscription, and closes it. Refusing
+    was the other answer: an in-process caller that drops its
+    `LogStream` without unsubscribing would then wedge the sink for
+    the life of the process. The rpc refuses instead, where a stream
+    ending is what releases it.
+
+    The bound means something different here. A per-state queue is
+    bounded by one evaluation, so keeping every `"start"` and
+    `"stop"` is affordable - which is why they are never dropped. A
+    process-wide queue in a service that runs for days is bounded by
+    the READER draining it, and a reader that stops draining grows
+    this without limit. The capacity does not save it, because the
+    records it never drops are the ones that accumulate."""
+    Cxx("""
+if (capacity < 1)
+    throw std::invalid_argument("capacity must be at least 1");
+if (level < 0)
+    throw std::invalid_argument("level must not be negative");
+return huggorm::subscribe_process_logs(static_cast<std::size_t>(capacity),
+                                       static_cast<std::uint64_t>(level));
+    """)
+
+
+@needs("huggorm_decl/cpp/eval.hpp")
+@threading("pool")
+@binds("huggorm::unsubscribe_process_logs")
+def unsubscribe_process_logs() -> None:
+    """Stop recording process-wide.
+
+    A queue already handed out still drains what it holds, exactly
+    like `EvalState.unsubscribe_logs`. This says only that nothing
+    more goes into it."""
+
+
+@needs("huggorm_decl/cpp/eval.hpp")
 @binds("huggorm::install_log_tap")
 @startup
 def _log_tap_init() -> None:

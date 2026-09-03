@@ -46,6 +46,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 // `eval.hh` only forward-declares the concurrent map its caches are.
@@ -389,6 +390,41 @@ inline std::shared_ptr<LogQueue> & thread_queue()
 }
 
 /**
+ * The one slot for records raised on a thread that subscribed to none.
+ *
+ * The gap `thread_queue` names, closed. A fetcher thread, a
+ * file-transfer thread and a build's own output all raise records on
+ * threads no `EvalState` owns, so no `thread_local` reaches them - and
+ * a build's log is what a Nix user most wants to see (`tasks/085`).
+ *
+ * A MUTEX here, where `thread_queue` needs none, and the reason the
+ * thread_local's rationale does not transfer: that slot is read and
+ * written by one thread, so `route` reads it lock-free. This slot is
+ * read from every thread while another subscribes, which is a data
+ * race on the `shared_ptr` itself - two words, non-atomically
+ * updated. The cost is paid only by threads that have no queue of
+ * their own, and `LogQueue::push` takes a mutex one line later
+ * anyway.
+ *
+ * `std::atomic<std::shared_ptr<T>>` would do it lock-free and is not
+ * used: it is free-standing-optional in libstdc++ and the lock here
+ * is off the evaluation path entirely.
+ */
+inline std::pair<std::mutex, std::shared_ptr<LogQueue>> & process_sink()
+{
+    static std::pair<std::mutex, std::shared_ptr<LogQueue>> sink;
+    return sink;
+}
+
+/** A share of the process-wide queue, or null. Any thread. */
+inline std::shared_ptr<LogQueue> process_queue()
+{
+    auto & sink = process_sink();
+    std::lock_guard<std::mutex> held(sink.first);
+    return sink.second;
+}
+
+/**
  * The `nix::Logger` that fills the queues.
  *
  * Five overrides, one per virtual, and each one builds the record
@@ -460,9 +496,30 @@ private:
         return out;
     }
 
+    /**
+     * One record to exactly one queue.
+     *
+     * A FALLBACK and not a broadcast, which is the whole decision. A
+     * thread that subscribed CLAIMS its records, so a state's
+     * subscriber sees what it saw before this existed and the
+     * process-wide queue never repeats it. Broadcasting to both was
+     * the alternative: it would let one process-wide reader see
+     * everything, at the cost of a caller holding both subscriptions
+     * seeing every evaluation record twice, with nothing on a record
+     * to deduplicate by.
+     *
+     * So "everything in this process" is NOT what the process-wide
+     * queue answers. It answers what nobody else claimed, and the
+     * shape that would answer the other question is fan-out over one
+     * subscription - `tasks/085`'s third gap, still open.
+     */
     static void route(LogRecord && r)
     {
-        if (auto & queue = thread_queue())
+        if (auto & queue = thread_queue()) {
+            queue->push(std::move(r));
+            return;
+        }
+        if (auto queue = process_queue())
             queue->push(std::move(r));
     }
 };
@@ -511,6 +568,53 @@ inline void unsubscribe_logs()
     if (slot)
         slot->close();
     slot.reset();
+}
+
+/**
+ * Start recording what no subscribed thread claims.
+ *
+ * REPLACES, exactly like `subscribe_logs`, and closes what it
+ * replaced. Refusing was the other answer and it is the wrong one
+ * here: an in-process caller that drops its `LogStream` without
+ * unsubscribing would wedge the sink for the life of the process,
+ * with nothing to take it back. Replacing self-heals.
+ *
+ * That leaves one shared stream with no owner, which is the scoping
+ * question `tasks/032` opened. It is answered ABOVE this layer: the
+ * rpc admits one process-logs stream at a time and refuses a second
+ * with FAILED_PRECONDITION, the way `Session/Logs` already refuses a
+ * second reader of one state.
+ *
+ * The old queue is closed OUTSIDE the sink's mutex. `close` takes the
+ * queue's own mutex, and holding two locks in one order here and the
+ * other order anywhere else is how a deadlock is built.
+ */
+inline std::shared_ptr<LogQueue> subscribe_process_logs(std::size_t capacity,
+                                                        uint64_t level)
+{
+    auto fresh = std::make_shared<LogQueue>(capacity, level);
+    std::shared_ptr<LogQueue> old;
+    {
+        auto & sink = process_sink();
+        std::lock_guard<std::mutex> held(sink.first);
+        old = std::exchange(sink.second, fresh);
+    }
+    if (old)
+        old->close();
+    return fresh;
+}
+
+/** Stop recording process-wide. A queue already handed out drains. */
+inline void unsubscribe_process_logs()
+{
+    std::shared_ptr<LogQueue> old;
+    {
+        auto & sink = process_sink();
+        std::lock_guard<std::mutex> held(sink.first);
+        old = std::exchange(sink.second, {});
+    }
+    if (old)
+        old->close();
 }
 
 // ---- the collector, and the threads Python made -------------------
