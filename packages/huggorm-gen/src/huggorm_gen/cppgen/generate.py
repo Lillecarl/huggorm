@@ -21,6 +21,7 @@ extension or parsing a pxd.
 import argparse
 import ast
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -299,6 +300,60 @@ def _code_lines(text: str) -> int:
     return n
 
 
+# What a bound name looks like in the emitted C++. nanobind spells a
+# method `.def("name", ...)` and a free function `m.def("name", ...)`,
+# and both end in `def("`.
+BOUND_NAME = re.compile(r'def\("([^"]+)"')
+
+
+def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
+    """Every method the reader kept is a name the emitter wrote.
+
+    The SECOND of the two seams `tasks/081` names. `census_read` asks
+    whether the reader kept what the declaration wrote; this asks
+    whether the emitter wrote what the reader kept.
+
+    They need different instruments, and that is the point. A reader
+    drop is invisible to anything built from the read, so that one
+    compares against the raw parse. An emitter skip is invisible to
+    the reader's output, so this one compares against the TEXT the
+    emitter just produced - not against a second walk of the same
+    `Class` objects, which would be two views of one decision
+    agreeing with itself.
+
+    Here rather than in a later pass because this is the one place
+    both halves exist at once: `mod` is what the emitter was handed
+    and `text` is what it wrote.
+
+    Three exemptions, each read off the declaration rather than
+    listed. A `@startup` hook is emitted as a CALL at module init and
+    a `@translator` as a registration, so neither is a bound name -
+    `Module.exported` already draws that line. And the function a
+    class names in `@produced(by=...)` is emitted as that class's
+    constructor: `open_store` is `Store`'s `nb::new_`, and a caller
+    writes `Store(uri)`.
+
+    Only BOUND classes. `bindable` drops the ones nanobind cannot
+    bind yet and `emit_module` prints what it left out, which is a
+    different fact from an emitter losing one method of a class it
+    did bind."""
+    wrote = set(BOUND_NAME.findall(text))
+    factories = {c.decl.built_by for c in mod.classes if c.decl.built_by}
+    bad = []
+    for cls in bound:
+        for m in cls.methods:
+            if m.name not in wrote:
+                bad.append(f"{cls.name}.{m.name}()")
+    for fn in mod.exported:
+        if fn.name not in wrote and fn.name not in factories:
+            bad.append(f"{fn.name}()")
+    if bad:
+        raise TypeError(
+            f"{mod.name}.py: the reader kept {', '.join(bad)} and the "
+            f"emitted C++ binds no such name. An emitter dropped it, and "
+            f"a drop reads as an absence - see tasks/081.")
+
+
 def emit_module(mod: Module, dotted: str, out: str,
                 chain: list[str]) -> int:
     """One declaration, as the one C++ translation unit it owns.
@@ -325,8 +380,9 @@ def emit_module(mod: Module, dotted: str, out: str,
     if not bound:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    pathlib.Path(out).write_text(
-        extension(mod, dotted, chain=chain, errors=errors_module()))
+    written = extension(mod, dotted, chain=chain, errors=errors_module())
+    census_written(mod, bound, written)
+    pathlib.Path(out).write_text(written)
     names = ", ".join(c.name for c in bound)
     print(f"{decl} -> {out} (module {dotted}): {names}")
     # How much of each class the declaration derived, and how much a
