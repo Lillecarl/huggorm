@@ -26,7 +26,7 @@ from typing import Any
 
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
-from huggorm_dsl.read import Module, reading
+from huggorm_dsl.read import FROM_PARTS, Module, reading
 from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors, pyinit
 from huggorm_gen.cppgen.nbemit import bindable, extension
 
@@ -375,6 +375,162 @@ def emit_module(mod: Module, dotted: str, out: str,
     return 0
 
 
+def _under_a_branch(node: ast.AST, target: ast.AST) -> bool:
+    """Whether `target` sits inside an `if` within `node`.
+
+    The one definition a declaration may write that reaches no output:
+    a `NIX_VERSION` arm this build is not. Only one arm survives the
+    import, so the other is MEANT to vanish.
+
+    Structural, not a name. The alternative was to compare against the
+    RESOLVED tree, which is what `_resolve` already produced - and
+    that is exactly the blind spot this gate exists to cover. A reader
+    that drops a node wrongly drops it from the resolved tree too, so
+    the two agree and the gate says nothing. `tasks/075` is that bug:
+    a `@property` accessor named no live line and vanished from every
+    output in silence."""
+    for parent in ast.walk(node):
+        if not isinstance(parent, ast.If):
+            continue
+        for inner in (*parent.body, *parent.orelse):
+            if any(n is target for n in ast.walk(inner)):
+                return True
+    return False
+
+
+def census_read(have: Any) -> None:
+    """Every definition a declaration writes reaches the reader.
+
+    The gate `tasks/081` was opened for, at the first of the two seams
+    it names. A declaration is read twice - parsed, and imported - and
+    the reader keeps what BOTH readings agree on. When they stop
+    agreeing it keeps less, and a definition that reaches nothing is
+    indistinguishable from one nobody wrote.
+
+    Three instances, none of them found by a check: a version-branched
+    class the errors emitter never saw (`tasks/073`), a `@property`
+    accessor `_live` could not name (`tasks/075`), and a whole file in
+    none of the lists (`tasks/078`, which the census beside this one
+    now catches at file grain).
+
+    Read from the RAW parse, which is the whole design. Everything
+    downstream reads the resolved tree or the `Class` objects built
+    from it, so a reader that drops a node wrongly makes every one of
+    them agree.
+
+    A definition is CONSUMED when the reader put it somewhere: in
+    `methods`, or as the `ctor`, or as `from_parts`. Those last two
+    are the two shapes that are not methods and are not skipped -
+    `__init__` becomes the constructor and `_from_parts` becomes the
+    round-trip helper - and asking WHERE the reader put it derives the
+    exemption instead of listing the two names.
+
+    Raises rather than prints, unlike `census_markers` beside it. An
+    unused marker is a real waiting state; a declaration nobody read
+    is this session's bug class four times over."""
+    bad = []
+    for name in (*have.nanobind, *have.vocabularies):
+        mod = have.module(name)
+        seen = {c.name: c for c in mod.classes}
+        functions = {f.name for f in mod.functions}
+        raw = ast.parse(have.path(name).read_text())
+        for node in raw.body:
+            if isinstance(node, ast.FunctionDef):
+                if node.name not in functions and not _under_a_branch(raw, node):
+                    bad.append(f"{name}: {node.name}() is declared and the "
+                               f"reader kept no function by that name")
+                continue
+            if not isinstance(node, ast.ClassDef):
+                continue
+            cls = seen.get(node.name)
+            if cls is None:
+                if not _under_a_branch(raw, node):
+                    bad.append(f"{name}: class {node.name} is declared and "
+                               f"the reader kept no class by that name")
+                continue
+            kept = {m.name for m in cls.methods}
+            for at in (cls.ctor, cls.from_parts):
+                if at is not None:
+                    kept.add(at.name)
+            for sub in node.body:
+                if not isinstance(sub, ast.FunctionDef):
+                    continue
+                if sub.name in kept or _under_a_branch(node, sub):
+                    continue
+                bad.append(
+                    f"{name}: {node.name}.{sub.name}() is declared and "
+                    f"reaches nothing - the reader kept no method, no "
+                    f"constructor and no {FROM_PARTS} by that name")
+    bad += _errors_read(have)
+    if bad:
+        raise TypeError(
+            "a declaration writes definitions nothing reads. " + " ".join(bad))
+
+
+def _errors_read(have: Any) -> list[str]:
+    """The same question for the errors declaration, which is not a Module.
+
+    Nothing reads `errors.py` as a `Module`: it emits a Python module
+    and a C++ catch chain, both written from the tree. So the consumed
+    side here is the RESOLVED tree - what `_resolve` kept - and the
+    declared side is the raw parse, as above.
+
+    Raw against RESOLVED, not against the emitted module. That is the
+    seam: `resolved` is parse, then `_live`, then `_reconcile`, then
+    `_resolve`, so a `_live` regression drops `to_dict` out of the
+    emitted errors module exactly the way it dropped
+    `registration_time` out of PathInfo (`tasks/075`). Comparing the
+    emitted module against the resolved tree would compare two things
+    built from one read and agree with itself.
+
+    `pyerrors` already refuses a tree it cannot resolve, which is the
+    VERSION-BRANCH half (`tasks/073`). This is the other half, and the
+    two are different failures: one is a branch nobody chose, the
+    other is a definition the reader lost.
+
+    The CLASS grain is the one with teeth here, and the method grain
+    is precautionary. Measured: `_resolve` appends a `ClassDef` whole
+    and does not filter its body, so a method of a kept class cannot
+    be dropped on this path at all - the per-method filtering happens
+    in `_class`, which errors.py never reaches. Perturbing `_live` to
+    forget one class does fire this:
+
+        errors.py: SysError is declared and the resolved tree has no
+        such definition
+
+    ...and that is an exception class gone from the emitted module and
+    from the C++ catch chain, in silence. Perturbing it to forget a
+    METHOD fires nothing, because nothing drops one."""
+    if not have.errors:
+        return []
+    raw = ast.parse(have.path(have.errors).read_text())
+    kept = have.resolved(have.errors)
+
+    def names(tree: ast.Module) -> set[str]:
+        out = set()
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            out.add(node.name)
+            out |= {f"{node.name}.{s.name}" for s in node.body
+                    if isinstance(s, ast.FunctionDef)}
+        return out
+
+    bad = []
+    for node in raw.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        here: dict[str, ast.stmt] = {node.name: node}
+        here.update({f"{node.name}.{s.name}": s for s in node.body
+                     if isinstance(s, ast.FunctionDef)})
+        for spelled, at in here.items():
+            if spelled in names(kept) or _under_a_branch(raw, at):
+                continue
+            bad.append(f"{have.errors}: {spelled} is declared and the "
+                       f"resolved tree has no such definition")
+    return bad
+
+
 def census_cpp(claimed: set[str]) -> None:
     """Every hand-written C++ file, counted, including the orphans.
 
@@ -486,6 +642,10 @@ def main(out_dir: str) -> int:
     print(f"front door -> {target}: {names} name(s)")
     census_cpp(set(have.module_names))
     census_markers(have)
+    # LAST of the three, and the only one that raises. It reads the
+    # RAW parse, so it is the one check no earlier stage can have
+    # already agreed with (tasks/081).
+    census_read(have)
     return 0
 
 
