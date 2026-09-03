@@ -187,6 +187,15 @@ which was superseded rather than fixed.
   and `@classmethod` are refused too - reachable since 075, and
   measured dropping the first parameter of every method that wrote
   one.
+- 083 (nothing decides when to forget) is OPEN. 016 built the three
+  pieces a watcher needs - `cached_files` says what to watch, the diff
+  around one `eval_file` says which files belong to which, and
+  `forget_file` drops one without dropping the rest - and nothing
+  NOTICES a change, so a live reload is still a manual one. No C++
+  either way; the decision it waits on is where the watcher lives, in
+  the RPC server or under both surfaces, and those are different work.
+  It must forget the CLOSURE, skip the entry that is not a file, and
+  say that `builtins.readFile` is invisible to it.
 - 081 (an input that reached no output) is DONE. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
   a skip reads as an absence. The fear it was opened with was wrong -
