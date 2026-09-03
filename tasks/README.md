@@ -187,15 +187,21 @@ which was superseded rather than fixed.
   and `@classmethod` are refused too - reachable since 075, and
   measured dropping the first parameter of every method that wrote
   one.
-- 083 (nothing decides when to forget) is OPEN. 016 built the three
-  pieces a watcher needs - `cached_files` says what to watch, the diff
-  around one `eval_file` says which files belong to which, and
-  `forget_file` drops one without dropping the rest - and nothing
-  NOTICES a change, so a live reload is still a manual one. No C++
-  either way; the decision it waits on is where the watcher lives, in
-  the RPC server or under both surfaces, and those are different work.
-  It must forget the CLOSURE, skip the entry that is not a file, and
-  say that `builtins.readFile` is invisible to it.
+- 083 (nothing decides when to forget) is OPEN, and has its watcher.
+  `huggorm.Watcher` is written against `EvalStateLike`, so one object
+  serves the in-process and the remote surface. It found 016 wrong on
+  the way: a closure is NOT the `cached_files` diff around one
+  `eval_file`. The diff says what an evaluation newly CACHED rather
+  than what it READ, so the second root importing a shared file gets a
+  diff that omits it and answers stale - measured, and gated by the
+  test that reverting to the diff model is the only thing that fails.
+  It records a full SNAPSHOT per root instead, which is a superset of
+  the closure and cannot miss, and it over-forgets by an amount the
+  file measures. Bookkeeping is separate from noticing: `changed()` is
+  told, `rescan()` stats, and both call one step - so every gate runs
+  with no sleeps. What keeps it OPEN is the inotify adapter, which
+  waits on a dependency decision rather than on effort, since Python
+  has no stdlib inotify and `rescan()` already needs none.
 - 081 (an input that reached no output) is DONE. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
   a skip reads as an absence. The fear it was opened with was wrong -

@@ -1,6 +1,7 @@
 # Nothing decides when to forget
 
-**OPEN.** Every piece the watcher needs exists. The watcher does not.
+**OPEN.** The watcher is built and gated. No inotify adapter yet,
+which waits on a dependency decision rather than on effort.
 
 `tasks/016` built the mechanism in three parts, and they compose:
 
@@ -144,3 +145,93 @@ is not a trade - it is the wrong answer.
   adapter over the same step, and its own commit.
 - Watches go on parent DIRECTORIES, not files. Most editors save by
   rename, which replaces the inode and orphans a file watch.
+
+## 2026-09-03: the watcher, built
+
+`huggorm.Watcher`, in `packages/huggorm/huggorm/watch.py`. Carl chose
+the second option above: written against `EvalStateLike`, so one
+object serves an in-process `AsyncEvalState` and a remote
+`RPCEvalState` alike.
+
+Bookkeeping and noticing are separate, and that is what makes it
+gateable:
+
+    changed(path)  ->  told a file moved. Stats nothing.
+    rescan()       ->  stats for itself. No dependency.
+
+Both call the same step, so a gate drives the whole thing with no
+sleeps, no timers and no event ordering. An inotify source becomes a
+third caller of `changed()` rather than a rewrite.
+
+It records a SNAPSHOT per root, for the reason measured above. The
+watcher OWNS `eval_file` and takes a lock around it, because a
+snapshot is only a snapshot if nothing else evaluates at the same
+time. Reaching past the watcher to the state's own `eval_file`
+poisons the bookkeeping, and the class docstring says so rather than
+leaving it as a property of the async layer.
+
+### The gates
+
+Seven, in `tests/test_watch.py`. The one that matters is the shared
+import, seen to fail by reverting the policy to the diff `tasks/016`
+described:
+
+    assert [a.nix] == [a.nix, b.nix]
+    FAILED test_a_shared_import_forgets_both_roots
+    1 failed, 277 passed
+
+That one and no others, so it discriminates the policy rather than the
+plumbing. `b` is the root a diff-based watcher misses.
+
+The others cover the base case, `rescan` finding a change unaided, a
+DELETED dependency counting as a change, the virtual cache entry never
+being stat-ed, and an unrelated path forgetting nothing - the last
+being the control that a watcher forgetting everything on every event
+would fail.
+
+287 passed, from 280.
+
+### Three limits, named in the module
+
+- `builtins.readFile` and `builtins.path` are in no cache, so no
+  change to a data file invalidates anything.
+- A file DISCOVERED by an evaluation is stamped AFTER that evaluation
+  read it - nothing knew to watch it before. An edit landing in that
+  window becomes the baseline and no rescan fires. It applies only
+  the first time a file is seen; an already-watched file keeps its old
+  stamp, which errs the safe way. Closing it needs libexpr to say
+  what it is about to read, and it will not.
+- `rescan()` stats THIS machine. The bookkeeping and `changed()` are
+  path-string operations and cross RPC unchanged, but a remote state's
+  files are on the server, so a POLLING watcher has to share a
+  filesystem with its evaluator.
+
+### One gate reaches into a private, on purpose
+
+`_forget` prunes `_seen`, so a state living for days stops stat-ing
+files no root depends on any more. That changes what the watcher
+SPENDS, not what it answers: with the prune removed, every other
+assertion in its test still passes, because a stamp for an
+unreferenced file can never implicate a root.
+
+So there is nothing in the public surface to hold it to, and the
+choice was between reaching in and not gating it at all. Seen to fail:
+
+    assert {..inner.nix: (-1, -1)} == {}
+
+a stamp surviving for a file that no longer exists.
+
+### What keeps this OPEN
+
+The inotify adapter. `rescan()` is a complete change source and needs
+no dependency, so what is left is an upgrade to the NOTICING half
+only - and it needs a decision rather than effort: Python has no
+stdlib inotify, so it means a new propagated dependency
+(`inotify-simple`, `watchdog`) or a `ctypes` binding written here.
+
+When it lands: watch parent DIRECTORIES, not files. Most editors save
+by rename, which replaces the inode and orphans a watch on the file.
+
+Background eager evaluation (`tasks/016`) comes after, and needed this
+first - re-evaluating eagerly is only useful once something knows the
+old answer is stale.
