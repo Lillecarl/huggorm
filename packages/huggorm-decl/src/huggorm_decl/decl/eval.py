@@ -45,10 +45,12 @@ from huggorm_dsl.declare import (
     needs,
     produced,
     produces,
+    reads,
     startup,
     tagged,
     threading,
     tree,
+    wire_value,
 )
 
 
@@ -252,6 +254,173 @@ if (attr == nullptr)
     throw std::runtime_error("attribute '" + name + "' is missing");
 return self.wrap(attr->value);
         """)
+
+
+@header("huggorm_decl/cpp/eval.hpp")
+@binding(
+    cxx="huggorm::LogField",
+    threading="pool",
+    blocking=False,
+)
+@produced(by="LogRecord.fields")
+@wire_value()
+class LogField:
+    """One field of one log record: an integer or a string.
+
+    Nix's own `Logger::Field` is a hand-rolled variant - a two-valued
+    enum, a `uint64_t` and a `std::string` - with upstream's FIXME
+    asking for a `std::variant` (logging.hh:76). This mirrors it
+    rather than picking one of the two, because a field that carried
+    only its rendering would lose the difference between the number
+    42 and the string "42", and a progress result is made of numbers.
+    """
+
+    @reads("is_int")
+    def is_int(self) -> Bint:
+        """Which of the two `integer` and `text` this field is."""
+
+    @reads("integer")
+    def integer(self) -> I64:
+        """The number, when `is_int`. Zero otherwise."""
+
+    @reads("text")
+    def text(self) -> Str:
+        """The string, when not `is_int`. Empty otherwise."""
+
+
+@header("huggorm_decl/cpp/eval.hpp")
+@binding(
+    cxx="huggorm::LogRecord",
+    threading="pool",
+    blocking=False,
+)
+@produced(by="LogStream.drain")
+@wire_value()
+class LogRecord:
+    """One thing Nix said while it worked.
+
+    NOT a line of text. `nix::Logger` is a tree of ACTIVITIES carrying
+    typed progress results, and the progress bar every Nix user sees
+    is built from that tree rather than from messages. A binding that
+    handed back only strings would throw most of it away.
+
+    The names are Nix's own, from the `internal-json` log format
+    (`logging.cc:272`), so a client that already reads that format
+    reads this one. The mechanism is different and `tasks/032` says
+    why.
+
+    `level`, `type` and `id` are integers because that is what they
+    are: `Verbosity`, `ActivityType` and `ResultType` are int-valued
+    C++ enums and nothing upstream parses one from a string.
+    `decl/words.py` is for vocabularies whose member IS the string
+    libstore parses, and these are not that.
+    """
+
+    @reads("action")
+    def action(self) -> Str:
+        """Which of the four kinds this is.
+
+        `"msg"` is a message, and the only kind `level` filters.
+        `"start"` and `"stop"` open and close an activity. `"result"`
+        reports progress inside one.
+        """
+
+    @reads("level")
+    def level(self) -> I64:
+        """`nix::Verbosity`: 0 error, 1 warn, 2 notice, 3 info, 4
+        talkative, 5 chatty, 6 debug, 7 vomit.
+
+        A field of the record, not a gate. `Activity::Activity` calls
+        `startActivity` with no test (`logging.cc:196`), so a `start`
+        arrives whatever its level says."""
+
+    @reads("id")
+    def id(self) -> I64:
+        """The activity this belongs to, or 0 for a plain message."""
+
+    @reads("parent")
+    def parent(self) -> I64:
+        """The activity this one runs inside, for a `"start"`.
+
+        Nix tracks it per THREAD - `curActivity` is a `thread_local`
+        (`logging.cc:23`) - so the tree is already per-thread before
+        this binding sees it."""
+
+    @reads("type")
+    def type(self) -> I64:
+        """`nix::ActivityType` for a `"start"`, `nix::ResultType` for
+        a `"result"`, and 0 otherwise."""
+
+    @reads("text")
+    def text(self) -> Str:
+        """The message, or the activity's description.
+
+        An error arrives RENDERED, the way `JSONLogger` renders one
+        (`logging.cc:283`). An `ErrorInfo` carries a trace of
+        positions, and crossing those parts would be a second error
+        shape beside the one a failed call already crosses with
+        (`tasks/036`). Those two should agree; `tasks/032` holds the
+        question open rather than answering it twice."""
+
+    @reads("fields")
+    def fields(self) -> "list[LogField]":
+        """The typed payload, for a `"start"` or a `"result"`.
+
+        What it MEANS depends on `type`. A `resProgress` carries done,
+        expected, running and failed; a `resBuildLogLine` carries the
+        line. Upstream documents the pairing in `logging.hh` and this
+        binding does not restate it."""
+
+
+@header("huggorm_decl/cpp/eval.hpp")
+@binding(
+    cxx="huggorm::LogQueue",
+    # A share, because the queue outlives the subscribe call and the
+    # tap holds one too: a reader that drops its LogStream must not
+    # leave the logger writing into freed memory.
+    holder="shared_ptr",
+    # NOT affine, and that is the whole point. Every EvalState method
+    # runs on that state's own thread, one at a time, so a drain
+    # declared there would queue BEHIND the evaluation whose progress
+    # it wants to report - and the records would arrive only once the
+    # work they describe had finished. A queue with its own mutex is
+    # what makes the backchannel a backchannel.
+    threading="pool",
+    # It takes a mutex and moves a deque. Nothing waits.
+    blocking=False,
+)
+@produced(by="EvalState.subscribe_logs")
+class LogStream:
+    """The records one subscriber has not read yet.
+
+    BOUNDED, and the bound is the interesting part. A full queue
+    refuses a `"msg"` and a `"result"` and never a `"start"` or a
+    `"stop"`: a dropped stop leaves a node in the reader's activity
+    tree that nothing later closes, and an unclosed node is worse than
+    a missing log line. `dropped` counts what the bound refused.
+    """
+
+    def drain(self) -> "list[LogRecord]":
+        """Everything waiting, and the queue is empty afterwards.
+
+        Empty when nothing happened. It does not block and it does not
+        wait for a record, because the thread that would wait is the
+        one that has to keep draining."""
+
+    def dropped(self) -> I64:
+        """How many records the bound refused, over this queue's life.
+
+        CUMULATIVE, so a reader that misses a drain still sees the
+        number grow. A reader wanting the per-drain figure
+        subtracts."""
+
+    def close(self) -> None:
+        """Stop recording and let go of what is waiting.
+
+        The subscription on the state's thread is a separate fact:
+        `EvalState.unsubscribe_logs` is what clears that. Closing here
+        stops this queue filling; it does not stop the next `drain`
+        from being callable."""
 
 
 @header("huggorm_decl/cpp/eval.hpp")
@@ -492,6 +661,71 @@ if (arity < 1)
 self.register_primop(name, static_cast<std::size_t>(arity), fn);
         """)
 
+    def subscribe_logs(self, capacity: I64 = 1024,
+                       level: I64 = 3) -> "LogStream":
+        """Record what Nix says on THIS state's thread.
+
+        The direction `register_primop` runs, without a call: nix
+        tells Python what it is doing, in the middle of work Python
+        asked for.
+
+        The subscription belongs to the THREAD, because an `EvalState`
+        is affine and this Nix evaluates on one thread - nothing under
+        `src/libexpr` names `eval-cores`, so 2.34.8 has no parallel
+        evaluation. So the thread that owns a state is the thread its
+        records are raised on, and the queue this returns holds that
+        state's records and no other state's.
+
+        Two things it does NOT see, and both are named rather than
+        hidden.
+
+        The global `nix::verbosity` filters BEFORE any logger runs
+        (`logging.hh:314`), so `level` can only narrow. Asking for
+        more than the global gets nothing, and raising the global
+        would flood every other logger in the process too.
+
+        A record raised on a fetcher or a file-transfer thread reaches
+        no queue, because that thread subscribed to none. A
+        process-wide subscriber is what covers those, and the rpc is
+        what needs one.
+
+        REPLACES any subscription this thread had, and closes it. Two
+        live subscriptions on one thread would each get an arbitrary
+        half of the records, which is worse than either getting none.
+        """
+        Cxx("""
+if (capacity < 1)
+    throw std::invalid_argument("capacity must be at least 1");
+if (level < 0)
+    throw std::invalid_argument("level must not be negative");
+(void) self;
+return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
+                               static_cast<std::uint64_t>(level));
+        """)
+
+    def unsubscribe_logs(self) -> None:
+        """Stop recording on this state's thread.
+
+        A queue already handed out still drains what it holds. This
+        says only that nothing more goes into it.
+
+        It CROSSES the wire and `subscribe_logs` does not, which looks
+        like an accident and is not. `subscribe_logs` answers a
+        `LogStream`, and a LogStream is a proxy with no service - so
+        the answer would be a handle no later call could use, and the
+        schema refuses it for that reason. This answers nothing, so
+        the reason does not apply.
+
+        What a remote caller can do with it is stop a subscription
+        somebody else made on that state's thread. That is the same
+        power every shared handle already grants - a second connection
+        holding an EvalState can `forget_file` on it too - so it is
+        within the sharing model rather than a new hole in it."""
+        Cxx("""
+(void) self;
+huggorm::unsubscribe_logs();
+        """)
+
     def force(self, v: "Value") -> None:
         """Force a value in place. Idempotent.
 
@@ -618,6 +852,22 @@ def gc_release_thread() -> None:
     exits while still registered never answers, and the next
     collection aborts the process. That is what a dedicated affine
     executor does when its wrapper is closed."""
+
+
+@needs("huggorm_decl/cpp/eval.hpp")
+@binds("huggorm::install_log_tap")
+@startup
+def _log_tap_init() -> None:
+    """Put the log tap behind the logger already installed, once.
+
+    At import rather than on the first `subscribe_logs`, because
+    `nix::logger` is a plain global `unique_ptr` (`logging.hh:258`)
+    and replacing it while another thread reads it is a race with no
+    lock to take.
+
+    A TEE: the logger that was there stays the MAIN one, so it keeps
+    writing to stdout and keeps being the one Nix asks a question
+    with. Subscribing to nothing therefore changes nothing."""
 
 
 @needs("huggorm_decl/cpp/eval.hpp")
