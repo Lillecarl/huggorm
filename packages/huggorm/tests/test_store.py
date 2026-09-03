@@ -28,6 +28,8 @@ from huggorm_bindings import (
     Hash,
     HashAlgorithm,
     KeyedBuildResult,
+    LogField,
+    LogRecord,
     MissingPaths,
     OutputsSpec,
     PathInfo,
@@ -1699,6 +1701,24 @@ def test_every_wire_value_survives_its_own_round_trip(
         "GCResults": (
             _rebuild(GCResults, sorted(["/nix/store/a", "/nix/store/b"]), 8192),
             [(["/other/root"], 1)]),
+        # A log field is upstream's hand-rolled variant: a flag and
+        # the two values it chooses between. Both cases are
+        # constructed, because a producer here raises only messages
+        # and a message carries no fields.
+        #
+        # The flag has to differ, and so do both values. A case pair
+        # that only flipped the flag would pass with either value
+        # dropped, which is the shape this test exists to refuse.
+        "LogField": (_rebuild(LogField, True, 42, ""),
+                     [(False, 0, "a build log line")]),
+        # A record is either a message or a piece of an activity tree,
+        # and the two cases are one of each. So every field differs:
+        # a message has no activity, no parent, no type and no fields,
+        # and a start has all four.
+        "LogRecord": (
+            _rebuild(LogRecord, "msg", 0, 0, 0, 0, "trace: hi", []),
+            [("start", 3, 7, 2, 105, "copying '/tmp/x' to the store",
+              [_rebuild(LogField, False, 0, "/tmp/x")])]),
     }
 
     declared = _wire_values()
