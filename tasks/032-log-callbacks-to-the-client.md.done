@@ -1,10 +1,11 @@
 # Logs flow back to the client
 
-**MOSTLY DONE.** The in-process half is built: a tap under
-`nix::logger`, and a bounded queue a subscriber drains. What is left
-is the rpc, which is a server-streaming one and is protocol rather
-than generated surface. "Built, 2026-09-03" at the end says what
-works, what building it found, and what is still open.
+**DONE.** Both halves are built: a tap under `nix::logger` with a
+bounded queue a subscriber drains, and `Session/Logs` - a
+server-streaming rpc, hand-written beside Session because it is
+protocol rather than generated surface. The two "Built, 2026-09-03"
+sections at the end say what works and what building each half found.
+Four residues moved to `tasks/085`, which blocks nothing.
 
 Carl, 2026-08-25: "Nix will emit logs on a callback that flows back to
 the client."
@@ -161,8 +162,8 @@ in-process half.
 
 ## Built, 2026-09-03
 
-**MOSTLY DONE.** The in-process half works. The rpc is deferred, and
-now REFUSED rather than half-published.
+The in-process half works. The rpc was deferred here, and REFUSED
+rather than half-published; the section after this one builds it.
 
 `EvalState.subscribe_logs(capacity, level)` hands back a `LogStream`,
 which is a bounded queue with its own mutex. `drain()` answers the
@@ -223,7 +224,7 @@ in `test_no_rpc_surface`, so the asymmetry reads as a decision.
 **The streaming rpc**, which is the point of the task's title. The
 in-process queue is the mechanism it needs; the rpc is one reader over
 it, hand-written beside Session, and it does not come out of the
-manifest.
+manifest. Built below.
 
 **A process-wide subscriber.** The tap routes by THREAD, so a record
 raised by a fetcher or a file-transfer thread reaches no queue.
@@ -276,3 +277,141 @@ carried `_EvalState_subscribe_logs` in `METHODS` and
 `'LogStream': 'AsyncLogStream'` in `ASYNC_CLASS`, and the one after
 carries neither. That is the before-and-after the gate asserts,
 measured rather than reasoned about.
+
+## Built, 2026-09-03, the second half
+
+**DONE.** `Session/Logs` streams the queue to a client in another
+process. Twenty-three gates in `tests/test_logs.py`, eight of them new.
+
+A client calls `client.logs(state)` and iterates. It gets
+`(records, dropped)` per message, where a message is one DRAIN: the
+queue answers a batch, so the wire carries a batch. `dropped` rides
+with every one of them and is cumulative.
+
+Nothing here is generated, and `tasks/032` said so before it was
+built. Every other rpc is the wire form of a declared method; this is
+the wire form of no method at all, so it sits beside Session in
+`grpc_schema._add_log_stream`, `server.Dispatcher._session` and
+`remote.NixClient.logs`.
+
+### The decisions
+
+**A message is a DRAIN.** Fanning one drain of forty records into
+forty messages would restate the queue's shape rather than carry it.
+
+**The first batch is EMPTY, and means "subscribed".** A caller opens
+this to watch work it is about to start, so it needs a point where
+starting is safe. Without the empty batch the first message is the
+first record, which arrives only after the work it was meant to
+report - and a caller that started early raises its records into no
+queue at all. The tests would have been racy without it; so is every
+real caller.
+
+**One reader per state, and a second is REFUSED.** The tap routes by
+thread and a second `subscribe_logs` REPLACES the first in the C++.
+Accepting a second stream would therefore leave the first open,
+connected and empty forever, which reads exactly like a state that
+stopped logging. The refusal crosses as FAILED_PRECONDITION.
+
+Fan-out - one subscription, many readers - is the other answer and is
+not built. It is more code and nothing needs it yet.
+
+**A swept connection ends the stream with a status.** A stream that
+just stopped would be indistinguishable from a quiet one.
+
+The check is `req.state.id not in self.table.entries`, which reads
+nothing and changes nothing. `table.alive` was the obvious call and is
+wrong here: it REFRESHES the connection, so a log stream would keep
+its own connection alive for as long as it was open and quietly
+disable the sweeper for it. Liveness is the ping loop's job
+(`tasks/049`) and stays there.
+
+Gated, and broken on purpose. With the check made unreachable:
+
+    FAILED tests/test_logs.py::test_a_swept_connection_ends_the_stream
+    TimeoutError
+    1 failed, 309 passed, 10 deselected in 49.04s
+
+**Polling, at 50ms, and not a condition variable.** A `drain` takes a
+mutex and moves a deque, so a poll costs almost nothing. The
+alternative is a blocking drain in C++ - a condvar, a timeout, and
+`blocking=True` so the wrapper hops to a pool thread - which is new
+hand-written C++ and needs Carl's approval per occasion. Speed is not
+a goal yet. After a NON-empty drain the loop reads again at once, so a
+burst leaves at full speed and only a quiet stream pays the 50ms.
+
+**`level` gets real proto3 presence and `capacity` does not.** Level 0
+is lvlError, which is a subscription somebody means - "errors only" -
+so unset and zero have to differ (`tasks/048`). Capacity 0 is not a
+queue, so zero is free to mean "the binding's default".
+
+### What building it found
+
+**"A `finally` cannot await" was ARGUED, and the measurement refuted
+it.** The reasoning was that grpclib cancels the handler when the
+client goes away, so the first `await` in the cleanup re-raises
+CancelledError and nothing after it runs. Cleanup was written
+synchronous-first for that: the registry entry and `sub.close()` need
+no await, and `unsubscribe_logs` - which does need the state's own
+thread - is DETACHED through `Dispatcher._detach`, `_on_drop`'s
+retention pattern lifted out.
+
+Two perturbations say the ordering is not what makes it work.
+
+Awaiting the unsubscribe BEFORE the pop: 22 passed. An
+`await asyncio.sleep(0.2)` as the first line of the `finally`: 22
+passed. So the cleanup is NOT observed running under cancellation on
+this path, and the argument above is at best unproven. The likely
+reason is that cancellation is an exception rather than a state - it
+is delivered once, at the `asyncio.sleep` in the loop, and a later
+await in the same task suspends normally.
+
+The ordering STAYS, because it costs nothing and it is right under a
+second cancel or a deadline, where a delivered-once exception is not
+the whole story. What changed is the claim: this is a cheap defence,
+not a measured necessity.
+
+**The pop itself IS gated.** Dropping
+`self._log_readers.pop(key, None)` from the `finally`:
+
+    FAILED tests/test_logs.py::test_a_closed_stream_gives_the_state_back
+    TimeoutError
+    1 failed, 308 passed, 10 deselected in 41.04s
+
+One gate, and the retry loop in that test is what turns a permanent
+refusal into a TimeoutError rather than a hang.
+
+**A gate that raced the poll loop.** `test_a_drop_crosses_rather_than
+_vanishing` first raised its five records through five sequential
+`eval_expr` round trips. The server drains every 50ms CONCURRENTLY, so
+a tick landing between two evals empties a capacity-1 queue, the next
+record is kept rather than refused, and `dropped` comes back short.
+The five evals span roughly 10-20ms, so the window is wide enough to
+lose on a loaded machine - a probabilistic gate, which is the thing
+this repo refuses.
+
+It raises them in ONE expression now, nested traces, so the pushes
+land microseconds apart and no tick fits between them. It passed
+five times in the racy form, which is what makes this worth writing
+down: passing is not evidence.
+
+**The Session guard turned a refusal into a bug.** `guard_untyped`
+wrapped every exception in `InternalError`, so the FAILED_PRECONDITION
+above arrived as an anonymous internal failure with the status
+thrown away. It now re-raises a `GRPCError` unchanged: it is already
+the wire shape, and it is already carrying a status somebody chose.
+
+**`server_streaming` had no precedent in this schema.** Nothing here
+had ever set the flag, so there was nothing to copy and nothing to
+notice its absence. A descriptor that calls Logs unary while dispatch
+streams is a schema that LIES, and reflection and grpcurl both read
+it. `test_the_descriptor_says_it_streams` asserts the flag is set on
+Logs and on nothing else.
+
+### Still open, and moved to tasks/085
+
+The three residues this file already named - a process-wide
+subscriber for fetcher and file-transfer threads, the `ErrorInfo`
+overlap with `tasks/036`, and two states sharing one thread's
+subscription - outlive this task. Fan-out joins them. `tasks/085`
+holds all four, and blocks nothing.

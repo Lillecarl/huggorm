@@ -200,8 +200,9 @@ which was superseded rather than fixed.
   file measures. Bookkeeping is separate from noticing: `changed()` is
   told, `rescan()` stats, and both call one step - so every gate runs
   with no sleeps. The inotify adapter is decided
-  (`asyncinotify`, Linux only) and DEFERRED by Carl behind 033 and
-  032: the spec, the codegen and the binding details come first.
+  (`asyncinotify`, Linux only) and was DEFERRED by Carl behind 033 and
+  032: the spec, the codegen and the binding details come first. Both
+  are DONE now, so nothing is in front of it.
   `rescan()` stays the change source until then.
 - 081 (an input that reached no output) is DONE. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
@@ -466,7 +467,7 @@ which was superseded rather than fixed.
   suggestion engine still saw it; nine of ten gates passed without
   the fix. It needs the carried base-env patch, whose first real gate
   this is.
-- 032 (log callbacks) is MOSTLY DONE. The in-process half works:
+- 032 (log callbacks) is DONE. The in-process half works:
   `EvalState.subscribe_logs` hands back a bounded `LogStream` a reader
   drains, and a record is Nix's own - `action`, `level`, `id`,
   `parent`, `type`, `text`, `fields` - rather than a line of text. A
@@ -487,11 +488,38 @@ which was superseded rather than fixed.
   were wire values. And `ASYNC_CLASS` named an `AsyncLogStream` that
   does not exist. Both are refused now by a RULE rather than a
   blocklist: a return whose type is a proxy with no service is a
-  wire_blocker. The streaming rpc stays deferred; it is protocol, like
-  Session.
+  wire_blocker.
   The tap is a hand-written `nix::Logger` subclass, approved by Carl
   on 2026-09-03, and `tasks/084` holds the DSL gap that made it
   hand-written.
+  The second half is `Session/Logs`, a server-streaming rpc written
+  beside Session because it is protocol: every other rpc is the wire
+  form of a declared method and this is the wire form of none. A
+  message is one DRAIN, and `dropped` rides with every one of them.
+  The FIRST batch is empty and means "subscribed" - without it a
+  caller cannot know when starting the work it wants logs for is safe.
+  A second reader on one state is REFUSED, because a second subscribe
+  replaces the first in the C++ and the older stream would go silent.
+  It polls at 50ms rather than waiting on a condvar, which would be
+  new hand-written C++ for a speed that is not a goal yet.
+  Building it found three things. "A `finally` cannot await under
+  cancellation" was ARGUED and then refuted: two perturbations that
+  should have failed both passed, so the synchronous-first cleanup is
+  a cheap defence rather than a measured necessity - the pop itself is
+  gated and its ordering is not. The Session guard wrapped a
+  deliberate refusal in InternalError and threw its status away. And
+  `server_streaming` had never been set in this schema, so a
+  descriptor that lied would have had nothing to notice it.
+  Two gates were wrong before they were right: a drop test raced the
+  server's own 50ms poll and passed five times anyway, and the swept
+  branch was claimed as a decision before anything ran it. Both are
+  fixed and both failures are written out.
+  Four residues moved to `tasks/085`.
+- 085 (four things the log stream does not cover) is OPEN and blocks
+  nothing: a process-wide sink for fetcher and build threads, two
+  states on one thread, fan-out to a second reader, and the ErrorInfo
+  overlap with 036. One cause behind all four - the tap routes by
+  THREAD, and a thread is not always the right owner.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE
