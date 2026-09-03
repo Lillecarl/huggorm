@@ -364,7 +364,13 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
 
     for group in ("wrappers", "returned_types"):
         for name, proto in manifest[group].items():
-            if "async_class" in proto:
+            # WRAPPED, not merely named. `cppgen/manifest` stamps an
+            # `async_class` NAME on every proxy, and an unwrapped one
+            # gets no such class emitted - so reading the key alone
+            # put 'LogStream': 'AsyncLogStream' in this table with
+            # nothing behind it, and `server.adopt` would have raised
+            # AttributeError on the first handle (tasks/032).
+            if proto["wrapped"] and "async_class" in proto:
                 async_of.append((name,
                                  ast.Constant(value=proto["async_class"])))
             tree = proto.get("tree")

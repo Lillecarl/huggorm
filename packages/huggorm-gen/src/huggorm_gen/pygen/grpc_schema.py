@@ -236,14 +236,38 @@ NOT_DATA = {
 }
 
 
-def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
+def wire_blocker(type_str: str, kinds: dict[str, str],
+                 served: frozenset[str] | None = None) -> str | None:
     """Why this type cannot cross the wire, or None if it can.
 
     Reported rather than raised, so a function that is unrepresentable
     today still gets its in-process wrapper and the build says exactly
-    what is missing."""
+    what is missing.
+
+    `served` names the classes that HAVE a service. None means "do not
+    ask", which is what a caller testing a type in isolation wants;
+    `annotate` passes the real set."""
     if (why := NOT_DATA.get(type_str)) is not None:
         return why
+    # A proxy nobody serves. It crosses as a HANDLE, and a handle is
+    # only worth having if some service takes one - so a method
+    # returning this would publish an rpc whose answer no later call
+    # can use.
+    #
+    # This was a SILENT skip until LogStream. Every unwrapped class
+    # until then was also a wire VALUE, so "unwrapped" and "crosses by
+    # copy" agreed, and `annotate` said so in a comment: "an unwrapped
+    # class has no remote surface: it crosses as a value, so a caller
+    # already holds the object". LogStream is unwrapped - pool, and no
+    # method of it can block - and a proxy, which made that sentence
+    # false and published `EvalState.subscribe_logs` answering a
+    # handle with no service behind it (tasks/032).
+    if served is not None and type_str not in served \
+            and kinds.get(type_str) == "proxy":
+        return (f"{type_str} is a proxy with no service: it crosses as a "
+                f"handle, and nothing is wrapped to answer a call on that "
+                f"handle. A remote caller would receive an id it cannot "
+                f"use.")
     try:
         # `T | None` is T plus presence, so from here on it is T that
         # is under test - a field the schema cannot build has nothing
@@ -286,14 +310,15 @@ def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
     return None
 
 
-def _method_blockers(m: Proto, kinds: dict[str, str]) -> list[str]:
+def _method_blockers(m: Proto, kinds: dict[str, str],
+                     served: frozenset[str] | None = None) -> list[str]:
     """Why this method has no RPC, or [] when it has one."""
     out = [
         f"parameter {p['name']!r}: {why}"
         for p in m["params"]
-        if (why := wire_blocker(p["type"], kinds))
+        if (why := wire_blocker(p["type"], kinds, served))
     ]
-    if (why := wire_blocker(m["return_type"], kinds)):
+    if (why := wire_blocker(m["return_type"], kinds, served)):
         out.append(f"return type: {why}")
     return out
 
@@ -309,10 +334,18 @@ def annotate(manifest: Proto) -> Proto:
         for cls_name, proto in manifest[group].items():
             if proto["wire"] == "value":
                 proto["message"] = value_msg_name(cls_name)
-            # An unwrapped class has no remote surface: it crosses as a
-            # value, so a caller already holds the object and calls it
-            # directly. Giving it a service would publish rpcs that
-            # nobody can reach a handle for.
+            # An unwrapped class gets no service. A wrapper buys two
+            # things - a hop onto a home thread and a released GIL -
+            # and a pool class whose methods cannot block needs
+            # neither, so there is no async form for a handler to
+            # await.
+            #
+            # This USED to read "it crosses as a value, so a caller
+            # already holds the object", and that was true of every
+            # unwrapped class until LogStream. It is not a rule: it
+            # was a coincidence of which classes existed. What the
+            # absence of a service actually means is now CHECKED,
+            # below and in `wire_blocker`, rather than assumed here.
             if not proto["wrapped"]:
                 continue
             proto["service"] = service_name(cls_name)
@@ -323,6 +356,16 @@ def annotate(manifest: Proto) -> Proto:
                 }
 
     kinds = _wire_kinds(manifest)
+    # Which classes a handle can be USED with: the same two facts the
+    # loop above stamps a service on, and not the stamp itself -
+    # `cppgen/manifest` puts a `service` NAME on every proxy whether
+    # or not one is published, so reading the key back would call
+    # LogStream served and defeat the check.
+    served = frozenset(
+        name
+        for group in ("wrappers", "returned_types")
+        for name, proto in manifest[group].items()
+        if proto["wrapped"] and proto["wire"] == "proxy")
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
             if not proto["wrapped"]:
@@ -334,7 +377,7 @@ def annotate(manifest: Proto) -> Proto:
             # path on the machine the store runs on - and such a
             # method still deserves its in-process wrapper.
             for m in proto["methods"]:
-                m["wire_blockers"] = _method_blockers(m, kinds)
+                m["wire_blockers"] = _method_blockers(m, kinds, served)
                 if m["wire_blockers"]:
                     continue
                 m["rpc"] = {
@@ -352,7 +395,7 @@ def annotate(manifest: Proto) -> Proto:
                 "no threading policy, so the function has no async form "
                 "for a server to call"]
             continue
-        blockers = _method_blockers(proto, kinds)
+        blockers = _method_blockers(proto, kinds, served)
         proto["wire_blockers"] = blockers
         if not blockers:
             proto["rpc"] = {
