@@ -676,6 +676,121 @@ async def test_one_reader_per_state(client: Any) -> None:
         await first.aclose()
 
 
+async def opened_process(client: Any, **kw: Any) -> Any:
+    """A process-wide stream past its empty first batch. As `opened`."""
+    stream = client.process_logs(**kw)
+    records, dropped = await batch(stream)
+    assert records == [], "the first batch says 'subscribed', nothing more"
+    assert dropped == 0
+    return stream
+
+
+async def test_an_unclaimed_record_reaches_a_remote_client(
+        client: Any) -> None:
+    """The gap `tasks/085` named, over the wire.
+
+    The state is acquired and NEVER given a `logs` stream, so its
+    thread subscribes to nothing and the records fall through to the
+    process sink - which this reads from another process.
+
+    A `builtins.trace` rather than a build, and it tests the same
+    branch: `route`'s fallback fires for any record on a thread with
+    no queue. A build would add a store, a derivation and minutes to
+    a gate whose subject is one `if`."""
+    state = await client.acquire("EvalState", "dummy://")
+    stream = await opened_process(client)
+    try:
+        await state.eval_expr(TRACE % "remote-unclaimed")
+        records, _ = await batch(stream)
+        assert any("remote-unclaimed" in r.text() for r in records), records
+    finally:
+        await stream.aclose()
+
+
+async def test_a_state_stream_takes_its_records_back(client: Any) -> None:
+    """Both streams at once, and they do not overlap.
+
+    The fallback from the other side: with a `logs` stream open on
+    the state, its thread CLAIMS the record and the process stream
+    never sees it. A caller that wants everything reads both, and
+    neither repeats the other.
+
+    Written as one test rather than two because the fact IS the
+    relationship. Asserting only that the state stream got it would
+    pass under a broadcast, and asserting only that the process
+    stream did not would pass if the record vanished."""
+    state = await client.acquire("EvalState", "dummy://")
+    process = await opened_process(client)
+    mine = await opened(client, state)
+    try:
+        await state.eval_expr(TRACE % "remote-claimed")
+        records, _ = await batch(mine)
+        assert any("remote-claimed" in r.text() for r in records), records
+        # The process stream is polled once. It cannot be waited on:
+        # a batch that never comes is what this asserts, so the test
+        # would hang rather than fail.
+        with pytest.raises(TimeoutError):
+            await batch(process, timeout=0.5)
+    finally:
+        await mine.aclose()
+        await process.aclose()
+
+
+async def test_one_process_reader_for_the_whole_server(client: Any) -> None:
+    """A second process-wide stream is REFUSED, where the C++ replaces.
+
+    That split is the answer to the scoping question `tasks/032`
+    opened. Replacing in the C++ stops an in-process caller wedging
+    the sink by dropping its `LogStream` without unsubscribing.
+    Refusing here stops one connection silencing another's stream,
+    and it cannot wedge, because the handler's `finally` releases it
+    when the stream ends.
+
+    One reader for the SERVER, not per connection: there is one
+    process-wide sink, so there is nothing to key a second by."""
+    from grpclib.const import Status
+    from grpclib.exceptions import GRPCError
+
+    first = await opened_process(client)
+    try:
+        second = client.process_logs()
+        with pytest.raises(GRPCError) as caught:
+            await batch(second)
+        assert caught.value.status is Status.FAILED_PRECONDITION
+        assert "process-wide log stream is already open" in (
+            caught.value.message or "")
+    finally:
+        await first.aclose()
+
+
+async def test_a_closed_process_stream_lets_the_next_one_in(
+        client: Any) -> None:
+    """The gate on the flag being CLEARED.
+
+    Drop `self._process_reader = False` from the handler's `finally`
+    and this fails: the server would refuse every process-wide stream
+    for the rest of its life after the first one ended.
+
+    The retry is the same one `test_a_closed_stream_gives_the_state_back`
+    needs, for the same reason - the server learns of the close
+    through a stream reset, so its `finally` runs a moment after
+    `aclose()` returns here. Written without it first, and it failed
+    with the FAILED_PRECONDITION the flag is supposed to have
+    cleared: a real race, not a wrong refusal."""
+    first = await opened_process(client)
+    await first.aclose()
+
+    with anyio.fail_after(20):
+        while True:
+            try:
+                second = await opened_process(client)
+            except Exception:
+                await anyio.sleep(0.05)
+            else:
+                break
+    await second.aclose()
+
+
 async def test_a_closed_stream_gives_the_state_back(client: Any) -> None:
     """Closing one reader lets the next one in.
 
@@ -751,14 +866,47 @@ async def test_the_descriptor_says_it_streams() -> None:
     client built from it would wait for one message and stop.
 
     No other Session method carries it, which is asserted rather than
-    assumed: this is the first use of the flag in this schema, so
-    there was no example to copy and nothing to notice a stray one."""
+    assumed: this was the first use of the flag in this schema, so
+    there was no example to copy and nothing to notice a stray one.
+
+    TWO of them now, and this gate is what noticed the second - it
+    failed with `{'Logs', 'ProcessLogs'}` the moment the schema
+    gained one, which is the exact-set assertion earning its keep."""
     from huggorm.grpc_pb import PKG, load_pool
 
     session = load_pool().FindServiceByName(  # type: ignore[no-untyped-call]
         f"{PKG}.Session")
     streaming = {m.name for m in session.methods if m.server_streaming}
-    assert streaming == {"Logs"}, streaming
-    logs = session.FindMethodByName(  # type: ignore[no-untyped-call]
-        "Logs")
-    assert not logs.client_streaming, "the request is one message"
+    assert streaming == {"Logs", "ProcessLogs"}, streaming
+    for name in sorted(streaming):
+        rpc = session.FindMethodByName(  # type: ignore[no-untyped-call]
+            name)
+        assert not rpc.client_streaming, f"{name}: the request is one message"
+
+
+async def test_the_process_stream_names_no_state() -> None:
+    """The one structural difference between the two requests.
+
+    `LogsReq` carries a handle because the tap routes by thread and an
+    EvalState owns one. A process-wide subscription has no thread to
+    name, so there is nothing to address - and a request that took a
+    handle it ignored would be inviting a caller to believe the scope
+    was that state's.
+
+    They share `LogsResp`, which is asserted here rather than left to
+    read like an accident: a batch and a drop count is the whole
+    answer either way."""
+    from huggorm.grpc_pb import PKG, load_pool
+
+    pool = load_pool()
+    session = pool.FindServiceByName(  # type: ignore[no-untyped-call]
+        f"{PKG}.Session")
+    plain = session.FindMethodByName("Logs")  # type: ignore[no-untyped-call]
+    process = session.FindMethodByName(  # type: ignore[no-untyped-call]
+        "ProcessLogs")
+
+    assert [f.name for f in plain.input_type.fields] \
+        == ["state", "capacity", "level"]
+    assert [f.name for f in process.input_type.fields] \
+        == ["capacity", "level"]
+    assert process.output_type is plain.output_type, "one response message"
