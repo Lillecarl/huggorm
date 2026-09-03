@@ -242,6 +242,56 @@ def test_the_reader_sees_an_accessor_the_import_kept_as_a_descriptor(
     assert cls.methods[0].prop
 
 
+# One bound class that declares a dunder. `__call__` because that is
+# the one a declaration actually wants - `await f.apply(x)` is what
+# `tasks/034` shipped, and `await f(x)` is what it could not say.
+CALLABLE = '''"""One bound class that declares __call__."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header
+
+
+@header("nix/expr/value.hh")
+@binding(cxx="nix::Value", threading="affine", blocking=True)
+class Callable:
+    """A value, for a test that never compiles one."""
+
+    def __call__(self, arg: Str) -> Str:
+        """Apply this to one argument."""
+        Cxx("return arg;")
+'''
+
+
+def test_a_declared_dunder_is_refused_rather_than_dropped(
+        tmp_path: pathlib.Path) -> None:
+    """A declaration that writes `__call__` gets an answer.
+
+    It used to get NOTHING. The class-body loop kept the names that
+    are not `__`-prefixed and skipped the rest, so a declared dunder
+    reached no binding, no stub line and no manifest entry, with no
+    diagnostic anywhere - and a skip is indistinguishable from an
+    absence, which is this repo's named failure mode (tasks/088).
+
+    Measured before the refusal, on a probe declaring `__call__` and
+    `__len__` beside one plain accessor:
+
+        Probe ['nar_size'] ctor= None
+
+    Two declared methods gone, and the read reported success.
+
+    The message points at `tasks/088` rather than describing what a
+    dunder would take, because the answer for a caller today is to
+    declare a plain name. `Value.apply` is that name."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    path = _declaration(tmp_path, CALLABLE)
+    with pytest.raises(DeclarationError, match="tasks/088") as caught:
+        read(path)
+    # The LINE, because a refusal whose answer is "rename this" has to
+    # say which one. `__call__` is the eleventh line of the fixture.
+    assert ":11:" in str(caught.value)
+    assert "Callable.__call__" in str(caught.value)
+
+
 # One value carrying both 64-bit widths. Written here because the
 # corpus has each width but never both on one class, and the fact
 # under test is the DIFFERENCE between them (tasks/079).
