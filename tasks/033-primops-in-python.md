@@ -91,3 +91,74 @@ from Python. The threading rules are opposite and neither can borrow
 the other's shape. A primop runs inside evaluation, so it is SYNC and
 must not await. Applying a Nix function hops onto the evaluator's
 thread, so it is ASYNC and must not be anything else.
+
+## 2026-09-03: three facts read from 2.34.8, and one of them is a wall
+
+Read from the headers this build links and from Nix's own source,
+before designing anything.
+
+### `fun<PrimOpFun>` is a `std::function`, so a lambda may capture
+
+`nix/util/fun.hh:23` - `fun<Ret(Args...)>` holds a
+`std::function<Ret(Args...)>` and only refuses a null one. It takes
+any callable `std::function` accepts.
+
+That settles the helper's shape and it is the good answer. A capturing
+lambda holding an `nb::callable` goes straight in, so there is no
+registry keyed by name, no trampoline class, and no static table. Had
+it been a raw function pointer there would be no user-data slot and
+all of that would be forced.
+
+### Registration is PRIVATE, and the shim for that already exists
+
+`EvalState::addPrimOp(PrimOp &&)` is at `eval.hh:837`, under the
+`private:` at 828. So per-EvalState registration is not public surface
+in this version.
+
+That is the same situation as `fileEvalCache`, and `cpp/eval.hpp`
+already holds the answer: the `Reach` template instantiated with the
+member pointer, by [temp.spec]/6. A third tag, and no patch.
+
+### The wall: the base environment is 128 slots and 119 are taken
+
+`addPrimOp` ends with (`eval.cc:549`):
+
+    staticBaseEnv->vars.emplace_back(envName, baseEnvDispl);
+    baseEnv.values[baseEnvDispl++] = v;
+
+`baseEnv` is `mem.allocEnv(BASE_ENV_SIZE)` with
+`BASE_ENV_SIZE = 128` (`eval.cc:228, 311`), and `allocEnv` is
+`allocBytes(sizeof(Env) + size * sizeof(Value *))` - a flexible array
+of exactly 128 pointers (`eval-inline.hh:88`).
+
+**There is no bounds check in `addPrimOp`.** Measured against the
+same 2.34.8 this build links:
+
+    nix-instantiate --eval -E 'builtins.length (builtins.attrNames builtins)'
+    119
+
+    builtins ? builtins   ->  true      (so `builtins` is one of them)
+    __-prefixed names     ->  0         (stripped, as the source says)
+    .internal = true      ->  0         (none in this primops.cc)
+
+Every one of those 119 consumed a slot. So roughly NINE remain, and
+the tenth registration writes past the end of a GC allocation. Not an
+exception, not a refusal - a heap overflow into the collector's
+memory, which is this repo's named failure mode in its worst form.
+
+So "register a primop" cannot be an open-ended API on this version.
+Whatever ships either counts the slots and refuses, or does not touch
+the base environment at all.
+
+### What the previous plan assumed and no longer holds
+
+This file says "the trampoline pattern covers it (PyStore already
+forwards a pure virtual)". `tasks/060` deleted every trampoline with
+the mock, and `nbemit.py:2063` says so in the code: "There are no
+trampolines any more". `tasks/032` rests on the same sentence.
+
+So the shape both tasks called "the easy part" is not in the repo.
+What replaces it is smaller, not bigger - `fun` takes a lambda, so
+nothing needs to be subclassed - but it is the first C++-calls-into-
+Python path since the mock died, and nothing existing demonstrates
+the `gil_scoped_acquire` half of it.

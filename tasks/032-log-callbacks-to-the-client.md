@@ -40,6 +40,15 @@ Four things to get right.
 pure virtual to Python, so a PyLogger doing the same for log/logEI/
 startActivity/stopActivity/result is a shape this repo has.
 
+**That last sentence is no longer true.** `tasks/060` deleted every
+trampoline along with the mock, and `nbemit.py` says so where one used
+to be built: "There are no trampolines any more". So the shape this
+paragraph called the easy part is not in the repo, and 033 - which
+rested on the same sentence - is where its replacement gets built
+first. A logger is an abstract CLASS, so unlike a primop it does need
+a subclass; what 033 settles for it is the GIL half, which is the part
+no code here demonstrates since the mock died.
+
 **The thread is not.** Logs are emitted on whichever thread is doing
 the work - an affine EvalState thread, or a pool thread - and the
 callback re-enters Python there. It must not block that thread on a
