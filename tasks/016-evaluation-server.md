@@ -368,6 +368,25 @@ re-enters through `rootPath()`; if those two did not produce equal
 `SourcePath`s, every erase would silently miss and the test would show
 exactly this. It does not.
 
+It proves the GIVEN spelling only, and the first write-up of this
+claimed more. `outer.nix` and `inner.nix` resolve to themselves, so
+every erase there succeeds through `given` and the resolution lookup
+could be deleted with all 277 tests still passing - half the approved
+C++ with no gate, by this repo's own rule.
+
+`test_forgetting_a_directory_forgets_its_default_nix` is the missing
+half. It evaluates a DIRECTORY, edits the `default.nix` inside it, and
+forgets the directory - never naming the file. Seen to fail, by
+dropping the `entry.second` push:
+
+    assert 42 == 2
+    FAILED test_forgetting_a_directory_forgets_its_default_nix[sync]
+    FAILED test_forgetting_a_directory_forgets_its_default_nix[async]
+    FAILED test_forgetting_a_directory_forgets_its_default_nix[rpc]
+
+Those three and no others, so it discriminates the resolution lookup
+and nothing else. 280 passed.
+
 `test_forgetting_only_the_edited_file_leaves_the_importer_stale` is
 the measurement above, kept as a test. It forgets `inner` alone and
 asserts the importer still answers 42. Asserted rather than noted, so
@@ -375,7 +394,7 @@ a `forget_file` that grew a recursive erase would fail here and be
 seen. It is not a wish that the answer stays stale - it is the
 statement that per-file erase ALONE is not invalidation.
 
-277 passed, from 271.
+280 passed, from 271.
 
 ### What is left for the server
 
