@@ -1,0 +1,83 @@
+# A failed evaluation wedged its root
+
+**DONE.** Found while building `tasks/086`, fixed in the same branch.
+It is the fifth of this repo's named failure mode - a wrong answer
+that looks exactly like a right one - and the first that was not an
+emitter skipping something.
+
+## What it was
+
+libexpr caches the files a FAILED evaluation read, and the cache is
+what answers next time. So a file fixed after a bad save keeps raising
+the OLD error.
+
+Measured before anything was designed:
+
+    root.nix = "1 + 1"     eval -> 2
+    forget_file(root)
+    root.nix = "1 + \"     eval -> NixError: syntax error
+    cached_files()         still holds root.nix
+    root.nix = "2 + 2"     eval -> NixError: syntax error   <- 2:1
+    forget_file(root)
+    root.nix = "2 + 2"     eval -> 4
+
+The fifth line is the defect. The file on disk reads `2 + 2` and the
+evaluator reports a syntax error at 2:1, about text that is not there
+any more.
+
+## Why nothing caught it
+
+`Watcher` only forgets through `changed()`, and `changed()` needs a
+SNAPSHOT to know which roots a path implicates. A failed evaluation
+records no snapshot - `eval_file` raises before the recording line -
+so a wedged root is invisible to every later change.
+
+The wedge is therefore PERMANENT, and it is silent in the way this
+repo cares about: the caller gets a confident error rather than an
+absence, and re-saving the file does not clear it. Only an explicit
+`forget_file` does, and nothing was calling one.
+
+`tasks/083`'s seven gates could not see it. Every one of them
+evaluates files that parse.
+
+## The fix, and why it costs nothing
+
+`Watcher.eval_file` forgets what a failed evaluation cached.
+
+What to forget is DERIVED rather than measured with an extra call.
+Every file a SUCCESSFUL evaluation cached is in that root's snapshot,
+so a file that is cached and in no snapshot was read by an evaluation
+that failed. That is `_drop_unrecorded`, and it needs only the
+`cached_files()` call the success path already makes.
+
+The direction of the error matters. Forgetting a file that was
+actually fine costs one re-read; leaving a bad one costs the answer.
+So the rule errs towards forgetting.
+
+It is a REPAIR and not a reset, which is the second gate: a root that
+evaluated successfully keeps its snapshot across someone else's
+failure, because its files are in that snapshot and the rule only
+touches what is not.
+
+## Broken on purpose
+
+With the cleanup removed:
+
+    FAILED tests/test_watch.py::test_a_failed_evaluation_does_not_wedge_the_root
+    huggorm_bindings.errors.NixError: error: syntax error, unexpected end of file
+    FAILED tests/test_warm.py::test_a_root_that_does_not_parse_is_recorded_not_raised
+    2 failed, 324 passed, 10 deselected
+
+Two gates, at two layers. The watcher one shows the stale error
+directly; the warmer one shows the consequence - an eager pass that
+never recovers the root however many times the file is fixed.
+
+## What it says about the others
+
+`tasks/073`, `075`, `078` and `082` were all an EMITTER skipping what
+it did not recognise. This one is a CACHE keeping what it should have
+dropped, which is the same shape from the other side: state that
+outlives the reason it was correct, with nothing in the interface to
+say so.
+
+Worth remembering when the next layer caches something.
