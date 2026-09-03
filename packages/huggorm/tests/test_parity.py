@@ -341,3 +341,83 @@ async def test_a_file_reached_by_import_is_in_the_cache_too(
     files = await call(state, "cached_files")
     assert str(outer) in files, files
     assert str(inner) in files, "an imported file is cached too"
+
+
+async def _closure(state: Any, path: str) -> list[str]:
+    """The files one evaluation read, as the cache diff around it.
+
+    `cached_files` before and after a single `eval_file` differ by
+    exactly what that evaluation cached, and libexpr offers no other
+    way to ask - it keeps no edge from an importer to its import.
+
+    A helper in the TEST rather than in the binding, because it is a
+    policy and not a fact: a caller who evaluates two files
+    concurrently on one state gets their closures mixed. The affine
+    state this repo already assumes is what makes it work here."""
+    before = set(await call(state, "cached_files"))
+    await call(state, "eval_file", path)
+    return [f for f in await call(state, "cached_files") if f not in before]
+
+
+async def test_forgetting_a_closure_picks_up_an_edited_import(
+        state: Any, tmp_path: Any) -> None:
+    """Per-path invalidation, which is what a reload server needs.
+
+    Carl's requirement, in his words: a live-reloading evaluation
+    server, and "resetting the entire eval cache database is not what
+    we want to do at all". `resetFileCache()` is the only public way,
+    and it also drops the fetched flake inputs - re-downloading every
+    input because one local file changed.
+
+    The CLOSURE, not the file, and `tasks/016` records the
+    measurement that says so: the cache holds no edge from an importer
+    to its import, so forgetting `inner` alone leaves `outer`
+    answering its old value. The negative control below is that
+    measurement, kept as a test.
+
+    Two evaluations of the same path in one state, with an edit
+    between them, and the second answers the NEW value. That is the
+    whole claim."""
+    inner = tmp_path / "inner.nix"
+    inner.write_text("40 + 2\n")
+    outer = tmp_path / "outer.nix"
+    outer.write_text(f"import {inner}\n")
+
+    closure = await _closure(state, str(outer))
+    assert str(outer) in closure and str(inner) in closure, closure
+
+    inner.write_text("1 + 1\n")
+    for path in closure:
+        await call(state, "forget_file", path)
+
+    again = await call(state, "eval_file", str(outer))
+    assert await call(again, "integer") == 2, "the edit was not picked up"
+
+
+async def test_forgetting_only_the_edited_file_leaves_the_importer_stale(
+        state: Any, tmp_path: Any) -> None:
+    """The negative control for the test above, and a real limit.
+
+    Identical, except that it forgets the file that CHANGED instead of
+    the closure that read it. The importer keeps answering 42 from a
+    cache entry whose input now says 2, and nothing complains - a
+    silent stale answer, which is the failure this design is shaped to
+    avoid.
+
+    Asserted rather than merely noted, so `forget_file` growing a
+    recursive erase would fail here and be seen. It is not a wish that
+    the answer stays stale; it is the statement that per-file erase
+    ALONE is not invalidation."""
+    inner = tmp_path / "inner.nix"
+    inner.write_text("40 + 2\n")
+    outer = tmp_path / "outer.nix"
+    outer.write_text(f"import {inner}\n")
+
+    first = await call(state, "eval_file", str(outer))
+    assert await call(first, "integer") == 42
+
+    inner.write_text("1 + 1\n")
+    await call(state, "forget_file", str(inner))
+
+    again = await call(state, "eval_file", str(outer))
+    assert await call(again, "integer") == 42, "no edge means no cascade"
