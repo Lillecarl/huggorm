@@ -13,8 +13,10 @@ in this repo branches today, so nothing real can hold the fix.
 """
 
 import ast
+import dataclasses
 import pathlib
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -607,3 +609,133 @@ def test_an_accessor_declared_static_is_refused(
     classmethod_too = STATIC.replace("@staticmethod", "@classmethod")
     with pytest.raises(DeclarationError, match="@classmethod"):
         read(_declaration(second, classmethod_too))
+
+
+# A bound class with one accessor behind a version branch. The corpus
+# has no branch at all, so the one exemption the read census makes is
+# written here or it is never read (tasks/081).
+BRANCHED_ACCESSOR = '''"""One bound class whose accessor is behind a version."""
+
+from huggorm_dsl.declare import NIX_VERSION, Cxx, Str, binding, header
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    def base16(self) -> Str:
+        """The digest as lowercase hex."""
+        Cxx("return self.to_string();")
+
+    if NIX_VERSION >= (2, 0):
+
+        def here(self) -> Str:
+            """The arm this build has."""
+            Cxx("return self.here();")
+
+    else:
+
+        def gone(self) -> Str:
+            """The arm it does not."""
+            Cxx("return self.gone();")
+'''
+
+
+def _one_file_corpus(tmp_path: pathlib.Path, source: str) -> Any:
+    """A `Corpus` over one declaration, the way `nbcheck` builds one.
+
+    The real set is `huggorm_decl.corpus()`, and it is cached and
+    global. A test that wants a declaration the corpus does not have
+    builds its own, which the docstring on `corpus()` says is the
+    supported way."""
+    from huggorm_dsl.corpus import Corpus
+
+    (tmp_path / "digest.py").write_text(source)
+    return Corpus(tmp_path, nanobind=("digest.py",))
+
+
+def test_a_branch_arm_that_lost_is_not_a_missing_definition(
+        tmp_path: pathlib.Path) -> None:
+    """The one definition a declaration may write that reaches nothing.
+
+    Python resolves `NIX_VERSION` during the import, so one arm of an
+    `if` survives and the other is MEANT to vanish. The census reads
+    the RAW parse, where both arms are still there, so without this
+    exemption every branched declaration would fail the build.
+
+    Written here because the corpus has no branch: `read.py` imports
+    every declaration for exactly this reason and no declaration in
+    this repo uses it, which is how the errors emitter came to see
+    neither arm and say nothing (tasks/073)."""
+    from huggorm_gen.cppgen import generate
+
+    have = _one_file_corpus(tmp_path, BRANCHED_ACCESSOR)
+    generate.census_read(have)
+
+    mod = have.module("digest.py")
+    kept = {m.name for m in mod.classes[0].methods}
+    assert kept == {"base16", "here"}, "the import chose an arm"
+
+
+def test_the_census_notices_a_definition_the_reader_dropped(
+        tmp_path: pathlib.Path) -> None:
+    """A method in the file and not in the reader's output fails.
+
+    This is `tasks/075` in one assertion. A `@property` accessor named
+    no live line, `_resolve` dropped its node, and it vanished from
+    the binding, from `_parts`, from `__repr__`, from `__hash__` and
+    from `_wire_fields` - with the only complaint coming from a
+    hand-written `_from_parts` that still named it. A class whose
+    `_from_parts` is derived would have lost the field in silence.
+
+    Dropped by hand here rather than by reproducing the reader bug:
+    what the census is asked is "did anything keep this", and a
+    method removed from `methods` is that question's failing input
+    whatever removed it. The reader bug itself was reproduced against
+    the real corpus - see the task."""
+    from huggorm_dsl.read import Class
+    from huggorm_gen.cppgen import generate
+
+    have = _one_file_corpus(tmp_path, BRANCHED_ACCESSOR)
+    full = have.module("digest.py")
+    lost = dataclasses.replace(
+        full.classes[0], methods=tuple(m for m in full.classes[0].methods
+                                       if m.name != "base16"))
+    assert isinstance(lost, Class)
+
+    class Dropped:
+        nanobind = ("digest.py",)
+        vocabularies = ()
+        # No errors declaration. This corpus is one bound class, and
+        # the errors half of the census asks a different question of a
+        # different file.
+        errors = ""
+
+        def path(self, name: str) -> Any:
+            return have.path(name)
+
+        def module(self, name: str) -> Any:
+            return dataclasses.replace(full, classes=(lost,))
+
+    with pytest.raises(TypeError, match="base16"):
+        generate.census_read(Dropped())
+
+
+def test_the_codegen_runs_the_read_census(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """The census is called, and this notices when it stops being.
+
+    The two tests above drive the function. They say nothing about the
+    one line that reaches it, so deleting that line would leave both
+    passing - which is the same shape as the bug the census exists to
+    catch: something that stopped happening and said nothing.
+
+    The same argument as `test_the_census_runs_when_the_corpus_is_built`
+    above, for the other census (tasks/078)."""
+    from huggorm_gen.cppgen import generate
+
+    ran = []
+    monkeypatch.setattr(generate, "census_read", lambda have: ran.append(have))
+    assert generate.main(str(tmp_path)) == 0
+    assert ran, "the codegen no longer runs the read census"
