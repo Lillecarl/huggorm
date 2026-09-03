@@ -360,3 +360,84 @@ the compiler:
 - A primop that adds two integers, on both in-process surfaces.
 - Refusals: an `async def` at REGISTRATION time rather than a
   deadlock at evaluation, and a non-Value return.
+
+## 2026-09-03: built, and two defects found by building it
+
+`EvalState.register_primop(name, arity, fn)`. Ten gates, 297 passed.
+
+    state.register_primop(
+        "add2", 2, lambda a, b: state.make_int(a.integer() + b.integer()))
+    state.eval_expr("builtins.add2 40 2").integer()   # 42
+
+### Upstream does not sort, and neither did we
+
+The defect this work found, and it was found by a gate rather than by
+reading. `addPrimOp` APPENDS to the `builtins` set and to
+`staticBaseEnv` and sorts neither. `createBaseEnv` sorts once after
+adding them all, and says why (`primops.cc:5449`):
+
+    /* Now that we've added all primops, sort the `builtins' set,
+       because attribute lookups expect it to be sorted. */
+
+Registering on a LIVE state runs after that sort, so both containers
+are left out of order. The failure is worth recognising on sight:
+
+    error: attribute 'wrong' missing
+           Did you mean wrong?
+
+The lookup binary-searched past the name and the SUGGESTION engine,
+which scans, still found it. So `register_primop` sorts both
+containers itself. Both are public - `getBuiltins()` is, and
+`staticBaseEnv` carries upstream's own `// !!! should be private`.
+
+**Nine of ten gates passed without the sorts.** `Symbol` orders by
+interning id (`symbol-table.hh:73`, a defaulted `<=>`), so a freshly
+interned name usually takes the highest id and an append keeps the
+order. Eight arbitrary names all passed; `wrong` did not, and WHY that
+name and not the others is not chased down here. The gate keeps the
+measured name for that reason - a tidy-up that swapped it for a nicer
+one would retire the only case known to discriminate.
+
+A binding that shipped without this would have worked almost always.
+
+### A registered callable pins what it closes over
+
+Measured, not feared. Adding these gates made nanobind report at
+shutdown:
+
+    nanobind: leaked 2 instances!
+    nanobind: leaked 1 types!
+    nanobind: leaked 16 functions!
+
+and running the suite without `test_primop.py` made the report go
+away entirely - 287 passed, silent.
+
+The cause is upstream's shape. `addPrimOp` does `new PrimOp(...)`
+into GC memory and Boehm runs no destructors, so the captured
+`nb::object` is never released. A callable that CAPTURES the state
+therefore pins it forever:
+
+    state.register_primop("f", 1, lambda v: state.make_int(1))
+
+The C++ takes a `weak_ptr` precisely to avoid that cycle, and a
+Python closure puts it straight back one level up. Named in the
+declaration's docstring, because it is the kind of thing a caller
+writes without thinking - the natural way to write a primop body is
+to reach for the state.
+
+### What is NOT here
+
+No unregister, and there is nowhere to put one: upstream stores the
+primop permanently and offers no removal.
+
+No rpc, by decision rather than omission. `grpc_schema.NOT_DATA`
+refuses a callable parameter, so `RPCEvalState` has no
+`register_primop` at all and a gate asserts it. A remote registration
+would make the evaluator call back over the socket once per
+invocation, on its evaluation thread.
+
+`tasks/034` - a Nix function called FROM Python - is still open and
+cannot borrow this shape. A primop is SYNC and must not await;
+applying a Nix function hops onto the evaluator's thread and must be
+async. The threading rules are opposite, which is what the two files
+said before either was built and is still true now one is.
