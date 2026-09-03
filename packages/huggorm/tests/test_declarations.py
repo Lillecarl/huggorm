@@ -739,3 +739,71 @@ def test_the_codegen_runs_the_read_census(
     monkeypatch.setattr(generate, "census_read", lambda have: ran.append(have))
     assert generate.main(str(tmp_path)) == 0
     assert ran, "the codegen no longer runs the read census"
+
+
+def test_the_emitter_must_write_every_method_the_reader_kept() -> None:
+    """The second seam: what the reader kept, and what the emitter wrote.
+
+    Checked against the TEXT the emitter produced, not against a
+    second walk of the same `Class` objects - that would be two views
+    of one decision agreeing with itself, which is the blind spot
+    `census_read` exists to avoid on the other side.
+
+    `pathinfo.py` because it is the class 075 lost an accessor from,
+    and `nar_size` because it is a plain one: no marker, no
+    exemption, nothing else to explain its absence."""
+    from huggorm_decl import corpus
+    from huggorm_gen.cppgen import generate
+    from huggorm_gen.cppgen.nbemit import bindable, extension
+
+    have = corpus()
+    mod = have.module("pathinfo.py")
+    bound = bindable(mod)
+    text = extension(mod, "huggorm_bindings.pathinfo", chain=[], errors="")
+    generate.census_written(mod, bound, text)
+
+    lost = text.replace('def("nar_size"', 'def("not_that_one"')
+    assert lost != text, "the emitter no longer writes nar_size at all"
+    with pytest.raises(TypeError, match="nar_size"):
+        generate.census_written(mod, bound, lost)
+
+
+def test_a_function_the_emitter_writes_another_way_is_not_missing() -> None:
+    """Three declared functions that are not bound names, and none of
+    them is exempt by name.
+
+    `store.py` has all three shapes. `_init_libstore` is `@startup`,
+    emitted as a CALL at module init; `_translate_nix_error` is a
+    `@translator`, emitted as a registration; and `open_store` is what
+    `Store` names in `@produced(by=...)`, emitted as that class's
+    `nb::new_` - a caller writes `Store(uri)` and never the function.
+
+    Without the third the census would fail the real corpus, which is
+    how it was found."""
+    from huggorm_decl import corpus
+    from huggorm_gen.cppgen import generate
+    from huggorm_gen.cppgen.nbemit import bindable, extension
+
+    have = corpus()
+    mod = have.module("store.py")
+    declared = {f.name for f in mod.functions}
+    assert {"open_store", "_init_libstore", "_translate_nix_error"} <= declared
+
+    text = extension(mod, "huggorm_bindings.store", chain=[], errors="")
+    assert 'def("open_store"' not in text, "it is a constructor, not a name"
+    generate.census_written(mod, bindable(mod), text)
+
+
+def test_the_codegen_runs_the_written_census(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """The census is called for every module the codegen emits.
+
+    Same argument as the two wiring tests above: the tests that drive
+    the function say nothing about the line that reaches it."""
+    from huggorm_gen.cppgen import generate
+
+    ran = []
+    monkeypatch.setattr(generate, "census_written",
+                        lambda mod, bound, text: ran.append(mod.name))
+    assert generate.main(str(tmp_path)) == 0
+    assert "pathinfo" in ran, ran
