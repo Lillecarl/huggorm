@@ -1,7 +1,10 @@
 # Nothing decides when to forget
 
-**OPEN.** The watcher is built and gated. The inotify adapter is
-DEFERRED, by Carl, behind `tasks/033` and `tasks/032`.
+**DONE.** Both halves are built and gated: `huggorm.Watcher` decides
+what to forget, and `huggorm.Notifier` notices without being asked.
+The adapter was deferred by Carl behind `tasks/033` and `tasks/032`,
+and both are done. The last section says what it cost and what
+building it proved.
 
 `tasks/016` built the mechanism in three parts, and they compose:
 
@@ -221,13 +224,14 @@ choice was between reaching in and not gating it at all. Seen to fail:
 
 a stamp surviving for a file that no longer exists.
 
-### What keeps this OPEN
+### What kept this OPEN
 
 The inotify adapter. `rescan()` is a complete change source and needs
-no dependency, so what is left is an upgrade to the NOTICING half
-only - and it needs a decision rather than effort: Python has no
-stdlib inotify, so it means a new propagated dependency
+no dependency, so what was left was an upgrade to the NOTICING half
+only - and it needed a decision rather than effort: Python has no
+stdlib inotify, so it meant a new propagated dependency
 (`inotify-simple`, `watchdog`) or a `ctypes` binding written here.
+Built at the end of this file.
 
 When it lands: watch parent DIRECTORIES, not files. Most editors save
 by rename, which replaces the inode and orphans a watch on the file.
@@ -264,3 +268,141 @@ building out the full file watching code."
 So `rescan()` stays the change source and this task waits. Recorded
 here rather than left in a conversation, because the decision is the
 part that would otherwise be re-argued.
+
+Both of the things in front of it are done now, and the next section
+builds it.
+
+## 2026-09-03: the adapter, built
+
+**DONE.** `huggorm.Notifier`, in `packages/huggorm/huggorm/notify.py`.
+Seven gates in `tests/test_notify.py`, and the suite went from 320 to
+327.
+
+It is the third caller of `Watcher.changed()`, which is what the
+separation in this file was for: noticing was kept apart from
+bookkeeping so an inotify source would be an addition rather than a
+rewrite, and it is one module that decides nothing about what a
+change MEANS.
+
+    Notifier(watcher)          owns the inotify handle
+      .eval_file(path)         the watcher's, plus a sync() after
+      .sync()                  watch set <- watcher.watching()
+      .next_change()           one event, acted on, roots answered
+      .run()                   next_change() forever
+      .directories()           what is watched, for a gate to read
+
+`asyncinotify` 4.4.4, as decided above, added as a propagated
+dependency of `huggorm` and to the interpreter `check` and `test` run
+against.
+
+### DIRECTORIES, and the gate that says why
+
+This file said it before anything was built: watch parent
+directories, not files. A watch follows the INODE, and most editors
+save by writing a temporary file and renaming it over the original -
+so a file watch survives the save pointing at an inode nobody has,
+and never fires again. The rename is a `MOVED_TO` in the PARENT.
+
+`test_a_save_by_rename_wakes_it_too` does exactly that, and it
+discriminates. With `Mask.MOVED_TO` taken out of the watch mask:
+
+    FAILED tests/test_notify.py::test_a_save_by_rename_wakes_it_too
+    TimeoutError
+    1 failed, 316 passed, 10 deselected in 44.10s
+
+One gate. The plain-write test beside it still passed, so the rename
+case is tested rather than covered by accident.
+
+### The filter, and the two gates on it
+
+A directory watch raises an event for every file in the directory,
+and a checkout holds thousands the evaluation never read. `_paths`
+answers only the watched files an event is about, so `changed()` is
+never called for the rest.
+
+Replacing that with "pass every named event through":
+
+    FAILED tests/test_notify.py::test_a_save_by_rename_wakes_it_too
+    FAILED tests/test_notify.py::test_an_unrelated_file_wakes_nothing
+    AssertionError: assert [] == ['.../outer.nix']
+    2 failed, 315 passed, 10 deselected in 24.50s
+
+Two, and both for the same reason: the first event to arrive is about
+a file no root depends on - the editor's `.tmp`, or the unrelated
+`notes.txt` - so `next_change()` answers `[]` where the root was
+expected. The control was written to catch this without waiting for a
+non-event, and it does.
+
+### A watch-set assertion was not a gate
+
+`test_the_virtual_entry_is_never_watched` asserted that
+`«nix-internal»` never becomes a watched directory, and that assertion
+alone proves nothing. If the marker DID reach `add_watch`, the call
+raises OSError - and `sync()` turns an OSError into a CHANGE on
+purpose, per the section below. So the watch set comes out identical
+either way.
+
+Only the ROOT tells them apart, so the test asserts that too:
+filtered, the root survives the sync; unfiltered, the sync meant to
+start watching it forgets it instead, on every evaluation. With
+`_watchable` returning everything:
+
+    FAILED tests/test_notify.py::test_the_virtual_entry_is_never_watched
+    AssertionError: assert [] == ['.../root.nix']
+    FAILED tests/test_watch.py::test_the_virtual_cache_entry_is_never_watched
+    7 failed, 310 passed, 10 deselected
+
+The watch-set half passed under the perturbation, which is the point:
+it was written first and it was decoration.
+
+It is also not vacuous, which was checked rather than assumed.
+Evaluating `derivation` on `dummy://` really does put
+`«nix-internal»/derivation-internal.nix` in `cached_files`, so there
+is a marker for the filter to drop.
+
+### CLOSE_WRITE is not in the mask, on purpose
+
+`MODIFY` fires once per `write(2)` and `CLOSE_WRITE` once per save, so
+`CLOSE_WRITE` is the cheaper subscription. It was rejected: a writer
+using `mmap` never closes anything, so it is also ZERO events for a
+real change. Over-reporting costs a call that forgets nothing;
+under-reporting is silent staleness, which is the failure this whole
+task exists to prevent.
+
+### A directory that will not take a watch is a CHANGE
+
+`sync()` runs after an evaluation, and by then the directory a root's
+files live in may be gone. `add_watch` raises `OSError`, and the
+tempting answer is to skip it - which would leave that root cached
+against files that no longer exist, with nothing said. So `sync()`
+calls `changed()` for every watched file under the missing directory
+and returns the roots it forgot. `test_a_deleted_directory_is_a_change`
+holds it.
+
+`rm_watch` on a dropped watch is the opposite case and IS suppressed:
+the watch is gone either way, and there is nothing a caller could do.
+
+### How it is gated without sleeping
+
+Five of the seven assert on the WATCH SET, which is a pure function of
+what the watcher depends on - evaluate a root, read `directories()`.
+No event and no wait.
+
+The two that go end to end wait on the EVENT, not on the clock:
+`next_change()` returns the moment the kernel delivers, and
+`anyio.fail_after` is the deadline that turns a missing event into a
+named failure instead of a hang. That is why `next_change()` and
+`run()` are a pair - a test driving `run()` could only sleep and hope.
+
+### Unmarked, not `live`
+
+inotify is a kernel interface rather than a daemon, so a build sandbox
+has it. These run on every build.
+
+### What is left
+
+Background eager evaluation, the last third of `tasks/016`, and it
+needed this: re-evaluating eagerly is only useful once something knows
+the old answer is stale. `tasks/086` holds it, and the trigger is
+already there - `Notifier.next_change()` answers the roots it forgot,
+and nothing consumes that yet.

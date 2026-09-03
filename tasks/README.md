@@ -187,7 +187,7 @@ which was superseded rather than fixed.
   and `@classmethod` are refused too - reachable since 075, and
   measured dropping the first parameter of every method that wrote
   one.
-- 083 (nothing decides when to forget) is OPEN, and has its watcher.
+- 083 (nothing decides when to forget) is DONE, watcher and source.
   `huggorm.Watcher` is written against `EvalStateLike`, so one object
   serves the in-process and the remote surface. It found 016 wrong on
   the way: a closure is NOT the `cached_files` diff around one
@@ -199,11 +199,29 @@ which was superseded rather than fixed.
   the closure and cannot miss, and it over-forgets by an amount the
   file measures. Bookkeeping is separate from noticing: `changed()` is
   told, `rescan()` stats, and both call one step - so every gate runs
-  with no sleeps. The inotify adapter is decided
-  (`asyncinotify`, Linux only) and was DEFERRED by Carl behind 033 and
-  032: the spec, the codegen and the binding details come first. Both
-  are DONE now, so nothing is in front of it.
-  `rescan()` stays the change source until then.
+  with no sleeps.
+  The source is `huggorm.Notifier`, over `asyncinotify` - Carl's
+  choice, Linux only, and DEFERRED by him behind 033 and 032 until
+  both were done. It is the third caller of `changed()`, which is
+  what keeping noticing apart from bookkeeping bought.
+  It watches parent DIRECTORIES, never files: a watch follows the
+  inode, so an editor saving by rename orphans a file watch while the
+  parent sees a MOVED_TO. Removing MOVED_TO from the mask fails the
+  rename gate and nothing else. A directory event names every file in
+  the directory, so a filter answers only the watched ones - dropping
+  it fails two gates, both with `assert [] == [root]`.
+  One assertion was decoration and is now a gate: "the marker is
+  never a watched directory" holds whether the filter works or not,
+  because a marker reaching add_watch raises OSError and sync() turns
+  that into a change. The ROOT is what tells them apart.
+  A directory that will not take a watch is a CHANGE, not a skip: the
+  root is forgotten and `sync()` says so, because skipping would
+  leave it cached against files that no longer exist.
+  `CLOSE_WRITE` is deliberately not in the mask - it is one event per
+  save rather than one per write, and zero for an mmap writer.
+  Five of the seven gates read the WATCH SET and never wait; the two
+  end-to-end ones wait on the EVENT under `anyio.fail_after`, which
+  is why `next_change()` exists beside `run()`.
 - 081 (an input that reached no output) is DONE. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
   a skip reads as an absence. The fear it was opened with was wrong -
@@ -515,6 +533,17 @@ which was superseded rather than fixed.
   branch was claimed as a decision before anything ran it. Both are
   fixed and both failures are written out.
   Four residues moved to `tasks/085`.
+- 086 (nothing evaluates before it is asked) is OPEN and blocks
+  nothing: the last third of 016 and the last piece of the
+  destination. It waited for 083 and correctly - eager re-evaluation
+  is only useful once something knows the answer is stale - and 083
+  is done. The trigger already exists: `Notifier.next_change()`
+  answers the roots it forgot, and nothing consumes that. The design
+  question is not the loop, it is the DEBOUNCE: one save is several
+  inotify events, so this is the first thing in the area that cannot
+  be gated without a timer. Two more it has to decide - a failed
+  eager pass on a half-saved file, and an eager evaluation queueing
+  ahead of the user on the state's own affine thread.
 - 085 (four things the log stream does not cover) is OPEN and blocks
   nothing: a process-wide sink for fetcher and build threads, two
   states on one thread, fan-out to a second reader, and the ErrorInfo
