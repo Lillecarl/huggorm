@@ -466,11 +466,36 @@ which was superseded rather than fixed.
   suggestion engine still saw it; nine of ten gates passed without
   the fix. It needs the carried base-env patch, whose first real gate
   this is.
-- 032 (log callbacks) is the other place the flow reverses: C++
-  calling into Python, on Nix's schedule and Nix's thread. It rested
-  on the same deleted trampoline that 033 did, and 033 is where the
-  replacement now lives - a logger is an abstract CLASS, so unlike a
-  primop it does need a subclass, but the GIL half is settled.
+- 032 (log callbacks) is MOSTLY DONE. The in-process half works:
+  `EvalState.subscribe_logs` hands back a bounded `LogStream` a reader
+  drains, and a record is Nix's own - `action`, `level`, `id`,
+  `parent`, `type`, `text`, `fields` - rather than a line of text. A
+  queue and not a callback, because a callback would take the GIL once
+  per log line inside the evaluator. The bound refuses a `msg` and a
+  `result` and never a `stop`, since a dropped stop leaks a node in
+  the reader's activity tree forever.
+  It measured two things that shape it. The global `nix::verbosity`
+  filters before any logger runs, so a subscription can only narrow;
+  and activities are not filtered at all, so a start arrives whatever
+  its level says. It routes by THREAD, which is sound because this Nix
+  has no parallel evaluation - and leaves fetcher threads uncovered,
+  which is named rather than fixed.
+  It found the emitter publishing HALF a surface: `subscribe_logs`
+  crossed as an rpc answering a `LogStream` handle that no service
+  could take, because `annotate` assumed an unwrapped class crosses by
+  copy - true of every unwrapped class until this one, all of which
+  were wire values. And `ASYNC_CLASS` named an `AsyncLogStream` that
+  does not exist. Both are refused now by a RULE rather than a
+  blocklist: a return whose type is a proxy with no service is a
+  wire_blocker. The streaming rpc stays deferred; it is protocol, like
+  Session.
+  The tap is a hand-written `nix::Logger` subclass, approved by Carl
+  on 2026-09-03, and `tasks/084` holds the DSL gap that made it
+  hand-written.
+- 084 (a declaration cannot implement a virtual) is OPEN and blocks
+  nothing. The five `LogTap` overrides are one shape stated five
+  times, which is what an emitter is for - and there is exactly ONE
+  implementer, so the shape cannot be shown to generalise yet.
 - 045 (wire names) and 048 (proto3 optional) want doing BEFORE 022:
   both change the schema, and the lockfile should pin the fixed
   names and the synthetic oneofs, not the current ones.
