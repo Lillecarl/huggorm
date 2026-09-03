@@ -74,6 +74,17 @@ CXX_PARAM = {
     # converts. `chrono` names <nanobind/stl/chrono.h>, like every
     # other entry names its own header.
     "microseconds": ("std::chrono::microseconds", "chrono"),
+    # A Python callable the binding KEEPS. No caster header: nanobind
+    # itself defines `nb::object`, and there is nothing to convert -
+    # the point is to hold the reference, not to read a value out.
+    #
+    # BY VALUE, which is the opposite of every other entry, and the
+    # method carrying it must be `@instant`. A by-value Python handle
+    # is only safe while the GIL is HELD, and `@instant` is what keeps
+    # it: a method that released it would change a reference count
+    # without it and nanobind aborts the process. Registration waits
+    # for nothing, so it has no reason to release the GIL anyway.
+    "nb::object": ("nb::object", None),
 }
 
 # A declared Python type with no C++ alias behind it, and the C++ it

@@ -78,6 +78,12 @@ PYTHON = {
     # the two widths above read as: a timedelta says what the number
     # MEANS, and nanobind's chrono caster hands one over already.
     "microseconds": "datetime.timedelta",
+    # The one entry that does not describe a C++ VALUE. `nb::object`
+    # is a reference to a Python object, so the Python spelling is
+    # what the caller already had - nothing is marshalled in either
+    # direction, and the binding holds the reference to call back
+    # through (tasks/033).
+    "nb::object": "object",
 }
 
 # What a wire value defines, and what makes it define each one. Read
@@ -144,7 +150,21 @@ def _type(t: Type | None) -> str:
 # cannot reflect off a compiled class - so `check.py` would diff the
 # manifest against a shape reflection has no way to produce. Adding
 # that for zero callers buys a bug, not a feature (tasks/079).
-UNCROSSABLE = ("uint64_t",)
+#
+# This RAISES, so everything here is a GAP rather than a decision: a
+# width is something the manifest could learn to say. A type that
+# should NEVER cross belongs in `grpc_schema.NOT_DATA` instead, which
+# REPORTS - the method then keeps its in-process wrapper and loses
+# only the rpc, which is the shape `Store.real_path` already has.
+#
+# `nb::object` went here first and stopped the whole build, which is
+# the wrong answer for something deliberate (tasks/033).
+UNCROSSABLE = {
+    "uint64_t": (
+        "a service's message carries no width: every int parameter "
+        "crosses as sint64, which holds half of one. Teach the "
+        "manifest to spell a parameter's wire type - see tasks/079."),
+}
 
 
 def _crossable(t: Type | None, where: str) -> None:
@@ -155,10 +175,8 @@ def _crossable(t: Type | None, where: str) -> None:
     value crosses as its fields, and a field says its width."""
     if t is not None and t.cxx is not None and t.cxx.spelling in UNCROSSABLE:
         raise TypeError(
-            f"{where} is a {t.cxx.spelling}, and a service's message "
-            f"carries no width: every int parameter crosses as sint64, "
-            f"which holds half of one. Teach the manifest to spell a "
-            f"parameter's wire type - see tasks/079.")
+            f"{where} is a {t.cxx.spelling}, and "
+            f"{UNCROSSABLE[t.cxx.spelling]}")
 
 
 def _param(p: Param) -> dict[str, Any]:

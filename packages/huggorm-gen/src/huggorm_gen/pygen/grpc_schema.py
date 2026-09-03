@@ -215,12 +215,35 @@ ACQUIRE = "Acquire"
 FREE_SERVICE = "Functions"
 
 
+# Types that are DELIBERATELY not on the wire, and the reason each is.
+#
+# Distinct from everything else this function reports: the rest are
+# gaps a later change could close, and these are decisions that a
+# later change should not.
+#
+# Kept here rather than in `manifest.UNCROSSABLE`, which RAISES and
+# stops the build. A method taking one of these is a real in-process
+# method with no remote form - the same shape as `Store.real_path` -
+# so it is REPORTED, and the protocol withholds it.
+NOT_DATA = {
+    "object": (
+        "an arbitrary Python object is not data - here it is a "
+        "callable the binding keeps and calls back. A remote client "
+        "registering one would make the evaluator call BACK over the "
+        "socket, on its own evaluation thread, once per invocation - "
+        "a distributed call in a hot loop. In-process only, by "
+        "decision rather than omission (tasks/033)."),
+}
+
+
 def wire_blocker(type_str: str, kinds: dict[str, str]) -> str | None:
     """Why this type cannot cross the wire, or None if it can.
 
     Reported rather than raised, so a function that is unrepresentable
     today still gets its in-process wrapper and the build says exactly
     what is missing."""
+    if (why := NOT_DATA.get(type_str)) is not None:
+        return why
     try:
         # `T | None` is T plus presence, so from here on it is T that
         # is under test - a field the schema cannot build has nothing

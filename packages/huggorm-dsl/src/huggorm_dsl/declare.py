@@ -149,6 +149,27 @@ Path = Annotated[pathlib.Path, Cxx("string"), Async("anyio.Path")]
 # means nothing without an epoch, while a span is a quantity a caller
 # can add up. Declaring both as `int` would have made them look alike.
 Duration = Annotated[datetime.timedelta, Cxx("microseconds")]
+# A Python callable the BINDING keeps and calls back.
+#
+# The only type here that does not describe a C++ value. `nb::object`
+# is a reference to a Python object, so a parameter spelled this way
+# says the C++ on the far side re-enters the interpreter - which is
+# `EvalState.register_primop` and nothing else today.
+#
+# It cannot cross a wire, and `manifest.UNCROSSABLE` refuses it there.
+# That is not a gap to fill later: a remote client registering a
+# primop would make the evaluator call BACK over the socket, on its
+# own evaluation thread, once per invocation - a distributed call in
+# a hot loop. `tasks/033` records it as a decision rather than an
+# omission.
+#
+# `object` and not `Callable[..., Any]`, and the reflection gate is
+# what settled it. `nb::object` accepts ANY Python object and nanobind
+# reports the parameter as `object`, so a `Callable` annotation would
+# promise a check the binding does not make - and a declaration may
+# not be more permissive OR more specific than the C++ it binds. The
+# docstring is where "this must be callable" belongs.
+PyFunc = Annotated[object, Cxx("nb::object")]
 
 
 @dataclass(frozen=True)
