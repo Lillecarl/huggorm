@@ -30,7 +30,7 @@ The hand-written layer's own surface: `connect`, `NixClient`,
 `ConnectionExpired`, `serve`, `errors`, `set_pool_size`. No
 declaration names any of them, because they are not bindings - they
 are the library this repo writes over the bindings. `LOCAL` below is
-a list of six, and it changes when that layer's API changes rather
+a short list, and it changes when that layer's API changes rather
 than when a declaration does. That was the whole complaint: the
 maintenance burden was tracking DECLARATIONS, and there were
 thirty-odd of those.
@@ -64,6 +64,7 @@ LOCAL: dict[str, list[str]] = {
     "huggorm_generated._runtime": ["set_pool_size"],
     ".remote": ["ConnectionExpired", "NixClient", "connect"],
     ".server": ["serve"],
+    ".watch": ["Watcher"],
 }
 
 # Imported as a MODULE rather than for the names in it. `huggorm.errors`
