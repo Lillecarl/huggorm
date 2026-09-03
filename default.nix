@@ -4,6 +4,52 @@
 rec {
   inherit pkgs;
   inherit (pkgs) lib;
+  # The Nix this repository BINDS, with one patch carried on it.
+  #
+  # `EvalState` allocates its base environment once, at a size
+  # `src/libexpr/eval.cc` fixes as `BASE_ENV_SIZE = 128`, and neither
+  # `addConstant` nor `addPrimOp` tests a bound before writing
+  # `baseEnv.values[baseEnvDispl++]`. Nix 2.34 publishes 119 names
+  # under `builtins`, so a stock evaluator has NINE slots left and the
+  # tenth registered primop writes past the end of the block.
+  #
+  # `tasks/033` measured the headroom here; the patch header measures
+  # the overflow, under AddressSanitizer, and explains why the size is
+  # a constant at all. Two things in it are worth knowing before
+  # reading the diff:
+  #
+  # - The collector HIDES this. `allocBytes` is GC_MALLOC and Boehm
+  #   rounds up to a size class, so the write lands in the block's
+  #   slack and nothing reports it. Only a build with no collector
+  #   gets an exact allocation and aborts.
+  # - There are TWO containers of 128. `createBaseEnv` also builds the
+  #   `builtins` attribute set with `buildBindings(128)` and pushes
+  #   into it through a `const_cast` that goes around the capacity
+  #   assert. Raising only the base environment moves the corruption
+  #   rather than removing it, so both go up together.
+  #
+  # Taken from ~/Code/nanopynix, which found it and carries the same
+  # file. Carl's call, 2026-09-03: "there are tiny patches required to
+  # make good bindings for now, eventually I'll work on upstreaming
+  # dynamic env sizing".
+  #
+  # ONE patch on ONE version, and nanopynix's shape is deliberately
+  # not copied. It keys a patch table by `majorMinor` and builds a
+  # scope per version, because it supports 2.34 through git. This
+  # repository binds the nix that `pkgs.nix` is, and Carl put it this
+  # way on the same day: nanopynix is production ready, "this is still
+  # an elaborate spike". A version matrix is a cost that buys nothing
+  # until there is a second version to serve.
+  #
+  # The patch header says the three hunks have identical context in
+  # 2.31, 2.34 and 2.35, so a version bump moves line numbers and
+  # nothing else. If it ever stops applying, that failure is the
+  # signal to read it again - not to add a matrix.
+  #
+  # It raises both sizes to 512 and makes the two base-environment
+  # writes TEST the bound, so a consumer that still exceeds it reads
+  # an error instead of corrupting the heap.
+  nix = pkgs.nix.appendPatches [ ./nix/patches/nix-base-env-size.patch ];
   # The LANGUAGE a declaration is written in, and the reader that
   # parses one. No declaration and no emitter is in here, which is
   # what lets the two below depend on it without depending on each
@@ -53,6 +99,7 @@ rec {
   # the sources exist.
   huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
     inherit huggorm-gen huggorm-decl huggorm-dsl;
+    inherit nix;
   };
   # this is a Python library that uses huggorm-bindings
   huggorm = pkgs.callPackage ./packages/huggorm {
