@@ -667,11 +667,53 @@ which was superseded rather than fixed.
   is a SECOND silent-drop layer with its own `startswith("_")`
   filter; and a proto identifier must start with a letter, so
   `__call__` cannot be an rpc name.
-- 085 (four things the log stream does not cover) is OPEN and blocks
-  nothing: a process-wide sink for fetcher and build threads, two
-  states on one thread, fan-out to a second reader, and the ErrorInfo
-  overlap with 036. One cause behind all four - the tap routes by
-  THREAD, and a thread is not always the right owner.
+- 085 (four things the log stream does not cover) is OPEN, with its
+  FIRST gap done: `huggorm.subscribe_process_logs`, for records
+  raised on a fetcher, a file-transfer thread or a build. Carl
+  approved the C++ by name; `eval.hpp` grew 104 lines, about 42 of
+  them code.
+  A FALLBACK, not a broadcast. A thread that subscribed CLAIMS its
+  records, so the sink answers what nobody claimed rather than
+  everything in the process. Broadcasting would buy the second
+  question and cost a caller holding both subscriptions every record
+  twice, with nothing on a LogRecord to deduplicate by - so the shape
+  that answers "everything" is fan-out, which is gap 3, still open.
+  Two gates, one per direction, because either alone passes for the
+  wrong reason. Removing the fallback fails both.
+  The scoping question 032 opened is answered at TWO layers on
+  purpose: the C++ REPLACES, because refusing there wedges the sink
+  when a caller drops its LogStream; the rpc REFUSES, because a
+  stream ending releases it.
+  It needs a MUTEX where `thread_queue` needs none - that slot is one
+  thread's, this one is read from every thread while another writes
+  it - and the replaced queue is closed outside it, because close
+  takes the queue's own lock.
+  Stated rather than fixed: the never-drop-a-stop rule was justified
+  by a per-state queue being bounded by ONE EVALUATION, and a
+  process-wide queue in a service that runs for days is bounded by
+  the reader instead.
+  The codegen needed NO change for a shape it had never seen - a free
+  function returning a proxy with no service. Every emitter derived
+  the same answer, including the refusal to give it an rpc, and its
+  inverse got one for the same reason `unsubscribe_logs` has one.
+  The rpc is `Session/ProcessLogs`, hand-written beside `Session/Logs`
+  and `client.process_logs()` on the far side. `ProcessLogsReq` is
+  `LogsReq` without the handle - the only structural difference - and
+  they SHARE `LogsResp`, because a batch and a drop count is the whole
+  answer either way. `_options`, `_pump` and `_log_stream` are the
+  three things written once rather than twice.
+  It REFUSES a second stream, which is where the sharing question
+  lands. A BOOL and not a map, because there is nothing to key one
+  sink by - so it is one reader for the whole SERVER, not one per
+  connection, and fan-out is what would change that.
+  `test_the_descriptor_says_it_streams` caught the schema change
+  itself, failing with `{'Logs', 'ProcessLogs'}` - an exact-set
+  assertion earning its keep. Three perturbations: no fallback fails
+  three gates, no refusal fails one with DID NOT RAISE, and no flag
+  clear fails three, because a wedged server poisons the tests after
+  it.
+  Gaps 2, 3 and 4 are unchanged: two states on one thread, fan-out to
+  a second reader, and the ErrorInfo overlap with 036.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE
