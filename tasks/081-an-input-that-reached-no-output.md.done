@@ -1,8 +1,10 @@
 # An input that reached no output
 
-**OPEN.** This repo's emitters SKIP what they do not recognise, and a
+**DONE.** This repo's emitters SKIP what they do not recognise, and a
 skip is indistinguishable from an absence. Three tasks found three
 instances, each by someone writing the case rather than by a check.
+Two censuses close the two seams that produced them, and each was
+seen to fail on the bug it is for.
 
 ## The three
 
@@ -157,16 +159,91 @@ That is an exception class gone from the emitted module and from the
 catch chain, silently - which is `tasks/073`'s shape reached by a
 different route than a version branch.
 
-### What is still open
+## The gate, at the second seam
 
-The EMITTER seam. This proves the reader kept a definition; it does
-not prove any emitter wrote it. `emit_module` prints `not bound: ...`
-at class grain and nothing at method grain, so an emitter that
-skipped one method of a bound class would still say nothing.
+`census_written` in `emit_module`, raising, run for every module the
+codegen emits.
 
-That is the harder half, and it needs what this one did not: a record
-of what each emitter consumed, rather than a comparison of two things
-built from the same read.
+The reader census proves the reader kept a definition. It says
+nothing about whether an emitter wrote it: `emit_module` printed
+`not bound: ...` at class grain and nothing at method grain, so an
+emitter that lost one method of a class it DID bind said nothing at
+all.
+
+### Why it reads the emitted TEXT
+
+The same argument as the other seam, pointed the other way. A reader
+drop is invisible to everything built from the read, so that census
+compares against the raw parse. An emitter skip is invisible to the
+reader's output, so this one compares against the text the emitter
+just wrote - not a second walk of the same `Class` objects, which
+would be two views of one decision agreeing with itself.
+
+It lives inside `emit_module` because that is the one place both
+halves exist at once: the `Module` the emitter was handed, and the
+string it produced.
+
+nanobind spells a method `.def("name", ...)` and a free function
+`m.def("name", ...)`, so one pattern finds both. That is a text
+search, and it is a sound one here in a way the first probe was not:
+the text is generated, its shape is fixed, and the match is anchored
+rather than a substring.
+
+### Three exemptions, none of them a name
+
+Measured, and each is read off the declaration:
+
+- `@startup` - emitted as a CALL at module init;
+- `@translator` - emitted as a registration;
+- the function a class names in `@produced(by=...)` - emitted as that
+  class's `nb::new_`. `open_store` is `Store`'s constructor, and a
+  caller writes `Store(uri)`.
+
+`Module.exported` already draws the first two. The third was found by
+the census failing the real corpus.
+
+Only BOUND classes are asked. `bindable` drops the ones nanobind
+cannot bind yet and `emit_module` prints what it left out, which is a
+different fact from an emitter losing one method of a class it did
+bind.
+
+### Measured by breaking it
+
+One line in `nbemit`'s method loop, skipping `nar_size`:
+
+    TypeError: pathinfo.py: the reader kept PathInfo.nar_size() and
+    the emitted C++ binds no such name. An emitter dropped it, and a
+    drop reads as an absence - see tasks/081.
+
+Before this, that produced a binding quietly missing an accessor, a
+stub promising one, and a wire field nothing could read.
+
+## Both seams, and what is left
+
+Neither census can see what the other sees, and the three historical
+bugs are covered:
+
+| bug | what happened | which census |
+| --- | --- | --- |
+| 073 | a version-branched class the errors emitter never saw | `census_read`, errors half |
+| 075 | a `@property` accessor `_live` could not name | `census_read` |
+| 078 | a declaration file in none of the lists | `huggorm_decl.census` |
+| - | an emitter losing one method of a bound class | `census_written` |
+
+What is NOT covered is the surfaces ABOVE the bindings: the stub, the
+async wrapper, the RPC client and the schema. Those are emitted from
+the MANIFEST rather than from the reader's output, so the question
+there is a different one - "every manifest entry reached every
+surface that should carry it" - and it wants its own task if a bug
+ever shows it is needed. None has.
+
+`census_written` covers the NANOBIND emitter. `pyenum` and `pyerrors`
+are emitters too and are not asked: each writes a whole list or a
+whole tree rather than looping definitions, and neither has ever been
+seen to drop one. A vocabulary MEMBER is outside both censuses by
+construction - it is an assignment, not a `def`, and `_resolve`
+filters only `ClassDef` and `FunctionDef`, so the reader cannot drop
+one either.
 
 ## What the probe is NOT good enough for
 

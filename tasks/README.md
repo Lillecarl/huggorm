@@ -187,20 +187,21 @@ which was superseded rather than fixed.
   and `@classmethod` are refused too - reachable since 075, and
   measured dropping the first parameter of every method that wrote
   one.
-- 081 (an input that reached no output) is OPEN. The general form of
+- 081 (an input that reached no output) is DONE. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
-  a skip reads as an absence. Measured on 2026-09-02: six of 182
-  declared names reach no output by name, and all six are legitimate
-  for a reason the declaration already states - `@startup`,
-  `_`-private, `@produced(by=...)`, or being a vocabulary. So the
-  fear it was opened with is wrong and the gate is buildable. Half of
-  it is built: `census_read` compares the RAW parse against where the
-  reader put each definition, and fails the build on one that reached
-  nothing. It catches 075 exactly - reproduced, and the message names
-  the accessor. errors.py is covered too, at class grain: a method
-  there turned out not to be droppable at all, because `_resolve`
-  appends a ClassDef whole. What is left is the EMITTER seam, which needs a record
-  of what each emitter consumed rather than two views of one read.
+  a skip reads as an absence. The fear it was opened with was wrong -
+  every legitimate skip is already something the declaration SAYS, so
+  no new word was needed. Two censuses, at the two seams that produced
+  the three bugs. `census_read` compares the RAW parse against where
+  the reader put each definition, because everything else is built
+  from the read and would agree with it; it catches 075 exactly, and
+  errors.py at class grain, where a method turned out not to be
+  droppable at all because `_resolve` appends a ClassDef whole.
+  `census_written` compares what the reader kept against the emitted
+  TEXT, inside `emit_module` where both exist. Each was seen to fail
+  on the bug it is for. The surfaces above the bindings are emitted
+  from the MANIFEST and are a different question, unasked because no
+  bug has asked it.
 - 016 (evaluation server) is OPEN, and has its first warm cache.
   `eval_file` is declared, so libexpr's `fileEvalCache` is reachable:
   evaluate a file, delete it, evaluate it again, and the answer comes
