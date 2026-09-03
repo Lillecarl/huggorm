@@ -237,7 +237,8 @@ which was superseded rather than fixed.
   on the bug it is for. The surfaces above the bindings are emitted
   from the MANIFEST and are a different question, unasked because no
   bug has asked it.
-- 016 (evaluation server) is OPEN, and has its first warm cache.
+- 016 (evaluation server) is DONE: all three parts of its title are
+  built and the destination milestone is gated. It has its warm cache.
   `eval_file` is declared, so libexpr's `fileEvalCache` is reachable:
   evaluate a file, delete it, evaluate it again, and the answer comes
   from the cache. A fresh state asked the same thing in the same
@@ -257,8 +258,18 @@ which was superseded rather than fixed.
   resolved path. Forget the CLOSURE, not the file: the cache holds no
   edge from an importer to its import, so forgetting the changed file
   alone leaves the importer silently stale - measured, gated, and kept
-  as a negative control. What is left is a watcher that decides WHEN,
-  and background eager evaluation.
+  as a negative control.
+  The watcher that decides WHEN is 083 and the eager pass over it is
+  086, so nothing of the title is outstanding. Closing it does not
+  settle the milestone's two CAVEATS - a handle id is the capability,
+  so it shows the object survived rather than that the claim kept it
+  (031); and "no re-evaluation" is shown by the file being gone
+  rather than by counting evaluations. Both want a better instrument
+  and neither is about whether the server exists.
+  `resetFileCache` stays unbound, and for a better reason than the
+  one it was deferred on: per-path invalidation made it a binding
+  with no PURPOSE, because dropping the fetched flake inputs is
+  exactly what a watcher must not do.
 - 078 (a declaration nobody lists reaches nothing) is DONE. `corpus()`
   censuses `decl/` against the lists and the build fails when they
   disagree. The plan in the file was wrong: "every `*.py` in exactly
@@ -555,6 +566,12 @@ which was superseded rather than fixed.
   It does not make a user's call faster while it runs: an EvalState
   is affine, so the wait is one eager evaluation. Not zero, and only
   a second EvalState would make it zero.
+  The file first closed saying the destination SENTENCE still needed
+  an end-to-end gate. It does not: `test_lifecycle.py`'s
+  `test_a_claimed_state_answers_for_a_file_it_can_no_longer_read` is
+  that gate and predates this work. Its technique is the better one -
+  the creator deletes the file it evaluated, so a cache miss cannot
+  be faked, and a fresh EvalState in the same test is the control.
 - 087 (a failed evaluation wedged its root) is DONE, and is the fifth
   instance of the named failure mode - the first that is not an
   emitter skipping something. libexpr caches what a FAILED evaluation
@@ -590,11 +607,13 @@ which was superseded rather than fixed.
   SUPERSEDED: all three are settled. 050 closed with Cython rather
   than being done, and a signature is stated once now - in the
   declaration.
-- 014 (transport shims) and 016 (evaluation server) are the
-  destinations. 016's lifecycle contract is settled and executable -
-  a detached evaluator survives its creator's death and a successor
-  claims it warm - so what is left of it is the part that needs a real
-  evaluator: warm caches, the file graph, background evaluation.
+- 014 (transport shims) is the destination that is left. 016
+  (evaluation server) is DONE: the lifecycle contract, the warm
+  caches, the file graph and background evaluation are all built, and
+  `CLAUDE.md` now describes something that exists rather than
+  something aimed at. What follows it is ordinary work on a running
+  service - the residues in 085, the transports in 014, and whatever
+  the first real caller finds.
 
 Every build lints and typechecks the code its package owns, and
 `nix run --file . check` does the whole tree in about a second (013).

@@ -1,7 +1,11 @@
 # Evaluation server: persistent state, watched files, background eval
 
-**OPEN.** The lifetime contract, the warm cache and per-path
-invalidation landed. No inotify watcher, no background evaluation.
+**DONE.** All three parts of the title are built, and the milestone
+that counts as reaching the destination is gated. The lifetime
+contract, the warm cache and per-path invalidation landed here; the
+watcher and the source that drives it are `tasks/083`; background
+eager evaluation is `tasks/086`. The last section says what closing
+this does and does not mean.
 
 This is the project's DESTINATION, and it is stated as one in
 `CLAUDE.md` under "What this is for" - including the milestone that
@@ -133,6 +137,10 @@ cold state's SysError went straight past a helper that catches only
 what said so.
 
 ### What is still missing
+
+*(Written 2026-09-02. Both are built now - `tasks/083` and
+`tasks/086`. Kept as written, because the order they were missing in
+is what the sections below record.)*
 
 Watched files and background eager evaluation are still untouched.
 `resetFileCache` is deliberately NOT bound: nothing but a test would
@@ -422,3 +430,49 @@ only useful once something knows the old answer is stale.
 Known limits, unchanged: `positions` keeps entries for a forgotten
 file (append-only metadata, harmless), and a file reached only through
 `builtins.readFile` is invisible to all of this.
+
+## 2026-09-03: the three parts are built, so this closes
+
+**DONE.** The title names three things and all three exist.
+
+    persistent state      here, and the milestone gates it
+    watched files         tasks/083 - Watcher, and Notifier over it
+    background eval       tasks/086 - Warmer
+
+The chain runs end to end and each link was built because the one
+before it existed: a state that outlives its creator is only worth
+keeping if something knows when it goes stale, and knowing that is
+only worth having if something acts on it.
+
+### What closing this does NOT mean
+
+**The milestone's two caveats stand**, and they are written above
+rather than repeated here: a handle id is the capability, so the
+milestone shows the OBJECT survived rather than that the CLAIM kept it
+(`tasks/031`); and "does no re-evaluation" is shown by the file being
+gone rather than by counting evaluations. Both want a better
+instrument. Neither is worth a weaker claim, and neither is worth
+holding this file open - they are about how the milestone is
+MEASURED, not about whether the server exists.
+
+**The pieces have their own residues**, each recorded where it
+belongs. `tasks/085` holds four things the log backchannel does not
+cover. `builtins.readFile` is invisible to the watcher, which
+`tasks/083` names and libexpr will not fix. An eager evaluation
+queues ahead of the user on the affine thread, which `tasks/086`
+names and only a second `EvalState` would change.
+
+**`resetFileCache` is still not bound**, and the reason it was
+deferred turned out to be right for a better reason than the one
+given. It was held back as a binding with no user; per-path
+invalidation then made it a binding with no PURPOSE, because
+forgetting one path is what a watcher wants and dropping everything
+including the fetched flake inputs is what it must not do.
+
+### What the destination becomes now
+
+`CLAUDE.md` describes the service in the present tense, and it is now
+true rather than aspirational. The next things are not "reach the
+destination" but ordinary work on a service that exists: the residues
+above, the transports in `tasks/014`, and whatever the first real
+caller finds.

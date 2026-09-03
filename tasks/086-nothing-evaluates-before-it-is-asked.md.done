@@ -173,7 +173,22 @@ evaluation would run on regardless. Nothing here pretends otherwise.
 The destination in `CLAUDE.md` is reached in its parts: a handle that
 outlives its creator, a warm state, a watcher that knows when the
 answer is stale, and now something that refreshes it before anyone
-asks. What is not built is the sentence as one thing - a second client
-claiming a live `EvalState` and finding the work already done. That
-wants an end-to-end gate over the rpc rather than new machinery, and
-it has no task yet.
+asks.
+
+**The sentence as one thing is ALREADY GATED**, which this section
+first claimed it was not. `test_a_claimed_state_answers_for_a_file_it
+_can_no_longer_read`, in `tests/test_lifecycle.py`, is the milestone
+word for word - a second client claims a live `EvalState` and
+re-evaluating unchanged input does no re-evaluation.
+
+Its technique is better than the one that would have been written
+here. The creator evaluates a file and then DELETES it, so a cache
+MISS cannot be faked: a hit never opens the file and nothing else on
+that machine can answer. The control is a fresh `EvalState` in the
+same test asking for the same path, which goes to disk and says
+"opening file".
+
+So there is nothing to build for it. What the parts above add is that
+the warm work now maintains ITSELF - the milestone proves a claimed
+state keeps what it had, and `Watcher` plus `Notifier` plus `Warmer`
+are what keep that from going stale while nobody is looking.
