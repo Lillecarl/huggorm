@@ -1,0 +1,179 @@
+# Nothing evaluates before it is asked
+
+**DONE.** `huggorm.Warmer` is built and gated. The section at the end
+says what it cost, and records the debounce this file argued for -
+which a measurement refuted and a gate then un-refuted.
+
+The last third of `tasks/016`, and the last piece of the
+destination `CLAUDE.md` names: "registered expressions evaluated
+eagerly in the background so a user-triggered eval is already in
+progress or already done."
+
+It waited for `tasks/083`, and correctly: re-evaluating eagerly is
+only useful once something knows the old answer is stale. That is
+built now - `Watcher` decides what to forget and `Notifier` notices
+without being asked - so this is what is missing.
+
+## What exists to build on
+
+    Watcher.eval_file(root)    evaluates and records a snapshot
+    Watcher.changed(path)      forgets the roots that could depend on it
+    Notifier.next_change()     one event, acted on, roots ANSWERED
+
+The last line is the hinge. `changed()` already returns the roots it
+forgot, and `next_change()` passes that up. So the trigger is not
+missing - what is missing is anything that does something with it.
+Today a caller gets a list of stale roots and has to re-evaluate them
+itself.
+
+## What it is
+
+A registry of roots to keep warm, and a task that re-evaluates one
+when it goes stale.
+
+    register(root)     keep this one warm
+    unregister(root)
+    ...and a loop over next_change() that re-evaluates what it named
+
+That is small, and the smallness is the point: 083 built the change
+source so that this would be a consumer rather than a rewrite.
+
+## What it has to get right, and none of it is obvious
+
+**A re-evaluation is not free and a change is not one event.** Saving
+a file raises several inotify events, and an editor writing by rename
+raises more. Re-evaluating on each of them evaluates the same root
+three or four times. Some debounce is needed, and a debounce is a
+TIMER - which is the first thing in this whole area that cannot be
+gated without one. That is the design question, not the loop.
+
+**A failed eager evaluation is not a failure.** A file saved
+mid-edit does not parse. The eager pass must not raise into whatever
+is running, must not retry forever, and must not swallow the error so
+completely that a caller asking later gets a fresh copy of the same
+failure with no history.
+
+**It shares the state's thread with the user.** An `EvalState` is
+affine, so an eager evaluation and a user-triggered one QUEUE behind
+each other. Starting one eagerly can therefore make a user wait,
+which is the opposite of the point. Whether the eager pass yields, or
+runs on its own state, or is simply cancelled when a real call
+arrives, is a decision this task has to make and record.
+
+**Cancelling an evaluation in flight.** libexpr offers no such thing.
+So "cancelled" can only mean "we stopped waiting for it", and the
+evaluation keeps running on that thread. Worth measuring before
+designing around it.
+
+## Where it lives
+
+Beside `Notifier`, under both surfaces, for the reason Carl gave for
+`Watcher`: it is written against `EvalStateLike`, so one object serves
+the in-process and the remote case. It needs no C++.
+
+## Where it does not go
+
+`tasks/085` is the other open piece of the destination, and it is a
+different problem: a process-wide log sink needs C++ and is blocked on
+approval. This one is blocked on nothing.
+
+## 2026-09-03: built
+
+**DONE.** `huggorm.Warmer`, in `packages/huggorm/huggorm/warm.py`.
+Seven gates in `tests/test_warm.py`, and the suite went from 327 to
+336 - two of the nine are `tasks/087`'s, found on the way.
+
+    Warmer(watcher)
+      .register(root) / .unregister(root)
+      .stale()          registered roots the watcher has dropped
+      .refresh()        evaluate them; answers the ones that worked
+      .follow(source)   refresh whenever the source says so
+      .failures         what the last eager attempt raised, per root
+
+### `stale()` is derived, and that is the design
+
+This file expected a registry plus a staleness flag. The flag is not
+needed: `Watcher.changed()` DELETES a forgotten root's snapshot, so
+"registered and has no snapshot" already means "its answer is gone".
+
+So the module records nothing about staleness and there is nothing for
+it and the watcher to disagree about. It is the same move `tasks/083`
+made when it read `Watcher.roots` rather than tracking its own.
+
+### What this file got wrong about the debounce, twice
+
+The section above said the design question was the debounce: one save
+is several inotify events, so a refresh per event evaluates one root
+several times, and a timer is needed to coalesce them. That was
+argued, so it was measured.
+
+**The measurement said the debounce was pointless.** A drain loop
+reading changes across a save saw exactly ONE, in-place or by rename.
+The reasoning fitted: the first event forgets the root, which drops
+its snapshot, which empties `Watcher.watching()`, so every later event
+of the burst matches nothing. The window was removed and the module
+became timer-free.
+
+**The measurement was wrong, and the gate caught it.** The probe never
+REFRESHED between events. `follow()` does, and a refresh re-evaluates
+the root and re-watches its files - which is precisely what lets the
+straggler through. `test_one_save_is_one_evaluation` failed with two
+evaluations for one save, and the window went back in.
+
+Worth keeping because the wrong step was a real measurement rather
+than a guess. It measured the right thing in the wrong harness, and
+only a gate driving the actual loop could tell.
+
+### A failure is recorded, not raised
+
+An eager pass has no caller to raise to, and a file saved mid-edit
+that does not parse is the normal case rather than an error. So
+`refresh()` records the exception against the root and leaves the root
+STALE.
+
+Stale is the half that matters. A failure marking the root warm would
+leave it never re-evaluated, and the caller asking later would get an
+answer built from a file that no longer says that. Gated.
+
+Leaving it stale also means the next change tries again, which is one
+attempt per change rather than a retry loop - so `refresh()` is
+edge-driven, and calling it in a loop is not what it is for.
+
+### What building it found
+
+**`tasks/087`.** A failed evaluation leaves its files CACHED, so a
+file fixed after a bad save keeps raising the old error - and a failed
+evaluation records no snapshot, so no later change can implicate that
+root. The wedge was permanent and silent. It was found here because an
+eager pass evaluates half-saved files as a matter of course, and it is
+a `Watcher` defect rather than this module's. Fixed in the same
+branch.
+
+**A gate that waited on the wrong thing.**
+`test_a_saved_file_is_re_evaluated_with_nobody_asking` first waited
+for `stale()` to empty, which is vacuous: a warm root is already
+unstale, so the wait returned before the save was ever noticed and the
+test asserted on the old answer. It waits for the EVALUATION now.
+
+### What it does not do, and none of it is fixable here
+
+**It does not make a user's call faster while it runs.** An
+`EvalState` is affine, so an eager evaluation holds the watcher's
+lock. `refresh()` takes that lock once per ROOT rather than once for
+the batch, so a user waits one evaluation rather than the whole
+refresh - but never zero. A second `EvalState` for the eager pass is
+the only thing that would, and that is a different design.
+
+**It does not cancel an evaluation in flight.** libexpr offers no way
+to, so "cancelled" could only mean "stopped waiting", and the
+evaluation would run on regardless. Nothing here pretends otherwise.
+
+### After this
+
+The destination in `CLAUDE.md` is reached in its parts: a handle that
+outlives its creator, a warm state, a watcher that knows when the
+answer is stale, and now something that refreshes it before anyone
+asks. What is not built is the sentence as one thing - a second client
+claiming a live `EvalState` and finding the work already done. That
+wants an end-to-end gate over the rpc rather than new machinery, and
+it has no task yet.

@@ -533,17 +533,40 @@ which was superseded rather than fixed.
   branch was claimed as a decision before anything ran it. Both are
   fixed and both failures are written out.
   Four residues moved to `tasks/085`.
-- 086 (nothing evaluates before it is asked) is OPEN and blocks
-  nothing: the last third of 016 and the last piece of the
-  destination. It waited for 083 and correctly - eager re-evaluation
-  is only useful once something knows the answer is stale - and 083
-  is done. The trigger already exists: `Notifier.next_change()`
-  answers the roots it forgot, and nothing consumes that. The design
-  question is not the loop, it is the DEBOUNCE: one save is several
-  inotify events, so this is the first thing in the area that cannot
-  be gated without a timer. Two more it has to decide - a failed
-  eager pass on a half-saved file, and an eager evaluation queueing
-  ahead of the user on the state's own affine thread.
+- 086 (nothing evaluates before it is asked) is DONE. `huggorm.Warmer`
+  re-evaluates registered roots the watcher dropped, which is the last
+  third of 016 and the last piece of the destination.
+  `stale()` is DERIVED, and that is the design: `changed()` deletes a
+  forgotten root's snapshot, so "registered and has no snapshot"
+  already means "its answer is gone" - the module records no
+  staleness and so cannot disagree with the watcher.
+  A failed eager pass is RECORDED and left stale, never raised. An
+  eager pass has no caller to tell, and a half-saved file is the
+  normal case; stale is the half that matters, because a failure
+  marking the root warm would leave it never re-evaluated.
+  The DEBOUNCE was wrong twice and the sequence is worth keeping. It
+  was argued; a measurement then said it was pointless, because a
+  drain loop across a save saw one change - the first event forgets
+  the root and empties `watching()`. That probe never REFRESHED
+  between events, and a refresh re-watches the files, which is what
+  lets a straggler through. The gate failed with two evaluations for
+  one save and the window went back in. A real measurement, in the
+  wrong harness.
+  It does not make a user's call faster while it runs: an EvalState
+  is affine, so the wait is one eager evaluation. Not zero, and only
+  a second EvalState would make it zero.
+- 087 (a failed evaluation wedged its root) is DONE, and is the fifth
+  instance of the named failure mode - the first that is not an
+  emitter skipping something. libexpr caches what a FAILED evaluation
+  read, so a file fixed after a bad save keeps raising the OLD error;
+  and a failed evaluation records no snapshot, so no later change can
+  implicate that root. Permanent, and a confident wrong answer rather
+  than an absence. 083's seven gates all evaluate files that parse.
+  `Watcher.eval_file` forgets what a failure cached, DERIVED at no
+  extra call: cached and in no snapshot means read by an evaluation
+  that failed. It errs towards forgetting, because forgetting a good
+  file costs a re-read and keeping a bad one costs the answer. Two
+  gates, at two layers, and reverting fails both.
 - 085 (four things the log stream does not cover) is OPEN and blocks
   nothing: a process-wide sink for fetcher and build threads, two
   states on one thread, fan-out to a second reader, and the ErrorInfo
