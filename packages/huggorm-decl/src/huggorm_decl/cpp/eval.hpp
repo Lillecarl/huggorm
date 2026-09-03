@@ -39,8 +39,11 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -70,6 +73,8 @@ namespace nb = nanobind;
 #include "nix/fetchers/fetch-settings.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-open.hh"
+#include "nix/util/error.hh"
+#include "nix/util/logging.hh"
 
 #include <gc/gc.h>
 
@@ -200,6 +205,312 @@ inline void forget_file(nix::EvalState & state, const nix::SourcePath & given)
         (state.*get(FileEvalCache{}))->erase(key);
     for (const auto & key : resolutions)
         (state.*get(ImportResolutionCache{}))->erase(key);
+}
+
+// ---- the log tap --------------------------------------------------
+//
+// The other direction, again. `register_primop` lets nix call a
+// Python function; this lets nix TELL Python what it is doing, and
+// neither is a call Python made.
+//
+// A HELPER by the same test as `Bridge` and `cached_files`: it is a
+// callback receiver over a foreign library, and generated code calls
+// it. `LogRecord` and `LogField` have no method at all - every
+// accessor Python sees comes from `@reads` in the declaration, so the
+// mapping is still written by the emitter.
+//
+// The one part no declaration can carry today is `LogTap` itself.
+// `nix::Logger` is ABSTRACT, so a tap is a SUBCLASS, and the DSL can
+// say "Python may not construct one of these" (`@abstract`) but
+// cannot say "implement these virtuals". `tasks/084` is that gap.
+
+/**
+ * One field of one record.
+ *
+ * Mirrors `nix::Logger::Field`, whose own FIXME asks for a
+ * `std::variant` (logging.hh:76). Copying the shape upstream has
+ * keeps this honest: when that FIXME is taken, one struct changes
+ * here and the declaration follows it.
+ */
+struct LogField
+{
+    bool is_int = false;
+    uint64_t integer = 0;
+    std::string text;
+};
+
+/**
+ * One record, in Nix's own vocabulary.
+ *
+ * The field names are `JSONLogger`'s (logging.cc:272-333), because a
+ * client that already reads `--log-format internal-json` should not
+ * have to learn a second spelling of the same record. Not the same
+ * MECHANISM - see `tasks/032` for why the JSON logger was rejected -
+ * but the same shape.
+ *
+ * `level`, `type` and `id` cross as integers. They ARE integers:
+ * `Verbosity`, `ActivityType` and `ResultType` are int-valued C++
+ * enums, and nothing upstream parses one from a string. `decl/words.py`
+ * exists for vocabularies where a member IS the string libstore
+ * parses, and forcing these in would make that file's rationale
+ * false.
+ */
+struct LogRecord
+{
+    // "msg" | "start" | "stop" | "result".
+    std::string action;
+    uint64_t level = 0;
+    uint64_t id = 0;
+    uint64_t parent = 0;
+    uint64_t type = 0;
+    std::string text;
+    std::vector<LogField> fields;
+};
+
+/**
+ * A bounded queue one subscriber drains.
+ *
+ * A QUEUE and not a callback, and that is the whole design. A record
+ * is raised on whichever thread is working - the evaluation thread,
+ * mid-evaluation - and a callback there would take the GIL once per
+ * record and run arbitrary Python inside the evaluator. `push` takes
+ * a mutex, copies, and returns.
+ *
+ * The DROP POLICY is the interesting part of a bounded queue.
+ *
+ * A full queue refuses a "msg" and a "result", and NEVER a "start" or
+ * a "stop". A dropped stop leaks a node in the reader's activity tree
+ * forever, because nothing later says that activity ended - so the
+ * cost of dropping is not the same for the two kinds, and one bound
+ * for both would be the wrong answer for one of them. Activities are
+ * bounded by the evaluation itself, so keeping them all is affordable
+ * in a way that keeping every build log line is not.
+ *
+ * `level` filters a "msg" ONLY. Filtering a "start" by level would
+ * leak a node the same way dropping one does, and upstream never
+ * filters activities either: `Activity::Activity` calls
+ * `startActivity` with no test (logging.cc:196), and the `lvl` it
+ * passes is a field of the record rather than a gate.
+ *
+ * The global `nix::verbosity` still filters BEFORE any logger runs
+ * (logging.hh:314, :330), so this level can only narrow. Asking for
+ * more than the global gets nothing.
+ */
+class LogQueue
+{
+public:
+    LogQueue(std::size_t capacity, uint64_t level)
+        : capacity_(capacity)
+        , level_(level)
+    {
+    }
+
+    LogQueue(const LogQueue &) = delete;
+    LogQueue & operator=(const LogQueue &) = delete;
+
+    /** Any thread. Never touches Python. */
+    void push(LogRecord && r)
+    {
+        const bool droppable = r.action == "msg" || r.action == "result";
+        std::lock_guard<std::mutex> held(mutex_);
+        if (!open_)
+            return;
+        if (r.action == "msg" && r.level > level_)
+            return;
+        if (droppable && records_.size() >= capacity_) {
+            ++dropped_;
+            return;
+        }
+        records_.push_back(std::move(r));
+    }
+
+    /** Everything waiting, and the queue is empty afterwards. */
+    std::vector<LogRecord> drain()
+    {
+        std::lock_guard<std::mutex> held(mutex_);
+        std::vector<LogRecord> out(
+            std::make_move_iterator(records_.begin()),
+            std::make_move_iterator(records_.end()));
+        records_.clear();
+        return out;
+    }
+
+    /**
+     * How many records the bound refused, over the queue's life.
+     *
+     * Cumulative rather than per-drain, so a reader that misses one
+     * drain still sees the number grow. A reader that wants the
+     * per-drain figure subtracts.
+     */
+    uint64_t dropped() const
+    {
+        std::lock_guard<std::mutex> held(mutex_);
+        return dropped_;
+    }
+
+    /** Stop recording, and let go of what is waiting. */
+    void close()
+    {
+        std::lock_guard<std::mutex> held(mutex_);
+        open_ = false;
+        records_.clear();
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::deque<LogRecord> records_;
+    std::size_t capacity_;
+    uint64_t level_;
+    uint64_t dropped_ = 0;
+    bool open_ = true;
+};
+
+/**
+ * The queue this thread's records go to, if any.
+ *
+ * A `thread_local` rather than a map keyed by thread id, because the
+ * push path runs inside evaluation and a lock there would be paid per
+ * log line.
+ *
+ * A THREAD is the right key because an `EvalState` is affine and this
+ * Nix evaluates on one thread: nothing under `src/libexpr` names
+ * `eval-cores`, so 2.34.8 has no parallel evaluation and the thread
+ * that owns a state is the thread its records are raised on.
+ *
+ * The gap this leaves is named rather than hidden. A record raised by
+ * a fetcher or a file-transfer thread reaches no queue, because that
+ * thread has none. A process-wide subscriber is what covers it, and
+ * the rpc is what needs one.
+ */
+inline std::shared_ptr<LogQueue> & thread_queue()
+{
+    static thread_local std::shared_ptr<LogQueue> queue;
+    return queue;
+}
+
+/**
+ * The `nix::Logger` that fills the queues.
+ *
+ * Five overrides, one per virtual, and each one builds the record
+ * `JSONLogger` would have written and routes it. There is no state
+ * here: the routing is the thread's, so one tap serves every thread
+ * and every subscription.
+ */
+class LogTap : public nix::Logger
+{
+public:
+    void log(nix::Verbosity lvl, std::string_view s) override
+    {
+        route({.action = "msg",
+               .level = static_cast<uint64_t>(lvl),
+               .text = std::string(s)});
+    }
+
+    void logEI(const nix::ErrorInfo & ei) override
+    {
+        // RENDERED, the way JSONLogger renders it (logging.cc:283).
+        // An ErrorInfo carries a trace of positions, and a record
+        // that carried those parts would be a second error shape
+        // beside the one the typed-status path already crosses with
+        // (`tasks/036`). Those two should agree, and `tasks/032`
+        // holds that question open rather than answering it twice.
+        std::ostringstream rendered;
+        nix::showErrorInfo(rendered, ei, nix::loggerSettings.showTrace.get());
+        route({.action = "msg",
+               .level = static_cast<uint64_t>(ei.level),
+               .text = rendered.str()});
+    }
+
+    void startActivity(nix::ActivityId act, nix::Verbosity lvl,
+                       nix::ActivityType type, const std::string & s,
+                       const Fields & fields, nix::ActivityId parent) override
+    {
+        route({.action = "start",
+               .level = static_cast<uint64_t>(lvl),
+               .id = act,
+               .parent = parent,
+               .type = static_cast<uint64_t>(type),
+               .text = s,
+               .fields = convert(fields)});
+    }
+
+    void stopActivity(nix::ActivityId act) override
+    {
+        route({.action = "stop", .id = act});
+    }
+
+    void result(nix::ActivityId act, nix::ResultType type,
+                const Fields & fields) override
+    {
+        route({.action = "result",
+               .id = act,
+               .type = static_cast<uint64_t>(type),
+               .fields = convert(fields)});
+    }
+
+private:
+    static std::vector<LogField> convert(const Fields & fields)
+    {
+        std::vector<LogField> out;
+        out.reserve(fields.size());
+        for (const auto & f : fields)
+            out.push_back(f.type == nix::Logger::Field::tInt
+                              ? LogField{.is_int = true, .integer = f.i}
+                              : LogField{.is_int = false, .text = f.s});
+        return out;
+    }
+
+    static void route(LogRecord && r)
+    {
+        if (auto & queue = thread_queue())
+            queue->push(std::move(r));
+    }
+};
+
+/**
+ * Puts the tap behind the logger that is already there.
+ *
+ * ONCE, at import, beside `initGC`. Lazily on first subscribe would
+ * replace `nix::logger` - a plain global `unique_ptr` (logging.hh:258)
+ * - while another thread may be reading it, which is a race with no
+ * lock to take.
+ *
+ * A TEE, so a console user still sees output: `makeTeeLogger` keeps
+ * the logger that was installed as the MAIN one, which is the one it
+ * uses for stdout and for asking the user a question. So this file
+ * writes no forwarding of its own.
+ */
+inline void install_log_tap()
+{
+    std::vector<std::unique_ptr<nix::Logger>> extra;
+    extra.push_back(std::make_unique<LogTap>());
+    nix::logger = nix::makeTeeLogger(std::move(nix::logger), std::move(extra));
+}
+
+/**
+ * Start recording this thread's records, and hand back the queue.
+ *
+ * Replaces whatever this thread was recording to, and CLOSES it: two
+ * live subscriptions on one thread would each get an arbitrary half
+ * of the records, which is worse than either getting none.
+ */
+inline std::shared_ptr<LogQueue> subscribe_logs(std::size_t capacity,
+                                                uint64_t level)
+{
+    auto & slot = thread_queue();
+    if (slot)
+        slot->close();
+    slot = std::make_shared<LogQueue>(capacity, level);
+    return slot;
+}
+
+/** Stop recording. A queue already handed out still drains. */
+inline void unsubscribe_logs()
+{
+    auto & slot = thread_queue();
+    if (slot)
+        slot->close();
+    slot.reset();
 }
 
 // ---- the collector, and the threads Python made -------------------
