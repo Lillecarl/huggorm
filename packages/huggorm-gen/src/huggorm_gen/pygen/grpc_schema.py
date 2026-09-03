@@ -762,6 +762,22 @@ def _add_value_tree(f: Any, sess: Any) -> None:
 # -- the log stream --------------------------------------------------------
 
 
+def _options(req: Any, kinds: dict[str, str], first: int) -> None:
+    """The two fields a log subscription carries, wherever it is made.
+
+    Stated once because both requests carry them, and the numbering
+    is a parameter because only one of the two has a handle in front.
+
+    `level` gets real presence and `capacity` does not, and the two
+    are not the same question. Level 0 is lvlError, which is a
+    subscription somebody means - "errors only" - so an unset field
+    and a zero one have to differ. Capacity 0 is not a queue at all,
+    so zero is free to mean "the binding's own default" (tasks/048).
+    """
+    _add_field(req, "capacity", first, "int", kinds)
+    _add_field(req, "level", first + 1, "int", kinds, optional=True)
+
+
 def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     """The one rpc that travels the other way, unsolicited.
 
@@ -787,29 +803,47 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     see is this repo's named failure mode. The count is cumulative, so
     a client that missed a batch still learns the total.
 
-    `level` gets real presence and `capacity` does not, and the two
-    are not the same question. Level 0 is lvlError, which is a
-    subscription somebody means - "errors only" - so an unset field
-    and a zero one have to differ. Capacity 0 is not a queue at all,
-    so zero is free to mean "the binding's own default" (tasks/048)."""
+    TWO rpcs now, one response message. `Logs` names a state and
+    subscribes on its thread; `ProcessLogs` names nothing and takes
+    what no subscribed thread claimed. A batch of records and a drop
+    count is the whole answer either way, so a second response
+    message would be the same fact declared twice.
+
+    Where the options live is `_options`, for the same reason."""
     req = f.message_type.add()
     req.name = "LogsReq"
     # Which state's thread to subscribe on. The tap routes by thread,
     # and an EvalState owns one, so the handle names the subscription.
     _field(req, "state", 1, type_name=HANDLE)
-    _add_field(req, "capacity", 2, "int", kinds)
-    _add_field(req, "level", 3, "int", kinds, optional=True)
+    _options(req, kinds, 2)
 
+    # The same subscription with nothing to name. The process-wide
+    # sink takes records no subscribed thread claimed, so there is no
+    # handle to address and the message is the options alone
+    # (`tasks/085`).
+    #
+    # Numbered from 1 rather than leaving a hole where the handle
+    # would be. They are two messages, not one message with a field
+    # switched off, and a reserved gap would say the opposite.
+    process = f.message_type.add()
+    process.name = "ProcessLogsReq"
+    _options(process, kinds, 1)
+
+    # ONE response message for both. A batch of records and a drop
+    # count is the whole answer either way, and a second message with
+    # the same two fields would be the same fact declared twice.
     resp = f.message_type.add()
     resp.name = "LogsResp"
     _add_field(resp, "records", 1, "list[LogRecord]", kinds)
     _add_field(resp, "dropped", 2, "int", kinds)
 
-    rpc = sess.method.add()
-    rpc.name = "Logs"
-    rpc.input_type = f".{PKG}.LogsReq"
-    rpc.output_type = f".{PKG}.LogsResp"
-    rpc.server_streaming = True
+    for name, input_name in (("Logs", "LogsReq"),
+                             ("ProcessLogs", "ProcessLogsReq")):
+        rpc = sess.method.add()
+        rpc.name = name
+        rpc.input_type = f".{PKG}.{input_name}"
+        rpc.output_type = f".{PKG}.LogsResp"
+        rpc.server_streaming = True
 
 
 def _add_free_service(file_dp: Any, manifest: Proto,

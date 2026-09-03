@@ -165,6 +165,54 @@ async def _drop_subscription(target: Any) -> None:
         await target.unsubscribe_logs()
 
 
+async def _drop_process_subscription() -> None:
+    """Clear the process-wide subscription. As `_drop_subscription`.
+
+    No target, because there is nothing to name: the sink belongs to
+    the process. That is the whole difference between the two, which
+    is why they are two three-line functions rather than one with a
+    branch."""
+    with contextlib.suppress(Exception):
+        from huggorm_generated import unsubscribe_process_logs
+        await unsubscribe_process_logs()
+
+
+async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
+                alive: Callable[[], None]) -> None:
+    """Drain a queue onto a stream until somebody stops it.
+
+    Both log rpcs run this, and everything they do differently
+    happens before it: which queue to drain, and what `alive` means.
+    Written once for the reason goal 3 gives - the drop reporting and
+    the empty first batch are decisions, and a second copy is a
+    second place for one of them to drift.
+
+    An EMPTY first batch, which is the subscription saying it is
+    installed. A caller opens the stream to watch work it is about to
+    start, and without this it has no way to know when starting is
+    safe: the next message would otherwise be the first record, which
+    arrives only after the work it was meant to report.
+
+    `alive` is a check with NO side effect, which is the part that
+    matters. `table.alive` would refresh the connection, and a log
+    stream that kept a connection alive would disable the sweeper for
+    as long as it was open. Liveness is the ping loop's job
+    (`tasks/049`) and stays there.
+    """
+    await stream.send_message(resp_cls())
+    while True:
+        alive()
+        records = sub.drain()
+        if not records:
+            await asyncio.sleep(LOG_POLL)
+            continue
+        resp = resp_cls()
+        codec.encode(resp, "records", "list[LogRecord]", records,
+                     _never_a_proxy)
+        resp.dropped = sub.dropped()
+        await stream.send_message(resp)
+
+
 class Dispatcher:
     def __init__(self, pool: Any, lease_ttl: float = 120.0) -> None:
         """No manifest. Every table it unpacked is emitted, in
@@ -188,6 +236,10 @@ class Dispatcher:
         # to; a shared handle leases the same id to two connections
         # and still names one state.
         self._log_readers: dict[int, Any] = {}
+        # Whether a process-wide log stream is open. A BOOL, where the
+        # per-state readers need a map: there is one sink, so there is
+        # nothing to key by.
+        self._process_reader = False
         # A failure crosses the same way a value does: as messages, by
         # what the bindings declare, never by a type this file names
         # (tasks/036).
@@ -623,36 +675,17 @@ class Dispatcher:
                 opts["level"] = req.level
             sub = await target.subscribe_logs(**opts)
             self._log_readers[key] = target
-            resp_cls = self.msg("LogsResp")
+
+            def alive() -> None:
+                if req.state.id not in self.table.entries:
+                    raise grpclib.exceptions.GRPCError(
+                        grpclib.const.Status.UNAVAILABLE,
+                        f"the connection holding {req.state.id[:8]} was "
+                        f"swept, so this stream has nothing to read.")
+
             try:
-                # An EMPTY first batch, which is the subscription
-                # saying it is installed. A caller opens the stream to
-                # watch work it is about to start, and without this it
-                # has no way to know when starting is safe: the next
-                # message would otherwise be the first record, which
-                # arrives only after the work it was meant to report.
-                await stream.send_message(resp_cls())
-                while True:
-                    # A read with no side effect. `table.alive` would
-                    # refresh the connection, and a log stream that
-                    # kept a connection alive would disable the sweeper
-                    # for as long as it was open. Liveness is the ping
-                    # loop's job (tasks/049) and stays there.
-                    if req.state.id not in self.table.entries:
-                        raise grpclib.exceptions.GRPCError(
-                            grpclib.const.Status.UNAVAILABLE,
-                            f"the connection holding {req.state.id[:8]} was "
-                            f"swept, so this stream has nothing to read.")
-                    records = sub.drain()
-                    if not records:
-                        await asyncio.sleep(LOG_POLL)
-                        continue
-                    resp = resp_cls()
-                    self.codec.encode(
-                        resp, "records", "list[LogRecord]", records,
-                        _never_a_proxy)
-                    resp.dropped = sub.dropped()
-                    await stream.send_message(resp)
+                await _pump(stream, sub, self.msg("LogsResp"), self.codec,
+                            alive)
             except grpclib.exceptions.StreamTerminatedError:
                 # The client is gone. There is nobody to tell.
                 return
@@ -661,10 +694,68 @@ class Dispatcher:
                 sub.close()
                 self._detach(_drop_subscription(target))
 
+        async def process_logs(stream: Any) -> None:
+            """Records no subscribed thread claimed, streamed.
+
+            The same rpc with nothing to name. `Logs` takes a handle
+            because the tap routes by THREAD and an EvalState owns
+            one; this one takes what a fetcher thread, a
+            file-transfer thread or a build raised, and none of those
+            belongs to a state (`tasks/085`).
+
+            So it holds NO lease and refreshes nothing. A caller with
+            no handle at all can open it, which is right: the records
+            it carries are the ones no handle could have reached.
+
+            REFUSES a second stream, where the C++ replaces. That
+            split is the answer to the scoping question `tasks/032`
+            opened. Replacing in the C++ is what stops an in-process
+            caller wedging the sink by dropping its `LogStream`;
+            refusing here is what stops one connection silencing
+            another's stream, and it cannot wedge, because the
+            `finally` below runs when the stream ends.
+
+            ONE reader, not per-connection, and that is the
+            limitation to read twice. There is one process-wide queue,
+            so the first connection to ask gets every unclaimed
+            record in the process and the second is told no. Fan-out
+            is what would change that, and it is `tasks/085`'s third
+            gap for the per-state stream too."""
+            from huggorm_generated import subscribe_process_logs
+
+            req = await stream.recv_message()
+            if self._process_reader:
+                raise grpclib.exceptions.GRPCError(
+                    grpclib.const.Status.FAILED_PRECONDITION,
+                    "a process-wide log stream is already open. There is "
+                    "one sink, so a second subscription would replace the "
+                    "first and leave it connected and silent.")
+            opts: dict[str, int] = {}
+            if req.capacity:
+                opts["capacity"] = req.capacity
+            if req.HasField("level"):
+                opts["level"] = req.level
+            sub = await subscribe_process_logs(**opts)
+            self._process_reader = True
+            try:
+                await _pump(stream, sub, self.msg("LogsResp"), self.codec,
+                            lambda: None)
+            except grpclib.exceptions.StreamTerminatedError:
+                return
+            finally:
+                self._process_reader = False
+                sub.close()
+                self._detach(_drop_process_subscription())
+
         Handle = self.msg("Handle")
         self.mapping[f"/{schema.PKG}.Session/Logs"] = grpclib.const.Handler(
             guard_untyped(logs), grpclib.const.Cardinality.UNARY_STREAM,
             self.msg("LogsReq"), self.msg("LogsResp"))
+        self.mapping[f"/{schema.PKG}.Session/ProcessLogs"] = \
+            grpclib.const.Handler(
+                guard_untyped(process_logs),
+                grpclib.const.Cardinality.UNARY_STREAM,
+                self.msg("ProcessLogsReq"), self.msg("LogsResp"))
         for name, fn, req_cls, resp_cls in (
             ("Realize", realize, self.msg("RealizeReq"),
              self.msg("RealizeResp")),

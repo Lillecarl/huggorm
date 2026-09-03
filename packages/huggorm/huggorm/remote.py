@@ -361,9 +361,14 @@ class NixClient:
         cannot tell a quiet evaluation from a lost one. The count is
         cumulative, so it survives a batch the caller skipped.
 
-        `capacity` 0 takes the binding's default. `level` None does
-        too, and None rather than 0 because level 0 is lvlError - a
-        subscription somebody means, not an absent one.
+        `capacity` and `level` mean what `_log_options` says.
+
+        What it does NOT see is what `process_logs` does: a record
+        raised on a fetcher thread, a file-transfer thread or a build
+        belongs to no state's thread, so it reaches this stream
+        never. The two do not overlap - a thread that subscribed
+        claims its records - so a caller wanting everything reads
+        both.
 
         One reader per state. A second subscription would replace the
         first on that state's thread, so the server refuses it with
@@ -375,20 +380,73 @@ class NixClient:
         start, so it needs a point where starting is safe; without the
         empty batch the first message would be the first record, which
         arrives only after the work it was meant to report."""
-        if self._expired:
-            raise ConnectionExpired(
-                f"connection {self.token!r} was swept by the server; its "
-                f"handles are gone. Call bind() and re-acquire.")
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
         req = self.msg("LogsReq")()
         req.state.id = obj.handle_id
+        self._log_options(req, capacity, level)
+        async for batch in self._log_stream("Logs", req):
+            yield batch
+
+    async def process_logs(self, capacity: int = 0,
+                           level: int | None = None) -> Any:
+        """Records no subscribed thread claimed, as they arrive.
+
+        The same stream with nothing to name. `logs` takes a state
+        because the tap routes by THREAD and an EvalState owns one;
+        this takes what a fetcher thread, a file-transfer thread or a
+        build raised, and none of those belongs to a state
+        (`tasks/085`). A build's log is the one this exists for.
+
+        NO handle, so a connection with no state at all can open it -
+        which is right, because the records it carries are the ones no
+        handle could have reached.
+
+        NOT everything in the process. A thread that subscribed claims
+        its records, so a state with its own `logs` stream does not
+        appear here. Reading both is how a caller sees all of it, and
+        neither repeats the other.
+
+        ONE reader for the whole server, not one per connection. There
+        is a single process-wide sink, so the first connection to ask
+        gets it and the second is refused with FAILED_PRECONDITION -
+        the same answer `logs` gives for a second reader of one state,
+        for the same reason: a replaced subscription would leave the
+        older stream connected and silent.
+
+        Batches, `dropped` and the empty first message all mean what
+        they mean in `logs`."""
+        req = self.msg("ProcessLogsReq")()
+        self._log_options(req, capacity, level)
+        async for batch in self._log_stream("ProcessLogs", req):
+            yield batch
+
+    @staticmethod
+    def _log_options(req: Any, capacity: int, level: int | None) -> None:
+        """The two options, set the same way on either request.
+
+        `capacity` 0 takes the binding's default. `level` None does
+        too, and None rather than 0 because level 0 is lvlError - a
+        subscription somebody means, not an absent one."""
         req.capacity = capacity
         if level is not None:
             req.level = level
+
+    async def _log_stream(self, rpc: str, req: Any) -> Any:
+        """One log rpc, opened and drained until the caller stops.
+
+        Both log streams run this. What they do differently is the
+        request they build; everything after that - the token, the
+        decode, the typed-failure contract - is one shape, and a
+        second copy would be a second place for one of them to
+        drift."""
+        if self._expired:
+            raise ConnectionExpired(
+                f"connection {self.token!r} was swept by the server; its "
+                f"handles are gone. Call bind() and re-acquire.")
         metadata = {TOKEN_HEADER: self.token} if self.token else None
         stream = self.channel.request(
-            f"/{schema.PKG}.Session/Logs",
+            f"/{schema.PKG}.Session/{rpc}",
             grpclib.const.Cardinality.UNARY_STREAM,
             type(req), self.msg("LogsResp"), metadata=metadata)
         try:
