@@ -177,3 +177,37 @@ is the reason to write this down rather than to fix anything.
 A reader who sees the count should check WHOSE leftovers they are
 before touching a fixture here. `ls /tmp/pytest-of-lillecarl/<dir>`
 answers it in one command.
+
+## It stopped a build again, 2026-09-03
+
+Still **OPEN**, and the cost is no longer hypothetical. It stopped
+work in the middle of a perturbation run:
+
+    error: write of 62 bytes: No space left on device
+
+`/nix` and `/` are one filesystem, so this is the same 61 GB. At the
+moment it failed:
+
+    61 GB   size
+     4.0 K  available, 100% used
+    7.2 GB  /tmp/pytest-of-lillecarl, 576 directories
+    2.2 GB  garbage-1ca72bea-...
+    2.2 GB  garbage-1fd4c0e5-...
+    562 MB  each of the three most recent pytest-N runs
+
+Two immortal `garbage-*` dirs again, and 574 husks behind them.
+Reclaiming all of it returned the disk to 92%, 4.6 GB free:
+
+    chmod -R u+w /tmp/pytest-of-lillecarl && rm -rf /tmp/pytest-of-lillecarl
+
+The `chmod` is the whole problem in one line. `rm -rf` alone fails on
+these, which is why pytest's own `rm_rf` fails on them, which is why
+they accumulate - the suite builds a store whose paths are read-only,
+the way a real store is, and nothing makes them writable again
+afterwards.
+
+Two things this run adds to the record above. The failure mode is
+NOT always the SIGBUS in `tasks/062`'s title - a plain nix
+evaluation just reports ENOSPC, which is at least honest. And 4.6 GB
+free is one more full suite plus one build; the reclaim buys an
+afternoon, not a fix.
