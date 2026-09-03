@@ -226,3 +226,50 @@ that the three hunks have identical context in 2.31, 2.34 and 2.35,
 so a bump moves line numbers only - and if it ever stops applying,
 that failure is the signal to read it again rather than to add a
 matrix.
+
+## 2026-09-03: the borrowed view is not needed, and the cycle is
+
+Two more things read from this repo's own C++ rather than assumed.
+
+### "Value lifetime" above is WRONG, and the design shrinks
+
+This file says:
+
+> A primop's arguments live exactly as long as the call, so wrapping
+> them in a Python object that outlives it is a use-after-free. The
+> binding needs a borrowed view that refuses to outlive the call,
+> which is not a thing this repo has yet.
+
+`Bridge` already answers it. Its constructor is
+`root_(nix::allocRootValue(value))` (`cpp/eval.hpp:455`) - EVERY
+Bridge takes its own GC root, which is the whole reason the class
+exists. A Bridge over a primop argument keeps that argument reachable
+for as long as Python holds it.
+
+So there is no use-after-free to defend against, and no borrowed-view
+type to invent. The cost of holding one is RETENTION - an argument
+Python keeps is a value the collector cannot take - which is the same
+cost every other value crossing this boundary already has, and is a
+leak at worst rather than a crash.
+
+That deletes a subsystem from the plan. A primop takes `Value`
+proxies and returns one, exactly like every other binding here, and
+nothing about it is special.
+
+### The cycle is the real lifetime problem
+
+A `Bridge` needs a `std::shared_ptr<EvalCore>`, and `EvalCore` owns
+the `EvalState` the primop is registered on. A callback capturing
+that shared_ptr would make the state own a callback that owns the
+state, so neither is ever freed - a leak that no test asserting on
+`live_roots()` would see, because no root leaks.
+
+A `weak_ptr<EvalCore>`, locked inside the callback, breaks it. An
+expired weak pointer means the state is being destroyed, and a primop
+belonging to a destroyed state cannot be running - so the failure is
+unreachable rather than merely unlikely, and it should say so if it
+ever fires.
+
+Written down before any C++ exists, because it is the kind of defect
+that compiles, passes, and is found months later by a server that
+grows.
