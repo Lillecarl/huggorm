@@ -377,6 +377,40 @@ return self.wrap(made);
         holds, not a promise that each entry is on disk."""
         Cxx("return huggorm::cached_files(self.state());")
 
+    def forget_file(self, path: Str) -> None:
+        """Forget one cached file, so the next evaluation reads disk.
+
+        The other half of `cached_files`. A watcher that sees a file
+        change needs to drop that file's warm evaluation and KEEP the
+        rest - `resetFileCache()` is the only public way to do it, and
+        it also clears the fetched flake inputs, so one edited local
+        file costs a re-download.
+
+        FORGET THE CLOSURE, NOT THE FILE. Measured, and written up in
+        `tasks/016`: an importer does not notice its import changing.
+        `outer.nix` that says `import ./inner.nix` stays cached at its
+        old answer after `inner.nix` is edited and forgotten, because
+        the cache holds no edge between the two - both files are
+        listed, and nothing says one read the other.
+
+        The edges are recoverable without more C++. `cached_files`
+        before and after one `eval_file(X)` differ by exactly the
+        files that evaluation read, which is X's closure. A caller
+        that forgets the whole closure gets the new answer; one that
+        forgets the changed file alone gets the old one, SILENTLY.
+
+        Erases both spellings. The cache is keyed by the RESOLVED
+        path, so forgetting `/foo` erases `/foo/default.nix` too - the
+        argument is in `cpp/eval.hpp`, beside the code.
+
+        A path that was never cached forgets nothing, which is what
+        makes feeding a whole closure in safe."""
+        Cxx("""
+if (path.empty())
+    throw std::invalid_argument("empty path");
+huggorm::forget_file(self.state(), self.state().rootPath(path));
+        """)
+
     def force(self, v: "Value") -> None:
         """Force a value in place. Idempotent.
 

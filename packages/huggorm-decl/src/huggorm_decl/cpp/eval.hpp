@@ -104,6 +104,13 @@ auto get(FileEvalCache);
 
 template struct Reach<FileEvalCache, &nix::EvalState::fileEvalCache>;
 
+struct ImportResolutionCache
+{
+};
+auto get(ImportResolutionCache);
+
+template struct Reach<ImportResolutionCache, &nix::EvalState::importResolutionCache>;
+
 /**
  * Every file whose evaluation this state has cached, resolved.
  *
@@ -123,6 +130,53 @@ inline std::vector<std::string> cached_files(const nix::EvalState & state)
         out.push_back(entry.first.to_string());
     });
     return out;
+}
+
+/**
+ * Forgets one file, so the next evaluation of it reads the disk.
+ *
+ * `resetFileCache()` is the only public way to do this, and it is not
+ * a coarser version of the same thing: it also clears `inputCache`,
+ * so one edited local file costs a re-fetch of every flake input over
+ * the network. A state meant to live for days cannot pay that.
+ *
+ * TWO keys, because the caches are keyed differently. `fileEvalCache`
+ * is keyed by the RESOLVED path, so forgetting `/foo` has to erase
+ * `/foo/default.nix` - erasing only what the caller said would leave
+ * the value cached, and the next evaluation would re-resolve, hit it,
+ * and answer STALE. The resolution itself goes too: a symlink that
+ * retargets, or a `/foo` that gains or loses a `default.nix`, changes
+ * what `/foo` resolves TO, and re-resolving costs one stat.
+ *
+ * Collect first, erase after. `cvisit_all` holds a lock over the map
+ * for the length of the visit, so an erase from inside the visitor is
+ * a deadlock on that same map.
+ *
+ * Safe because an `EvalState` is AFFINE in this repo - one thread per
+ * state at a time. That is huggorm's policy, not libexpr's guarantee:
+ * the map itself tolerates concurrent writers, but nothing here
+ * defends the read-then-erase against a racing evaluation refilling
+ * the entry in between.
+ *
+ * A path that was never a key erases nothing, which is what makes a
+ * caller free to feed a whole closure in without filtering it.
+ */
+inline void forget_file(nix::EvalState & state, const nix::SourcePath & given)
+{
+    std::vector<nix::SourcePath> evaluated{given};
+    std::vector<nix::SourcePath> resolutions;
+
+    (state.*get(ImportResolutionCache{}))->cvisit_all([&](const auto & entry) {
+        if (entry.first == given)
+            evaluated.push_back(entry.second);
+        if (entry.first == given || entry.second == given)
+            resolutions.push_back(entry.first);
+    });
+
+    for (const auto & key : evaluated)
+        (state.*get(FileEvalCache{}))->erase(key);
+    for (const auto & key : resolutions)
+        (state.*get(ImportResolutionCache{}))->erase(key);
 }
 
 // ---- the collector, and the threads Python made -------------------
