@@ -215,8 +215,15 @@ which was superseded rather than fixed.
   `EvalState.cached_files()` reaches the cache from our own header,
   by the explicit-instantiation rule, with nixpkgs untouched. It sees
   a file reached by `import`, which our own boundary never could.
-  Next is per-path invalidation: `resetFileCache()` clears everything,
-  which defeats the point. Background eager evaluation is untouched.
+  Per-path invalidation is built too: `EvalState.forget_file()` drops
+  one file's warm evaluation and keeps the rest, where the only public
+  way - `resetFileCache()` - also clears the fetched flake inputs. It
+  erases BOTH spellings, because the eval cache is keyed by the
+  resolved path. Forget the CLOSURE, not the file: the cache holds no
+  edge from an importer to its import, so forgetting the changed file
+  alone leaves the importer silently stale - measured, gated, and kept
+  as a negative control. What is left is a watcher that decides WHEN,
+  and background eager evaluation.
 - 078 (a declaration nobody lists reaches nothing) is DONE. `corpus()`
   censuses `decl/` against the lists and the build fails when they
   disagree. The plan in the file was wrong: "every `*.py` in exactly

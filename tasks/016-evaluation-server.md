@@ -1,7 +1,7 @@
 # Evaluation server: persistent state, watched files, background eval
 
-**OPEN.** The lifetime contract landed; the service did not. No warm
-cache, no inotify graph, no background evaluation.
+**OPEN.** The lifetime contract, the warm cache and per-path
+invalidation landed. No inotify watcher, no background evaluation.
 
 This is the project's DESTINATION, and it is stated as one in
 `CLAUDE.md` under "What this is for" - including the milestone that
@@ -303,3 +303,90 @@ actually holds.
 Known limits to keep beside it: `positions` keeps entries for a
 forgotten file (append-only metadata, harmless), and a file reached
 only through `builtins.readFile` is invisible to all of this.
+
+### Per-path invalidation, built
+
+`EvalState.forget_file(path)` is declared, and `huggorm::forget_file`
+is the helper it calls. Approved by Carl in advance, as CLAUDE.md
+requires.
+
+Two keys, because the two caches are keyed differently:
+
+    importResolutionCache   given    -> resolved
+    fileEvalCache           resolved -> Value *
+
+So forgetting `/foo` erases `/foo/default.nix` as well as `/foo`.
+Erasing only what the caller SAID would leave the value cached, and
+the next evaluation would re-resolve, hit it and answer stale.
+
+**A delta from the plan, named rather than slipped in.** The plan said
+erase from `fileEvalCache`. The code also erases the matching
+`importResolutionCache` entries. The reason is that a resolution goes
+stale too - a symlink retargets, or a `/foo` gains or loses a
+`default.nix` - and re-resolving costs one stat. The justification is
+in the comment above those four lines, so a later reader is not left
+guessing whether they were meant.
+
+Collect before erase. `cvisit_all` holds a lock for the length of the
+visit, so an erase from inside the visitor deadlocks on the same map.
+
+Safe because an `EvalState` is AFFINE in this repo - one thread per
+state at a time. That is huggorm's policy, not libexpr's guarantee:
+the map tolerates concurrent writers, but nothing here defends the
+read-then-erase against a racing evaluation refilling the entry.
+
+**`cpp/eval.hpp` went 257 -> 277 code lines**, by the build's own
+count, plus a 3-line `Cxx` body in the declaration. Recorded because
+CLAUDE.md says the number is not a budget to spend.
+
+Both APIs read from the packaged headers before anything was written,
+and a compile probe against them ran first: `concurrent_flat_map::
+erase(key_type const &)` at `concurrent_flat_map.hpp:799`, and
+`SourcePath::operator==` at `source-path.hh:106`.
+
+### The gate, and its own negative control
+
+`test_forgetting_a_closure_picks_up_an_edited_import`, on all three
+surfaces. Evaluate an importer, edit its import, forget the closure,
+and the re-evaluation answers the NEW value.
+
+The closure is the `cached_files` diff around one `eval_file`. That
+helper lives in the TEST, not the binding, because it is a policy and
+not a fact: two concurrent evaluations on one state would mix their
+closures, and the affine state is what makes it hold.
+
+Seen to FAIL, by making the `fileEvalCache` erase a no-op:
+
+    assert 42 == 2
+    FAILED test_forgetting_a_closure_picks_up_an_edited_import[sync]
+    FAILED test_forgetting_a_closure_picks_up_an_edited_import[async]
+    FAILED test_forgetting_a_closure_picks_up_an_edited_import[rpc]
+
+That failure proves the fragile joint, which is not the erase.
+`cached_files` renders a path with `to_string()` and `forget_file`
+re-enters through `rootPath()`; if those two did not produce equal
+`SourcePath`s, every erase would silently miss and the test would show
+exactly this. It does not.
+
+`test_forgetting_only_the_edited_file_leaves_the_importer_stale` is
+the measurement above, kept as a test. It forgets `inner` alone and
+asserts the importer still answers 42. Asserted rather than noted, so
+a `forget_file` that grew a recursive erase would fail here and be
+seen. It is not a wish that the answer stays stale - it is the
+statement that per-file erase ALONE is not invalidation.
+
+277 passed, from 271.
+
+### What is left for the server
+
+A watcher. Nothing here calls `inotify`, and nothing decides WHEN to
+forget - a caller must notice the change itself and hand the closure
+back. The pieces the watcher needs now exist: `cached_files` says what
+to watch, the diff around `eval_file` says what belongs to what, and
+`forget_file` drops one without dropping the rest.
+
+Background eager evaluation is still untouched.
+
+Known limits, unchanged: `positions` keeps entries for a forgotten
+file (append-only metadata, harmless), and a file reached only through
+`builtins.readFile` is invisible to all of this.
