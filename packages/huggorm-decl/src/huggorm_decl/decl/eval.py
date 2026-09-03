@@ -393,11 +393,18 @@ return self.wrap(made);
         the cache holds no edge between the two - both files are
         listed, and nothing says one read the other.
 
-        The edges are recoverable without more C++. `cached_files`
-        before and after one `eval_file(X)` differ by exactly the
-        files that evaluation read, which is X's closure. A caller
-        that forgets the whole closure gets the new answer; one that
-        forgets the changed file alone gets the old one, SILENTLY.
+        The DIFF is not that closure, and this docstring said it was.
+        `cached_files` before and after one `eval_file` differ by what
+        the evaluation newly CACHED, not by what it read - so the
+        second root to import a shared file gets a diff that does not
+        mention it, and forgetting that diff leaves the root stale.
+        Measured in `tasks/083`.
+
+        What is sound is the SNAPSHOT: everything cached when a root
+        finished is a superset of what that root read. `huggorm.Watcher`
+        keeps one per root and does this bookkeeping, so a caller who
+        wants live reloading should use it rather than pair this call
+        with a diff of their own.
 
         Erases both spellings. The cache is keyed by the RESOLVED
         path, so forgetting `/foo` erases `/foo/default.nix` too - the

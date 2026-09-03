@@ -288,6 +288,18 @@ before and after one `eval_file(X)` differ by exactly the files that
 evaluation read, which is X's closure. Forget the closure, not the
 file.
 
+**The last two sentences are WRONG, and `tasks/083` holds what refuted
+them.** The diff is what an evaluation newly CACHED, not what it READ.
+Two roots importing one file prove the difference: the first caches
+the shared file, the second HITS that cache, and the second's diff
+never mentions it. A watcher built on diffs then leaves the second
+root stale - the exact failure this paragraph was written to avoid.
+
+The sound version is a SNAPSHOT: everything cached when a root
+finished is a superset of what that root read. It over-forgets, and
+`tasks/083` measures by how much. Believed for a day, and only found
+because the watcher's first gate used a shared file.
+
 ### What the erase has to get right
 
 `fileEvalCache` is keyed by the RESOLVED path. An erase of the path a
@@ -398,13 +410,14 @@ statement that per-file erase ALONE is not invalidation.
 
 ### What is left for the server
 
-A watcher. Nothing here calls `inotify`, and nothing decides WHEN to
-forget - a caller must notice the change itself and hand the closure
-back. The pieces the watcher needs now exist: `cached_files` says what
-to watch, the diff around `eval_file` says what belongs to what, and
-`forget_file` drops one without dropping the rest.
+A watcher, and it is built - `huggorm.Watcher`, in `tasks/083`. It
+found the closure claim above wrong on its first gate, which is the
+best argument for having built it here rather than left it to a
+caller.
 
-Background eager evaluation is still untouched.
+What is still missing from this task is background eager evaluation.
+It needed the watcher first: re-evaluating an expression eagerly is
+only useful once something knows the old answer is stale.
 
 Known limits, unchanged: `positions` keeps entries for a forgotten
 file (append-only metadata, harmless), and a file reached only through
