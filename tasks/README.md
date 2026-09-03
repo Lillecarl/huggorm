@@ -193,9 +193,14 @@ which was superseded rather than fixed.
   declared names reach no output by name, and all six are legitimate
   for a reason the declaration already states - `@startup`,
   `_`-private, `@produced(by=...)`, or being a vocabulary. So the
-  fear it was opened with is wrong and the gate is buildable. What is
-  left is the design: ask the emitters what they consumed rather than
-  searching the text they wrote.
+  fear it was opened with is wrong and the gate is buildable. Half of
+  it is built: `census_read` compares the RAW parse against where the
+  reader put each definition, and fails the build on one that reached
+  nothing. It catches 075 exactly - reproduced, and the message names
+  the accessor. errors.py is covered too, at class grain: a method
+  there turned out not to be droppable at all, because `_resolve`
+  appends a ClassDef whole. What is left is the EMITTER seam, which needs a record
+  of what each emitter consumed rather than two views of one read.
 - 016 (evaluation server) is OPEN, and has its first warm cache.
   `eval_file` is declared, so libexpr's `fileEvalCache` is reachable:
   evaluate a file, delete it, evaluate it again, and the answer comes
