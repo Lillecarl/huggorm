@@ -1,8 +1,15 @@
 # A value can be a function
 
-**OPEN.** A function value has no Python shape yet. Carl aborted the
-MOCK version of this to link real Nix (tasks/015), which removed the
-reason it was blocked rather than the work.
+**MOSTLY DONE.** A function value applies both ways, introspects, and
+describes itself as an `inspect.Signature`. `__call__` is what is
+left, and it is a DSL gap rather than a decision. The section at the
+end says what was built, what three docstrings got wrong, and what
+breaking it proved.
+
+Carl aborted the MOCK version of this to link real Nix (tasks/015),
+which removed the reason it was blocked rather than the work - and
+also removed the first bullet of the plan below, since `tasks/060`
+deleted the mock entirely.
 
 Carl, 2026-08-25: "Values can be functions as well. Can we return
 Callable/Coroutine (sync/async) and which types are most appropriate
@@ -172,3 +179,242 @@ worth keeping: applying lives on EvalState, not on Value, because it
 runs the evaluator - the same reason force lives there. Which means a
 bare `await f(x)` needs the value to know its state, and that is the
 question to answer with a real ExprLambda in hand.
+
+## 2026-09-03: built
+
+**MOSTLY DONE.** A function value applies, introspects, and describes
+itself as an `inspect.Signature`. What is missing is `__call__`, and
+the reason is a DSL gap rather than a decision - the last section says
+so.
+
+Thirty-four gates in `tests/test_function.py`, and the suite went from
+336 to 370.
+
+    Value.apply(arg)          f x, the curried form
+    Value.apply_auto(attrs)   autoCallFunction, by name, fills defaults
+    Value.is_lambda()         the three shapes nFunction covers
+    Value.is_primop()
+    Value.is_primop_app()
+    Value.lambda_name()       what it was bound to, or ""
+    Value.lambda_arg()        the name bound to the WHOLE argument
+    Value.has_formals()
+    Value.accepts_extra()     the ellipsis
+    Value.formal_names()      alphabetical
+    Value.defaulted_formals() a subset of the above
+    Value.primop_name()
+    Value.primop_arity()      the one honest arity
+    Value.primop_args()
+    Value.doc()               getDoc, and it BLOCKS
+
+    huggorm.signature_of(v) -> inspect.Signature
+
+The plan above was written against the MOCK, which `tasks/060`
+deleted, so its first bullet ("the mock needs a function kind") was
+already dead: real Nix has real lambdas and `eval_expr` produces
+them. Everything else in that section held.
+
+Carl pre-approved `Cxx()` bodies in declarations for this, with
+documented justifications. No new C++ in `cpp/eval.hpp`, and every
+body carries the why-a-declaration-cannot-say-this comment the
+approval asked for.
+
+### One arm, three payloads
+
+`@guard("function")` is NECESSARY AND NOT SUFFICIENT, and that is the
+shape of the whole change. The guard is generated from `@tagged`,
+which names the twelve `nix::ValueType` arms - and the three function
+shapes are not types, they are storage tags under one type
+(value.hh:1111). So the guard proves `nFunction` and says nothing
+about which of the three, and reading `lambda()` off a builtin is
+exactly the payload reinterpretation the `Value` docstring exists to
+warn about.
+
+Every body therefore checks its own shape first. `tests/
+test_function.py::test_a_builtin_read_as_a_lambda_is_refused` holds
+all twelve of those checks, in both directions.
+
+**Not perturbed, and deliberately.** Removing a sub-guard produces
+undefined behaviour rather than a wrong answer, so the failure is a
+crash or a garbage number that takes the suite with it - not one
+clean assertion. Stated here instead of run.
+
+### Three things measured after writing the opposite
+
+Each of these was in a docstring before it was in a gate, and each
+gate refuted the docstring.
+
+**The result of `apply` is in WHNF, not a thunk.**
+
+    assert 'int' == 'thunk'
+
+`callFunction` evaluates the lambda's body with `Expr::eval`
+(eval.cc:1600), which produces an evaluated value. The laziness is
+one level down: `x: { a = x + 1; }` answers a forced attribute set
+whose `a` is still a thunk, which is now the second half of that
+gate.
+
+**Formals arrive in interning order.**
+
+    assert ['zebra', 'apple', 'mango'] == ['apple', 'mango', 'zebra']
+
+`validateFormals` sorts them by `std::tie(a.name, a.pos)`
+(parser-state.hh:302) - and `name` is a `Symbol`, an interning ID. So
+upstream's order is the order each name was first seen ANYWHERE in
+the process: neither source order nor alphabetical, and not
+reproducible between two runs.
+
+This is the same fact this repo already records for attribute sets,
+where `Bridge::sorted()` pays a sort to hide it. The bodies sort by
+name for the same reason. Source order would be the other defensible
+answer and is not available - `Formal::pos` survives, but sorting by
+it needs positions the declaration does not carry.
+
+Broken on purpose, with the sort removed from both bodies:
+
+    FAILED test_formals_come_back_alphabetically
+    1 failed, 359 passed, 10 deselected
+
+**`doc()` on a lambda reads the source file, and throws if it is
+gone.**
+
+    IndexError: basic_string::substr: __pos (which is 3) >
+                this->size() (which is 0)
+
+A doc comment is NOT stored. `getDoc` calls `getInnerText`, which
+calls `getSnippetUpTo`, which calls `Pos::getSource`, which calls
+`path.readFile()` (position.cc:49). So an accessor that looks like a
+field read opens a file, and it is marked `@blocks` - `tasks/067`'s
+class of surprise.
+
+And when the file has moved, `getSource` catches its own error and
+answers "", after which `getInnerText` does
+`substr(3, size() - 3 - 2)` on that empty string and throws from
+inside libexpr (nixexpr.cc:644-648). Upstream's bug.
+
+The binding catches that ONE exception and reports the cause. "" was
+the first answer and is wrong for this repo's own reason: it would say
+"no documentation" where the truth is "cannot read the
+documentation", and an absence standing in for a failure is the named
+failure mode.
+
+### The refusal that matters
+
+`apply_auto` refuses a function that declares no formals, and that is
+why it is a separate method rather than a convenience on `apply`.
+
+`autoCallFunction` answers `res = fun` in that case (eval.cc:1795-
+1798) - the function itself, UNAPPLIED, with nothing to say that the
+arguments went nowhere. A caller could not tell that from a call that
+legitimately returned a function. That is this repo's named failure
+mode sitting in libexpr, and goal 1 says a binding may not be more
+permissive than the C++ it binds.
+
+Broken on purpose:
+
+    FAILED test_a_formal_less_lambda_is_refused_by_name
+    Failed: DID NOT RAISE Exception
+    1 failed, 359 passed, 10 deselected
+
+Two more things `autoCallFunction` does that the docstring now
+states. It FORCES the function (eval.cc:1783), unlike everything else
+here. And it follows a `__functor` attribute (eval.cc:1786-1792), so
+Nix considers some attribute sets callable - which `@guard("function")`
+refuses, and a caller reaches by applying the `__functor` attribute
+itself.
+
+### No arity for a lambda
+
+`x: y: body` is a function returning a function, so nothing can say
+how many arguments it takes without applying it. `getDoc` leaves a
+lambda's `arity` at 0 with upstream's own FIXME beside it
+(eval.cc:622). No accessor here offers a lambda one, because any that
+did would be lying.
+
+Only a builtin declares an arity, and `primop_arity` reads it off
+`PrimOp` rather than through `getDoc` - which matters, because
+`getDoc`'s whole primop branch sits behind `if (primOp.doc)`
+(eval.cc:578). A builtin with no documentation has an arity that
+`getDoc` will not report.
+
+The third shape has no arity at all: `getDoc` has no branch for a
+`primOpApp`, and the applied arguments sit in a chain nothing walks.
+`primop_arity` refuses it and `signature_of` raises rather than
+answering a catch-all.
+
+### The two duals, composed
+
+`test_python_calls_nix_calling_python` is the gate neither `tasks/033`
+nor this task had.
+
+They are duals with OPPOSITE threading, which this file already said:
+a primop written in Python is SYNC because it runs inside evaluation
+and cannot await, and applying a function BLOCKS so the binding
+releases the GIL around it. The test crosses both in one call - Python
+applies a function, the evaluator runs with the GIL released, and then
+calls back into Python and reacquires it.
+
+That reacquire inside a release is the deadlock the composition would
+produce if either half were wrong, and nothing else in the suite
+reaches it: 033 never applies a function from Python, and the rest of
+this file never registers one.
+
+### `inspect.Signature`, and what Python requires that Nix does not
+
+`huggorm.signature_of(value)`, hand-written in `huggorm/signature.py`
+for the reason the module says: the binding answers FACTS, one
+declared accessor each, and assembling them into a library type is a
+mapping no declaration describes.
+
+    { a, b ? 2 }:        (*, a, b=Ellipsis)
+    { a, ... }:          (*, a, **kwargs)
+    x:                   (x, /)
+    builtins.add         (e1, e2, /)
+
+`Ellipsis` is the default for a formal that has one, because a Nix
+default is an unevaluated expression in the lambda's own environment
+and cannot cross. What a caller needs is that the argument is
+OPTIONAL. `None` would claim a default Nix does not have, and
+`Parameter.empty` would say the parameter is required.
+
+Two things Python requires and Nix does not, both found by writing the
+gate:
+
+- a parameter with no default may not follow one, even among
+  keyword-only parameters, so the required formals are ordered first;
+- Nix names are wider than Python's. A dash is legal in a Nix
+  identifier and `class` is an ordinary Nix name, and `Parameter`
+  raises on either - so an unusable name falls back to a positional
+  one rather than turning an unusual function into a failure to
+  introspect it at all. `formal_names` still answers the real name.
+
+A quoted formal is NOT one of those cases, which the gate found the
+hard way: `{ "with a space" ? 1 }` is a syntax error in Nix, unlike
+the same spelling in an attribute set.
+
+Nothing is attached as `__signature__` and nothing is cached, which is
+what this file asked for: a proxy is built for every function value
+that crosses, and paying for introspection nobody asked for would make
+realizing a tree of functions quadratic.
+
+### What is left
+
+**`__call__`, so `await f(x)` works.** The ask says "call cleanly" and
+this delivers `await f.apply(x)`. A dunder cannot be declared today -
+the same family of gap as `tasks/076`'s `@property` and `tasks/084`'s
+virtuals - and the declaration is where it has to be solved, because
+`__call__` on the async wrapper alone would leave the RPC client and
+the sync binding without it. Not opened as its own task: it is one
+more instance of "the DSL cannot say this", and 076 is where that
+question already lives.
+
+**A cross-state argument is unchecked**, and it is not new. `apply(f,
+arg)` hands one state's GC value to another state's evaluator if a
+caller mixes them, and so does `EvalState.force` and
+`EvalState.attrs_set` today - nothing compares `core()`. Named here
+rather than widened or silently fixed, because the fix belongs to
+whichever task decides what a state's ownership of a value means.
+
+**No remote gate.** `Value` to `Value` over the wire is already proven
+by `force` and `attrs_set`, so an `apply` rpc adds confirmation rather
+than machinery, and the schema needs nothing new. Worth adding when
+something remote actually calls a function.

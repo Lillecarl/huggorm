@@ -481,9 +481,42 @@ which was superseded rather than fixed.
   suite outside it. What is left is what a live test may ASSUME - a
   daemon, or a writable chroot store - and that is what addToStore
   will answer.
-- 034 (functions as values) waits on 015. Its analysis is about the
-  Python surface, not the mock, so it survives intact - and against
-  libexpr the formals are real.
+- 034 (functions as values) is MOSTLY DONE. Fourteen accessors on
+  Value, all declared, plus `huggorm.signature_of` for the
+  `inspect.Signature`. `apply` is the curried `f x` and `apply_auto`
+  is `autoCallFunction`, by name, filling defaults.
+  `@guard("function")` is NECESSARY AND NOT SUFFICIENT and that
+  shapes the whole change: `nFunction` is one arm over THREE storage
+  tags, so the guard proves the arm and reading a lambda payload off
+  a builtin is still undefined. Every body checks its own shape, and
+  one gate holds all twelve of those checks in both directions. NOT
+  perturbed, deliberately: removing a sub-guard crashes rather than
+  failing one assertion.
+  `apply_auto` REFUSES a function with no formals, because upstream
+  answers the function unapplied there and a caller cannot tell that
+  from a call that returned a function. Broken on purpose: DID NOT
+  RAISE, one gate.
+  Three docstrings were written and then refuted by their own gates.
+  The result of `apply` is in WHNF, not a thunk. Formals arrive in
+  SYMBOL-ID order - interning order, because upstream sorts by a
+  Symbol - so the bodies sort by name, the same answer this repo
+  already gives for attribute sets; removing the sort fails one gate.
+  And `doc()` on a lambda READS THE SOURCE FILE (position.cc:49), so
+  it blocks - and throws from inside libexpr when that file has
+  moved, which the binding catches narrowly and reports, because an
+  empty answer would say "no documentation" where the truth is
+  "cannot read it".
+  No lambda gets an arity, because a curried function has none. Only
+  a builtin declares one, read off PrimOp rather than getDoc - whose
+  primop branch sits behind `if (primOp.doc)`, so a doc-less builtin
+  has an arity getDoc will not report.
+  `test_python_calls_nix_calling_python` is the gate neither 033 nor
+  034 had: the two are duals with opposite threading, and it crosses
+  both in one call so the GIL reacquire happens inside the release.
+  Left: `__call__`, which is a DSL gap in 076's family rather than a
+  decision; an unchecked cross-state argument, which `force` and
+  `attrs_set` already have; and no remote gate, since Value-to-Value
+  over the wire is already proven.
 - 033 (primops in Python) is DONE. `EvalState.register_primop`
   publishes a Python callable as `builtins.<name>`: `fun<PrimOpFun>`
   holds a std::function so a capturing lambda goes straight in, and
