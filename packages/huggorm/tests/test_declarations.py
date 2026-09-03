@@ -292,6 +292,125 @@ def test_a_declared_dunder_is_refused_rather_than_dropped(
     assert "Callable.__call__" in str(caught.value)
 
 
+# One declaration with an `async def` in each of the three places it
+# can sit: a method, a decorated free function, and an undecorated
+# helper. The answers differ, which is the point (tasks/088).
+#
+# ONE async at a time, and the three tests below each turn on the one
+# they are about. Written with all three async first, and that gate
+# was weak: the class test's `match="async def"` was satisfied by the
+# FREE function's refusal, so it passed with the class refusal
+# removed and failed on a later assertion instead.
+ASYNCS = '''"""One declaration written with async defs."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header, threading
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    def base16(self) -> Str:
+        """The digest as lowercase hex."""
+        Cxx("return std::string();")
+
+
+@threading("pool")
+def free_one(text: Str) -> Str:
+    """Decorated, so it was meant to be a binding."""
+    Cxx("return text;")
+
+
+async def helper() -> None:
+    """Undecorated, so the declaration wrote it for itself."""
+'''
+
+# The one edit each test makes, so no fixture carries two asyncs.
+AS_METHOD = ("    def base16", "    async def base16")
+AS_FREE = ("\ndef free_one", "\nasync def free_one")
+
+
+def test_an_async_def_says_why_it_is_refused(
+        tmp_path: pathlib.Path) -> None:
+    """`async def` in a declaration names its own cause.
+
+    It was refused before this, by accident. The import keeps the
+    function, so it named a live line; `ast.AsyncFunctionDef` is not
+    a subclass of `ast.FunctionDef`, so `_reconcile`'s node set had
+    no line there; and the message a reader got was
+
+        the import kept definitions at lines [16] and the tree has no
+        node there. The two readings have stopped lining up - most
+        likely `co_firstlineno` no longer points where this assumes.
+
+    Loud, and blaming the wrong thing. Nothing in it says "async",
+    and the cause it names - a Python release moving
+    `co_firstlineno` - sends a reader to the wrong file entirely.
+
+    The refusal is at the loop that drops it now, so it can say what
+    a declaration is: a description of a C++ binding, where the async
+    form is DERIVED from `@binding(threading=...)` and `@blocks`."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    source = ASYNCS.replace(*AS_METHOD)
+    with pytest.raises(DeclarationError, match="async def") as caught:
+        read(_declaration(tmp_path, source))
+    assert "Digest.base16" in str(caught.value)
+    assert "co_firstlineno" not in str(caught.value)
+
+
+def test_a_free_async_function_is_refused_too(
+        tmp_path: pathlib.Path) -> None:
+    """The module-level loop drops one the same way.
+
+    A second loop, so a second refusal - and the class one cannot
+    stand in for it, because a declaration may have free functions
+    and no class at all."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    source = ASYNCS.replace(*AS_FREE)
+    with pytest.raises(DeclarationError, match="async def") as caught:
+        read(_declaration(tmp_path, source))
+    assert "free_one" in str(caught.value)
+
+
+def test_an_undecorated_async_helper_is_left_alone(
+        tmp_path: pathlib.Path) -> None:
+    """The reconcile half, and the half that is not a refusal.
+
+    An UNDECORATED def at module level is a helper the declaration
+    wrote for itself - the free-function loop has always skipped one,
+    and this asserts an `async def` helper is skipped the same way.
+
+    It could not be written at all before. `_reconcile` ran first and
+    raised on it, because the import kept it and the tree reader had
+    no node at its line, so an async helper failed the whole read.
+    Adding `ast.AsyncFunctionDef` to `DEFINITIONS` is what fixed
+    that.
+
+    Dropping it again fails all THREE of these, which is more than
+    this gate was written expecting - the docstring here claimed the
+    two refusals would still pass. They do not, and the reason is the
+    order: `_reconcile` runs before anything reads a class body, so
+    without `DEFINITIONS` the refusals are UNREACHABLE and the two
+    tests above fail on the message rather than on the raise.
+
+        FAILED test_an_async_def_says_why_it_is_refused
+          AssertionError: Regex pattern did not match.
+        FAILED test_a_free_async_function_is_refused_too
+          AssertionError: Regex pattern did not match.
+        FAILED test_an_undecorated_async_helper_is_left_alone
+          DeclarationError: ... the import kept definitions at lines
+        3 failed, 361 passed, 10 deselected"""
+    from huggorm_dsl.read import read
+
+    # ASYNCS as written: only the helper is async.
+    mod = read(_declaration(tmp_path, ASYNCS))
+    assert [c.name for c in mod.classes] == ["Digest"]
+    assert [f.name for f in mod.functions] == ["free_one"]
+
+
 # One value carrying both 64-bit widths. Written here because the
 # corpus has each width but never both on one class, and the fact
 # under test is the DIFFERENCE between them (tasks/079).
