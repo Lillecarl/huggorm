@@ -93,3 +93,64 @@ four-emitter problem as `@property`, and belongs to this task if
 anybody ever wants one.
 
 Opened 2026-09-02, while closing `tasks/075`.
+
+## 2026-09-03: two of the four are already right
+
+Still **OPEN**, and its own rule still applies: nothing needs an
+attribute yet. What changed is the estimate. The section above says
+four emitters and a wire predicate, and two of those five were
+measured and found to need nothing.
+
+**`pyi.py` already emits `@property`.** It does not print a stub, it
+moves the declaration's own tree - and its decorator filter keeps
+`d.id in BUILTIN_DECORATORS`, which is where `property` lives. So the
+stub agrees with the declaration today, with no edit. The claim above
+was written from the emitter it replaced.
+
+Proven by READING, not by a property reaching it. `nbemit` refuses
+the class first, so no `@property` accessor has ever reached
+`pyi.py` - which is the dead-path shape `tasks/075` documents, and
+the reason to say how this was checked rather than that it was.
+`wire.py` is the other way round: its route was traced through code
+that runs on every wire value.
+
+**`wire.py` needs no predicate.** It reads a wire value's parts
+through `_parts()` and nothing else - `value_to_msg` calls
+`self._sync(obj)._parts()`, and the one route that reads a part BY
+NAME is `error_to_msg`, for an exception, which is Python's own object
+and has no `_parts`. `_parts` is a METHOD either way. Only the C++
+that builds its body changes.
+
+So the real list is three, and one of them is new:
+
+- `nbemit._method`, which binds `def` and would bind `def_prop_ro`;
+- `nbemit.wire_fields`, whose third element is `h.attr(name)()` - one
+  expression, read by `_parts`, `__repr__`, `__hash__` and
+  `_round_trip`. That is the predicate, and it is ONE place, not
+  four. `__eq__` needs nothing: it compares `_parts()` against
+  `_parts()`, so it reads the helper rather than the fields. The one
+  site OUTSIDE `wire_fields` is `@shown`, whose repr writes
+  `h.attr(shown)()` for a class with no fields at all;
+- `manifest._method`, which carries no `prop` key at all, so nothing
+  downstream of the manifest can know. `pygen`'s wrappers read it
+  from there.
+
+The last one is the open design question, and it is not prettiness.
+An async wrapper's method is `async def name(self)`, and a property
+cannot be awaited. A value class does not get one - `PathInfo` is
+`threading="pool"` and `blocking=False`, so `wrapped` is False and
+there is no async form to disagree with - but a wrapped class would
+have to refuse `@property` or answer a coroutine from an attribute.
+Whichever it is has to be a refusal, not a comment.
+
+## `__call__` is NOT this task
+
+It was named here as "076's family of gap" by `tasks/034`, and
+carried forward as "one DSL change buys both". Measurement refuted
+that, and `tasks/088` is where it went.
+
+`@property` is attribute-versus-call: the name is kept and the
+emitters read it the wrong way. `__call__` was never KEPT - the
+class-body loop dropped every `__`-prefixed name, in silence. One is
+a reading, the other is an absence, and nothing about `__call__`
+needs `@property`.

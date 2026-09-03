@@ -294,8 +294,22 @@ which was superseded rather than fixed.
   not - what Carl aborted was the MOCK version of it.
 - 076 (an accessor that is an attribute) is OPEN. `@property` in a
   declaration is refused, and the file says what honouring it would
-  cost - four emitters reading one predicate. Do it when a declaration
-  needs an attribute, not for prettiness.
+  cost. Do it when a declaration needs an attribute, not for
+  prettiness.
+  Its estimate came DOWN when it was measured. Two of the five
+  outputs it named need nothing: `pyi.py` already keeps `@property`,
+  because it moves the declaration's own node and its filter keeps
+  Python's own decorators - proven by reading, since `nbemit` refuses
+  the class first and no property has ever reached the stub; and
+  `wire.py` reads a value's parts
+  through `_parts()` alone, so only the C++ that builds that body
+  changes. The predicate is `nbemit.wire_fields`'s read expression,
+  ONE place, plus `@shown`'s repr - and the open question is
+  `manifest._method`, which carries no `prop` key, so nothing past
+  the manifest can know. A wrapped class is where it bites: an async
+  wrapper's method is `async def`, and a property cannot be awaited.
+  `__call__` is NOT this task, and "one DSL change buys both" was
+  the assumption that measurement refuted. See 088.
 
   The wire question is settled: a word crosses as a STRING, with a
   generated mapping at both ends, because a word is easier to read
@@ -617,6 +631,27 @@ which was superseded rather than fixed.
   that failed. It errs towards forgetting, because forgetting a good
   file costs a re-read and keeping a bad one costs the answer. Two
   gates, at two layers, and reverting fails both.
+- 088 (a declared dunder reaches nothing) is OPEN, with the refusal
+  DONE. The SIXTH silent skip: `read.py`'s class-body loop kept the
+  names that are not `__`-prefixed and dropped the rest with no
+  answer, so a declaration writing `def __call__` reached no binding,
+  no stub line and no manifest entry, and the read reported success.
+  Measured on a probe: two declared methods gone, `Probe
+  ['nar_size']`. No declaration tripped it - `errors.py` declares
+  `__eq__` and `__hash__`, and an error class carries no `@binding`,
+  so that file yields no bound class at all.
+  The branch is inverted now, refusing through `_survive` with the
+  line and both answers a caller has: the value dunders are DERIVED
+  from `@wire_value` - `order=` and `text=` decide which - and
+  anything else gets a plain name. Broken on purpose: DID NOT RAISE, one gate.
+  What is left is `__call__` itself, which is `tasks/034`'s residue.
+  It is NOT 076's problem, and "one DSL change buys both" was the
+  carried assumption that this refuted: `@property` is
+  attribute-versus-call in four emitters, and `__call__` is a name the
+  reader never kept. `nbemit` and `pyi.py` need nothing; the manifest
+  is a SECOND silent-drop layer with its own `startswith("_")`
+  filter; and a proto identifier must start with a letter, so
+  `__call__` cannot be an rpc name.
 - 085 (four things the log stream does not cover) is OPEN and blocks
   nothing: a process-wide sink for fetcher and build threads, two
   states on one thread, fan-out to a second reader, and the ErrorInfo

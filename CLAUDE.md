@@ -46,7 +46,8 @@ In order:
 1. A defect that can corrupt a value, or drop one silently. This
    repo's named failure mode is the SILENT SKIP - an emitter skips
    what it does not recognise, and a skip is indistinguishable from an
-   absence. Four found so far: `tasks/073`, `075`, `078`, `082`.
+   absence. Six found so far: `tasks/073`, `075`, `078`, `082`,
+   `087`, `088`.
 2. Whatever the destination above needs next and does not have.
 3. A task that is outstanding and blocks nothing.
 
