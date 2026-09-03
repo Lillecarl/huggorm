@@ -273,3 +273,26 @@ ever fires.
 Written down before any C++ exists, because it is the kind of defect
 that compiles, passes, and is found months later by a server that
 grows.
+
+### The patch applied, and what that does NOT yet prove
+
+`pkgs.nix.appendPatches` rebuilt all five components as `2.34.8+1`,
+and the three hunks are in the source this build links
+(`ippimy5...-source-patched-source`):
+
+    src/libexpr/eval.cc:228    BASE_ENV_SIZE = 512
+    src/libexpr/eval.cc        2x "the base environment is full"
+    src/libexpr/primops.cc:5151 buildBindings(512)
+
+`all checks passed`, 287 passed. So the patch costs nothing that this
+suite can see, which is the only claim available today.
+
+**It is UNGATED, and will stay so until registration exists.** The
+patch has no observable effect from Python: `builtins` still holds
+119 names, and nothing here registers a primop, so no test can tell a
+patched evaluator from a stock one. The gate arrives with the binding
+- register past 128 names and read an error instead of corrupting the
+heap - and that gate is the reason the patch is here at all.
+
+Said plainly rather than left implied, because "the build is green"
+is not evidence about a bound nothing reaches yet.
