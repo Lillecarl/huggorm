@@ -65,6 +65,7 @@ LOCAL: dict[str, list[str]] = {
     ".remote": ["ConnectionExpired", "NixClient", "connect"],
     ".server": ["serve"],
     ".watch": ["Watcher"],
+    ".notify": ["Notifier"],
 }
 
 # Imported as a MODULE rather than for the names in it. `huggorm.errors`

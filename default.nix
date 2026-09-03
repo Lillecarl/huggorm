@@ -136,6 +136,10 @@ rec {
       pytest
       anyio
       pytest-timeout
+      # The inotify change source. A propagated dependency of
+      # huggorm, so the interpreter check and test run against needs
+      # it too.
+      asyncinotify
     ]
   );
   # The emitted front door, into the working tree.

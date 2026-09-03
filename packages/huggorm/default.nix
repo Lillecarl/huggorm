@@ -39,9 +39,15 @@ python3Packages.buildPythonPackage {
   # googleapis-common-protos: google.rpc.Status, which is the message
   # gRPC puts in grpc-status-details-bin - the only place a FAILED
   # call can carry a typed answer (tasks/036).
+  # asyncinotify: the kernel telling the watcher a file moved, instead
+  # of the watcher stat-ing for it (tasks/083). Linux only, which is
+  # what let it beat watchdog - Carl ruled Darwin out for now, so
+  # cross-platform bought nothing and cost a thread pool. It
+  # propagates nothing but python3 itself.
   propagatedBuildInputs = [
     huggorm-bindings
     huggorm-generated
+    python3Packages.asyncinotify
     python3Packages.googleapis-common-protos
     python3Packages.grpclib
     python3Packages.protobuf
