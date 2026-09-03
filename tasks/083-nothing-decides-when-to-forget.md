@@ -1,7 +1,7 @@
 # Nothing decides when to forget
 
-**OPEN.** The watcher is built and gated. No inotify adapter yet,
-which waits on a dependency decision rather than on effort.
+**OPEN.** The watcher is built and gated. The inotify adapter is
+DEFERRED, by Carl, behind `tasks/033` and `tasks/032`.
 
 `tasks/016` built the mechanism in three parts, and they compose:
 
@@ -235,3 +235,32 @@ by rename, which replaces the inode and orphans a watch on the file.
 Background eager evaluation (`tasks/016`) comes after, and needed this
 first - re-evaluating eagerly is only useful once something knows the
 old answer is stale.
+
+
+## 2026-09-03: the adapter is decided and deferred
+
+Two answers from Carl, and the second outranks the first.
+
+**`asyncinotify`, when it is built.** Checked against the pinned
+nixpkgs before asking, and all four candidates are packaged with no
+propagated dependency but `python3`:
+
+    asyncinotify    4.4.4    asyncio-native, an async iterator
+    inotify-simple  2.0.1    sync; its fd needs wiring to the loop
+    watchdog        6.0.0    cross-platform, thread-based
+
+`asyncinotify` wins because this layer is already async and the
+adapter becomes a task that iterates events and calls `changed()`.
+`watchdog` buys Darwin at the cost of a thread pool nothing else here
+has, and Carl ruled Darwin out: "MacOS should not be considered yet in
+the project lifecycle."
+
+**It is not next.** Carl, 2026-09-03: "It's most important that the
+spec and codegen is correct and that all binding+wrapping details are
+as consistent as they can be. There's still the primop registration
+stuff, backchannels for logging and such that are more important than
+building out the full file watching code."
+
+So `rescan()` stays the change source and this task waits. Recorded
+here rather than left in a conversation, because the decision is the
+part that would otherwise be re-argued.

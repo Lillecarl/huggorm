@@ -199,9 +199,10 @@ which was superseded rather than fixed.
   the closure and cannot miss, and it over-forgets by an amount the
   file measures. Bookkeeping is separate from noticing: `changed()` is
   told, `rescan()` stats, and both call one step - so every gate runs
-  with no sleeps. What keeps it OPEN is the inotify adapter, which
-  waits on a dependency decision rather than on effort, since Python
-  has no stdlib inotify and `rescan()` already needs none.
+  with no sleeps. The inotify adapter is decided
+  (`asyncinotify`, Linux only) and DEFERRED by Carl behind 033 and
+  032: the spec, the codegen and the binding details come first.
+  `rescan()` stays the change source until then.
 - 081 (an input that reached no output) is DONE. The general form of
   073, 075 and 078: an emitter skips what it does not recognise, and
   a skip reads as an absence. The fear it was opened with was wrong -
