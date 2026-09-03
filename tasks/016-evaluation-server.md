@@ -248,10 +248,58 @@ it cannot stat; the declaration says so.
 evaluation imported and no data file it read. The declaration says
 so, which is the difference between a known limit and a wrong answer.
 
-### What is next for the watcher
+### What is next for the watcher: invalidation
 
-Invalidation. `resetFileCache()` is public and clears EVERYTHING -
-the whole warm state for one changed file, which defeats the point.
-Per-path invalidation needs an erase from the same private map, by
-the same route, and it is the piece that makes `cached_files` useful
-rather than merely true.
+Carl's goal for `cached_files` in his own words: "to be able to have a
+live-reloading evaluation server (at some point), resetting the entire
+eval cache database is not what we want to do at all."
+
+`resetFileCache()` is public and is not a coarser version of the same
+operation. Its body clears four things (`eval.cc:1155`):
+
+    importResolutionCache->clear();   path -> resolved path
+    fileEvalCache->clear();           the warm evaluations
+    inputCache->clear();              fetched flake inputs
+    positions.clear();                the PosTable
+
+`inputCache` holds FETCHED inputs. For a state meant to live for days,
+that is re-downloading over the network because one local file
+changed. And it destroys the milestone this task is measured by: after
+it, every input counts as changed because one was.
+
+### The measurement the design rests on
+
+Taken 2026-09-03, before asking for any C++. A cached importer does
+not notice its import changing, and the cache holds no edge:
+
+    outer.nix = `import inner.nix`   ->  42
+    (inner.nix edited to `1 + 1`)
+    cached outer = 42        a fresh state = 2
+    cached_files = [«nix-internal»/derivation-internal.nix,
+                    outer.nix, inner.nix]
+
+Both files are listed and nothing says one imported the other. So
+erasing `inner` alone would leave `outer` answering 42 for the life of
+the state - SILENTLY, which is worse than over-clearing.
+
+Per-path erase is therefore the right mechanism and is not sufficient
+by itself. The edges are recoverable without more C++: `cached_files`
+before and after one `eval_file(X)` differ by exactly the files that
+evaluation read, which is X's closure. Forget the closure, not the
+file.
+
+### What the erase has to get right
+
+`fileEvalCache` is keyed by the RESOLVED path. An erase of the path a
+caller GAVE would leave `/foo/default.nix` cached after
+`forget_file("/foo")`, and the next evaluation would re-resolve, hit
+the stale value and answer from it. Both spellings go.
+
+Safe because an `EvalState` is AFFINE in this repo - one thread per
+state, which is huggorm's policy rather than libexpr's guarantee. The
+map tolerates more; the reasoning should name the invariant that
+actually holds.
+
+Known limits to keep beside it: `positions` keeps entries for a
+forgotten file (append-only metadata, harmless), and a file reached
+only through `builtins.readFile` is invisible to all of this.
