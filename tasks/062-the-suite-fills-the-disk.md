@@ -200,14 +200,43 @@ Reclaiming all of it returned the disk to 92%, 4.6 GB free:
 
     chmod -R u+w /tmp/pytest-of-lillecarl && rm -rf /tmp/pytest-of-lillecarl
 
-The `chmod` is the whole problem in one line. `rm -rf` alone fails on
-these, which is why pytest's own `rm_rf` fails on them, which is why
-they accumulate - the suite builds a store whose paths are read-only,
-the way a real store is, and nothing makes them writable again
-afterwards.
+### Most of it was NOT this suite
 
-Two things this run adds to the record above. The failure mode is
-NOT always the SIGBUS in `tasks/062`'s title - a plain nix
-evaluation just reports ENOSPC, which is at least honest. And 4.6 GB
-free is one more full suite plus one build; the reclaim buys an
+Written first as "7.2 GB of it was this suite's leftovers", which
+the evidence does not support. The 2026-09-01 section above already
+said one `garbage-*` dir belonged to another project, and the same
+is true of both today. Their contents name the test:
+
+    garbage-.../test_a_build_lands_in_the_uppe0/lower/nix/store/...
+
+`test_a_build_lands_in_the_upper*` does not exist in this
+repository - grepped, no match - which is exactly what that section
+says, and an OverlayFS `lower` layer is not a shape anything here
+builds. So 4.4 GB of the 7.2 GB is somebody else's, and this suite's
+share is the ~2.8 GB of numbered husks.
+
+The `chmod` is still the mechanism: `rm -rf` alone fails on a store
+path that is a read-only DIRECTORY, which is why pytest's own
+`rm_rf` needs its recovery path. But that recovery WORKS, per the
+measurement above - what defeats it is `EROFS` and `Directory not
+empty`, and both came from the overlay test that is not ours.
+
+### What is unexplained, and stays that way
+
+574 numbered dirs, where pytest retains three. That contradicts the
+"three retained runs" figure this task has used since 2026-09-01,
+and it is not diagnosed: the evidence was deleted to get the disk
+back. Whether the older ones failed to prune or are near-empty
+stubs is a measurement somebody has to take fresh - `ls | wc -l`
+plus `du -sh` on the oldest, before reclaiming next time.
+
+Recorded as a question rather than a finding. The reclaim is what
+made the number unrecoverable, and knowing that is worth more than
+a guess about it.
+
+### The failure mode is not always the SIGBUS
+
+A plain nix evaluation reports ENOSPC, which is at least honest.
+The SIGBUS this task is named for needs sqlite's mmap. And 4.6 GB
+free is one more full suite plus one build: the reclaim buys an
 afternoon, not a fix.
