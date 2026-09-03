@@ -71,6 +71,15 @@ from huggorm_dsl.declare import Cxx, Decl, Field
 BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
                                 "overload"})
 
+# Every node that DEFINES a name. Stated once because
+# `ast.AsyncFunctionDef` is not a subclass of `ast.FunctionDef`, and
+# the three readers that ask this question have to agree: `_live`
+# reads a definition's `co_firstlineno`, `_reconcile` checks that the
+# tree has a node there, and `_resolve` keeps the arm the import
+# chose. A reader short one of the three arms drops an `async def`
+# out of one reading and not the other (tasks/088).
+DEFINITIONS = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
 
 # Where a declaration takes its vocabulary from. Named once: a
 # declaration is read rather than imported, so this string is the only
@@ -1136,6 +1145,25 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     methods: list[Method] = []
     # ...with any `NIX_VERSION` branch already chosen by the import.
     for item in _resolve(node.body, live):
+        if isinstance(item, ast.AsyncFunctionDef):
+            # A declaration says what the BINDING is, and a binding is
+            # C++. Which methods get an async form is decided from
+            # `@binding(threading=...)` and `@blocks`, one file later,
+            # so `async def` here says nothing the emitter can use.
+            #
+            # It was refused already, by accident and with the wrong
+            # cause: the import keeps the function, so it named a live
+            # line, and `_reconcile` saw a line the tree reader had no
+            # node for. The message blamed `co_firstlineno` and never
+            # said "async" (tasks/088). `DEFINITIONS` closed that,
+            # which is what makes this refusal reachable.
+            _survive(DeclarationError(
+                item,
+                f"{node.name}.{item.name}: a declaration describes a C++ "
+                f"binding, so `async def` says nothing here. The async "
+                f"form is DERIVED - @binding(threading=...) and @blocks "
+                f"decide which methods get one - so write a plain `def`."))
+            continue
         if not isinstance(item, ast.FunctionDef):
             continue
         if item.name == FROM_PARTS:
@@ -1408,9 +1436,9 @@ def _reconcile(tree: ast.Module, live: set[int], path: str) -> None:
     if not live:
         return
     nodes = {n.lineno for n in ast.walk(tree)
-             if isinstance(n, ast.ClassDef | ast.FunctionDef)}
+             if isinstance(n, DEFINITIONS)}
     nodes |= {d.lineno for n in ast.walk(tree)
-              if isinstance(n, ast.ClassDef | ast.FunctionDef)
+              if isinstance(n, DEFINITIONS)
               for d in n.decorator_list}
     orphans = sorted(live - nodes)
     if orphans:
@@ -1443,7 +1471,7 @@ def _resolve(body: list[ast.stmt], live: set[int]) -> list[ast.stmt]:
             if isinstance(n, ast.If):
                 walk(n.body)
                 walk(n.orelse)
-            elif isinstance(n, ast.ClassDef | ast.FunctionDef):
+            elif isinstance(n, DEFINITIONS):
                 own = {n.lineno} | {d.lineno for d in n.decorator_list}
                 if own & live:
                     out.append(n)
@@ -1535,6 +1563,17 @@ def _read(path: str) -> Module:
     # a helper the declaration wrote for itself.
     functions = []
     for n in body:
+        if isinstance(n, ast.AsyncFunctionDef) and n.decorator_list:
+            # As in a class body, and for the same reason. An
+            # UNDECORATED one is not refused: it is a helper the
+            # declaration wrote for itself, exactly like an
+            # undecorated `def`, and this loop already ignores those.
+            _survive(DeclarationError(
+                n,
+                f"{n.name}: a declaration describes a C++ binding, so "
+                f"`async def` says nothing here. The async form is "
+                f"DERIVED from @threading - so write a plain `def`."))
+            continue
         if not (isinstance(n, ast.FunctionDef) and n.decorator_list):
             continue
         try:
