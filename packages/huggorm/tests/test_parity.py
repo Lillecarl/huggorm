@@ -306,3 +306,38 @@ async def test_a_file_evaluated_twice_is_read_once(
     # would stop agreeing.
     assert "opening file" in str(caught.value)
     assert "answer.nix" in str(caught.value)
+
+
+async def test_a_file_reached_by_import_is_in_the_cache_too(
+        state: Any, tmp_path: Any) -> None:
+    """What a watcher would watch, and why it is not our own boundary.
+
+    `tasks/016` wants a change to a file an evaluation read to
+    invalidate the warm state. Our binding sees ONE path - the one
+    handed to `eval_file` - and an evaluation reads many: `import`
+    goes through `evalFile` too, so the file it names is cached
+    exactly like the file the caller named.
+
+    That difference is the whole reason `cached_files` reaches into
+    libexpr's own cache rather than counting what we were asked to
+    evaluate. The inner file is the assertion that matters; the outer
+    one is the control that says the answer is not empty for some
+    other reason.
+
+    Both are asserted absent BEFORE the evaluation, so a state that
+    answered with every file it had ever seen - or with a constant -
+    would fail here rather than pass by accident."""
+    inner = tmp_path / "inner.nix"
+    inner.write_text("40 + 2\n")
+    outer = tmp_path / "outer.nix"
+    outer.write_text(f"import {inner}\n")
+
+    before = await call(state, "cached_files")
+    assert str(inner) not in before and str(outer) not in before
+
+    v = await call(state, "eval_file", str(outer))
+    assert await call(v, "integer") == 42
+
+    files = await call(state, "cached_files")
+    assert str(outer) in files, files
+    assert str(inner) in files, "an imported file is cached too"
