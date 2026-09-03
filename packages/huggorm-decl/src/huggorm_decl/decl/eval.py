@@ -255,6 +255,363 @@ if (attr == nullptr)
 return self.wrap(attr->value);
         """)
 
+    # -- functions -------------------------------------------------------
+    #
+    # `nFunction` is ONE type name over THREE payloads - a lambda, a
+    # primop, and a primop that already holds some of its arguments -
+    # told apart by `isLambda()`, `isPrimOp()` and `isPrimOpApp()`
+    # (value.hh:1111). So `@guard("function")` is NECESSARY AND NOT
+    # SUFFICIENT here: it proves the arm and says nothing about which
+    # of the three, and `lambda()` on a primop is exactly the payload
+    # reinterpretation this class exists to prevent.
+    #
+    # Every body below therefore checks its own shape first. The guard
+    # cannot: it is generated from `@tagged`, which names the twelve
+    # `nix::ValueType` arms, and the three function shapes are not
+    # types - they are storage tags under one type.
+    #
+    # CURRIED, so there is no arity. `x: y: body` is a function
+    # returning a function, and nothing can say how many arguments it
+    # takes without applying it. Only a primop declares one, and
+    # `getDoc` leaves a lambda's `arity` at 0 with upstream's own
+    # FIXME beside it (eval.cc:622). No accessor here offers a
+    # lambda an arity, because any that did would be lying.
+
+    @guard("function")
+    def is_lambda(self) -> Bint:
+        """Whether this function is a `x:` or `{ a, b }:` lambda."""
+        Cxx("return self.get()->isLambda();")
+
+    @guard("function")
+    def is_primop(self) -> Bint:
+        """Whether this function is a builtin, with none of its
+        arguments applied yet."""
+        Cxx("return self.get()->isPrimOp();")
+
+    @guard("function")
+    def is_primop_app(self) -> Bint:
+        """Whether this is a builtin holding SOME of its arguments.
+
+        The third shape, and the one with no introspection at all:
+        `getDoc` has no branch for it and returns nothing
+        (eval.cc:571-648), and nothing in libexpr says how many
+        arguments are still wanted. Counting them means walking the
+        application chain, which is work this declaration does not do
+        and a caller cannot ask for."""
+        Cxx("return self.get()->isPrimOpApp();")
+
+    @guard("function")
+    @blocks
+    def apply(self, arg: "Value") -> "Value":
+        """Apply one argument. `f x`, and the answer may be a function.
+
+        The curried form, so this is how every Nix function is called
+        and the by-name form below is the special case. Applying `x:
+        y: body` once answers another function.
+
+        BLOCKS: it runs the evaluator. The argument is not forced
+        first, and the RESULT comes back in WHNF - `callFunction`
+        evaluates the lambda's body with `Expr::eval`, which produces
+        an evaluated value rather than a thunk (eval.cc:1600). So the
+        top level is forced and everything inside it stays lazy: `x: {
+        a = x; }` answers an attribute set whose `a` is still a
+        thunk.
+
+        Measured, because the opposite was written here first. A
+        docstring claiming the result was a thunk failed its own gate
+        with `assert 'int' == 'thunk'`.
+
+        `noPos`, because the call site is Python and there is no Nix
+        position to name. The trace on a failure therefore starts
+        inside the function rather than at a caller."""
+        Cxx("""
+huggorm::gc_register_thread();
+auto * out = self.state().allocValue();
+self.state().callFunction(*self.get(), *arg.get(), *out, nix::noPos);
+return self.wrap(out);
+        """)
+
+    @guard("function")
+    @blocks
+    def apply_auto(self, args: "Value") -> "Value":
+        """Apply an attribute set BY NAME, filling defaults.
+
+        `autoCallFunction`, which is what `--arg` reaches. One round
+        trip for a whole argument set, where `apply` is one per
+        argument - and it fills each formal the set does not mention
+        from that formal's own default.
+
+        It REFUSES a function that declares no formals, and that
+        refusal is the reason this is a separate method rather than a
+        convenience. Upstream returns the function UNAPPLIED in that
+        case (eval.cc:1795-1798, `res = fun`), so a caller who passed
+        arguments to `x: x` would get back the function and no
+        indication that nothing happened. That is this repo's named
+        failure mode sitting in libexpr, and a binding may not be
+        more permissive than the C++ it binds.
+
+        It forces `self`, unlike everything else here, because
+        `autoCallFunction` does (eval.cc:1783) - so a thunk that
+        evaluates to a function is accepted where `apply` would
+        refuse it. `@guard` still rejects a thunk before we get here,
+        so that reachability belongs to a caller who forced first.
+
+        An attribute set with a `__functor` attribute is CALLABLE in
+        Nix and is refused here, because `@guard("function")` sees
+        `nAttrs`. Upstream follows the functor (eval.cc:1786-1792);
+        this does not, and a caller reaches it by applying the
+        `__functor` attribute itself.
+
+        A required formal with no value and no default raises
+        MissingArgumentError, which crosses as a declared Nix
+        error."""
+        Cxx("""
+if (!self.get()->isLambda()
+    || !self.get()->lambda().fun->getFormals().has_value())
+    throw std::invalid_argument(
+        "apply_auto needs a lambda that declares formals; nix's "
+        "autoCallFunction answers the function UNAPPLIED for anything "
+        "else, which is indistinguishable from a call that did nothing");
+if (args.get()->type<true>() != nix::nAttrs)
+    throw std::invalid_argument(
+        "apply_auto needs an attribute set of arguments");
+huggorm::gc_register_thread();
+auto * out = self.state().allocValue();
+self.state().autoCallFunction(*args.get()->attrs(), *self.get(), *out);
+return self.wrap(out);
+        """)
+
+    @guard("function")
+    def lambda_name(self) -> Str:
+        """The name this lambda was bound to, or "" for an anonymous
+        one.
+
+        `ExprLambda::name` (nixexpr.hh:517), which the parser sets
+        when a lambda is the right-hand side of an attribute or a
+        `let`. It is for a human: two bindings of one lambda do not
+        make two functions, and this reports whichever name the
+        expression carried."""
+        Cxx("""
+if (!self.get()->isLambda())
+    throw std::invalid_argument("value is not a lambda");
+const auto & name = self.get()->lambda().fun->name;
+return name ? self.symbol(name) : std::string();
+        """)
+
+    @guard("function")
+    def lambda_arg(self) -> Str:
+        """The name bound to the WHOLE argument, or "".
+
+        Two spellings reach it, which is why this is not "the
+        parameter name". `x: body` binds the argument to `x` and
+        declares no formals. `{ a, b } @ rest: body` declares formals
+        AND binds the whole set to `rest`, so both this and
+        `formal_names` answer.
+
+        "" means the lambda takes formals and named no binding for the
+        set itself."""
+        Cxx("""
+if (!self.get()->isLambda())
+    throw std::invalid_argument("value is not a lambda");
+const auto & arg = self.get()->lambda().fun->arg;
+return arg ? self.symbol(arg) : std::string();
+        """)
+
+    @guard("function")
+    def has_formals(self) -> Bint:
+        """Whether this lambda declares `{ a, b }` style formals.
+
+        The one thing that separates the two calling conventions:
+        `apply_auto` needs it and `apply` does not care."""
+        Cxx("""
+if (!self.get()->isLambda())
+    throw std::invalid_argument("value is not a lambda");
+return self.get()->lambda().fun->getFormals().has_value();
+        """)
+
+    @guard("function")
+    def accepts_extra(self) -> Bint:
+        """Whether the formals end in `...`.
+
+        It changes what `apply_auto` PASSES, not just what it
+        accepts: with an ellipsis upstream forwards every argument it
+        was given, and without one it forwards only the declared
+        formals (eval.cc:1803-1813)."""
+        Cxx("""
+if (!self.get()->isLambda())
+    throw std::invalid_argument("value is not a lambda");
+auto formals = self.get()->lambda().fun->getFormals();
+return formals.has_value() && formals->ellipsis;
+        """)
+
+    # ALPHABETICAL, and the sort is OURS. Both accessors below sort
+    # by name in the body, which needs saying because upstream looks
+    # like it already did.
+    #
+    # `validateFormals` sorts by `std::tie(a.name, a.pos)`
+    # (parser-state.hh:302), and `name` is a `Symbol` - an interning
+    # ID. So upstream's order is the order each name was first seen
+    # ANYWHERE in the process, which is neither source order nor
+    # alphabetical and is not reproducible between two runs.
+    #
+    # That is the same fact this class already records for attribute
+    # sets, where `Bridge::sorted()` pays a sort to hide it. Measured
+    # the same way too: a docstring claiming name order failed with
+    # `assert ['zebra', 'apple', 'mango'] == ['apple', 'mango',
+    # 'zebra']`, which is the interning order of a test that had just
+    # mentioned zebra first.
+    #
+    # Source order would be the other defensible answer and is not
+    # available: `Formal::pos` survives, but sorting by it would need
+    # positions this declaration does not carry.
+
+    @guard("function")
+    def formal_names(self) -> "list[Str]":
+        """Every formal this lambda declares, alphabetically.
+
+        Empty for a `x:` lambda, which declares none.
+
+        A LIST rather than an index and a count, because the whole
+        point of reading formals is to build one signature - and over
+        RPC an indexed accessor would be one round trip per
+        parameter."""
+        Cxx("""
+if (!self.get()->isLambda())
+    throw std::invalid_argument("value is not a lambda");
+std::vector<std::string> names;
+auto formals = self.get()->lambda().fun->getFormals();
+if (formals.has_value())
+    for (const auto & formal : formals->formals)
+        names.push_back(self.symbol(formal.name));
+std::sort(names.begin(), names.end());
+return names;
+        """)
+
+    @guard("function")
+    def defaulted_formals(self) -> "list[Str]":
+        """The formals that have a default, alphabetically.
+
+        A SUBSET of `formal_names`, not the defaults themselves. A
+        default is an unevaluated expression in the lambda's own
+        environment, so it could only cross as a proxy - and
+        `inspect.Parameter` needs to know that a default EXISTS
+        rather than what it is, which is the whole use for this.
+
+        `Formal::def` non-null is the fact (nixexpr.hh:467)."""
+        Cxx("""
+if (!self.get()->isLambda())
+    throw std::invalid_argument("value is not a lambda");
+std::vector<std::string> names;
+auto formals = self.get()->lambda().fun->getFormals();
+if (formals.has_value())
+    for (const auto & formal : formals->formals)
+        if (formal.def != nullptr)
+            names.push_back(self.symbol(formal.name));
+std::sort(names.begin(), names.end());
+return names;
+        """)
+
+    @guard("function")
+    def primop_name(self) -> Str:
+        """This builtin's name.
+
+        Read off `PrimOp` directly rather than through `getDoc`, and
+        the difference matters: `getDoc` returns NOTHING for a primop
+        with no documentation, because the whole branch is behind `if
+        (primOp.doc)` (eval.cc:578). So a doc-less primop has a name
+        and an arity that `getDoc` will not tell you."""
+        Cxx("""
+if (!self.get()->isPrimOp())
+    throw std::invalid_argument("value is not a builtin");
+return self.get()->primOp()->name;
+        """)
+
+    @guard("function")
+    def primop_arity(self) -> I64:
+        """How many arguments this builtin wants.
+
+        The ONE place an arity is honest, for the reason in the
+        comment above this block: a primop declares one and a lambda
+        cannot. It is the FULL arity - a primop that already holds
+        arguments is `is_primop_app`, which this refuses."""
+        Cxx("""
+if (!self.get()->isPrimOp())
+    throw std::invalid_argument("value is not a builtin");
+return static_cast<std::int64_t>(self.get()->primOp()->arity);
+        """)
+
+    @guard("function")
+    def primop_args(self) -> "list[Str]":
+        """This builtin's argument names, in declaration order.
+
+        Real order, unlike `formal_names`: these are a vector the
+        primop declared rather than a set something searches."""
+        Cxx("""
+if (!self.get()->isPrimOp())
+    throw std::invalid_argument("value is not a builtin");
+return self.get()->primOp()->args;
+        """)
+
+    @guard("function")
+    @blocks
+    def doc(self) -> Str:
+        """Documentation for this function, or "".
+
+        `EvalState::getDoc`, which is what the REPL's `:doc` shows -
+        and it answers a DIFFERENT shape per function kind rather than
+        one thing:
+
+        - a primop with documentation gives its own doc string;
+        - a primop WITHOUT gives "", because the branch is behind `if
+          (primOp.doc)` (eval.cc:578);
+        - a lambda gives PROSE built for the REPL - "Function `name`
+          defined at ..." followed by its doc comment, if any
+          (eval.cc:585-625);
+        - a partially-applied primop gives "", having no branch at
+          all.
+
+        BLOCKS, and this is the surprise worth the marker. A lambda's
+        doc comment is not stored: `getInnerText` resolves two
+        positions and calls `getSnippetUpTo`, which calls
+        `Pos::getSource`, which calls `path.readFile()`
+        (position.cc:49). So reading a lambda's documentation OPENS
+        ITS SOURCE FILE. An accessor that looks cheap and does I/O is
+        `tasks/067`'s class of surprise, so it says so.
+
+        A source file that has GONE AWAY raises, and the message
+        says so rather than letting upstream's own out-of-range
+        escape. `getSource` catches its read error and answers
+        nothing, and `getInnerText` then does
+        `substr(3, size() - 3 - 2)` on that empty string
+        (nixexpr.cc:644-648) - so a doc comment whose file has moved
+        throws `std::out_of_range` from inside libexpr. Measured: a
+        gate written to expect "" failed with
+        `basic_string::substr: __pos (which is 3) > this->size()`.
+
+        Reported rather than swallowed, and that is the choice worth
+        stating. "" would mean "no documentation" where the truth is
+        "cannot read the documentation", and conflating those two is
+        this repo's named failure mode - an absence standing in for a
+        failure. A caller who does not care can catch it; one who
+        gets "" cannot un-lose the difference."""
+        Cxx("""
+try {
+    auto doc = self.state().getDoc(*self.get());
+    if (!doc.has_value() || doc->doc == nullptr)
+        return std::string();
+    return std::string(doc->doc);
+} catch (const std::out_of_range &) {
+    // Upstream's own bug, surfaced with its cause rather than
+    // reported as an empty answer. Narrow on purpose: this is the
+    // exact exception measured, and anything else is a real failure
+    // that belongs to the caller.
+    throw std::runtime_error(
+        "cannot read this function's documentation: its source file is "
+        "no longer readable, and nix's own doc-comment reader does not "
+        "handle that");
+}
+        """)
+
 
 @header("huggorm_decl/cpp/eval.hpp")
 @binding(
