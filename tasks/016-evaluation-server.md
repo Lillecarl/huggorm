@@ -138,3 +138,43 @@ Watched files and background eager evaluation are still untouched.
 `resetFileCache` is deliberately NOT bound: nothing but a test would
 call it today, and 070 is the standing example of a binding with no
 user. It becomes real surface when inotify invalidation needs it.
+
+## 2026-09-03: libexpr will not say which files it read
+
+The vision says the server "watches every non-Store file an
+evaluation touched". Measured against the source before designing
+anything, and the answer is that libexpr offers no way to ask.
+
+`EvalState` knows. Three private members hold it:
+
+    importResolutionCache   /foo        -> /foo/default.nix
+    fileEvalCache           resolved    -> Value *
+    positionToDocComment    per file
+
+All three are under `private:` in the 2.34.8 header this build links
+(`eval.hh:460`), so a binding cannot read them.
+
+Nor can one be wrapped on the way in. `rootFS` is the accessor every
+file read goes through, and it is a `const ref<SourceAccessor>` built
+INSIDE the constructor from the settings alone (`eval.cc:267`) - the
+constructor takes a lookup path, a store, two settings objects and an
+optional build store, and no accessor. There is nothing to substitute.
+
+Upstream is moving away from this, not toward it. In the 2.36pre
+header also in this store, `rootFS` has moved under `private:` too
+(`eval.hh:393, 424`), and `fileEvalCache` is still private.
+
+### So the choice is not "how to watch" but "what can be watched"
+
+- **What OUR boundary sees.** Every path handed to `eval_file`. Honest
+  and free, and shallow: a file reached by `import` from inside a Nix
+  expression is invisible, and that is most of a real evaluation.
+- **A patched libexpr.** A friend accessor, an upstream PR, or a
+  wrapping `SourceAccessor` the constructor accepts. Real coverage,
+  and a dependency on a change this repo does not control.
+- **The directory.** Watch the tree each evaluated file sits under,
+  and accept over-watching. No API needed, and it invalidates on
+  files no evaluation ever read.
+
+This is Carl's call. The measurement is here so it is made against
+what libexpr does rather than against what it might.
