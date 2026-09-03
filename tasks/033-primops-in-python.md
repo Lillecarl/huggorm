@@ -296,3 +296,67 @@ heap - and that gate is the reason the patch is here at all.
 
 Said plainly rather than left implied, because "the build is green"
 is not evidence about a bound nothing reaches yet.
+
+## 2026-09-03: the helper, compiled and awaiting approval
+
+31 lines, probe-compiled against the packaged 2.34.8 headers and
+nanobind 2.13. NOT in the repo: CLAUDE.md requires Carl's approval per
+occasion for C++ the codegen did not write, and the draft is in
+`.scratchpad/probe_primop.cpp` until he answers.
+
+### What the probe settled
+
+- The field is `impl`, not `fun` (`eval.hh:123`). The first draft
+  wrote `.fun` and would not have compiled.
+- `Reach` works on a member FUNCTION pointer, not only a data member,
+  so `&nix::EvalState::addPrimOp` instantiates exactly like
+  `&nix::EvalState::fileEvalCache`.
+- `state.error<nix::EvalError>(...).atPos(pos).debugThrow()` is how
+  `primops.cc` raises (`primops.cc:481`), and it compiles here.
+  Copied rather than invented, and `pos` is the half only a primop
+  knows.
+- `nb::gil_scoped_acquire` and `fn(*nb::tuple(made))` both compile.
+- `arity` is computed from `args` when `args` is non-empty, so
+  setting `arity` alone with `args` empty is the supported path.
+
+### Four defects the first draft had
+
+Worth recording, because two of them compiled in my head and not in
+the compiler:
+
+1. `.fun` for `.impl` - a designated initialiser on a member that
+   does not exist.
+2. The arity loop was `i < /* arity */ 0`, which iterates zero times,
+   and `arity` was not captured.
+3. The error path claimed to copy `primops.cc` and did not - it
+   invented `throw nix::EvalError(state, ...)` and dropped `pos`,
+   the one thing its own comment said mattered.
+4. `catch (nb::python_error &)` alone. A primop returning a plain
+   `int` fails in `nb::cast<Bridge>` with `cast_error`, which would
+   have escaped through C++ evaluation frames - the exact failure
+   this task names.
+
+### Three things Carl is being asked to weigh, not just approve
+
+- **It puts nanobind into `cpp/eval.hpp`, which today has none.** The
+  header stops being "the nix C++ we own" and becomes a Python-C++
+  bridge. Unavoidable if the helper holds the callback, and a real
+  line crossed.
+- **A registered callable is never released.** `addPrimOp` does
+  `new PrimOp(...)` into GC memory and Boehm runs no destructors, so
+  the captured `nb::object` is never DECREF'd. Every registration
+  retains its callable for the life of the process. Retention, not a
+  crash, and it belongs in the docstring.
+- **`arity == 0` must be REFUSED** in the declaration's `Cxx` body.
+  `addPrimOp` rewrites a zero-arity primop into a self-applied lazy
+  constant (`eval.cc:523`), so a registration would silently become
+  something other than what was asked for.
+
+### The gates it will need
+
+- Register past the bound and read "the base environment is full"
+  rather than corrupt the heap. That gate is also the first thing to
+  test the carried patch, which is ungated until it exists.
+- A primop that adds two integers, on both in-process surfaces.
+- Refusals: an `async def` at REGISTRATION time rather than a
+  deadlock at evaluation, and a non-Value return.
