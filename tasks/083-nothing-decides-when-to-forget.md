@@ -67,3 +67,80 @@ forget that must run on the state's thread rather than the watcher's.
 Background eager evaluation, which is the last third of `tasks/016`.
 It needs this one first: eagerly re-evaluating an expression is only
 useful if something knows the old answer is stale.
+
+## 2026-09-03: the diff is not the closure
+
+`tasks/016` said the closure is the `cached_files` diff around one
+`eval_file`. Measured before designing anything, and it is WRONG in
+the case that matters: a file two roots share.
+
+    shared.nix = 40 + 2
+    a.nix      = import shared.nix
+    b.nix      = import shared.nix
+
+    diff around a: [a.nix, shared.nix]
+    diff around b: [b.nix]              <- shared.nix is NOT here
+
+The diff says what an evaluation newly CACHED, not what it READ. `a`
+cached `shared.nix` first, so `b` hit the cache and its diff missed
+it. Then:
+
+    (shared.nix edited to 1 + 1)
+    forget b's own diff  ->  b answers 42
+
+A watcher holding per-root diffs answers stale, silently, which is
+this repo's named failure mode. Nothing in `016`'s gates could see it:
+each test gets a fresh `tmp_path`, so no file is ever shared.
+
+### The policy, measured rather than argued
+
+Record the full `cached_files` SNAPSHOT taken after each root
+evaluates. When a file changes, forget the union of every snapshot
+that contained it.
+
+Sound, and the reason is short: a snapshot taken after R evaluated
+holds everything cached at that moment, and every file R read was
+cached by the time R finished. So `snapshot[R]` is a superset of R's
+closure. It cannot miss.
+
+Measured with a third root added, and it works:
+
+    snapshot[a] = [a, shared, «nix-internal»]
+    snapshot[b] = [a, b, shared, «nix-internal»]
+    snapshot[c] = [a, b, c, shared, «nix-internal»]
+
+    (shared edited)
+    roots implicated: a, b, c
+    a -> 2  OK
+    b -> 2  OK
+
+### What it costs, stated rather than hidden
+
+`c.nix` is `10 + 1`. It reads nothing but itself and it is forgotten
+anyway, because it was evaluated after `shared.nix` was already
+cached and a snapshot cannot tell a hit from a file never read.
+
+So the cost grows with the order roots are registered in: a root
+registered late is implicated by almost any change. At worst this
+degenerates to "forget the whole eval cache", which is still strictly
+better than `resetFileCache()` - the fetched flake inputs stay, and
+they are the expensive half Carl named.
+
+The exact answer needs libexpr to say which files ONE evaluation read.
+It will not (`tasks/016`), and the two approximations available are
+this one and the diff. The diff is cheaper and silently wrong, so it
+is not a trade - it is the wrong answer.
+
+### What follows for the design
+
+- The watcher OWNS `eval_file` and serializes it. A snapshot is only
+  a snapshot if nothing else evaluates at the same time, so calling
+  the state's `eval_file` directly bypasses the bookkeeping. That is
+  the affinity assumption made load-bearing, and it has to be said in
+  the API rather than assumed.
+- NOTICING is separate from BOOKKEEPING. The core takes an explicit
+  step - "this path changed, act on it" - so a gate can drive it with
+  no sleeps and no event timing. An inotify source is then a thin
+  adapter over the same step, and its own commit.
+- Watches go on parent DIRECTORIES, not files. Most editors save by
+  rename, which replaces the inode and orphans a file watch.
