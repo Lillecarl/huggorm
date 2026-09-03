@@ -425,6 +425,38 @@ declaration's docstring, because it is the kind of thing a caller
 writes without thinking - the natural way to write a primop body is
 to reach for the state.
 
+### The census
+
+**`cpp/eval.hpp` went 277 -> 331 code lines**, by the build's own
+count, plus 66 -> 73 in `Cxx` bodies. Fifty-four lines, and the file
+that grew 108 -> 417 a reasonable line at a time is this one - so the
+number is recorded because CLAUDE.md says it is not a budget to
+spend.
+
+Most of it is argument rather than code. The helper is roughly twenty
+lines; the rest says why the reference is weak, why the force happens
+before the GIL, why a `cast_error` is caught apart from a
+`python_error`, and why registering has to sort. Each of those was a
+defect first.
+
+The one structural cost is separate from the count: this header now
+includes nanobind, which it did not. That is named where the include
+sits, and it is the only thing here that needs it.
+
+### The gates are SYNC-only, deliberately
+
+`register_primop` is exercised on the compiled binding alone. The
+async in-process wrapper keeps the method - it is the same shape as
+`Store.real_path`, a real method with no remote form - and it is
+untested here.
+
+Not an oversight. What these gates are about is the CALLBACK: the GIL,
+the forcing, the error translation and the sort, none of which the
+async wrapper touches. It routes the call onto the state's own thread
+and changes nothing about what happens there. A parity test would
+re-run the same C++ through one more layer, and `test_parity` is where
+a claim about surfaces belongs if one is ever wanted.
+
 ### What is NOT here
 
 No unregister, and there is nowhere to put one: upstream stores the
