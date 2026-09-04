@@ -342,3 +342,52 @@ through `Activity::~Activity` after a session freed it - and
 offers no way to join it. A tap installed once and never replaced has
 the same property for free, so this repo does not need their
 leaked-singleton trick as long as nothing ever swaps it back.
+
+### First: the C++ moves out of `eval.hpp`
+
+Carl, when the replacement was put to him:
+
+> this doesn't belong in eval.hpp, there's no point in limiting the
+> amount of files, separate as appropriate.
+
+Right, and `eval.hpp` had grown to 1289 lines holding four unrelated
+things: a reach into libexpr's private caches, the log tap, the
+collector, and the evaluator itself.
+
+Two moved, and they were the two that could - neither the tap nor
+the collector depends on the other, and neither depends on the
+evaluator:
+
+    eval.hpp     1289 -> 754
+    logging.hpp            440
+    gc.hpp                 170
+
+The evaluator DOES depend on the collector, because `alloc` and every
+`Bridge` register a thread, so `eval.hpp` includes `gc.hpp` rather
+than merely sitting beside it. The reach into the private caches
+stays with the evaluator: `cached_files` and `forget_file` take an
+`EvalState` and are about nothing else.
+
+A MOVE, and verified as one. The extracted text is the file's own
+lines sliced at the section banners, nothing retyped, and the emitted
+C++ differs by exactly two lines:
+
+    > #include "huggorm_decl/cpp/gc.hpp"
+    > #include "huggorm_decl/cpp/logging.hpp"
+
+which is `@header` and `@needs` in the declaration pointing at where
+the code went. Three classes and six free functions were retargeted
+BY LINE, because `@header("huggorm_decl/cpp/eval.hpp")` is the same
+string in five places and only three of them move.
+
+**The includes go ABOVE `namespace huggorm {`, and that is not
+style.** Put where the code used to be - inside it - they nest, and
+every name in them becomes `huggorm::huggorm::`. The compiler said
+so:
+
+    error: 'install_log_tap' is not a member of 'huggorm'; did you
+    mean 'huggorm::huggorm::install_log_tap'?
+
+Worth recording because the sections were self-contained in every
+other respect, and the one thing that was not self-contained was the
+namespace they had been sitting inside.
