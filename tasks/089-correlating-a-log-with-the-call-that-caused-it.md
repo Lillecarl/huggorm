@@ -1,9 +1,14 @@
 # Correlating a log with the call that caused it
 
-**OPEN.** A reflection, not a plan yet. Carl asked what nanopynix
-does about a per-request log id and about granular verbosity, and
-how either fits here. This is the answer, the parts of it that were
-verified against Nix's own source, and the two decisions it forces.
+**OPEN.** A reflection first, and now one decision. Carl asked what
+nanopynix does about a per-request log id and about granular
+verbosity, and how either fits here. This is the answer, the parts
+of it that were verified against Nix's own source, and the question
+it forced.
+
+**The question is answered: REPLACE the logger, do not tee.** Carl
+decided it, for the stdio transport, and the last section holds what
+that costs. Everything else in this file is still a reflection.
 
 Nothing is implemented. The C++ half needs a per-occasion ask.
 
@@ -134,7 +139,8 @@ So adopting per-thread verbosity needs one of:
 3. no per-thread verbosity at all, and `LogQueue.level` stays the
    only filter.
 
-**This is the decision to make first.** Everything else follows it.
+**This was the decision to make first, and it is made: option 1.**
+See the last section. Options 2 and 3 are closed.
 
 ## Two filters on one axis
 
@@ -143,10 +149,12 @@ documented as being able to NARROW only, because the global filters
 first. A per-thread verbosity would be a second filter on the same
 axis. Goal 3 says one of them owns it.
 
-Under option 2 above they compose and both are honest. Under option 1
-the queue's level becomes redundant with the thread's, and the
-"narrow only" sentence in `subscribe_logs` becomes false - the thread
-level would be the authority and could widen.
+Under option 2 they would compose and both stay honest. Option 1 is
+what was chosen, so the queue's level becomes redundant with the
+thread's, and the "narrow only" sentence in `subscribe_logs` becomes
+FALSE - the thread level is the authority and can widen. That
+sentence has to change in the same commit as the pinning, or the
+declaration will be documenting the opposite of what happens.
 
 ## Fan-out needs no C++, and Carl's message makes it required
 
@@ -219,3 +227,118 @@ priority arm.
    re-measured on this repo's workloads rather than adopted.
 
 Opened 2026-09-04, from Carl's question.
+
+## Decided: REPLACE the logger, 2026-09-04
+
+Carl:
+
+> We should replace the logger, at some point we will want to be able
+> to run the protocol over stdin/stdout and then it's important that
+> we don't log there. I have code for grpclib that transports over
+> various transports.
+
+So option 1 above, and options 2 and 3 are closed. The tee goes.
+
+### What replacing costs, read rather than assumed
+
+Four things a tee currently gives that a replacement has to answer
+for. Each was checked against 2.34.8 in
+`/nix/store/2ijv0g6069dsh55z3bdr5ln2iv69mw7r-source`.
+
+**Console output.** `nix::logger` is initialised at static-init to
+`makeSimpleLogger(true)` (`logging.cc:35`), and `SimpleLogger::log`
+ends in `writeToStderr` - so today's tee prints to STDERR, not
+stdout. Replacing it removes that unless the tap carries a fallback,
+which is what nanopynix does (`_fallback{nix::makeSimpleLogger()}`).
+Keep one, and keep it pointed at stderr.
+
+**`writeToStdout`.** The base writes to descriptor 1 directly -
+`getStandardOutput()` then `writeFull` (`logging.cc:42`) - and THAT
+is the call that would corrupt an H2 frame. Every caller in 2.34.8 is
+in `libcmd`, `libmain` or `src/nix`: the repl, `--json` output,
+`nix develop`. None is in libexpr or libstore, so nothing huggorm
+drives reaches it today. Override it anyway: "no caller today" is a
+fact about one version, and the cost is three lines.
+
+**`ask`.** The base returns `{}` already (`logging.hh:98`), and
+nothing outside the tee logger calls it. Replacing loses nothing.
+
+**`isVerbose`, `pause`, `resume`, `stop`, `setPrintBuildLogs`.** All
+have empty or trivial base implementations. Nothing to preserve.
+
+### The transport already defends descriptor 1, and that changes the argument
+
+`grpclib-transports`' `take_wire_descriptors` (read at
+`~/Code/nanopynix/grpclib-transports/src/grpclib_transports/stdio.py`)
+moves the pipe pair off 0 and 1 before anything writes, then makes
+descriptor 1 a duplicate of descriptor 2 and descriptor 0
+`/dev/null`. Its own comment says why, and it is the same problem
+from the other side:
+
+> A redirection of `sys.stdout` is a Python-level rebinding, so it
+> cannot stop a C++ library, a C extension or a subprocess from
+> writing to the descriptor itself. Every such byte becomes an
+> HTTP/2 frame, and the peer reports a protocol error that names
+> nothing about where the byte came from.
+
+So a stray write from libnix lands on stderr as a log line, not on
+the wire as a corrupt frame, whatever the logger does.
+
+That is worth stating precisely, because it means **stdout safety is
+not the argument for replacing.** The transport has that covered
+structurally, and it is the better place for it: it defends against a
+subprocess and a C extension too, which no logger can.
+
+The argument that survives is OWNERSHIP, and it is the stronger one:
+
+- **The filter becomes ours.** This is what the conflict above was
+  about. A tee leaves `SimpleLogger` filtering on the global
+  `nix::verbosity` with no way for a caller to narrow it, so
+  per-thread verbosity is unimplementable while the tee stands.
+  Replace, and the tap is the only reader of the level - which makes
+  pinning the global open safe, and makes option 1 the same as this
+  decision.
+- **The destination is a service.** A daemon that writes to a
+  descriptor nobody reads is writing into a pipe buffer that fills.
+  Where Nix's output goes is a policy this project should state
+  rather than inherit.
+
+### The shape, and what it needs
+
+    inline void install_log_tap()
+    {
+        nix::logger = std::make_unique<LogTap>();
+    }
+
+plus, on `LogTap`:
+
+- a `SimpleLogger` fallback, used when no queue takes the record, so
+  a console user still sees Nix. Pointed at stderr, which is where
+  `SimpleLogger` already writes;
+- a `writeToStdout` override, so descriptor 1 is never written by
+  libnix through us;
+- and later, the per-thread verbosity check, which is the whole
+  reason the tee had to go.
+
+`install_log_tap`'s current comment claims the tee as a virtue - "so
+this file writes no forwarding of its own". That sentence becomes
+false and has to go with it.
+
+**NOT WRITTEN YET.** It is C++ in `cpp/eval.hpp` and needs Carl's
+per-occasion approval, which is asked for separately.
+
+### One thing this does not change
+
+`nix::logger` is still replaced ONCE, at import, on the main thread,
+before any Nix thread exists. That is not a tee property, it is a
+race property, and both this repo's comment and nanopynix's give the
+same reason: it is a plain global `unique_ptr`, and replacing it
+while another thread reads it has no lock to take.
+
+nanopynix goes one step further and never frees theirs, because
+ThreadSanitizer caught a curl worker thread reading the logger
+through `Activity::~Activity` after a session freed it - and
+`curlFileTransfer` starts that thread in its own constructor and
+offers no way to join it. A tap installed once and never replaced has
+the same property for free, so this repo does not need their
+leaked-singleton trick as long as nothing ever swaps it back.

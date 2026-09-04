@@ -781,6 +781,24 @@ which was superseded rather than fixed.
   Nix's own threads never pass a dispatch wrapper, so a build's output
   carries no id. The activity `parent` chain is the cross-thread half,
   and it is already on the record.
+  DECIDED since: REPLACE the logger, do not tee. Carl, for the stdio
+  transport - the protocol will run over stdin/stdout and nothing may
+  log there. Read rather than assumed, four things the tee gives:
+  console output goes to STDERR already (`SimpleLogger` ends in
+  `writeToStderr`), so a fallback keeps it; `writeToStdout` writes to
+  descriptor 1 directly and every caller in 2.34.8 is in the CLI, none
+  in libexpr or libstore, so override it anyway; `ask` already returns
+  nothing; the rest have empty bases.
+  And a correction to the reason: Carl's own `grpclib-transports`
+  already defends descriptor 1 STRUCTURALLY - `take_wire_descriptors`
+  makes fd 1 a duplicate of fd 2 before anything writes, so a stray
+  write from libnix is a log line rather than a corrupt H2 frame. So
+  stdout safety is not the argument. OWNERSHIP is: a tee leaves
+  `SimpleLogger` filtering on the global with no way for a caller to
+  narrow it, which makes per-thread verbosity unimplementable while
+  the tee stands.
+  `subscribe_logs`'s "can only narrow" sentence becomes FALSE under
+  this, and has to change in the same commit as the pinning.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE
