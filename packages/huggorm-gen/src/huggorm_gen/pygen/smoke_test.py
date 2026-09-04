@@ -545,17 +545,28 @@ async def test_behavior() -> None:
     # back. Said here rather than left as a silent hole.
     import huggorm_generated as flg
 
-    # An affine wrapper is usable as an argument from the FIRST call.
-    # It used to depend on call order: ensure() refuses to build a
-    # dedicated-thread object off-home (rightly), so a state nobody had
-    # touched yet could not be passed anywhere. Every wrapper above had
-    # been called already, which is why this went unseen. The runner
-    # now constructs on its own thread before the argument is unwrapped.
+    # An untouched affine wrapper constructs on its OWN thread, on the
+    # first call. ensure() refuses to build a dedicated-thread object
+    # off-home, rightly, and the runner satisfies that refusal rather
+    # than relaxing it.
+    #
+    # It read `untouched.force(thunk_arg)` with a thunk from `state`,
+    # which is a CROSS-STATE call and now refused: a state is an
+    # isolation, and a value is only meaningful to the state that
+    # allocated it. The cross-state part was scaffolding - what is
+    # asserted is where `untouched` was born, and any call proves that.
+    #
+    # The comment there claimed this covered an affine wrapper used as
+    # an ARGUMENT, and it never did. `_materialize_args` was a no-op on
+    # `thunk_arg`, which is attached to an already-constructed
+    # producer - and that is true of EVERY affine argument the corpus
+    # can produce, because the only ones are Values and a Value comes
+    # from a state that has by then been called. So the argument side
+    # of `materialize` has no producer to exercise it, which is said
+    # here rather than left looking covered.
     untouched = AsyncEvalState("dummy://")
     assert untouched._runner._obj is None, "expected an unconstructed wrapper"
-    thunk_arg = await state.parse_expr("1")
-    await untouched.force(thunk_arg)
-    assert await thunk_arg.integer() == 1
+    assert await (await untouched.eval_expr("1")).integer() == 1
     born = untouched._runner.born_thread_name
     assert born is not None and born.startswith("huggorm-affine"), (
         f"argument construction must stay on its own thread, not {born}")

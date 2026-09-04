@@ -203,15 +203,20 @@ def test_a_second_subscription_replaces_the_first(state: Any) -> None:
 
 
 def test_a_subscription_belongs_to_the_thread_not_the_state(state: Any) -> None:
-    """Named because it is a limitation, not a feature.
+    """The tap routes by THREAD, and here that is a decision.
 
-    The tap routes by THREAD, which is right for the affine model this
-    repo has - one EvalState per thread - and it means two states on
-    ONE thread share a subscription. The second `subscribe_logs`
-    closes the first's queue even though a different object asked.
+    Two states on one thread share a subscription: the second
+    `subscribe_logs` closes the first's queue even though a different
+    object asked. This was written as a LIMITATION, and it is not one
+    any more - Carl's rule is one state per thread, so the situation
+    it describes is a caller doing something the design forbids.
 
-    Sound where a state has its own thread, which is how the async
-    layer runs one. `tasks/032` records it rather than hiding it."""
+    What that changes is who owns the problem. The async layer gives
+    every state its own thread, so a library user cannot reach this;
+    a caller holding the sync binding directly can, and is on their
+    own - which is exactly the line drawn in `EvalState`'s docstring.
+    So this stays, and it documents the SYNC surface rather than
+    reporting a gap in the design (`tasks/085` gap 2)."""
     from huggorm_bindings import EvalState
 
     other = EvalState(URI)

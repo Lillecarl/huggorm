@@ -226,12 +226,23 @@ async def test_a_free_function_crosses(client: Any) -> None:
 
 async def test_a_proxy_argument_resolves_against_another_object(
         client: Any) -> None:
+    """A handle passed as an ARGUMENT is resolved from the table, not
+    from whatever object received the call.
+
+    It used to prove that with two `EvalState`s - `other.force(loose)`
+    on a value `state` had parsed - and that is now refused: a state
+    is an isolation, and a value is only meaningful to the state that
+    allocated it.
+
+    The subject survives the change, because the cross-state part was
+    never the subject. `fn` and `arg` are two different `Value`
+    proxies, so the argument still resolves against an object that is
+    not itself - and both belong to one state, which is the only way
+    two proxies can legally meet."""
     state = await client.acquire("EvalState", "dummy://")
-    other = await client.acquire("EvalState", "dummy://")
-    loose = await state.parse_expr("7")
-    await other.force(loose)
-    assert await loose.integer() == 7
-    await other.aclose()
+    fn = await state.eval_expr("x: x + 1")
+    arg = await state.eval_expr("7")
+    assert await (await fn.apply(arg)).integer() == 8
     await state.aclose()
 
 
