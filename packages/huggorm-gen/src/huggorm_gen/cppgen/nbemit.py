@@ -408,6 +408,61 @@ def _sites(classes: Sequence[Class],
         yield None, fn.ret
 
 
+# What a `Cxx` body spells, and the standard header that defines it.
+#
+# A body is TEXT the declaration carries, so which headers it needs is
+# DERIVED here rather than carried by a hand-written one on the
+# emitted file's behalf. That was the arrangement `tasks/090` found:
+# `eval.hpp` held a `<stdexcept>` it never used, for bodies that throw
+# `std::invalid_argument` 54 times - a fact about generated code,
+# living in a file a person maintains.
+#
+# Only what a caster does NOT already bring. `<string>` and `<vector>`
+# arrive with `nanobind/stl/string.h` and its kind, so listing them
+# here would add a line that is already there.
+#
+# It GROWS when a body spells something new. That is the point of a
+# table over a guess: a body reaching for `std::filesystem` gets its
+# header the day somebody adds the row, and until then the build fails
+# loudly at compile time rather than quietly at run time.
+BODY_HEADERS = {
+    "std::invalid_argument": "stdexcept",
+    "std::runtime_error": "stdexcept",
+    "std::logic_error": "stdexcept",
+    "std::out_of_range": "stdexcept",
+    "std::domain_error": "stdexcept",
+    "std::int64_t": "cstdint",
+    "std::uint64_t": "cstdint",
+    "std::int32_t": "cstdint",
+    "std::uint32_t": "cstdint",
+    "std::uintptr_t": "cstdint",
+    "std::size_t": "cstddef",
+    "std::sort": "algorithm",
+    "std::move": "utility",
+    "std::exchange": "utility",
+    "std::forward": "utility",
+}
+
+
+def _bodies(classes: Sequence[Class],
+            functions: Sequence[Method] = ()) -> Iterator[str]:
+    """Every piece of hand-written C++ this translation unit carries.
+
+    One walk, like `_sites`, and for the same reason. A body reaches
+    the emitted file from five places and a header it needs is a
+    header it needs from any of them."""
+    for cls in classes:
+        for m in cls.methods:
+            yield m.cxx_body
+        if cls.ctor is not None:
+            yield cls.ctor.cxx_body
+        if cls.from_parts is not None:
+            yield cls.from_parts.cxx_body
+        yield from cls.decl.custom.values()
+    for fn in functions:
+        yield fn.cxx_body
+
+
 def includes(classes: Sequence[Class],
              functions: Sequence[Method] = (),
              known: dict[str, Class] | None = None) -> list[str]:
@@ -466,11 +521,19 @@ def includes(classes: Sequence[Class],
     # A hook has no signature worth casting, and it still names the
     # header its C++ lives in. `wanted` below is where that lands.
 
+    # What the hand-written BODIES spell, which no signature says.
+    # Derived from the text the declaration carries - see
+    # BODY_HEADERS for why this is not a header's job.
+    body = " ".join(b for b in _bodies(classes, functions) if b)
+    standard = {h for spelling, h in BODY_HEADERS.items()
+                if spelling in body}
+
     out = ["#include <nanobind/nanobind.h>"]
     out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
     if any(cls.decl.wire == "value" and cls.decl.text for cls in classes):
         # std::hash lives in <functional>, and the value hash uses it.
         out.append("#include <functional>")
+    out += [f"#include <{h}>" for h in sorted(standard)]
     # Each class's header, then whatever the bodies reach past it.
     # Sorted and de-duplicated, because two methods needing one
     # header is normal and the order of a declaration's methods is

@@ -40,24 +40,6 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-// FOR THE EMITTED FILE, not for this one. `eval.cpp` includes this
-// header and no standard one of its own, and the `Cxx` bodies in the
-// declaration throw `std::invalid_argument` 54 times.
-//
-// Not load-bearing today, and that was measured rather than assumed:
-// removing this still compiles, because `logging.hpp` reaches
-// `nix/util/error.hh` which supplies the name. The first draft of
-// this comment claimed the build would break, and it does not.
-//
-// It stays because that chain is an ACCIDENT. Nothing about
-// `eval.hpp` promises to include `logging.hpp` forever, and the
-// declaration's bodies would break the day it stops. One line here
-// makes the guarantee direct.
-//
-// The real answer is a codegen one: the emitter knows what a `Cxx`
-// body spells and could emit the include beside it. Until then this
-// is the honest workaround rather than a header this file needs.
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
