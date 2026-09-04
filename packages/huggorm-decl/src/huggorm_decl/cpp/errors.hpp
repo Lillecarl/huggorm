@@ -9,8 +9,9 @@
 // catch(...), and whatever Python error it sets is what the caller
 // sees.
 //
-// The catches are ordered most-derived first, because a base class
-// catch would swallow its subclasses.
+// THE TRANSLATOR IS NOT HERE. It is emitted, one `catch` per declared
+// error class, ordered most-derived first so a base class does not
+// swallow its subclasses. This file is the two helpers it calls.
 
 #include <Python.h>
 #include <nanobind/nanobind.h>
@@ -20,6 +21,27 @@
 #include <string>
 #include <utility>
 
+// Only `terminal.hh` is for this file - `filterANSIEscapes` is the one
+// nix name it says. The other three are for the EMITTED files: every
+// one of them includes this header and then catches `nix::InvalidPath`,
+// `nix::BadStorePathName`, `nix::UsageError` and their kind.
+//
+// Not load-bearing today, and that was MEASURED after predicting the
+// opposite: removing all three still compiles, because the emitted
+// files reach those types through their own nix includes. The same
+// wrong prediction as `<stdexcept>` in `eval.hpp`, on the same day.
+//
+// They stay for the same reason that one does. `path.cpp` includes
+// `nix/store/path.hh` and catches `nix::InvalidPath`, which is a
+// store-api type - so the emitted file compiles by a transitive
+// include nobody declared. Keeping these makes the types available at
+// the one header every such file DOES include, which is a weaker
+// accident than the alternative.
+//
+// The real answer is the emitter's, and `tasks/090` holds it: the
+// declaration names every error class the emitted file catches, so
+// the emitter could write the include beside the catch and both this
+// block and eval.hpp's `<stdexcept>` could go.
 #include "nix/store/store-api.hh"
 #include "nix/store/store-dir-config.hh"
 #include "nix/util/error.hh"
@@ -99,6 +121,5 @@ inline void raise_as(const char * module, const char * name,
             nix::filterANSIEscapes(e.what(), /*filterAll=*/true).c_str());
     }
 }
-
 
 }  // namespace huggorm

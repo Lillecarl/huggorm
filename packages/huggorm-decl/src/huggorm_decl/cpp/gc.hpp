@@ -17,7 +17,6 @@
 #include <atomic>
 #include <cstddef>
 
-
 #include <gc/gc.h>
 
 namespace huggorm {

@@ -239,8 +239,6 @@ inline void forget_file(nix::EvalState & state, const nix::SourcePath & given)
         (state.*get(ImportResolutionCache{}))->erase(key);
 }
 
-
-
 // ---- one evaluator, and everything it outlives --------------------
 
 /**
