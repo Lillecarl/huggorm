@@ -750,8 +750,37 @@ which was superseded rather than fixed.
   is marked unreachable rather than left looking covered.
   Perturbing the check fails exactly three gates; the control, the
   thread gate and the pool gate all still pass.
-  Gaps 3 and 4 are unchanged: fan-out to a second reader, and the
-  ErrorInfo overlap with 036.
+  Gap 3's RATIONALE is refuted, and 089 records it. It argued fan-out
+  was "a plausible want and not an observed one"; Carl observed it - a
+  CLI wants a global listener printing to stdout as things happen. The
+  gap is still open, but it is now required rather than speculative,
+  and nanopynix shows it needs no C++.
+  Gap 4 is unchanged: the ErrorInfo overlap with 036.
+- 089 (correlating a log with the call that caused it) is OPEN, and is
+  a REFLECTION rather than a plan - Carl asked what nanopynix does
+  about a per-request log id and granular verbosity, and how either
+  fits here. Nothing is implemented.
+  nanopynix keeps a `thread_local` request id that its logger passes
+  as the first argument of every callback, set and restored at one
+  dispatch chokepoint; a `request_finalized` CONTROL event that is
+  never dropped, because an id without it says which call a record
+  belongs to and never says the call is done; a `thread_local`
+  verbosity with `nix::verbosity` pinned wide open, because the global
+  is a non-atomic that ThreadSanitizer catches; and per-OBJECT
+  ownership of the level.
+  Three structural claims were re-read against 2.34.8 rather than
+  believed: `printMsg` gates lazily on the global, `Activity::Activity`
+  calls `startActivity` unconditionally, and libstore holds 138
+  `debug()` sites against their 139. Their TIMING table is not
+  adopted - the `chatty` ceiling was measured on their workloads.
+  The conflict this repo has and they do not: huggorm's tap is a TEE
+  that keeps the old logger as MAIN, so pinning the global open would
+  leave the console arm unfiltered while ours filters. That decision
+  comes before everything else in the file.
+  A request id also does NOT cover what the process sink exists for:
+  Nix's own threads never pass a dispatch wrapper, so a build's output
+  carries no id. The activity `parent` chain is the cross-thread half,
+  and it is already on the record.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE
