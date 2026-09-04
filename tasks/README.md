@@ -756,6 +756,30 @@ which was superseded rather than fixed.
   gap is still open, but it is now required rather than speculative,
   and nanopynix shows it needs no C++.
   Gap 4 is unchanged: the ErrorInfo overlap with 036.
+- 091 (how much of the C++ could the DSL say) is OPEN, and answers
+  Carl's "I'm surprised there's so much C++". About a THIRD, not most.
+  1545 lines, of which 593 are code - the rest is 828 comment and 124
+  blank, which is deliberate here and does inflate what a reader sees.
+  ~200 lines are shape a declaration could carry: the `Reach` dance
+  (17, three identical users), `LogTap`'s five overrides (62, which is
+  084), the four subscribe/unsubscribe functions (41, one shape four
+  times), the two log structs (16, every field already named by
+  `@reads`), and six smaller patterns.
+  ~300 are algorithms goal 2 explicitly ALLOWS: `Bridge`'s root
+  lifetime (106), `LogQueue`'s action-dependent drop policy (52),
+  `register_primop`'s re-entry into Python (45), the GC thread dance
+  (31, justified by a measurement). Shrinking those would trade a
+  readable queue for a declaration form with one user.
+  The real finding is the PATTERN. `@property`, `@staticmethod`,
+  `@classmethod`, a dunder, `async def` and a virtual are all refused
+  or unsayable - six, five of them open, and one habit rather than six
+  gaps. Refusing was right each time, and six is where it stops being
+  the answer.
+  And `CLAUDE.md:95` claims the build prints the `huggorm_decl/cpp`
+  line count. IT DOES NOT - nothing counts that directory, and the
+  census it does print covers `StorePath` alone. A budget nobody
+  reports is a budget nobody keeps, which is part of why the growth
+  was noticed by reading.
 - 090 (are all the lines in the headers justified) is MOSTLY DONE.
   Carl asked; the answer was NO. Ten lines, all left behind by 089's
   split an hour earlier - seven includes in `eval.hpp` whose users had
