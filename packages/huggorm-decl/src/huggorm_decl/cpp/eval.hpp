@@ -36,14 +36,27 @@
  * value carried its own strings and hid this.
  */
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <map>
 #include <memory>
-#include <mutex>
-#include <sstream>
+// FOR THE EMITTED FILE, not for this one. `eval.cpp` includes this
+// header and no standard one of its own, and the `Cxx` bodies in the
+// declaration throw `std::invalid_argument` 54 times.
+//
+// Not load-bearing today, and that was measured rather than assumed:
+// removing this still compiles, because `logging.hpp` reaches
+// `nix/util/error.hh` which supplies the name. The first draft of
+// this comment claimed the build would break, and it does not.
+//
+// It stays because that chain is an ACCIDENT. Nothing about
+// `eval.hpp` promises to include `logging.hpp` forever, and the
+// declaration's bodies would break the day it stops. One line here
+// makes the guarantee direct.
+//
+// The real answer is a codegen one: the emitter knows what a `Cxx`
+// body spells and could emit the include beside it. Until then this
+// is the honest workaround rather than a header this file needs.
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -65,7 +78,6 @@
 namespace nb = nanobind;
 
 #include "nix/expr/attr-set.hh"
-#include "nix/expr/eval-gc.hh"
 #include "nix/expr/eval-settings.hh"
 #include "nix/expr/eval.hh"
 #include "nix/expr/nixexpr.hh"
@@ -74,8 +86,6 @@ namespace nb = nanobind;
 #include "nix/fetchers/fetch-settings.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-open.hh"
-#include "nix/util/error.hh"
-#include "nix/util/logging.hh"
 
 #include <gc/gc.h>
 
@@ -96,6 +106,11 @@ namespace nb = nanobind;
 #include "huggorm_decl/cpp/logging.hpp"
 
 namespace huggorm {
+
+// `Evaluator::wrap` answers one and is declared before `Bridge` is
+// defined, so the name has to exist first. It sat in `gc.hpp` after
+// the split, where nothing used it.
+class Bridge;
 
 // ---- the file cache, which libexpr keeps to itself ----------------
 //

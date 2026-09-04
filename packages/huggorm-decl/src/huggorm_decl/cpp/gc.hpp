@@ -17,8 +17,6 @@
 #include <atomic>
 #include <cstddef>
 
-#include "nix/expr/eval-gc.hh"
-#include "nix/expr/value.hh"
 
 #include <gc/gc.h>
 
@@ -146,8 +144,6 @@ inline void gc_collect()
     GC_gcollect();
     GC_gcollect();
 }
-
-class Bridge;
 
 /**
  * How many roots this process is holding right now.
