@@ -770,8 +770,19 @@ which was superseded rather than fixed.
   breaks without it, and it does not - `logging.hpp` reaches
   `nix/util/error.hh`, which supplies the name. It stays because that
   chain is an accident, not because it is load-bearing.
-  Two things left OPEN. The emitter should own that include - it knows
-  what a `Cxx` body spells and could emit it beside the body. And two
+  A second pass over the other three files found more. `errors.hpp`
+  opens by describing ordered catches THAT ARE NOT IN IT - the
+  translator is emitted, and this file is the two helpers it calls -
+  and three of its four nix includes serve the emitted files rather
+  than itself. Predicted removing them would break the build; it did
+  not, which is the SECOND wrong prediction of that shape in one
+  session. They stay because `path.cpp` catches a store-api type while
+  including only `path.hh`, so keeping them is a weaker accident than
+  the alternative.
+  Two things left OPEN. The emitter should own those includes - it
+  knows every error class the emitted file catches and every type a
+  `Cxx` body spells, and could write the include beside the code. Two
+  instances now, not one. And two
   things in `logging.hpp` may be derivable: `LogTap`'s five overrides
   are `tasks/084` exactly, the one MAPPING left in the headers; and
   `LogField`/`LogRecord` are plain structs whose every field the

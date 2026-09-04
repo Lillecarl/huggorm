@@ -102,3 +102,60 @@ private member without patching nixpkgs, and it fails loudly if
 upstream renames one.
 
 Opened and mostly closed 2026-09-04, from Carl's question.
+
+## A second pass, and a second wrong prediction
+
+The first pass answered Carl's question about the two files the split
+touched. He asked about ALL of them, so the other three got the same
+treatment.
+
+### `errors.hpp`: a stale sentence and three includes that are not its
+
+Its opening comment ends "The catches are ordered most-derived first,
+because a base class catch would swallow its subclasses." **There are
+no ordered catches in the file.** There is one `catch (...)`, in the
+fallback. The translator that has the ordered catches is EMITTED, one
+`catch` per declared error class, and this file is the two helpers it
+calls. The comment described a neighbour.
+
+The file names exactly one nix symbol outside a comment:
+`filterANSIEscapes`, from `terminal.hh`. The other three includes -
+`store-api.hh`, `store-dir-config.hh`, `error.hh` - are for the
+emitted files, which include this header and then catch
+`nix::InvalidPath`, `nix::BadStorePathName` and their kind.
+
+**Predicted that removing them would break the build. It did not.**
+
+    391 passed
+
+The emitted files reach those types through their own nix includes.
+That is the SECOND wrong prediction of this shape in one session -
+`<stdexcept>` in `eval.hpp` was the first, an hour earlier, and the
+lesson did not transfer because the second case looked more obviously
+load-bearing than the first.
+
+They stay, for the reason that survives: `path.cpp` includes
+`nix/store/path.hh` and catches `nix::InvalidPath`, which is a
+store-api type, so it compiles through a transitive include nobody
+declared. Keeping these puts the types at the one header every such
+file does include - a weaker accident than the alternative, and
+labelled as an accident rather than left to read as a need.
+
+### Two instances make the emitter question concrete
+
+The open item above was one line about `<stdexcept>`. It is now two
+instances with the same shape, and the fix is the same for both: the
+declaration names every error class the emitted file catches and every
+type a `Cxx` body spells, so the EMITTER could write the include
+beside the code that needs it. Both blocks would go.
+
+That is worth its own task when somebody wants it. Named here rather
+than opened, because nothing is broken - the build is correct today,
+just correct by accident in three places instead of one.
+
+### Whitespace
+
+Four double blank lines, three of them left by the split and one
+older, in `errors.hpp`. Removed. Trivial, and mentioned only because
+the question was whether every line is justified and a blank line
+that nothing put there deliberately is not.
