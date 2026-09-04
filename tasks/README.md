@@ -527,10 +527,17 @@ which was superseded rather than fixed.
   `test_python_calls_nix_calling_python` is the gate neither 033 nor
   034 had: the two are duals with opposite threading, and it crosses
   both in one call so the GIL reacquire happens inside the release.
-  Left: `__call__`, which is a DSL gap in 076's family rather than a
-  decision; an unchecked cross-state argument, which `force` and
-  `attrs_set` already have; and no remote gate, since Value-to-Value
-  over the wire is already proven.
+  Left: `__call__`, which is a DSL gap tracked in 088.
+  The cross-state argument is CHECKED now, and 085 holds it: Carl
+  decided a state is its own isolation, so `apply`, `force`,
+  `apply_auto`, `list_append` and `attrs_set` all refuse a value from
+  another state - from one check in `BaseRunner.call` rather than
+  seven.
+  The remote gate arrived by accident.
+  `test_a_proxy_argument_resolves_against_another_object` used two
+  states to prove a handle resolves from the table; that call is now
+  forbidden, so it was rewritten onto `fn.apply(arg)` - two Values of
+  one state being the only way two proxies can legally meet.
 - 033 (primops in Python) is DONE. `EvalState.register_primop`
   publishes a Python callable as `builtins.<name>`: `fun<PrimOpFun>`
   holds a std::function so a capturing lambda goes straight in, and
@@ -712,8 +719,39 @@ which was superseded rather than fixed.
   three gates, no refusal fails one with DID NOT RAISE, and no flag
   clear fails three, because a wedged server poisons the tests after
   it.
-  Gaps 2, 3 and 4 are unchanged: two states on one thread, fan-out to
-  a second reader, and the ErrorInfo overlap with 036.
+  Gap 2 is DONE too, by a RULE rather than a fix. Carl: one state,
+  one thread, and a value of one state is not valid in another unless
+  it is forced to data and copied. So "two states on one thread share
+  a subscription" is a caller doing what the design forbids, not a
+  limitation to route around.
+  The thread half needed no code: `AffineRunner` builds its own
+  `max_workers=1` executor, so two states cannot share a thread. One
+  gate asserts it.
+  The VALUE half is `BaseRunner.call`, checking every argument before
+  the executor hop - one place covering all seven `Value` parameters
+  across `force`, `apply`, `apply_auto`, `list_append` and
+  `attrs_set`. That also closes 034's cross-state residue. The
+  EXECUTOR is the identity, not the runner, because a value gets an
+  AttachedRunner over its producer's.
+  In `call` and NOT in `unwrap_arg`, after a measurement: `_invoke`
+  wraps what it catches, so the refusal arrived as
+  `InternalError: force failed` with the reason buried in a cause.
+  Enforced in the async layer, and Carl chose that: it is the lowest
+  layer that manages threads for a caller, the rpc goes through the
+  same wrappers, and a sync caller is on their own. Goal 1 is not in
+  tension - libexpr has no such rule, so the binding is exactly as
+  permissive as what it binds.
+  Two tests in this repo were making the forbidden call incidentally,
+  both with a different subject, and both were rewritten rather than
+  exempted. The `smoke_test` one also turned out to be claiming
+  coverage it never had.
+  The wire-value exemption is a DEAD BRANCH - removing it fails
+  nothing, because every wire value comes from a pool class - and it
+  is marked unreachable rather than left looking covered.
+  Perturbing the check fails exactly three gates; the control, the
+  thread gate and the pool gate all still pass.
+  Gaps 3 and 4 are unchanged: fan-out to a second reader, and the
+  ErrorInfo overlap with 036.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE

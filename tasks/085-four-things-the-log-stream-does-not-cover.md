@@ -2,8 +2,15 @@
 
 **OPEN.** Blocks nothing. `tasks/032` is done - a tap, a bounded
 queue, and `Session/Logs` streaming it to another process. These four
-are what that shape leaves out. Each is stated rather than fixed,
+are what that shape leaves out. Each was stated rather than fixed,
 because each was a decision and not an oversight.
+
+**TWO OF THE FOUR ARE DONE**, and the sections at the end hold them.
+1 has a process-wide sink and an rpc over it. 2 needed no fix at all:
+Carl ruled one state per thread, so the situation it describes is a
+caller doing what the design forbids - and the same ruling closed
+`tasks/034`'s cross-state residue. 3 and 4 are why this file is still
+OPEN. Read to the end before solving one of the first two again.
 
 They are separate problems in one file because they share one cause:
 the tap routes by THREAD, and a thread is not always the right owner.
@@ -277,3 +284,128 @@ still held. That is the same power `EvalState.unsubscribe_logs`
 already grants over a state's thread, and the declaration says so -
 the per-state one carried that defence and this one did not, which
 made it read as an oversight rather than as the model.
+
+## 2 is DONE, 2026-09-04, by a rule rather than a fix
+
+Carl decided it, and the decision dissolves the gap rather than
+closing it:
+
+> Two evalstates should never share threads, each evalstate should
+> have it's own thread. That's the most granular parallelism
+> evalstate supports and that's how we will do it. EvalState is it's
+> own isolation, values from one evalstate aren't valid for another
+> evalstate (unless they're forced into data and copied ofc).
+
+So "two states on one thread share a subscription" is not a
+limitation to route around. It is a caller doing something the design
+forbids.
+
+### The thread half needs nothing
+
+`AffineRunner.__init__` builds its own
+`ThreadPoolExecutor(max_workers=1)`, so two `AsyncEvalState`s cannot
+land on one thread - there is no pool to collide in. The rule holds
+by CONSTRUCTION, and the work was one gate asserting it rather than
+any code.
+
+### Where it is enforced, and why not lower
+
+Carl chose the layer:
+
+> I __think__ the best place to "enforce" this is in the async python
+> API, that's the lowest layer that manages threads for the user, if
+> a user uses the sync API they're "on their own" [...] So don't
+> enforce low-level, enforce where it makes sense for library users.
+
+Right, and it also avoids C++ with a wart. The version proposed first
+put the claim in `EvalCore`, and a plain `thread_local` cannot do it:
+`make_core`'s deleter says the last share can be dropped on ANY
+thread, so the release would clear the wrong thread's claim and leak
+the right one's. That forced a mutex and a
+`map<thread::id, EvalCore *>` - about 25 lines to assert downstream
+what `AffineRunner` already guarantees upstream.
+
+The rpc is covered by the same choice: `server.py`'s `_acquire`
+builds wrappers out of `huggorm_generated`, so every remote
+`EvalState` is an `AsyncEvalState` on its own `AffineRunner`.
+Verified, not assumed.
+
+Goal 1 is NOT in tension with this, which is worth saying because it
+is the rule somebody will cite. "A binding may not be more permissive
+than the C++ it binds" - and libexpr has no one-state-per-thread rule
+of its own, so the sync binding is exactly as permissive as what it
+binds. The rule is huggorm's, and it is enforced at huggorm's layer.
+
+### `tasks/034`'s cross-state residue, closed by the same sentence
+
+034 named an unchecked cross-state argument and left it: "the fix
+belongs to whichever task decides what a state's ownership of a value
+means". Carl's second sentence decides it.
+
+DERIVED, in one place. `BaseRunner.call` checks every argument before
+the executor hop, so all seven `Value` parameters across the five
+methods that take one - `force`, `apply`, `apply_auto`,
+`list_append`, `attrs_set` - are covered with nothing written per
+method. Seven emitted C++ comparisons was the first plan and it was
+worse.
+
+The EXECUTOR is the identity, not the runner. A value gets an
+`AttachedRunner` over its producer's executor, so two objects share
+an isolation exactly when they share a thread - which is what one
+state per thread buys.
+
+**In `call`, not in `unwrap_arg`, and that moved after a
+measurement.** `_invoke` wraps anything it catches in an
+`InternalError`, so the refusal first reached a caller as
+
+    InternalError: force failed
+
+with the reason buried in a cause. A rule a caller has to act on may
+not arrive as an internal bug. Checking in `call` also costs no
+thread handover and materializes nothing for a call that will not
+happen.
+
+### Two tests in this repo were making the call the rule forbids
+
+Both incidentally, and both had a different subject.
+
+`smoke_test.py` did `untouched.force(thunk_arg)` with a thunk from
+another state, to prove an affine wrapper constructs on its own
+thread on the first call. Any call proves that. Worse, its comment
+claimed to cover an affine wrapper used as an ARGUMENT, and it never
+did: `_materialize_args` was a no-op on `thunk_arg`, which is
+attached to an already-constructed producer - and that is true of
+every affine argument the corpus can produce, because the only ones
+are Values. So the argument side of `materialize` has no producer to
+exercise it, which the file now says.
+
+`test_remote.py::test_a_proxy_argument_resolves_against_another_object`
+used two states to prove that a handle passed as an ARGUMENT resolves
+from the table. Its subject survives: `fn.apply(arg)` is two Value
+proxies, so the argument still resolves against an object that is not
+itself, and both belong to one state - the only way two proxies can
+legally meet.
+
+### The wire-value exemption is a dead branch, and stays
+
+Carl's "unless they're forced into data and copied" is a branch in
+the check, and removing it fails NOTHING:
+
+    390 passed
+
+Every wire value in the corpus is produced by a POOL class, and the
+dedicated-thread guard already skips those. It stays because it is
+the rule rather than an optimisation - the day an affine class
+returns a wire value, refusing the copy would be wrong - and it is
+marked unreachable rather than left looking covered, which is
+`tasks/075`'s lesson.
+
+### Perturbation
+
+Removing the check fails exactly the three refusal gates:
+
+    3 failed, 377 passed, 10 deselected
+
+The control (a value from the state's OWN thread), the thread gate
+and the pool gate all still pass, which is what says the rule is
+about WHICH state rather than about passing a value at all.

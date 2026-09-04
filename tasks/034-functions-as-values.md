@@ -418,3 +418,29 @@ whichever task decides what a state's ownership of a value means.
 by `force` and `attrs_set`, so an `apply` rpc adds confirmation rather
 than machinery, and the schema needs nothing new. Worth adding when
 something remote actually calls a function.
+
+## 2026-09-04: the cross-state argument is checked
+
+The residue above said the fix "belongs to whichever task decides
+what a state's ownership of a value means". Carl decided it:
+
+> EvalState is it's own isolation, values from one evalstate aren't
+> valid for another evalstate (unless they're forced into data and
+> copied ofc).
+
+So `apply(f, arg)` across two states is refused, and so are `force`,
+`apply_auto`, `list_append` and `attrs_set` - seven `Value`
+parameters across five methods, from ONE check in
+`BaseRunner.call`. Derived rather than restated, which was the whole
+reason not to write it seven times in `Cxx()` bodies.
+
+Enforced in the ASYNC layer, not the binding, and Carl chose that
+too: it is the lowest layer that manages threads for a caller. The
+sync binding stays exactly as permissive as libexpr. `tasks/085`
+holds the detail.
+
+That leaves `__call__` (`tasks/088`) as this file's only residue, and
+the remote gate - which `test_remote.py` now has by accident:
+`test_a_proxy_argument_resolves_against_another_object` was rewritten
+onto `fn.apply(arg)`, because two Values of one state are the only
+way two proxies can legally meet.
