@@ -613,7 +613,7 @@ try {
         """)
 
 
-@header("huggorm_decl/cpp/eval.hpp")
+@header("huggorm_decl/cpp/logging.hpp")
 @binding(
     cxx="huggorm::LogField",
     threading="pool",
@@ -645,7 +645,7 @@ class LogField:
         """The string, when not `is_int`. Empty otherwise."""
 
 
-@header("huggorm_decl/cpp/eval.hpp")
+@header("huggorm_decl/cpp/logging.hpp")
 @binding(
     cxx="huggorm::LogRecord",
     threading="pool",
@@ -729,7 +729,7 @@ class LogRecord:
         binding does not restate it."""
 
 
-@header("huggorm_decl/cpp/eval.hpp")
+@header("huggorm_decl/cpp/logging.hpp")
 @binding(
     cxx="huggorm::LogQueue",
     # A share, because the queue outlives the subscribe call and the
@@ -1185,7 +1185,7 @@ return self.wrap_builder(made);
 # --- free functions ------------------------------------------------
 
 
-@needs("huggorm_decl/cpp/eval.hpp")
+@needs("huggorm_decl/cpp/gc.hpp")
 @threading("pool")
 def gc_stats() -> "dict[str, I64]":
     """Live collector counters, bound straight from gc.h.
@@ -1208,7 +1208,7 @@ return {
     """)
 
 
-@needs("huggorm_decl/cpp/eval.hpp")
+@needs("huggorm_decl/cpp/gc.hpp")
 @threading("pool")
 @blocks
 @binds("huggorm::gc_collect")
@@ -1224,7 +1224,7 @@ def collect_garbage() -> None:
     from unknown thread"."""
 
 
-@needs("huggorm_decl/cpp/eval.hpp")
+@needs("huggorm_decl/cpp/gc.hpp")
 @binds("huggorm::gc_unregister_thread")
 def gc_release_thread() -> None:
     """Take the CURRENT thread off the collector's list.
@@ -1241,7 +1241,7 @@ def gc_release_thread() -> None:
     executor does when its wrapper is closed."""
 
 
-@needs("huggorm_decl/cpp/eval.hpp")
+@needs("huggorm_decl/cpp/logging.hpp")
 @threading("pool")
 def subscribe_process_logs(capacity: I64 = 1024,
                            level: I64 = 3) -> "LogStream":
@@ -1290,7 +1290,7 @@ return huggorm::subscribe_process_logs(static_cast<std::size_t>(capacity),
     """)
 
 
-@needs("huggorm_decl/cpp/eval.hpp")
+@needs("huggorm_decl/cpp/logging.hpp")
 @threading("pool")
 @binds("huggorm::unsubscribe_process_logs")
 def unsubscribe_process_logs() -> None:
@@ -1313,7 +1313,7 @@ def unsubscribe_process_logs() -> None:
     here so it reads as the sharing model rather than an oversight."""
 
 
-@needs("huggorm_decl/cpp/eval.hpp")
+@needs("huggorm_decl/cpp/logging.hpp")
 @binds("huggorm::install_log_tap")
 @startup
 def _log_tap_init() -> None:
@@ -1329,7 +1329,7 @@ def _log_tap_init() -> None:
     with. Subscribing to nothing therefore changes nothing."""
 
 
-@needs("huggorm_decl/cpp/eval.hpp")
+@needs("huggorm_decl/cpp/gc.hpp")
 @binds("nix::initGC")
 @startup
 def _gc_init() -> None:
