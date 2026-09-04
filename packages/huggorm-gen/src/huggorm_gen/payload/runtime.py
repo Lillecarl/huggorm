@@ -108,6 +108,45 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
         return _POOL
 
 
+def _refuse_foreign(callee: Any, arg: Any, x: Any) -> None:
+    """Refuse a proxy that belongs to another isolation.
+
+    An affine object IS its own isolation. A `nix::Value` is only
+    meaningful to the `EvalState` that allocated it - an attribute
+    name is a `Symbol`, an index into that state's own table - so
+    handing one to a second state reads whatever that state's table
+    holds at the same index. Not an error there: a wrong answer, or a
+    crash.
+
+    The EXECUTOR is the identity, not the runner. A value produced by
+    a state gets an `AttachedRunner` over the producer's executor, so
+    two objects belong to the same isolation exactly when they run on
+    the same thread - which is also why one state per thread is the
+    rule this can be checked against.
+
+    Only between two DEDICATED-thread runners. A pool object is
+    thread-safe by declaration and belongs to no isolation, so passing
+    a Store to a state's method is not this.
+
+    Enforced HERE and not in the binding, and Carl decided that: the
+    async layer is the lowest one that manages threads for a caller,
+    so it is where a library user meets the rule. A caller using the
+    sync binding directly is on their own - the C++ is exactly as
+    permissive as libexpr, which has no such rule of its own.
+    """
+    if not (callee.dedicated_thread and arg.dedicated_thread):
+        return
+    if callee._executor() is arg._executor():
+        return
+    raise TypeError(
+        f"{type(x).__name__} belongs to another EvalState. A value is "
+        f"only meaningful to the state that allocated it, because an "
+        f"attribute name is an index into that state's own symbol "
+        f"table - so this would read the wrong table rather than fail. "
+        f"Force it to data and copy it across, or do the work on the "
+        f"state that owns it.")
+
+
 def unwrap_arg(x: Any) -> Any:
     """Normalize one argument: an async wrapper contributes its target
     object, anything else passes through. Used for method arguments and
@@ -124,6 +163,45 @@ def unwrap_arg(x: Any) -> Any:
     if getattr(x, "_wire", "proxy") == "value":
         return copy.copy(obj)
     return obj
+
+
+def _check_isolation(callee: Any, args: Iterable[Any]) -> None:
+    """Every argument of one call, against the isolation receiving it.
+
+    BEFORE the executor hop and before `_materialize_args`, which is
+    why it is here rather than inside `unwrap_arg`. Two reasons, and
+    the first is the one that made it move: `_invoke` wraps anything
+    it catches in an `InternalError`, so a refusal raised down there
+    reached a caller as "force failed" with the reason buried in a
+    cause. A rule the caller has to act on may not arrive as an
+    internal bug. The second is cheaper: refusing costs no thread
+    handover, and materializes nothing on behalf of a call that will
+    not happen.
+
+    `run` is NOT checked, and needs no check: it takes a FUNCTION
+    rather than wrapper arguments, so there is nothing to compare.
+    Its one caller walks the target's own value on the target's own
+    thread. `call_function` is not checked either - a free function
+    belongs to no isolation, so there is nothing for an argument to
+    be foreign TO."""
+    for x in args:
+        r = getattr(x, "_runner", None)
+        if r is None:
+            continue
+        if getattr(x, "_wire", "proxy") == "value":
+            # A wire value crosses as a COPY, so it carries no tie to
+            # whatever made it. That is the one crossing the rule
+            # allows - forced into data and copied.
+            #
+            # UNREACHABLE TODAY, and measured: removing this branch
+            # fails nothing, because every wire value in the corpus is
+            # produced by a POOL class and the guard below already
+            # skips those. It stays because it is the rule rather than
+            # an optimisation - the day an affine class returns a wire
+            # value, refusing the copy would be wrong. Said here so it
+            # is not read as covered (`tasks/075`'s lesson).
+            continue
+        _refuse_foreign(callee, r, x)
 
 
 async def _materialize_args(args: list[Any]) -> None:
@@ -272,6 +350,7 @@ class BaseRunner:
         return await loop.run_in_executor(self._executor(), invoke)
 
     async def call(self, method: str, args: list[Any]) -> Any:
+        _check_isolation(self, args)
         await _materialize_args(args)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor(), lambda: self._invoke(method, args))

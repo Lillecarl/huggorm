@@ -791,7 +791,37 @@ class LogStream:
     blocking=True,
 )
 class EvalState:
-    """One evaluator, and the thread it belongs to."""
+    """One evaluator, and the thread it belongs to.
+
+    ONE STATE, ONE THREAD, and that is a decision rather than a
+    consequence. A state is the most granular parallelism
+    `nix::EvalState` offers, so it is the unit this project isolates
+    on - and it isolates completely: a value belonging to one state
+    is not valid in another.
+
+    The reason is not a rule somebody chose. A `nix::Value` is not
+    self-describing - an attribute name is a `Symbol`, an index into
+    the producing state's own table - so handing one to a second
+    state reads whatever that state's table holds at the same index.
+    A wrong answer, not a failure.
+
+    The exception is DATA. A value forced and read out is a Python
+    object, and a wire value crosses as a copy; neither carries a tie
+    to the state that made it.
+
+    WHERE the rule is enforced is the other half. The async layer is
+    the lowest one that manages threads for a caller, so it is where
+    a library user meets it: an `AffineRunner` gives every state its
+    own thread, and a foreign argument is refused before the call
+    hops. The rpc goes through those same wrappers, so a remote
+    caller meets it too.
+
+    A caller holding THIS binding directly is on their own. Nothing
+    below the async layer checks, and nothing should: the C++ here is
+    exactly as permissive as libexpr, which has no such rule of its
+    own, and goal 1 asks a binding not to be MORE permissive than
+    what it binds. Carl decided this; `tasks/085` records it.
+    """
 
     def __init__(self, store_uri: Str) -> None:
         """Open a state against a store URI.
