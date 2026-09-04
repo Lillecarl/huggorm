@@ -976,3 +976,42 @@ def test_the_codegen_runs_the_written_census(
                         lambda mod, bound, text: ran.append(mod.name))
     assert generate.main(str(tmp_path)) == 0
     assert "pathinfo" in ran, ran
+
+
+def test_a_body_brings_its_own_standard_header() -> None:
+    """What a `Cxx` body SPELLS decides what the emitted file
+    includes.
+
+    `eval.py`'s bodies throw `std::invalid_argument` 54 times, and
+    the emitted `eval.cpp` includes `<stdexcept>` because of that -
+    not because a hand-written header carries one on its behalf.
+    That was the arrangement `tasks/090` found: `eval.hpp` held a
+    `<stdexcept>` it never used, a fact about generated code living
+    in a file a person maintains.
+
+    NOT load-bearing, and that is measured rather than hoped. With
+    both the header's include AND this derivation removed, the build
+    still compiles - nix's own headers reach `<stdexcept>` somewhere
+    along the chain. So the compiler cannot gate this, and asserting
+    on the emitted TEXT is what can: the question is whether the
+    emitter derives the include, not whether the build tolerates its
+    absence.
+
+    `pathinfo.py` is the control. Its bodies spell `std::uint64_t`
+    and `std::move` and throw nothing, so it gets `<cstdint>` and
+    `<utility>` and NOT `<stdexcept>` - which is what says the
+    derivation reads the body rather than adding a fixed list."""
+    from huggorm_decl import corpus
+    from huggorm_gen.cppgen.nbemit import extension
+
+    have = corpus()
+    text = extension(have.module("eval.py"), "huggorm_bindings.eval",
+                     chain=[], errors="")
+    assert "#include <stdexcept>" in text
+    assert "std::invalid_argument" in text, "the body that needs it"
+
+    other = extension(have.module("pathinfo.py"),
+                      "huggorm_bindings.pathinfo", chain=[], errors="")
+    assert "#include <cstdint>" in other
+    assert "#include <stdexcept>" not in other, \
+        "nothing in pathinfo throws, so nothing asks for it"
