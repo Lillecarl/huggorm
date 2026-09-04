@@ -756,6 +756,26 @@ which was superseded rather than fixed.
   gap is still open, but it is now required rather than speculative,
   and nanopynix shows it needs no C++.
   Gap 4 is unchanged: the ErrorInfo overlap with 036.
+- 090 (are all the lines in the headers justified) is MOSTLY DONE.
+  Carl asked; the answer was NO. Ten lines, all left behind by 089's
+  split an hour earlier - seven includes in `eval.hpp` whose users had
+  moved out, two in `gc.hpp` named only in comments, and a
+  `class Bridge;` forward declaration that is load-bearing in
+  `eval.hpp` and dead in `gc.hpp`. Found by asking each file which
+  symbols it names OUTSIDE a comment, which is the part a plain grep
+  gets wrong.
+  `<stdexcept>` stays and the reason first given for it was FALSE.
+  `eval.hpp` uses nothing from it; the EMITTED file throws
+  `std::invalid_argument` 54 times. The comment claimed the build
+  breaks without it, and it does not - `logging.hpp` reaches
+  `nix/util/error.hh`, which supplies the name. It stays because that
+  chain is an accident, not because it is load-bearing.
+  Two things left OPEN. The emitter should own that include - it knows
+  what a `Cxx` body spells and could emit it beside the body. And two
+  things in `logging.hpp` may be derivable: `LogTap`'s five overrides
+  are `tasks/084` exactly, the one MAPPING left in the headers; and
+  `LogField`/`LogRecord` are plain structs whose every field the
+  declaration already names with `@reads`.
 - 089 (correlating a log with the call that caused it) is OPEN, and is
   a REFLECTION rather than a plan - Carl asked what nanopynix does
   about a per-request log id and granular verbosity, and how either
