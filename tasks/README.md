@@ -775,11 +775,15 @@ which was superseded rather than fixed.
   or unsayable - six, five of them open, and one habit rather than six
   gaps. Refusing was right each time, and six is where it stops being
   the answer.
-  And `CLAUDE.md:95` claims the build prints the `huggorm_decl/cpp`
-  line count. IT DOES NOT - nothing counts that directory, and the
-  census it does print covers `StorePath` alone. A budget nobody
-  reports is a budget nobody keeps, which is part of why the growth
-  was noticed by reading.
+  It first claimed `CLAUDE.md:95` was stale - that nothing prints the
+  `huggorm_decl/cpp` line count. WRONG, and corrected in the file:
+  `census_cpp` prints `hand-written C++ in cpp/: 593 lines in 5
+  file(s)` on every build, and names the three ORPHANS - files no
+  module claims, `logging.hpp` the largest at 208. That is the third
+  claim of this shape in one session and the worst, because it was
+  committed and accused the instructions of being wrong. The number
+  reported is CODE lines, so the "comment ratio inflates it" answer
+  was wrong too.
 - 090 (are all the lines in the headers justified) is MOSTLY DONE.
   Carl asked; the answer was NO. Ten lines, all left behind by 089's
   split an hour earlier - seven includes in `eval.hpp` whose users had

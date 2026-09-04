@@ -14,30 +14,40 @@ headers, its size, and whether a declaration could say it instead.
 The answer is about a third, not most - and the reason for the
 surprise is partly a number nobody is printing.
 
-## The number nobody prints
+## The number IS printed, and this file first said it was not
 
-`CLAUDE.md:95` says:
+**Corrected.** The first version of this section claimed
+`CLAUDE.md:95` was stale - that nothing counts the directory. It is
+accurate. `generate.census_cpp` counts it on every build:
 
-> The build prints the `huggorm_decl/cpp` line count. It is not a
-> budget to spend.
+    front door -> .../__init__.py: 34 name(s)
+    hand-written C++ in cpp/: 593 lines in 5 file(s)
+      errors.hpp: 35 lines, claimed by no module
+      libstore.hpp: 12 lines, claimed by no module
+      logging.hpp: 208 lines, claimed by no module
 
-**It does not.** Nothing in the build counts that directory.
-`nbemit.census` counts one thing - how many of a CLASS's members were
-derived rather than hatched - and the build prints it for `StorePath`
-alone, against nanopynix:
+Two greps missed it and neither was enough: `nix run --file . check`
+does not carry the bindings-src build's stdout, and searching for
+"line count" and "wc -l" does not match `_code_lines`. The right
+check was `nix log` on the derivation, and it took three minutes.
 
-    StorePath: 16 emitted, 9 hand-written (10 derived, 0 hatched)
+That is the THIRD claim of this shape in one session - `<stdexcept>`
+and `errors.hpp`'s three includes were the first two - and it is the
+worst of them, because it was committed and it accused the project's
+own instructions of being wrong.
 
-So the guardrail that was meant to make this visible has never run.
-That is worth fixing before anything else here: a budget nobody
-reports is a budget nobody keeps, and it is why the growth was
-noticed by reading rather than by the build saying so.
+The number it reports is 593, which is CODE lines. So the figure
+Carl is reacting to is already the honest one, and the "the comment
+ratio inflates it" answer this file first gave is also wrong.
+
+`census_cpp` also names the ORPHANS - a file no module claims, so no
+declaration is emitted beside it. Three of the five are orphans, and
+that is the more useful half of the report: `logging.hpp` alone is
+208 lines that nothing derives.
 
 ## What is actually there
 
-Total is 1545 lines, and **593 of them are code**. The rest is 828
-lines of comment and 124 blank - a 3:2 ratio of prose to code, which
-is deliberate in this repo and does inflate the number a reader sees.
+593 code lines, in 1545 total.
 
     errors.hpp      125 total    35 code
     eval.hpp        767 total   280 code
@@ -133,18 +143,19 @@ being "refuse the next one too".
 
 ## The order to take them in
 
-1. **Make the build print the number.** It is claimed and absent, and
-   nothing else here can be measured against a baseline that is not
-   reported.
-2. **Includes**, which Carl agreed to and `tasks/090` has two
+1. **Includes**, which Carl agreed to and `tasks/090` has two
    instances of. The emitter knows every error class an emitted file
    catches and every type a `Cxx` body spells.
-3. **`@private_member`**, the cheapest real one: 17 lines, three
+2. **`@private_member`**, the cheapest real one: 17 lines, three
    users already, and the pattern is pure boilerplate around a name.
-4. **`tasks/084`'s virtuals**, which is the biggest single win at 62
+3. **`tasks/084`'s virtuals**, which is the biggest single win at 62
    lines and also the hardest - it needs a way to say that this
    parameter of the virtual becomes that field of the record.
-5. The rest, as anything needs them.
+4. The rest, as anything needs them.
+
+The baseline needs no work: `census_cpp` already reports it, and
+`logging.hpp` being the largest orphan at 208 lines is the report
+pointing straight at the biggest target.
 
 Nothing here says the ~300 should shrink. A helper that is an
 algorithm is what goal 2 explicitly ALLOWS, and pretending otherwise
