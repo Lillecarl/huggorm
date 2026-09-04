@@ -370,10 +370,11 @@ class NixClient:
         claims its records - so a caller wanting everything reads
         both.
 
-        One reader per state. A second subscription would replace the
-        first on that state's thread, so the server refuses it with
-        FAILED_PRECONDITION rather than leaving the older stream open
-        and silent.
+        MANY readers per state. A second subscription would replace
+        the first on that state's thread, so the server opens ONE and
+        fans it out - each stream gets its own view, its own capacity
+        and its own level (`tasks/085`). This was a refusal until
+        2026-09-04.
 
         The FIRST batch is always empty, and it means the subscription
         is installed. A caller opens this to watch work it is about to
@@ -407,12 +408,12 @@ class NixClient:
         appear here. Reading both is how a caller sees all of it, and
         neither repeats the other.
 
-        ONE reader for the whole server, not one per connection. There
-        is a single process-wide sink, so the first connection to ask
-        gets it and the second is refused with FAILED_PRECONDITION -
-        the same answer `logs` gives for a second reader of one state,
-        for the same reason: a replaced subscription would leave the
-        older stream connected and silent.
+        MANY readers over ONE sink. There is a single process-wide
+        sink, so every connection that asks reads the same
+        subscription through its own view - the fan-out `logs` uses,
+        for the same reason. This was a refusal until 2026-09-04, and
+        the reader it refused was a CLI printing everything as it
+        happens.
 
         Batches, `dropped` and the empty first message all mean what
         they mean in `logs`."""

@@ -5,12 +5,13 @@ queue, and `Session/Logs` streaming it to another process. These four
 are what that shape leaves out. Each was stated rather than fixed,
 because each was a decision and not an oversight.
 
-**TWO OF THE FOUR ARE DONE**, and the sections at the end hold them.
-1 has a process-wide sink and an rpc over it. 2 needed no fix at all:
-Carl ruled one state per thread, so the situation it describes is a
-caller doing what the design forbids - and the same ruling closed
-`tasks/034`'s cross-state residue. 3 and 4 are why this file is still
-OPEN. Read to the end before solving one of the first two again.
+**THREE OF THE FOUR ARE DONE**, and the sections at the end hold
+them. 1 has a process-wide sink and an rpc over it. 2 needed no fix
+at all: Carl ruled one state per thread, so the situation it
+describes is a caller doing what the design forbids - and the same
+ruling closed `tasks/034`'s cross-state residue. 3 has a fan-out in
+the server. 4 is why this file is still OPEN. Read to the end before
+solving one of the first three again.
 
 They are separate problems in one file because they share one cause:
 the tap routes by THREAD, and a thread is not always the right owner.
@@ -56,6 +57,17 @@ Fan-out is the other answer: one subscription on the state's thread,
 many readers over it. It is more code, and nothing needs it yet - a
 second reader on one evaluation is a plausible want and not an
 observed one.
+
+**That last sentence is now false, and Carl is the one who refuted
+it.** Asked about correlating logs with calls, he named the reader:
+
+> this also pretty much means we have to support multiple readers
+> since a CLI would want a global listener that prints to
+> stdout/stderr as things happen
+
+A global listener and a client watching one evaluation are both
+legitimate, and the refusal makes one of them silence the other. See
+"3 is DONE" below.
 
 ## 4. An ErrorInfo crosses rendered, and 036 crosses one as parts
 
@@ -409,3 +421,73 @@ Removing the check fails exactly the three refusal gates:
 The control (a value from the state's OWN thread), the thread gate
 and the pool gate all still pass, which is what says the rule is
 about WHICH state rather than about passing a value at all.
+
+## 3 is DONE, 2026-09-04
+
+No C++. `_Fanout` and `_Reader` are in `huggorm/server.py`, and both
+log rpcs run on them. The binding still opens ONE subscription per
+state and one for the process sink; the fan-out is in Python, where
+goal 2 puts a rule that does not have to run on the evaluation
+thread.
+
+### The level is asked for WIDE, and narrowed per reader
+
+The shared subscription opens at level 7, `lvlVomit`, and each reader
+filters "msg" records against its own level.
+
+The alternative was to let the FIRST reader's level open the queue
+and refuse a later reader that wanted more. That makes the answer
+depend on ARRIVAL ORDER: a warnings-only client arriving first would
+refuse the CLI listener this gap exists for. Asking wide costs
+nothing real, because `nix::verbosity` filters before any logger runs
+(`logging.hh:314`) - a level-7 subscription still receives only what
+the process was already willing to raise.
+
+Capacity stays per-reader, because a bound is a property of the
+reader that cannot keep up. A `_Reader` mirrors `LogQueue`'s policy
+exactly: refuse a "msg" or a "result" when full, never a "start" or a
+"stop", and count. `dropped` on the wire is the reader's own plus the
+shared queue's - both cumulative, so the sum still is.
+
+### A defect this fixed, which was live before it
+
+`process_logs` cleared its flag and then DETACHED the unsubscribe. A
+new stream could arrive after the flag cleared, subscribe, and then
+have the detached unsubscribe close ITS queue - because
+`unsubscribe_process_logs` clears the slot whatever is in it. The new
+reader would sit connected and silent, which is the failure the
+refusal existed to prevent, one layer down.
+
+`_Fanout` holds an `asyncio.Lock` over both awaiting transitions - no
+reader to one, and one reader to none - and the unsubscribe is
+AWAITED inside it. A `join` that arrives mid-teardown waits, then
+opens a fresh subscription.
+
+### The map entry is never removed on empty
+
+An empty `_Fanout` stays in `_log_fanouts` and is dropped with the
+state (`_on_drop`). Removing it when the last reader leaves puts the
+entry and the subscription under two different rules again: a `join`
+that already holds the object would open a subscription nothing else
+can find, and the reader after it would open a SECOND one - which the
+binding answers by replacing the first.
+
+### Three gates, each proved by breaking it
+
+    two readers on one state both see the record
+    two readers on the process sink both see it
+    one reader leaving does not stop the other
+    the last reader out unsubscribes
+
+The last one needs the process sink to be observable at all. An
+unsubscribe is invisible on its own - leave the subscription
+installed and the next reader replaces it - but `route` reaches the
+process sink ONLY when the raising thread has no queue. So a state
+whose reader left must fall through to it.
+
+    unsubscribe on ANY leave      test_one_reader_leaving_does_not_stop_the_other, TimeoutError
+    never unsubscribe             test_the_last_reader_out_unsubscribes, TimeoutError
+    offer to one reader           the two "both see it" gates
+
+The two refusal gates that used to stand here are gone. They asserted
+a limitation, and the limitation is what this removed.

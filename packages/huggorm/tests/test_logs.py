@@ -655,30 +655,89 @@ async def test_a_drop_crosses_rather_than_vanishing(client: Any) -> None:
     assert dropped == 4, records
 
 
-async def test_one_reader_per_state(client: Any) -> None:
-    """A second stream on one state is REFUSED, not accepted.
+async def test_two_readers_on_one_state_both_see_it(client: Any) -> None:
+    """Fan-out, where the server used to refuse.
 
-    The tap routes by thread and a second subscribe replaces the first
-    in the C++, so accepting this would leave the older stream open,
-    connected, and empty forever - which reads exactly like a state
-    that stopped logging.
+    A second stream on one state was FAILED_PRECONDITION until now,
+    because a second `subscribe_logs` REPLACES the first in the C++ -
+    so accepting would have left the older stream connected and
+    empty. The subscription is now opened once and the fan-out is in
+    the server, so both readers see the same record.
 
-    FAILED_PRECONDITION and not an InternalError: the guard around the
-    Session handlers wraps everything it catches, and a deliberate
-    refusal wrapped that way reads as a bug in the server."""
-    from grpclib.const import Status
-    from grpclib.exceptions import GRPCError
+    Carl named the reader that made the refusal wrong: a CLI wants a
+    global listener printing as things happen, while a client watches
+    one evaluation. Neither should silence the other (`tasks/085`).
 
+    Drop the fan-out and this fails at the second `opened`, with the
+    refusal it used to assert."""
     state = await client.acquire("EvalState", "dummy://")
     first = await opened(client, state)
+    second = await opened(client, state)
     try:
-        second = client.logs(state)
-        with pytest.raises(GRPCError) as caught:
-            await batch(second)
-        assert caught.value.status is Status.FAILED_PRECONDITION
-        assert "already has a log stream" in (caught.value.message or "")
+        await state.eval_expr(TRACE % "BOTH-OF-US")
+        one, _ = await batch(first)
+        two, _ = await batch(second)
     finally:
         await first.aclose()
+        await second.aclose()
+
+    assert any("BOTH-OF-US" in r.text() for r in one), one
+    assert any("BOTH-OF-US" in r.text() for r in two), two
+
+
+async def test_one_reader_leaving_does_not_stop_the_other(
+        client: Any) -> None:
+    """The refcount, from the side that matters.
+
+    The subscription lives while ANY reader holds it. A `leave` that
+    unsubscribed whenever a reader went away - rather than when the
+    last one did - would leave this second stream connected and
+    silent, which is the failure the old refusal existed to
+    prevent."""
+    state = await client.acquire("EvalState", "dummy://")
+    first = await opened(client, state)
+    second = await opened(client, state)
+    await first.aclose()
+    try:
+        await state.eval_expr(TRACE % "STILL-HERE")
+        records, _ = await batch(second)
+    finally:
+        await second.aclose()
+
+    assert any("STILL-HERE" in r.text() for r in records), records
+
+
+async def test_the_last_reader_out_unsubscribes(client: Any) -> None:
+    """The other half of the refcount, and it needs the process sink.
+
+    An unsubscribe is invisible from the wire on its own: leave the
+    subscription installed and the next reader simply replaces it.
+    What IS visible is where the records go afterwards. `route` reaches
+    the process sink ONLY when the raising thread has no queue, so a
+    state whose reader left must fall through to it.
+
+    Drop the `_drop` await from `_Fanout.leave` and this times out:
+    the state's own queue would still be installed, claiming the
+    record that this stream is waiting for."""
+    state = await client.acquire("EvalState", "dummy://")
+    mine = await opened(client, state)
+    await mine.aclose()
+
+    process = await opened_process(client)
+    try:
+        # The server learns of the close through a stream reset, so
+        # its `finally` runs a moment after `aclose()` returns. The
+        # same retry `test_a_closed_stream_gives_the_state_back` needs,
+        # for the same reason.
+        with anyio.fail_after(20):
+            while True:
+                await state.eval_expr(TRACE % "FELL-THROUGH")
+                records, _ = await batch(process)
+                if any("FELL-THROUGH" in r.text() for r in records):
+                    break
+                await anyio.sleep(0.05)
+    finally:
+        await process.aclose()
 
 
 async def opened_process(client: Any, **kw: Any) -> Any:
@@ -741,40 +800,37 @@ async def test_a_state_stream_takes_its_records_back(client: Any) -> None:
         await process.aclose()
 
 
-async def test_one_process_reader_for_the_whole_server(client: Any) -> None:
-    """A second process-wide stream is REFUSED, where the C++ replaces.
+async def test_two_process_readers_both_see_it(client: Any) -> None:
+    """The same fan-out, over the one sink that has nothing to key by.
 
-    That split is the answer to the scoping question `tasks/032`
-    opened. Replacing in the C++ stops an in-process caller wedging
-    the sink by dropping its `LogStream` without unsubscribing.
-    Refusing here stops one connection silencing another's stream,
-    and it cannot wedge, because the handler's `finally` releases it
-    when the stream ends.
-
-    One reader for the SERVER, not per connection: there is one
-    process-wide sink, so there is nothing to key a second by."""
-    from grpclib.const import Status
-    from grpclib.exceptions import GRPCError
-
+    This is the reader Carl named - a CLI printing everything as it
+    happens - and it must not cost the next connection its own view.
+    One subscription in the binding, two readers in the server."""
+    state = await client.acquire("EvalState", "dummy://")
     first = await opened_process(client)
+    second = await opened_process(client)
     try:
-        second = client.process_logs()
-        with pytest.raises(GRPCError) as caught:
-            await batch(second)
-        assert caught.value.status is Status.FAILED_PRECONDITION
-        assert "process-wide log stream is already open" in (
-            caught.value.message or "")
+        await state.eval_expr(TRACE % "SEEN-TWICE")
+        one, _ = await batch(first)
+        two, _ = await batch(second)
     finally:
         await first.aclose()
+        await second.aclose()
+
+    assert any("SEEN-TWICE" in r.text() for r in one), one
+    assert any("SEEN-TWICE" in r.text() for r in two), two
 
 
 async def test_a_closed_process_stream_lets_the_next_one_in(
         client: Any) -> None:
-    """The gate on the flag being CLEARED.
+    """The gate on `join` AFTER a teardown.
 
-    Drop `self._process_reader = False` from the handler's `finally`
-    and this fails: the server would refuse every process-wide stream
-    for the rest of its life after the first one ended.
+    There is no flag any more - `_Fanout` counts readers - so what
+    this now gates is the other side of that count: the last reader
+    out tears the subscription down, and the next `join` has to build
+    a fresh one rather than hand back the closed queue. Make `join`
+    reuse a `_sub` it did not check and this fails, because the
+    stream would read a queue nothing fills.
 
     The retry is the same one `test_a_closed_stream_gives_the_state_back`
     needs, for the same reason - the server learns of the close
@@ -799,16 +855,18 @@ async def test_a_closed_process_stream_lets_the_next_one_in(
 async def test_a_closed_stream_gives_the_state_back(client: Any) -> None:
     """Closing one reader lets the next one in.
 
-    This is the gate on the registry entry being RELEASED. Drop the
-    `pop` from the handler's `finally` and this is what fails, with a
-    TimeoutError rather than a hang, because the retry below turns a
-    permanent refusal into one.
+    This gated the registry entry being RELEASED, back when a second
+    reader was refused. Nothing refuses now, so what it gates is that
+    a state whose stream ended can be read again at all - the
+    `_Fanout` for it survives the teardown and opens a new
+    subscription on the next `join`. Drop the fan-out from the map on
+    empty and this is the shape that shows it.
 
-    It does NOT gate the ORDER of that cleanup. The handler puts the
-    synchronous work first on the argument that a cancelled task
-    cannot await, and two perturbations refute the argument: awaiting
-    before the pop passes, and an `asyncio.sleep` before it passes.
-    Recorded in `tasks/032`, because a defence nothing tests is worth
+    It does NOT gate the ORDER of that cleanup. `_Fanout.leave`
+    discards the reader before it takes the lock, on the argument
+    that a cancelled task cannot await - the same argument the
+    handler used to make about its `pop`, and two perturbations in
+    `tasks/032` refuted it there. A defence nothing tests is worth
     saying out loud."""
     state = await client.acquire("EvalState", "dummy://")
     first = await opened(client, state)

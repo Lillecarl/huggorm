@@ -177,6 +177,205 @@ async def _drop_process_subscription() -> None:
         await unsubscribe_process_logs()
 
 
+# The level a shared subscription asks the binding for: lvlVomit, the
+# widest there is. Every reader then filters in Python.
+#
+# The alternative was to let the FIRST reader's level open the queue
+# and refuse a later reader that wanted more. That makes the answer
+# depend on arrival order - a warnings-only reader arriving first
+# would refuse the CLI listener that wants everything, which is the
+# reader `tasks/085` exists for. Asking wide costs nothing real,
+# because the global `nix::verbosity` filters BEFORE any logger runs
+# (`logging.hh:314`), so a level-7 subscription still receives only
+# what the process was already willing to raise.
+LOG_LEVEL_ALL = 7
+
+# What a reader gets when the request names neither. The binding's own
+# defaults, restated here because the shared subscription no longer
+# passes them through (`decl/eval.py:1051`).
+LOG_CAPACITY = 1024
+LOG_LEVEL = 3
+
+
+class _Reader:
+    """One client's share of a subscription many clients read.
+
+    Duck-typed as a `LogStream` on purpose - `drain` and `dropped` are
+    the only two things `_pump` asks of a queue, so a reader drops
+    into the same loop the single-reader path used, unchanged.
+
+    The DROP POLICY is the C++ queue's, restated over a `deque`
+    because a reader is a second bound under the first. A full reader
+    refuses a "msg" and a "result" and never a "start" or a "stop",
+    for the reason `LogQueue` gives: a dropped stop leaks a node in
+    the reader's activity tree that nothing later closes.
+
+    `level` filters a "msg" only, which is the same rule and the same
+    reason.
+    """
+
+    def __init__(self, fan: _Fanout, capacity: int, level: int) -> None:
+        self._fan = fan
+        self._capacity = capacity
+        self._level = level
+        self._records: list[Any] = []
+        self._dropped = 0
+
+    def offer(self, record: Any) -> None:
+        """One record from the shared drain. Never awaits."""
+        action = record.action()
+        if action == "msg" and record.level() > self._level:
+            return
+        if action in ("msg", "result") and len(self._records) >= self._capacity:
+            self._dropped += 1
+            return
+        self._records.append(record)
+
+    def drain(self) -> list[Any]:
+        # The shared drain raised, so the queue this reads is not
+        # being filled any more. Re-raised HERE rather than logged,
+        # because that is what the single-reader path did: the
+        # handler let the failure end the stream, so the client
+        # learned. A reader that just went quiet would not say so.
+        if self._fan.failure is not None:
+            raise self._fan.failure
+        out = self._records
+        self._records = []
+        return out
+
+    def dropped(self) -> int:
+        """This reader's drops PLUS the shared queue's.
+
+        Both are cumulative, so the sum is too, and a client that
+        missed a batch still learns the total. It cannot tell the two
+        apart, and does not need to: either way the record is gone."""
+        return self._dropped + self._fan.dropped
+
+
+class _Fanout:
+    """One subscription in the binding, many readers over it.
+
+    `tasks/085`'s third gap. The binding REPLACES a subscription, so
+    two `subscribe_logs` calls on one thread leave the first queue
+    orphaned - which is why both log rpcs used to refuse a second
+    reader. Carl named the reader that makes the refusal wrong:
+
+    > a CLI would want a global listener that prints to stdout/stderr
+    > as things happen
+
+    That listener and a client watching one evaluation are both
+    legitimate, and neither should silence the other.
+
+    So the subscription is opened ONCE and the fan-out is here, in
+    Python. It is not in the C++ for the reason goal 2 gives: a list
+    of queues in `LogTap` would be a mapping the declaration cannot
+    say, and nothing about a fan-out needs to run on the evaluation
+    thread.
+
+    The LOCK covers the two transitions that await: no reader to one,
+    and one reader to none. Without it the teardown of the last
+    reader races the setup of the next - `unsubscribe` clears the slot
+    whatever is in it, so a detached unsubscribe could close a queue
+    a newer reader had just installed, leaving that reader connected
+    and silent. That is the failure the old refusal existed to
+    prevent, one layer down, and it was live in `process_logs` before
+    this.
+    """
+
+    def __init__(self, open_sub: Callable[[], Awaitable[Any]],
+                 drop_sub: Callable[[], Awaitable[None]]) -> None:
+        self._open = open_sub
+        self._drop = drop_sub
+        self._lock = asyncio.Lock()
+        self._sub: Any = None
+        self._task: asyncio.Task[None] | None = None
+        self._readers: set[_Reader] = set()
+        self.dropped = 0
+        self.failure: BaseException | None = None
+
+    async def join(self, capacity: int, level: int) -> _Reader:
+        """A reader, and the subscription behind it if it is the first."""
+        reader = _Reader(self, capacity, level)
+        async with self._lock:
+            if self._sub is None:
+                self.dropped = 0
+                self.failure = None
+                self._sub = await self._open()
+                self._task = asyncio.ensure_future(self._run(self._sub))
+            self._readers.add(reader)
+        return reader
+
+    async def leave(self, reader: _Reader) -> None:
+        """Drop a reader, and the subscription with the last one.
+
+        The teardown happens UNDER the lock, including the await of
+        the unsubscribe. A `join` that arrives mid-teardown waits and
+        then opens a fresh subscription, which is the ordering the
+        detached cleanup could not give.
+
+        The DISCARD is outside it, and that is the one thing this
+        does before it can be cancelled. The single-reader path
+        detached its cleanup so that a cancelled handler could not
+        skip it; this one awaits, so a cancel between the two would
+        leave a reader nothing drains - and a "start" or a "stop"
+        bypasses the capacity check by design, so that reader's deque
+        would grow without a bound. Discarding first makes a
+        cancelled `leave` leave a CONSISTENT state instead: the
+        subscription stays installed and the next `join` reuses it.
+
+        Cancellation is not observed in either handler - two
+        perturbations in `tasks/032` failed to produce it - so this
+        is a defence and not a measured need."""
+        self._readers.discard(reader)
+        async with self._lock:
+            if self._readers or self._sub is None:
+                return
+            task, sub = self._task, self._sub
+            self._task, self._sub = None, None
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            sub.close()
+            with contextlib.suppress(Exception):
+                await self._drop()
+
+    async def _run(self, sub: Any) -> None:
+        """Drain the one queue, offer to every reader.
+
+        `sub` is a parameter and not `self._sub`, because `leave`
+        clears the attribute before this task notices the cancel.
+
+        The readers set is mutated by `join` and `leave` and read
+        here, all on one event loop and none of them across an await
+        while iterating - so it needs no lock of its own. The lock
+        above is for the awaits, not for the set."""
+        try:
+            while True:
+                self.dropped = sub.dropped()
+                records = sub.drain()
+                if not records:
+                    await asyncio.sleep(LOG_POLL)
+                    continue
+                for record in records:
+                    for reader in self._readers:
+                        reader.offer(record)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # handed to the readers, not swallowed
+            self.failure = exc
+
+
+async def _open_process_subscription() -> Any:
+    """Subscribe to the process sink, at the widest level.
+
+    A function rather than the binding call itself, because the
+    import is deferred: `huggorm_generated` is the built extension,
+    and this module is imported by tools that never load it."""
+    from huggorm_generated import subscribe_process_logs
+    return await subscribe_process_logs(level=LOG_LEVEL_ALL)
+
+
 async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
                 alive: Callable[[], None]) -> None:
     """Drain a queue onto a stream until somebody stops it.
@@ -228,18 +427,25 @@ class Dispatcher:
         self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
         self.codec = WireCodec()
-        # Which states already have a log reader. The tap routes by
-        # THREAD and a second subscribe REPLACES the first, so two
-        # readers on one state would leave the older one silent with
-        # nothing said - this repo's named failure mode. Keyed by the
-        # wrapper object, because that is what a subscription belongs
-        # to; a shared handle leases the same id to two connections
-        # and still names one state.
-        self._log_readers: dict[int, Any] = {}
-        # Whether a process-wide log stream is open. A BOOL, where the
-        # per-state readers need a map: there is one sink, so there is
-        # nothing to key by.
-        self._process_reader = False
+        # One fan-out per state, so many readers share one
+        # subscription. Keyed by the wrapper object, because that is
+        # what a subscription belongs to; a shared handle leases the
+        # same id to two connections and still names one state.
+        #
+        # NEVER removed when the last reader leaves, and that is the
+        # point. Removing on empty puts the map entry and the
+        # subscription under two different rules again: a `join` that
+        # already holds the object would open a subscription nobody
+        # can find, and the reader after it would open a SECOND one -
+        # which the binding answers by replacing the first. So an
+        # empty fan-out stays, holds nothing, and is dropped with the
+        # state it belongs to (`_on_drop`).
+        self._log_fanouts: dict[int, _Fanout] = {}
+        # One fan-out for the process sink. Not a map, because there
+        # is one sink and nothing to key by, and not created lazily
+        # for the same reason.
+        self._process_fanout = _Fanout(_open_process_subscription,
+                                       _drop_process_subscription)
         # A failure crosses the same way a value does: as messages, by
         # what the bindings declare, never by a type this file names
         # (tasks/036).
@@ -252,6 +458,21 @@ class Dispatcher:
         for cls_name in METHODS:
             self._service(cls_name)
         self._free_service()
+
+    def _fanout(self, target: Any) -> _Fanout:
+        """This state's fan-out, made on first use.
+
+        `subscribe_logs` hops onto the state's own thread, so the
+        binding call is bound to the target here and the fan-out
+        never has to name one."""
+        key = id(target)
+        fan = self._log_fanouts.get(key)
+        if fan is None:
+            fan = _Fanout(
+                lambda: target.subscribe_logs(level=LOG_LEVEL_ALL),
+                lambda: _drop_subscription(target))
+            self._log_fanouts[key] = fan
+        return fan
 
     def _on_drop(self, obj: Any) -> None:
         """Shut a dropped wrapper's runner down, off the sweep.
@@ -267,6 +488,10 @@ class Dispatcher:
             with contextlib.suppress(Exception):
                 await obj.aclose()
 
+        # The fan-out goes with the state. It is the one removal that
+        # cannot race a reader: the wrapper is being dropped, so no
+        # request can resolve to it any more.
+        self._log_fanouts.pop(id(obj), None)
         self._detach(_close())
 
     def _detach(self, coro: Any) -> None:
@@ -630,63 +855,39 @@ class Dispatcher:
             reporting on is still running. That is the whole reason
             the queue is a class rather than a method on EvalState.
 
-            Four things it refuses to do quietly.
+            MANY readers on one state, which is `tasks/085`'s third
+            gap closed. It used to be one: a second subscribe
+            REPLACES the first in the C++, so a second reader would
+            have left the first connected and empty. The subscription
+            is now opened once per state and `_Fanout` hands each
+            reader its own view, so the refusal is gone and nothing
+            it protected is lost.
 
-            A SECOND reader on one state is refused, not accepted. A
-            second subscribe replaces the first in the C++, so
-            accepting would leave the older stream open and empty
-            forever.
+            Three things it still refuses to do quietly.
 
             A DROP is reported. `dropped` rides with every batch and
             is cumulative, so a client that missed a batch still
-            learns the total.
+            learns the total. It now covers this reader's own drops
+            as well as the shared queue's.
 
             A SWEPT connection ends the stream with a status. A stream
             that just stopped would be indistinguishable from a quiet
             one.
 
-            CLEANUP is synchronous first, which is a cheap defence
-            rather than a measured need. The argument was that grpclib
-            cancels this task when the client goes away, so the first
-            `await` in a `finally` re-raises. Two perturbations say
-            otherwise - awaiting before the pop passed, and an
-            `asyncio.sleep` before it passed - so cancellation is not
-            observed here. The ordering stays because it costs
-            nothing and it holds under a second cancel or a deadline,
-            where delivered-once is not the whole story (tasks/032)."""
+            CLEANUP is AWAITED, where the single-reader path detached
+            it. That path could afford to: it held the only
+            subscription, so nothing was waiting on the drop. A
+            fan-out has to know the subscription is gone before it
+            opens the next one, and only the await says so."""
             req = await stream.recv_message()
             token = _tok(stream)
             target = self.resolve(req.state.id, token)
-            key = id(target)
-            if key in self._log_readers:
-                raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.FAILED_PRECONDITION,
-                    f"{req.state.id[:8]} already has a log stream open. A "
-                    f"second subscription replaces the first on that "
-                    f"state's thread, so the first would go silent "
-                    f"without saying so.")
-            opts: dict[str, int] = {}
-            # Capacity 0 is not a queue, so zero means "the binding's
-            # default". Level 0 IS a subscription - lvlError, errors
-            # only - so it needs the presence the schema gives it.
-            if req.capacity:
-                opts["capacity"] = req.capacity
-            if req.HasField("level"):
-                opts["level"] = req.level
-            # CLAIMED before the first await, which is the whole
-            # ordering. `subscribe_logs` hops onto the state's thread,
-            # so it yields - and with the claim after it, two
-            # concurrent requests both passed the check above, both
-            # subscribed, and the second replaced the first's queue in
-            # the C++. The first stream then sat connected and silent,
-            # which is exactly what the refusal exists to prevent.
-            #
-            # NOT GATED, and deliberately: the failure needs two opens
-            # landing inside one thread hop, so a gate for it would
-            # assert a schedule rather than a fact. Stated here and in
-            # `tasks/085` instead.
-            self._log_readers[key] = target
-            sub = None
+            fan = self._fanout(target)
+            # Capacity 0 is not a queue, so zero means "the default".
+            # Level 0 IS a subscription - lvlError, errors only - so it
+            # needs the presence the schema gives it.
+            capacity = req.capacity or LOG_CAPACITY
+            level = req.level if req.HasField("level") else LOG_LEVEL
 
             def alive() -> None:
                 if req.state.id not in self.table.entries:
@@ -695,21 +896,19 @@ class Dispatcher:
                         f"the connection holding {req.state.id[:8]} was "
                         f"swept, so this stream has nothing to read.")
 
+            reader = await fan.join(capacity, level)
             try:
-                sub = await target.subscribe_logs(**opts)
-                await _pump(stream, sub, self.msg("LogsResp"), self.codec,
+                await _pump(stream, reader, self.msg("LogsResp"), self.codec,
                             alive)
             except grpclib.exceptions.StreamTerminatedError:
                 # The client is gone. There is nobody to tell.
                 return
             finally:
-                self._log_readers.pop(key, None)
-                # None when the subscribe itself failed, which
-                # installed nothing - so there is nothing to close and
-                # nothing to drop.
-                if sub is not None:
-                    sub.close()
-                    self._detach(_drop_subscription(target))
+                # AWAITED, where the single-reader path detached its
+                # cleanup. The fan-out has to know the subscription is
+                # gone before it opens the next one, and only the
+                # await says so.
+                await fan.leave(reader)
 
         async def process_logs(stream: Any) -> None:
             """Records no subscribed thread claimed, streamed.
@@ -724,54 +923,29 @@ class Dispatcher:
             no handle at all can open it, which is right: the records
             it carries are the ones no handle could have reached.
 
-            REFUSES a second stream, where the C++ replaces. That
-            split is the answer to the scoping question `tasks/032`
-            opened. Replacing in the C++ is what stops an in-process
-            caller wedging the sink by dropping its `LogStream`;
-            refusing here is what stops one connection silencing
-            another's stream, and it cannot wedge, because the
-            `finally` below runs when the stream ends.
+            MANY readers over ONE sink, and the fan-out is what makes
+            that true. There is one process-wide queue, so every
+            connection that asks reads the same subscription through
+            its own `_Reader`. This is the reader Carl named - a CLI
+            printing everything as it happens - and it no longer
+            costs the next connection its view.
 
-            ONE reader, not per-connection, and that is the
-            limitation to read twice. There is one process-wide queue,
-            so the first connection to ask gets every unclaimed
-            record in the process and the second is told no. Fan-out
-            is what would change that, and it is `tasks/085`'s third
-            gap for the per-state stream too."""
-            from huggorm_generated import subscribe_process_logs
-
+            Replacing in the C++ still stops an in-process caller
+            wedging the sink by dropping its `LogStream` without
+            unsubscribing. What used to sit beside it here was a
+            refusal; `_Fanout` replaces that with a refcount."""
             req = await stream.recv_message()
-            if self._process_reader:
-                raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.FAILED_PRECONDITION,
-                    "a process-wide log stream is already open. There is "
-                    "one sink, so a second subscription would replace the "
-                    "first and leave it connected and silent.")
-            opts: dict[str, int] = {}
-            if req.capacity:
-                opts["capacity"] = req.capacity
-            if req.HasField("level"):
-                opts["level"] = req.level
-            # CLAIMED before the first await. `subscribe_process_logs`
-            # goes to the pool, so it yields - and with the claim after
-            # it, two concurrent requests both passed the check above
-            # and both subscribed, with the second replacing the
-            # first's queue in the C++. The first stream would then be
-            # connected and silent, which is what the refusal exists
-            # to prevent. See `logs` above for why there is no gate.
-            self._process_reader = True
-            sub = None
+            capacity = req.capacity or LOG_CAPACITY
+            level = req.level if req.HasField("level") else LOG_LEVEL
+
+            reader = await self._process_fanout.join(capacity, level)
             try:
-                sub = await subscribe_process_logs(**opts)
-                await _pump(stream, sub, self.msg("LogsResp"), self.codec,
+                await _pump(stream, reader, self.msg("LogsResp"), self.codec,
                             lambda: None)
             except grpclib.exceptions.StreamTerminatedError:
                 return
             finally:
-                self._process_reader = False
-                if sub is not None:
-                    sub.close()
-                    self._detach(_drop_process_subscription())
+                await self._process_fanout.leave(reader)
 
         Handle = self.msg("Handle")
         self.mapping[f"/{schema.PKG}.Session/Logs"] = grpclib.const.Handler(
