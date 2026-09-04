@@ -163,3 +163,47 @@ would trade a readable 50-line queue for a declaration form nobody
 else uses.
 
 Opened 2026-09-04, from Carl's question.
+
+## `@private_member` is later, and the reason is a dependency
+
+It looked like the cheapest item, and it is not, because of who uses
+the thing it would generate.
+
+Every consumer of the `Reach` dance is a HAND-WRITTEN helper in
+`eval.hpp`:
+
+    cached_files          (state.*get(FileEvalCache{}))->cvisit_all
+    forget_file           both caches
+    register_primop       (state.*get(AddPrimOp{}))(std::move(op))
+
+Generated code never touches it. So an emitted `Reach` block has to
+be visible to `eval.hpp`, and `huggorm-decl` does not depend on
+`huggorm-gen` - `packages/huggorm-bindings/default.nix` names all
+three, and the arrow runs bindings -> {gen, decl, dsl} and no other
+way.
+
+Two ways out, and both are bigger than the 17 lines they save:
+
+1. **`eval.hpp` includes a generated header.** It compiles, because
+   nothing outside the bindings build ever compiles `eval.hpp`. But a
+   helper is meant to be readable and buildable on its own, and this
+   makes one that is not - it would stop compiling standalone, which
+   is a worse property than the boilerplate it removes.
+2. **The consumers move into the emitted file**, as `Cxx` bodies on
+   the declaration. Then everything is on the generated side and the
+   header loses ~40 lines rather than 17. Defensible, and it is a
+   real change to three helpers rather than a decorator.
+
+So this one waits on (2) being worth doing for its own sake. Carl
+named `@private_member` as an EXAMPLE of the appetite - "things like
+`@private_member` and other C++ annotations" - rather than as the
+task, and the appetite is better spent where the emitter already owns
+the output.
+
+## Which makes includes the real first step
+
+`tasks/090` has two measured instances and Carl agreed to it by name.
+It also has no dependency problem at all: the emitter already writes
+the include block of every emitted `.cpp`, so this is a fact it
+computes instead of one a header carries on the emitted file's
+behalf.

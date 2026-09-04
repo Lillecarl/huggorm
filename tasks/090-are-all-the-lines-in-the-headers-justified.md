@@ -159,3 +159,58 @@ Four double blank lines, three of them left by the split and one
 older, in `errors.hpp`. Removed. Trivial, and mentioned only because
 the question was whether every line is justified and a blank line
 that nothing put there deliberately is not.
+
+## The emitter owns the includes now, half of it
+
+`tasks/091`'s first step, and the half with two measured instances.
+
+`nbemit.includes` derived the headers a translation unit needs from
+its declared TYPES. It did not look at what the hand-written BODIES
+spell, so the bodies' headers were carried by `eval.hpp` on the
+emitted file's behalf - a fact about generated code living in a file
+a person maintains.
+
+`BODY_HEADERS` is that fact, derived. Fifteen spellings mapped to
+their standard header, scanned across every `Cxx` body in the unit -
+methods, the constructor, `_from_parts`, `@custom` blocks and free
+functions. The emitted files change by exactly this:
+
+    eval.cpp      + <algorithm> <cstddef> <cstdint> <stdexcept>
+    gc.cpp        + <cstdint>
+    hash.cpp      + <cstddef>
+    pathinfo.cpp  + <cstdint> <utility>
+
+...and `eval.hpp` loses the `<stdexcept>` it never used.
+
+Only what a caster does NOT already bring. `<string>` and `<vector>`
+arrive with `nanobind/stl/string.h` and its kind, so listing them
+would add a line that is already there.
+
+### The compiler cannot gate this, and the gate says so
+
+Both perturbations were run and NEITHER broke the build. Removing
+`eval.hpp`'s include compiles. Removing the derivation as well still
+compiles - nix's own headers reach `<stdexcept>` somewhere along the
+chain.
+
+So the question the compiler answers is not the question. What
+matters is whether the EMITTER derives the include, and a text gate
+answers that: `test_a_body_brings_its_own_standard_header` asserts
+`eval.cpp` gets `<stdexcept>` because its bodies throw, and that
+`pathinfo.cpp` gets `<cstdint>` and `<utility>` and NOT `<stdexcept>`
+because its bodies spell those and throw nothing. The control is what
+says the derivation reads the body rather than adding a fixed list.
+
+Removing the derivation fails it, and only it:
+
+    1 failed, 381 passed, 10 deselected
+
+### What is left of this item
+
+The error translator's catches. `path.cpp` catches `nix::InvalidPath`
+while including only `nix/store/path.hh`, and `errors.hpp` carries
+`store-api.hh` for it. That half needs the error DECLARATIONS to say
+which header defines their `cxx = "nix::..."` - eight classes in
+`decl/errors.py` carry a C++ name and no header - which is a
+declaration change rather than an emitter one, and it is the "bind
+Python fake types to C++ types" shape Carl described.

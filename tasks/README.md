@@ -807,10 +807,18 @@ which was superseded rather than fixed.
   session. They stay because `path.cpp` catches a store-api type while
   including only `path.hh`, so keeping them is a weaker accident than
   the alternative.
-  Two things left OPEN. The emitter should own those includes - it
-  knows every error class the emitted file catches and every type a
-  `Cxx` body spells, and could write the include beside the code. Two
-  instances now, not one. And two
+  HALF of that is DONE: `nbemit.BODY_HEADERS` derives a unit's
+  standard headers from what its `Cxx` bodies SPELL, so `eval.cpp`
+  gets `<stdexcept>` because its bodies throw and `eval.hpp` loses the
+  one it never used. Neither perturbation breaks the BUILD - nix's
+  headers reach `<stdexcept>` anyway - so the gate is on the emitted
+  TEXT, with `pathinfo.cpp` as the control that gets `<cstdint>` and
+  not `<stdexcept>`. Removing the derivation fails it and only it.
+  The other half is the error translator's catches, and it needs the
+  eight classes in `decl/errors.py` to say which header defines their
+  `cxx = "nix::..."` - a declaration change, and the "bind fake types
+  to C++ types" shape.
+  And two
   things in `logging.hpp` may be derivable: `LogTap`'s five overrides
   are `tasks/084` exactly, the one MAPPING left in the headers; and
   `LogField`/`LogRecord` are plain structs whose every field the

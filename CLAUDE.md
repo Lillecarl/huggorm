@@ -137,6 +137,22 @@ The exception is anything nanobind resolves at compile or run time
 rather than in the text. A missing type_caster emits fine and
 compiles fine, and fails a gate later (`tasks/067`).
 
+**The build's own reports are in the DERIVATION LOG, not on your
+terminal.** A cached derivation prints nothing, and `nix run` does
+not carry the stdout of what it built. So before claiming the build
+does not report something, read the log:
+
+    nix build --file . bindings-src --no-link --json > /tmp/d.json
+    nix log $(python3 -c "import json;print(json.load(open('/tmp/d.json'))[0]['drvPath'])")
+
+(`--json` and `--print-out-paths` together emit two documents, so
+passing both and parsing the result as JSON fails. Written that way
+here first, and it did not run.)
+
+`census_cpp`'s `hand-written C++ in cpp/: N lines` lives there, and
+so does the orphan list. Claimed absent three times in one session
+and present every time (`tasks/091`).
+
 # Maintain `tasks/` as you work
 
 Goal 3 says to record decisions in `tasks/`, including the ones that
