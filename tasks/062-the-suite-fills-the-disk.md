@@ -240,3 +240,28 @@ A plain nix evaluation reports ENOSPC, which is at least honest.
 The SIGBUS this task is named for needs sqlite's mmap. And 4.6 GB
 free is one more full suite plus one build: the reclaim buys an
 afternoon, not a fix.
+
+## How NOT to read the suite result, 2026-09-04
+
+The warnings above push the totals line off the end of the output,
+so a reader greps for a failure count instead. This one is wrong:
+
+    nix run --file . test -- ... 2>&1 | grep -c 'FAILED'
+
+It reports **0 for a build that never ran the suite at all**. A nix
+build failure prints `error:` lines, and the derivation that fails
+first is often `huggorm-generated`, whose own smoke test runs before
+the pytest suite exists. Measured here: a change broke
+`smoke_test.py`, that grep answered 0, and the breakage went unseen
+for one cycle.
+
+Read the TOTALS line, and drop `-q` so it survives:
+
+    nix run --file . test -- -p no:warnings --tb=line -rf \
+      2>&1 | grep -E '^FAILED|passed|failed'
+
+    390 passed in 130.41s (0:02:10)
+
+An absent totals line is now the signal it should always have been:
+the suite did not run. Which is this repo's named failure mode in the
+tooling rather than in the code - a skip that reads as an absence.
