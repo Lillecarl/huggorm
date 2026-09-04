@@ -915,3 +915,58 @@ async def test_the_process_stream_names_no_state() -> None:
     assert [f.name for f in process.input_type.fields] \
         == ["capacity", "level"]
     assert process.output_type is plain.output_type, "one response message"
+
+
+# ---- the tap replaced the logger, and did not tee it ---------------
+#
+# `install_log_tap` teed until now, so a subscriber got the record
+# TWICE: once in its queue, once on descriptor 2 from the logger nix
+# installed at static init. `tasks/014` wants this protocol to run
+# over stdin/stdout, and a library that writes the transport is not
+# usable there.
+#
+# Two arms, and each one breaks the other's fix:
+#
+# - restore the tee and the subscribed arm fails, because stderr
+#   carries the trace as well as the queue;
+# - drop `LogTap::fallback` and the unsubscribed arm fails, because
+#   nothing writes stderr at all.
+
+
+def test_a_message_reaches_stderr_with_no_subscriber(
+    state: Any, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """The fallback exists, and nix's own gate is the only one.
+
+    `builtins.trace` is `printError`, so lvlError (`primops.cc:1282`),
+    and `builtins.warn` is lvlWarn. Both are under the default
+    `nix::verbosity` of lvlInfo, so `SimpleLogger::log` writes them
+    (`logging.cc:118`). A caller that never subscribed sees what it
+    saw before the tap existed."""
+    state.eval_expr(TRACE % "UNCLAIMED-TRACE")
+    state.eval_expr(WARN % "UNCLAIMED-WARN")
+
+    out, err = capfd.readouterr()
+    assert "UNCLAIMED-TRACE" in err
+    assert "UNCLAIMED-WARN" in err
+    assert out == "", "descriptor 1 belongs to the protocol"
+
+
+def test_a_subscriber_takes_the_message_off_stderr(
+    subscribed: tuple[Any, Any], capfd: pytest.CaptureFixture[str]
+) -> None:
+    """The tee is gone, which is the whole change.
+
+    A subscription CLAIMS the record, so nothing forwards it. This is
+    the property the stdio transport needs: a client that reads the
+    protocol on descriptor 1 and the log on its own stream gets
+    neither on descriptor 2."""
+    state, stream = subscribed
+    state.eval_expr(TRACE % "CLAIMED-TRACE")
+
+    records = stream.drain()
+    assert any("CLAIMED-TRACE" in r.text() for r in records), records
+
+    out, err = capfd.readouterr()
+    assert err == "", err
+    assert out == ""

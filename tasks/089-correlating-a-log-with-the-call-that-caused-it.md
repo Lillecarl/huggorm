@@ -391,3 +391,98 @@ so:
 Worth recording because the sections were self-contained in every
 other respect, and the one thing that was not self-contained was the
 namespace they had been sitting inside.
+
+## The fallback ceiling: recommended, measured, withdrawn
+
+**WRITTEN.** The shape above is now in
+`packages/huggorm-decl/src/huggorm_decl/cpp/logging.hpp`. Carl asked
+one question before it went in:
+
+> Logging should always run, if nobody subscribes they go to the
+> bin? Or what's your recommendation?
+
+The answer given was a SPLIT, modelled on Python's
+`logging.lastResort`: forward to stderr for `level <= lvlWarn`, bin
+everything below, and bin every activity. The argument was that a
+library must not narrate uninvited, but that a warning that vanishes
+is a silent skip.
+
+**The probe refuted it.** Measured against the tee, with no
+subscriber:
+
+    trace + warn      err='trace: TRACE-MARKER\nevaluation warning: WARN-MARKER\n'
+    a store copy      err=''   (a real store, a path added to it)
+
+Two facts, and each kills half of the recommendation:
+
+1. `builtins.trace` is `printError`, so **lvlError, level 0**
+   (`primops.cc:1282`). A `<= lvlWarn` ceiling passes it. The cost
+   stated to Carl - "`builtins.trace` stops appearing for an
+   unsubscribed caller" - was wrong. It keeps appearing.
+2. The probed activity wrote nothing to stderr, so the second half
+   of the recommendation was argued from an example that could not
+   show it either way. `SimpleLogger::startActivity` prints only
+   when `lvl <= verbosity && !s.empty()` (`logging.cc:127`), and
+   which of the two the probe met was never established.
+
+   The correction matters in the other direction: `copyStorePath`
+   raises `actCopyPath` at **`lvlInfo`** (`store-api.cc:934`), which
+   IS under the default verbosity. So "bin every activity" does not
+   remove nothing - it would have removed a copy's progress line
+   from a console user. The reason not to write it is stronger than
+   the file first said.
+
+So at the default verbosity the ceiling on messages is a no-op, and
+its only live effect is to silence a caller who RAISED
+`nix::verbosity`. That is a silent drop, which is the failure mode
+named in `CLAUDE.md`. Goal 1 says be close to Nix;
+`SimpleLogger::log` already gates on `nix::verbosity`, and one gate
+is closer than two.
+
+It also fails the repo's own test for a gate: prove it by breaking
+it. Nothing reachable from Python raises a record at lvlNotice or
+lvlInfo, so no test could ever have driven the ceiling.
+
+**What went in instead:** no second ceiling. `LogTap::fallback` is
+`makeSimpleLogger(true)`, the same logger static init built, and an
+override forwards to it when `route` reports that no queue took the
+record.
+
+Two details the shape above did not have:
+
+- **The ORIGINAL arguments go to the fallback, not the `LogRecord`.**
+  `SimpleLogger::result` prints a `resBuildLogLine` out of
+  `fields[0].s` (`logging.cc:140`), so a record-fed fallback would
+  have to rebuild `Fields` from `LogField`.
+- **`isVerbose` returns true.** It was listed above under "nothing to
+  preserve", and that was wrong: `derivation-building-goal.cc:1090`
+  reads it to decide whether a failed build's error carries the log
+  tail. The tee answered with `SimpleLogger(true)`'s `true`; the base
+  class answers `false`. Leaving it would have changed a build
+  failure's message as a side effect.
+
+The fallback is LEAKED (`.release()`), for the reason recorded at
+the end of this file: a detached thread that logs after static
+destruction would otherwise use a destroyed object.
+
+### The two gates, and what breaking each one showed
+
+`test_logs.py` holds them, and each one was proved by breaking it.
+
+**Drop `LogTap::log`'s forward** and
+`test_a_message_reaches_stderr_with_no_subscriber` fails - but only
+half of it:
+
+    AssertionError: assert 'UNCLAIMED-TRACE' in
+                    'evaluation warning: UNCLAIMED-WARN\n'
+
+The warning SURVIVED, because `builtins.warn` goes through `logEI`
+and that override still forwarded. So the two arms of that gate drive
+two different virtuals, and each override's forward is load-bearing
+on its own. That was not the intent when the gate was written; the
+perturbation is what showed it.
+
+**Put the tee back** and `test_a_subscriber_takes_the_message_off_stderr`
+fails with `trace: CLAIMED-TRACE` on stderr - the record in the queue
+AND on descriptor 2, which is exactly the double delivery the
+replacement removes.

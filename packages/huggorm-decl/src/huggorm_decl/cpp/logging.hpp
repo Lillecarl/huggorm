@@ -248,19 +248,37 @@ inline std::shared_ptr<LogQueue> process_queue()
 /**
  * The `nix::Logger` that fills the queues.
  *
- * Five overrides, one per virtual, and each one builds the record
- * `JSONLogger` would have written and routes it. There is no state
- * here: the routing is the thread's, so one tap serves every thread
- * and every subscription.
+ * Five record overrides, one per virtual, and each one builds the
+ * record `JSONLogger` would have written and routes it. There is no
+ * state here: the routing is the thread's, so one tap serves every
+ * thread and every subscription.
+ *
+ * Two more overrides answer for the logger it REPLACED, because it
+ * replaces rather than tees: `writeToStdout` keeps descriptor 1
+ * clean, and `isVerbose` keeps a failed build's message the shape it
+ * had.
  */
 class LogTap : public nix::Logger
 {
 public:
+    /**
+     * Every override has the same two lines: route, and forward what
+     * nobody took.
+     *
+     * The ORIGINAL arguments go to the fallback, never the record
+     * built from them. `SimpleLogger::result` prints a
+     * `resBuildLogLine` from `fields[0].s` (logging.cc:140), so a
+     * fallback fed a `LogRecord` would have to rebuild `Fields` from
+     * `LogField` to say the same thing. Forwarding the arguments
+     * says it with no reconstruction, and the fallback's own
+     * `nix::verbosity` gate stays exactly where nix put it.
+     */
     void log(nix::Verbosity lvl, std::string_view s) override
     {
-        route({.action = "msg",
-               .level = static_cast<uint64_t>(lvl),
-               .text = std::string(s)});
+        if (!route({.action = "msg",
+                    .level = static_cast<uint64_t>(lvl),
+                    .text = std::string(s)}))
+            fallback().log(lvl, s);
     }
 
     void logEI(const nix::ErrorInfo & ei) override
@@ -273,36 +291,79 @@ public:
         // holds that question open rather than answering it twice.
         std::ostringstream rendered;
         nix::showErrorInfo(rendered, ei, nix::loggerSettings.showTrace.get());
-        route({.action = "msg",
-               .level = static_cast<uint64_t>(ei.level),
-               .text = rendered.str()});
+        if (!route({.action = "msg",
+                    .level = static_cast<uint64_t>(ei.level),
+                    .text = rendered.str()}))
+            fallback().logEI(ei);
     }
 
     void startActivity(nix::ActivityId act, nix::Verbosity lvl,
                        nix::ActivityType type, const std::string & s,
                        const Fields & fields, nix::ActivityId parent) override
     {
-        route({.action = "start",
-               .level = static_cast<uint64_t>(lvl),
-               .id = act,
-               .parent = parent,
-               .type = static_cast<uint64_t>(type),
-               .text = s,
-               .fields = convert(fields)});
+        if (!route({.action = "start",
+                    .level = static_cast<uint64_t>(lvl),
+                    .id = act,
+                    .parent = parent,
+                    .type = static_cast<uint64_t>(type),
+                    .text = s,
+                    .fields = convert(fields)}))
+            fallback().startActivity(act, lvl, type, s, fields, parent);
     }
 
     void stopActivity(nix::ActivityId act) override
     {
-        route({.action = "stop", .id = act});
+        if (!route({.action = "stop", .id = act}))
+            fallback().stopActivity(act);
     }
 
     void result(nix::ActivityId act, nix::ResultType type,
                 const Fields & fields) override
     {
-        route({.action = "result",
-               .id = act,
-               .type = static_cast<uint64_t>(type),
-               .fields = convert(fields)});
+        if (!route({.action = "result",
+                    .id = act,
+                    .type = static_cast<uint64_t>(type),
+                    .fields = convert(fields)}))
+            fallback().result(act, type, fields);
+    }
+
+    /**
+     * Descriptor 1 is the protocol's, never a log's.
+     *
+     * `Logger::writeToStdout` writes descriptor 1 directly
+     * (logging.cc:42), and `tasks/014` wants this protocol to run
+     * over stdin/stdout. One stray line there is a corrupt frame,
+     * not a stray line. So the tap sends it where every other record
+     * goes.
+     *
+     * No caller reaches this in-process - every `cout` in 2.34.8 is
+     * in `libcmd`, `libmain` or `src/nix`, and none of those is
+     * linked here - so no gate can drive it from Python. It is a
+     * guarantee about a descriptor, not a behaviour under test.
+     *
+     * A do-nothing override was the alternative, and it drops. This
+     * one keeps the text at the level nix gives an unlabelled
+     * message, `lvlInfo` (`logging.hh:136`).
+     */
+    void writeToStdout(std::string_view s) override
+    {
+        log(nix::lvlInfo, s);
+    }
+
+    /**
+     * True, because the tap forwards every build log line.
+     *
+     * `derivation-building-goal.cc:1090` reads this to decide
+     * whether a failed build's error needs the log tail appended.
+     * The tee answered with `SimpleLogger(true)`'s `true`, and the
+     * base class answers `false`, so leaving it alone would change a
+     * build failure's message as a side effect of replacing a
+     * logger. Every `resBuildLogLine` still reaches a queue or the
+     * fallback, so `true` is also the honest answer.
+     */
+    bool isVerbose() override
+    {
+        return true;
     }
 
 private:
@@ -318,7 +379,7 @@ private:
     }
 
     /**
-     * One record to exactly one queue.
+     * One record to at most one queue. True if a queue took it.
      *
      * A FALLBACK and not a broadcast, which is the whole decision. A
      * thread that subscribed CLAIMS its records, so a state's
@@ -334,14 +395,46 @@ private:
      * shape that would answer the other question is fan-out over one
      * subscription - `tasks/085`'s third gap, still open.
      */
-    static void route(LogRecord && r)
+    static bool route(LogRecord && r)
     {
         if (auto & queue = thread_queue()) {
             queue->push(std::move(r));
-            return;
+            return true;
         }
-        if (auto queue = process_queue())
+        if (auto queue = process_queue()) {
             queue->push(std::move(r));
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Where a record goes when no queue claimed it.
+     *
+     * The logger nix itself installs at static init
+     * (`logging.cc:35`), built here a second time because
+     * `install_log_tap` no longer keeps the first one. It writes
+     * descriptor 2 and gates on `nix::verbosity`, so an unsubscribed
+     * caller sees exactly what it saw before the tap existed.
+     *
+     * NO SECOND CEILING. A `level <= lvlWarn` cut was written into
+     * `tasks/089` first, on the argument that a library must not
+     * narrate uninvited. The probe refuted it: at the default
+     * verbosity nothing above `lvlWarn` reaches stderr anyway, so
+     * the cut's only live effect is to silence a caller who RAISED
+     * `nix::verbosity` - a silent drop, and this repo's named
+     * failure mode.
+     *
+     * LEAKED, and deliberately. A `static unique_ptr` here destructs
+     * at exit in an order nothing states, and a detached fetcher
+     * thread that logs after that would use a destroyed object.
+     * Nothing frees it and nothing needs to: one logger, for the
+     * life of the process.
+     */
+    static nix::Logger & fallback()
+    {
+        static nix::Logger * simple = nix::makeSimpleLogger(true).release();
+        return *simple;
     }
 };
 
@@ -353,16 +446,21 @@ private:
  * - while another thread may be reading it, which is a race with no
  * lock to take.
  *
- * A TEE, so a console user still sees output: `makeTeeLogger` keeps
- * the logger that was installed as the MAIN one, which is the one it
- * uses for stdout and for asking the user a question. So this file
- * writes no forwarding of its own.
+ * A REPLACEMENT, and it was a tee until now. `makeTeeLogger` keeps
+ * the logger that was already there as the MAIN one, so every record
+ * reached stderr whether a subscriber took it or not. A client
+ * reading this protocol over stdin/stdout cannot have that: the tee
+ * writes descriptor 2 always and descriptor 1 on `cout`, and neither
+ * belongs to it.
+ *
+ * Nothing is lost by dropping the tee, because `LogTap::fallback`
+ * builds the same `SimpleLogger` and uses it for what no queue took.
+ * The one behaviour that changes is the one Carl asked for: a
+ * SUBSCRIBED caller no longer also gets the record on stderr.
  */
 inline void install_log_tap()
 {
-    std::vector<std::unique_ptr<nix::Logger>> extra;
-    extra.push_back(std::make_unique<LogTap>());
-    nix::logger = nix::makeTeeLogger(std::move(nix::logger), std::move(extra));
+    nix::logger = std::make_unique<LogTap>();
 }
 
 /**
