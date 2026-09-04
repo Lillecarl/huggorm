@@ -673,8 +673,20 @@ class Dispatcher:
                 opts["capacity"] = req.capacity
             if req.HasField("level"):
                 opts["level"] = req.level
-            sub = await target.subscribe_logs(**opts)
+            # CLAIMED before the first await, which is the whole
+            # ordering. `subscribe_logs` hops onto the state's thread,
+            # so it yields - and with the claim after it, two
+            # concurrent requests both passed the check above, both
+            # subscribed, and the second replaced the first's queue in
+            # the C++. The first stream then sat connected and silent,
+            # which is exactly what the refusal exists to prevent.
+            #
+            # NOT GATED, and deliberately: the failure needs two opens
+            # landing inside one thread hop, so a gate for it would
+            # assert a schedule rather than a fact. Stated here and in
+            # `tasks/085` instead.
             self._log_readers[key] = target
+            sub = None
 
             def alive() -> None:
                 if req.state.id not in self.table.entries:
@@ -684,6 +696,7 @@ class Dispatcher:
                         f"swept, so this stream has nothing to read.")
 
             try:
+                sub = await target.subscribe_logs(**opts)
                 await _pump(stream, sub, self.msg("LogsResp"), self.codec,
                             alive)
             except grpclib.exceptions.StreamTerminatedError:
@@ -691,8 +704,12 @@ class Dispatcher:
                 return
             finally:
                 self._log_readers.pop(key, None)
-                sub.close()
-                self._detach(_drop_subscription(target))
+                # None when the subscribe itself failed, which
+                # installed nothing - so there is nothing to close and
+                # nothing to drop.
+                if sub is not None:
+                    sub.close()
+                    self._detach(_drop_subscription(target))
 
         async def process_logs(stream: Any) -> None:
             """Records no subscribed thread claimed, streamed.
@@ -735,17 +752,26 @@ class Dispatcher:
                 opts["capacity"] = req.capacity
             if req.HasField("level"):
                 opts["level"] = req.level
-            sub = await subscribe_process_logs(**opts)
+            # CLAIMED before the first await. `subscribe_process_logs`
+            # goes to the pool, so it yields - and with the claim after
+            # it, two concurrent requests both passed the check above
+            # and both subscribed, with the second replacing the
+            # first's queue in the C++. The first stream would then be
+            # connected and silent, which is what the refusal exists
+            # to prevent. See `logs` above for why there is no gate.
             self._process_reader = True
+            sub = None
             try:
+                sub = await subscribe_process_logs(**opts)
                 await _pump(stream, sub, self.msg("LogsResp"), self.codec,
                             lambda: None)
             except grpclib.exceptions.StreamTerminatedError:
                 return
             finally:
                 self._process_reader = False
-                sub.close()
-                self._detach(_drop_process_subscription())
+                if sub is not None:
+                    sub.close()
+                    self._detach(_drop_process_subscription())
 
         Handle = self.msg("Handle")
         self.mapping[f"/{schema.PKG}.Session/Logs"] = grpclib.const.Handler(

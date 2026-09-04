@@ -232,3 +232,48 @@ before the server's `finally` has run, so the next subscribe races
 it. The same retry `test_a_closed_stream_gives_the_state_back`
 already needed, and it was written without one first and failed with
 the FAILED_PRECONDITION the flag is supposed to have cleared.
+
+### A race in both handlers, and why it has no gate
+
+Found by review after the gates were green, and it was in
+`Session/Logs` before `Session/ProcessLogs` copied it faithfully.
+
+The claim came AFTER the subscribe:
+
+    if self._process_reader: raise FAILED_PRECONDITION
+    sub = await subscribe_process_logs(**opts)   # yields
+    self._process_reader = True
+
+`subscribe_process_logs` goes to the pool and `subscribe_logs` hops
+onto the state's thread, so both yield. Two concurrent requests
+therefore both passed the check, both subscribed, and the second
+REPLACED the first's queue in the C++ - leaving the first stream
+connected and silent, which is precisely what the refusal exists to
+prevent. Whichever ended first then cleared the claim while the other
+was still pumping.
+
+The claim is taken before the first await now, with the `try` widened
+so a subscribe that raises still releases it. `sub` starts as None,
+and the `finally` closes nothing when the subscribe never returned
+one - a raise from `subscribe_process_logs` installs nothing, because
+the capacity and level checks run before the queue is made.
+
+**NOT GATED, deliberately.** The failure needs two opens landing
+inside one thread hop, so a test for it would assert a SCHEDULE
+rather than a fact - and one that passed would say nothing about
+whether the window was closed. This is `tasks/034`'s case: stated
+where it can be read, in both handlers and here, rather than run.
+
+### One power the sharing model already grants
+
+`unsubscribe_process_logs` crosses the wire and its counterpart does
+not, for the reason the pair on `EvalState` splits the same way: it
+answers nothing, so the refusal that stops a `LogStream` handle
+crossing does not apply.
+
+So a remote caller can close the queue an open `Session/ProcessLogs`
+stream is pumping, leaving it connected and silent with the claim
+still held. That is the same power `EvalState.unsubscribe_logs`
+already grants over a state's thread, and the declaration says so -
+the per-state one carried that defence and this one did not, which
+made it read as an oversight rather than as the model.

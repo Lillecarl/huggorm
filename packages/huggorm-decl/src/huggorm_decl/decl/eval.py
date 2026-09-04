@@ -1268,7 +1268,19 @@ def unsubscribe_process_logs() -> None:
 
     A queue already handed out still drains what it holds, exactly
     like `EvalState.unsubscribe_logs`. This says only that nothing
-    more goes into it."""
+    more goes into it.
+
+    It CROSSES the wire, and its counterpart does not, for the same
+    reason the pair on `EvalState` splits that way: this answers
+    nothing, so the refusal that stops a `LogStream` handle crossing
+    does not apply to it.
+
+    So a remote caller can stop a subscription somebody else made -
+    including the one an open `Session/ProcessLogs` stream is pumping,
+    which would leave that stream connected and silent. That is the
+    same power every shared handle already grants, and the same one
+    `EvalState.unsubscribe_logs` grants over a state's thread. Named
+    here so it reads as the sharing model rather than an oversight."""
 
 
 @needs("huggorm_decl/cpp/eval.hpp")
