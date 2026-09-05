@@ -1,6 +1,6 @@
 # Are all the lines in the headers justified
 
-**MOSTLY DONE.** Carl asked. The answer was no - ten lines, all of
+**DONE.** Carl asked. The answer was no - ten lines, all of
 them left behind by the split in `tasks/089` an hour earlier. They
 are gone. Two questions the audit surfaced are open, and they are
 why this is not DONE.
@@ -214,3 +214,85 @@ which header defines their `cxx = "nix::..."` - eight classes in
 `decl/errors.py` carry a C++ name and no header - which is a
 declaration change rather than an emitter one, and it is the "bind
 Python fake types to C++ types" shape Carl described.
+
+## Both open items are closed, 2026-09-05
+
+### The emitter owns the includes now
+
+`decl/errors.py` says `header = "nix/..."` beside each `cxx`, and the
+emitter writes that include into every unit that has a translator.
+`cpp/errors.hpp` keeps one nix include, `terminal.hh`, which is the
+only one it uses itself.
+
+    nix::Error, nix::UsageError, nix::SystemError   nix/util/error.hh
+    nix::Unsupported, nix::InvalidPath             nix/store/store-api.hh
+    nix::BadStorePath, nix::BadStorePathName       nix/store/store-dir-config.hh
+
+Each one read out of 2.34.8 rather than remembered:
+`MakeError(InvalidPath, Error)` at `store-api.hh:27`,
+`MakeError(BadStorePath, Error)` at `store-dir-config.hh:17`,
+`MakeError(UsageError, Error)` at `error.hh:274`.
+
+`header = "..."` is a bare assignment, not `@header(...)`. An error
+declaration wears no decorator - there is no behaviour to mark, which
+is why `cxx` is a bare assignment too - and `Union.header` already
+exists as a field for the same reason. A third idea would have been
+the wrong answer to "the DSL should say more".
+
+Refused BOTH ways. A `cxx` with no `header` is a catch whose type the
+emitted file reaches only by accident; a `header` with no `cxx` is a
+line no emitter reads. Dropping `InvalidPath`'s header fails the
+BUILD, not a test:
+
+    DeclarationError: <declaration>:164:1: InvalidPath:
+    `cxx = "nix::InvalidPath"` says the emitted translator catches
+    this type, and nothing says which header declares it.
+
+`<stdexcept>` was the other half and it is already gone. `eval.hpp`'s
+include list has no `<stdexcept>` in it - `BODY_HEADERS` in
+`nbemit.py` derives it from the body that throws, and
+`test_a_body_brings_its_own_standard_header` gates that. So the
+section above saying it "stays anyway" is stale; it stayed for one
+day.
+
+### And the audit found a live defect on its way past
+
+`pyerrors.module` STRIPPED `cxx` in place, on a tree `corpus()`
+caches for the whole process. So any reader that ran after it saw an
+exception declaration with no C++ in it:
+
+    chain(tree, ...)     ->  try { throw; } ... no catch at all
+    headers(tree)        ->  []
+
+Both compile. A translator that catches nothing is a translator that
+turns every nix error into a `RuntimeError`, silently - which is
+`tasks/063`'s failure returning by a different door.
+
+It had never fired because `generate.py` calls `error_chain()` before
+`module()`. Reversing those two lines was all it would have taken.
+
+Found by adding `headers` and watching it read `[]` where the same
+call had read three headers a moment earlier. `module` deep-copies
+each class now, and
+`test_emitting_the_module_leaves_the_declaration_alone` is the gate:
+chain, then module, then chain again, and the two chains must match.
+
+### Four perturbations, four gates
+
+    mutate the shared tree again    the mutation gate fails, and the
+                                    chain it prints has no catch in it
+    emit no error header            the catch gate fails on
+                                    nix/store/store-api.hh
+    drop one `header =` line        the BUILD fails, with the refusal
+    keep `header` in the module     the strip gate fails
+
+The compiler still cannot gate any of this - removing the three
+includes from `errors.hpp` compiled, which is measured above - so
+every gate reads the emitted TEXT.
+
+### What is left in this file
+
+Nothing open. The two `logging.hpp` questions stay where they belong:
+`LogTap`'s five overrides are `tasks/084`, and whether `LogField` and
+`LogRecord` should be emitted is recorded there as a decision nobody
+has taken rather than an oversight.

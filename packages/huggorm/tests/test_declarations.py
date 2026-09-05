@@ -978,6 +978,134 @@ def test_the_codegen_runs_the_written_census(
     assert "pathinfo" in ran, ran
 
 
+def test_a_catch_brings_the_header_that_declares_it() -> None:
+    """The other half of the same rule, and the same measurement.
+
+    The emitted translator catches `nix::InvalidPath`,
+    `nix::BadStorePathName` and their kind. Until 2026-09-05 the three
+    headers that declare them sat in `cpp/errors.hpp`, which every
+    emitted file includes - a fact about generated code, written into
+    a file a person maintains (`tasks/090`).
+
+    `decl/errors.py` now says `header = "nix/..."` beside each `cxx`,
+    and the emitter writes the include beside the chain.
+
+    NOT load-bearing, measured before this was written: removing all
+    three from the header still compiled, because `path.cpp` reaches
+    `nix::InvalidPath` through `nix/store/path.hh`'s own transitive
+    include. So the compiler cannot gate this either, and the emitted
+    TEXT is what can.
+
+    A file with NO translator is the control. It catches nothing, so
+    it asks for none of them."""
+    from huggorm_decl import corpus
+    from huggorm_gen.cppgen import pyerrors
+    from huggorm_gen.cppgen.nbemit import extension
+
+    have = corpus()
+    headers = pyerrors.headers(have.resolved(have.errors))
+    assert headers == ["nix/store/store-api.hh",
+                       "nix/store/store-dir-config.hh",
+                       "nix/util/error.hh"], headers
+
+    mod = have.module("path.py")
+    assert mod.translators, "the control below means nothing otherwise"
+    text = extension(mod, "huggorm_bindings.path", chain=[],
+                     errors="", error_headers=headers)
+    for h in headers:
+        assert f'#include "{h}"' in text, h
+
+    without = extension(mod, "huggorm_bindings.path", chain=[], errors="")
+    assert '#include "nix/store/store-dir-config.hh"' not in without, \
+        "the headers come from the derivation, not from a fixed list"
+
+
+def test_a_caught_error_must_say_which_header_declares_it() -> None:
+    """Both directions refused, because either line alone reaches
+    nothing.
+
+    A `cxx` with no `header` is a catch whose type the emitted file
+    can only reach by accident. A `header` with no `cxx` is a line no
+    emitter reads, and this repo's named failure mode is a line
+    nobody reads looking exactly like one nobody wrote.
+
+    Drop either refusal and the matching half of this passes."""
+    import ast
+
+    from huggorm_dsl.read import DeclarationError
+    from huggorm_gen.cppgen import pyerrors
+
+    no_header = ast.parse(
+        'class NixError(Exception):\n'
+        '    cxx = "nix::Error"\n')
+    with pytest.raises(DeclarationError, match="which header declares it"):
+        pyerrors.headers(no_header)
+
+    no_cxx = ast.parse(
+        'class NixError(Exception):\n'
+        '    header = "nix/util/error.hh"\n')
+    with pytest.raises(DeclarationError, match="`header` with no `cxx`"):
+        pyerrors.headers(no_cxx)
+
+
+def test_the_header_line_does_not_reach_the_emitted_module() -> None:
+    """`header` is C++, so it goes where `cxx` goes: nowhere a caller
+    can see.
+
+    A caller catches `huggorm_bindings.errors.InvalidPath` and can do
+    nothing with the name of a nix header. Drop `HEADER` from
+    `module`'s filter and this fails."""
+    import ast
+
+    from huggorm_decl import corpus
+    from huggorm_gen.cppgen import pyerrors
+
+    have = corpus()
+    tree = have.resolved(have.errors)
+    text = pyerrors.module(tree, "doc")
+    lines = [ln.strip() for ln in text.splitlines()]
+    assert not [ln for ln in lines if ln.startswith("header =")], text
+    assert not [ln for ln in lines if ln.startswith("cxx =")], text
+    # The classes still arrive, so the absence above is a strip and
+    # not an empty module. Prose may still say "cxx" - a docstring
+    # explaining the declaration is not a line a caller can act on -
+    # so the assertions above look at ASSIGNMENTS.
+    assert "class InvalidPath" in text
+    ast.parse(text)
+
+
+def test_emitting_the_module_leaves_the_declaration_alone() -> None:
+    """The tree is SHARED, so a transform that mutates it poisons the
+    next reader.
+
+    `corpus()` is cached for the process and hands every emitter the
+    same tree. `module` stripped `cxx` and `header` in place, so any
+    reader after it saw an exception declaration with no C++ in it:
+    `chain` would emit a translator catching NOTHING and `headers` an
+    empty include block. Both compile, and both are silent - this
+    repo's named failure mode.
+
+    It went unnoticed because `generate.py` happens to call
+    `error_chain` BEFORE `module`. Reversing those two lines is the
+    perturbation, and it needs no test to be a bug.
+
+    Found 2026-09-05, by `headers` reading [] where the same call had
+    read three headers a moment earlier."""
+    from huggorm_decl import corpus
+    from huggorm_gen.cppgen import pyerrors
+
+    have = corpus()
+    tree = have.resolved(have.errors)
+
+    before = pyerrors.chain(tree, "raise_as", "pkg.errors")
+    pyerrors.module(tree, "doc")
+    after = pyerrors.chain(tree, "raise_as", "pkg.errors")
+
+    assert before == after, "the transform kept its hands off the tree"
+    assert "nix::InvalidPath" in "\n".join(after)
+    assert pyerrors.headers(tree), "and the headers survive it too"
+
+
 def test_a_body_brings_its_own_standard_header() -> None:
     """What a `Cxx` body SPELLS decides what the emitted file
     includes.

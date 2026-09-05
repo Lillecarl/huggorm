@@ -201,6 +201,20 @@ def error_chain() -> list[str]:
                           errors_module())
 
 
+def error_headers() -> list[str]:
+    """The headers the catch chain's types are declared in.
+
+    Read from the same tree, at the same moment, as the chain itself.
+    A catch and the include that makes its type nameable are one
+    fact, and this is the emitter learning it rather than
+    `cpp/errors.hpp` carrying it on the emitted files' behalf
+    (`tasks/090`)."""
+    have = corpus()
+    if not have.errors:
+        return []
+    return pyerrors.headers(have.resolved(have.errors))
+
+
 def declared_errors() -> dict[str, Any]:
     """The exception surface, as the manifest carries it.
 
@@ -355,7 +369,7 @@ def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
 
 
 def emit_module(mod: Module, dotted: str, out: str,
-                chain: list[str]) -> int:
+                chain: list[str], headers: list[str] | None = None) -> int:
     """One declaration, as the one C++ translation unit it owns.
 
     A file, not a class: a nanobind extension is one translation unit,
@@ -380,7 +394,8 @@ def emit_module(mod: Module, dotted: str, out: str,
     if not bound:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    written = extension(mod, dotted, chain=chain, errors=errors_module())
+    written = extension(mod, dotted, chain=chain, errors=errors_module(),
+                        error_headers=headers or ())
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(written)
     names = ", ".join(c.name for c in bound)
@@ -670,9 +685,10 @@ def main(out_dir: str) -> int:
     # a corpus known to be sound (tasks/061).
     have.read_all()
     chain = error_chain()
+    headers = error_headers()
     for mod in have.modules:
         target = out / f"{mod.name}.cpp"
-        emit_module(mod, f"{PACKAGE}.{mod.name}", str(target), chain)
+        emit_module(mod, f"{PACKAGE}.{mod.name}", str(target), chain, headers)
     tree = have.resolved(have.errors)
     doc = ast.get_docstring(tree, clean=False) or ""
     # Named after the declaration, not "errors.py". `errors_module()`

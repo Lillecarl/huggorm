@@ -788,7 +788,7 @@ which was superseded rather than fixed.
   committed and accused the instructions of being wrong. The number
   reported is CODE lines, so the "comment ratio inflates it" answer
   was wrong too.
-- 090 (are all the lines in the headers justified) is MOSTLY DONE.
+- 090 (are all the lines in the headers justified) is DONE.
   Carl asked; the answer was NO. Ten lines, all left behind by 089's
   split an hour earlier - seven includes in `eval.hpp` whose users had
   moved out, two in `gc.hpp` named only in comments, and a
@@ -818,15 +818,24 @@ which was superseded rather than fixed.
   headers reach `<stdexcept>` anyway - so the gate is on the emitted
   TEXT, with `pathinfo.cpp` as the control that gets `<cstdint>` and
   not `<stdexcept>`. Removing the derivation fails it and only it.
-  The other half is the error translator's catches, and it needs the
-  eight classes in `decl/errors.py` to say which header defines their
-  `cxx = "nix::..."` - a declaration change, and the "bind fake types
-  to C++ types" shape.
-  And two
-  things in `logging.hpp` may be derivable: `LogTap`'s five overrides
-  are `tasks/084` exactly, the one MAPPING left in the headers; and
-  `LogField`/`LogRecord` are plain structs whose every field the
-  declaration already names with `@reads`.
+  The other half is DONE too, on 2026-09-05. `decl/errors.py` says
+  `header = "nix/..."` beside each `cxx`, the emitter writes that
+  include into every unit with a translator, and `errors.hpp` keeps
+  the one nix header it uses itself. Refused BOTH ways: a `cxx` with
+  no `header` fails the build, and a `header` with no `cxx` is a line
+  no emitter reads.
+  That audit found a LIVE defect. `pyerrors.module` stripped `cxx` in
+  place, on the tree `corpus()` caches for the whole process, so any
+  reader after it saw a declaration with no C++ in it - an empty catch
+  chain, which compiles and turns every nix error into a
+  `RuntimeError` in silence. It had never fired only because
+  `generate.py` calls `error_chain()` first. Copies now, and the gate
+  is chain-module-chain.
+  Two things in `logging.hpp` may still be derivable and both belong
+  elsewhere: `LogTap`'s five overrides are `tasks/084` exactly, the
+  one MAPPING left in the headers; and `LogField`/`LogRecord` are
+  plain structs whose every field the declaration already names with
+  `@reads`.
 - 089 (correlating a log with the call that caused it) is OPEN, and is
   a REFLECTION rather than a plan - Carl asked what nanopynix does
   about a per-request log id and granular verbosity, and how either

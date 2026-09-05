@@ -36,6 +36,7 @@ class NixError(Exception):
     that away from every caller who has one."""
 
     cxx = "nix::Error"
+    header = "nix/util/error.hh"
 
     # What crosses the wire, in constructor order: an error is rebuilt
     # as cls(*parts) on the far side. Declared once and inherited,
@@ -127,6 +128,7 @@ class UsageError(NixError):
     """nix::UsageError - the caller asked for something incoherent."""
 
     cxx = "nix::UsageError"
+    header = "nix/util/error.hh"
 
 
 class SysError(NixError):
@@ -138,6 +140,7 @@ class SysError(NixError):
     of silence this hierarchy exists to remove."""
 
     cxx = "nix::SystemError"
+    header = "nix/util/error.hh"
 
 
 class Unsupported(NixError):
@@ -155,6 +158,7 @@ class Unsupported(NixError):
     store, and cannot fall back from a genuine error."""
 
     cxx = "nix::Unsupported"
+    header = "nix/store/store-api.hh"
 
 
 class InvalidPath(NixError):
@@ -168,18 +172,21 @@ class InvalidPath(NixError):
     other."""
 
     cxx = "nix::InvalidPath"
+    header = "nix/store/store-api.hh"
 
 
 class BadStorePath(NixError):
     """nix::BadStorePath - not a store path."""
 
     cxx = "nix::BadStorePath"
+    header = "nix/store/store-dir-config.hh"
 
 
 class BadStorePathName(BadStorePath):
     """nix::BadStorePathName - a store path whose name part is invalid."""
 
     cxx = "nix::BadStorePathName"
+    header = "nix/store/store-dir-config.hh"
 
 
 class BuildError(NixError):

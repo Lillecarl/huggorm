@@ -42,6 +42,7 @@ evaluate and no `NIX_VERSION` to import.
 """
 
 import ast
+import copy
 from types import ModuleType
 from typing import Any
 
@@ -51,6 +52,7 @@ from huggorm_dsl.read import DeclarationError
 # decorator: an exception declaration has no behaviour to mark, and a
 # bare assignment reads as the fact it is.
 CXX = "cxx"
+HEADER = "header"
 
 
 # The package a declaration is WRITTEN in. Read off the reader's own
@@ -74,16 +76,83 @@ def _is_language_import(node: ast.stmt) -> bool:
     return False
 
 
-def _cxx_of(node: ast.ClassDef) -> str:
-    """The C++ class this exception stands for, from its `cxx` line."""
+def _assigned(node: ast.ClassDef, name: str) -> str:
+    """A bare `name = "..."` in this class body, or empty.
+
+    Two lines are read this way and they are the same shape, so one
+    reader answers both."""
     for item in node.body:
         if (isinstance(item, ast.Assign)
                 and len(item.targets) == 1
                 and isinstance(item.targets[0], ast.Name)
-                and item.targets[0].id == CXX
+                and item.targets[0].id == name
                 and isinstance(item.value, ast.Constant)):
             return str(item.value.value)
     return ""
+
+
+def _cxx_of(node: ast.ClassDef) -> str:
+    """The C++ class this exception stands for, from its `cxx` line."""
+    return _assigned(node, CXX)
+
+
+def _header_of(node: ast.ClassDef) -> str:
+    """Where that C++ class is DECLARED, from its `header` line.
+
+    The same fact `@header` carries for a bound class, in the
+    spelling an error declaration uses. An error wears no decorator -
+    there is no behaviour to mark - and `Union.header` already exists
+    for that reason, so a bare assignment beside `cxx` is the
+    consistent shape rather than a third idea.
+
+    What it is FOR: the emitted translator catches
+    `nix::BadStorePathName` and its kind, so the emitted file needs
+    the headers that declare them. Those three includes sat in
+    `cpp/errors.hpp` instead - a fact about generated code, stated in
+    a hand-written helper, which is the wrong place for it
+    (`tasks/090`)."""
+    return _assigned(node, HEADER)
+
+
+def headers(tree: ast.Module) -> list[str]:
+    """Every header the catch chain needs, once each, sorted.
+
+    Sorted rather than declared-order, because an include block is a
+    set and the chain's order - most-derived first - is a fact about
+    the CATCHES and not about the includes. Ordering them by
+    declaration would make a reordered declaration rewrite an
+    unrelated block.
+
+    Refuses BOTH directions, because either one alone is a line that
+    reaches nothing:
+
+    - a `cxx` with no `header` is a catch whose type the emitted file
+      can only reach by accident, through somebody else's transitive
+      include. That is how these three came to live in `errors.hpp`.
+    - a `header` with no `cxx` is a line no emitter reads, and a line
+      nobody reads is indistinguishable from a line nobody wrote.
+    """
+    out: set[str] = set()
+    for node in _body(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        cxx, header = _cxx_of(node), _header_of(node)
+        if cxx and not header:
+            raise DeclarationError(
+                node, f"{node.name}: `cxx = \"{cxx}\"` says the emitted "
+                      f"translator catches this type, and nothing says "
+                      f"which header declares it. Add `header = \"nix/...\"` "
+                      f"beside it, or the emitted file reaches the type "
+                      f"only through somebody else's include (tasks/090).")
+        if header and not cxx:
+            raise DeclarationError(
+                node, f"{node.name}: `header` with no `cxx`. Only a class "
+                      f"the translator CATCHES needs a header emitted for "
+                      f"it, so this line reaches no emitter - and a line "
+                      f"nobody reads looks exactly like one nobody wrote.")
+        if header:
+            out.add(header)
+    return sorted(out)
 
 
 def _body(tree: ast.Module) -> list[ast.stmt]:
@@ -221,9 +290,9 @@ def module(tree: ast.Module, doc: str) -> str:
 
     A transform rather than a print, for `pyenum.py`'s reason: the
     output is Python and the declaration already is. What changes is
-    only what a caller must not see - the `cxx` lines, which name C++
-    that no Python caller can act on, and any import of the
-    declaration LANGUAGE.
+    only what a caller must not see - the `cxx` and `header` lines,
+    which name C++ that no Python caller can act on, and any import
+    of the declaration LANGUAGE.
 
     The language import goes because the reason for it is gone. A
     declaration that branches writes `from huggorm_dsl.declare import
@@ -243,13 +312,28 @@ def module(tree: ast.Module, doc: str) -> str:
         if _is_language_import(node):
             continue
         if isinstance(node, ast.ClassDef):
-            node.body = [item for item in node.body
-                         if not (isinstance(item, ast.Assign)
-                                 and len(item.targets) == 1
-                                 and isinstance(item.targets[0], ast.Name)
-                                 and item.targets[0].id == CXX)]
-            node.decorator_list = []
-        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            # A COPY, because `corpus()` is cached for the process and
+            # hands every emitter the same tree. Stripping in place
+            # took `cxx` off that shared tree, so any reader that came
+            # after this one saw a declaration with no C++ in it at
+            # all - `chain` would emit a translator that catches
+            # NOTHING, and `headers` an include block with nothing in
+            # it. Both are silent: an empty chain compiles.
+            #
+            # It worked only because `generate.py` happens to call
+            # `error_chain` before this. Found on 2026-09-05 by
+            # `headers` being added and reading []; recorded in
+            # `tasks/090`.
+            cls = copy.deepcopy(node)
+            cls.body = [item for item in cls.body
+                        if not (isinstance(item, ast.Assign)
+                                and len(item.targets) == 1
+                                and isinstance(item.targets[0], ast.Name)
+                                and item.targets[0].id in (CXX, HEADER))]
+            cls.decorator_list = []
+            body.append(cls)
+            continue
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
             # The module docstring, replaced below.
             continue
         body.append(node)

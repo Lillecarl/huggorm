@@ -21,30 +21,15 @@
 #include <string>
 #include <utility>
 
-// Only `terminal.hh` is for this file - `filterANSIEscapes` is the one
-// nix name it says. The other three are for the EMITTED files: every
-// one of them includes this header and then catches `nix::InvalidPath`,
-// `nix::BadStorePathName`, `nix::UsageError` and their kind.
+// `filterANSIEscapes` is the one nix name this file says, and
+// `terminal.hh` is the one nix header it needs.
 //
-// Not load-bearing today, and that was MEASURED after predicting the
-// opposite: removing all three still compiles, because the emitted
-// files reach those types through their own nix includes. The same
-// wrong prediction as `<stdexcept>` in `eval.hpp`, on the same day.
-//
-// They stay for the same reason that one does. `path.cpp` includes
-// `nix/store/path.hh` and catches `nix::InvalidPath`, which is a
-// store-api type - so the emitted file compiles by a transitive
-// include nobody declared. Keeping these makes the types available at
-// the one header every such file DOES include, which is a weaker
-// accident than the alternative.
-//
-// The real answer is the emitter's, and `tasks/090` holds it: the
-// declaration names every error class the emitted file catches, so
-// the emitter could write the include beside the catch and both this
-// block and eval.hpp's `<stdexcept>` could go.
-#include "nix/store/store-api.hh"
-#include "nix/store/store-dir-config.hh"
-#include "nix/util/error.hh"
+// Three more sat here until 2026-09-05, for the EMITTED files: each
+// includes this header and then catches `nix::InvalidPath`,
+// `nix::BadStorePathName` and their kind. That was a fact about
+// generated code, stated in a hand-written helper. The emitter writes
+// them now, from `header = "nix/..."` beside each `cxx` in
+// `decl/errors.py` (`tasks/090`).
 #include "nix/util/terminal.hh"
 
 namespace huggorm {

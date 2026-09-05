@@ -465,7 +465,8 @@ def _bodies(classes: Sequence[Class],
 
 def includes(classes: Sequence[Class],
              functions: Sequence[Method] = (),
-             known: dict[str, Class] | None = None) -> list[str]:
+             known: dict[str, Class] | None = None,
+             errors: Sequence[str] = ()) -> list[str]:
     """Exactly the headers this translation unit needs, and no others.
 
     Derived from the declared types rather than listed. A caster left
@@ -534,6 +535,13 @@ def includes(classes: Sequence[Class],
         # std::hash lives in <functional>, and the value hash uses it.
         out.append("#include <functional>")
     out += [f"#include <{h}>" for h in sorted(standard)]
+    # The headers that declare the types the CATCH CHAIN names. The
+    # chain is emitted, so the includes it needs are emitted too - the
+    # three of them lived in `cpp/errors.hpp` until now, which is a
+    # fact about generated code stated in a hand-written helper
+    # (`tasks/090`). `decl/errors.py` says which header each class is
+    # in, beside the `cxx` that names the class.
+    out += [f'#include "{h}"' for h in errors]
     # Each class's header, then whatever the bodies reach past it.
     # Sorted and de-duplicated, because two methods needing one
     # header is normal and the order of a declaration's methods is
@@ -2329,14 +2337,15 @@ def _errors_used(classes: Sequence[Class],
 def module(classes: Sequence[Class],
            functions: Sequence[Method] = (),
            known: dict[str, Class] | None = None,
-           errors: str = "") -> str:
+           errors: str = "",
+           error_headers: Sequence[str] = ()) -> str:
     """One translation unit: the includes, then a bind function each.
 
     Several classes, not one. A declaration file owns a module and
     may declare more than one class in it - `decl/store.py` declares
     three - and a nanobind extension is one translation unit, so the
     file and the unit are the same grain."""
-    head = [*includes(classes, functions, known), "",
+    head = [*includes(classes, functions, known, error_headers), "",
             "namespace nb = nanobind;",
             "using namespace nb::literals;", ""]
     if errors and _errors_used(classes, functions, known):
@@ -2406,7 +2415,8 @@ def imports(mod: Module) -> list[str]:
 def extension(mod: Module, dotted: str,
               known: dict[str, Class] | None = None,
               chain: list[str] | None = None,
-              errors: str = "") -> str:
+              errors: str = "",
+              error_headers: Sequence[str] = ()) -> str:
     """One whole extension module: includes, bindings, entry point.
 
     `module` stops at the `bind_<name>` functions because that is the
@@ -2430,8 +2440,11 @@ def extension(mod: Module, dotted: str,
                f'{f"{package}." if package else ""}{stem}");'
                for stem in imports(mod)]
     translators = [translator(fn, chain) for fn in mod.translators]
+    # Only a unit that HAS a translator catches anything, so only that
+    # unit needs the headers behind the chain.
     return "\n".join([
-        module(classes, mod.functions, known, errors),
+        module(classes, mod.functions, known, errors,
+               error_headers if translators else ()),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
         # The declaration file's own docstring, which is the only

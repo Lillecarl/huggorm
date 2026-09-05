@@ -1776,10 +1776,12 @@ def _errors(body: list[ast.stmt], stem: str) -> tuple[Class, ...]:
     file already recognised. Nothing is listed and no decorator is
     invented; the hierarchy the file already writes IS the answer.
 
-    A NAME and nothing else. These carry no C++ object, no header and
-    no methods a binding calls, so an emitter wants them to resolve an
-    annotation and for nothing else - the errors emitter reads the
-    tree itself and is untouched by this.
+    A NAME and nothing else, HERE. An error declaration does carry a
+    `cxx` and, since 2026-09-05, a `header` beside it - but both are
+    read by `pyerrors`, which walks the tree itself, so nothing in
+    this function needs them. What this builds is what an emitter
+    needs to resolve an ANNOTATION naming an exception, and that is
+    the name.
     """
     out: list[Class] = []
     known = {"Exception"}
