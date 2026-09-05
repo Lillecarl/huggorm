@@ -486,3 +486,127 @@ perturbation is what showed it.
 fails with `trace: CLAIMED-TRACE` on stderr - the record in the queue
 AND on descriptor 2, which is exactly the double delivery the
 replacement removes.
+
+## The request id, designed. 2026-09-05
+
+Step 3 of the order above. The design is settled here; the C++ half is
+an ASK and nothing is written until Carl answers it.
+
+### Two questions the earlier reflection left open
+
+**Who allocates the id.** A caller-supplied id was considered and
+rejected. It sounds better - the rpc names its own request - and it
+breaks the marker: a request spans many calls, so a `finalized` per
+call would fire many times for one id and mean nothing. nanopynix
+allocates one per DISPATCH, and the marker matches the dispatch. So
+the id is per CALL and Python allocates it.
+
+A reader therefore never NAMES a call in advance. It groups records by
+`request` and learns the group is closed when the marker arrives. That
+is what the feature buys, and it is less than the title of this file
+promises. Handing the id back to the caller that started the call is
+additive and is not done here.
+
+**Where the marker goes.** Through `route`, exactly like a record. A
+thread with a queue claims its own marker; a thread without one sends
+it to the process queue, which is where that call's records went too.
+`route` returning false is IGNORED: the fallback is a `SimpleLogger`
+and a synthetic control record has no text to print.
+
+### The drop guarantee is already there, on both layers
+
+nanopynix needs a priority arm because their queue drops by age. This
+repo's queue drops by ACTION, and both bounds were read rather than
+assumed:
+
+- `LogQueue::push` computes `droppable = action == "msg" || action ==
+  "result"`, so `"finalized"` is never dropped and the level filter
+  never sees it.
+- `_Reader.offer` in `server.py` restates the same test by MEMBERSHIP,
+  `action in ("msg", "result")`, not by an enumeration of what to
+  keep. So the fan-out inherits the guarantee too.
+
+Had either one listed what to PROTECT instead of what to drop, a
+`"finalized"` would have been droppable one layer up and the guarantee
+would have died quietly - the eighth silent skip. It was checked
+because of that, and both are safe as written.
+
+The cost is the one `subscribe_process_logs` already documents: a
+record that is never dropped accumulates when nobody drains. One
+marker per call is bounded by the call rate, not by the queue.
+
+### What Python does
+
+`runtime.py`, at the three places a wrapped call enters C++:
+`BaseRunner._invoke`, `BaseRunner.run`'s `invoke`, and
+`call_function`. All three, so no wrapped call carries 0 by accident.
+A record still carries 0 when nix's own thread raised it - a fetcher,
+a file transfer, a build - and that is the honest answer, not a gap.
+
+The id comes from one process-wide counter. It is allocated on the
+LOOP thread, in `call`, and passed into the closure: `run_in_executor`
+does not carry a context, so an explicit argument is the only correct
+plumbing.
+
+`begin_request` returns what it replaced and `end_request` restores
+it, so the pair nests. Nothing nests today - every call hops through
+an executor - but a save-and-restore costs one word and removes the
+question.
+
+### The C++, which is the ask
+
+In `cpp/logging.hpp`. Ten lines of code, and every one of them is
+storage or a stamp that the tap itself reads:
+
+1. `uint64_t request = 0;` on `LogRecord`. A field of a helper struct.
+2. `inline uint64_t & thread_request()`, a `thread_local`, the exact
+   mirror of `thread_queue()` beside it.
+3. `r.request = thread_request();` in `route`, one line.
+4. `route` moved OUT of `LogTap`'s private section to a free inline
+   function, so `end_request` can push through it. A move of existing
+   text, not new logic.
+
+A declaration cannot carry any of the four. Three are storage and a
+struct field that the tap reads on nix's thread, with no Python on the
+stack; the fourth is a move.
+
+`begin_request` and `end_request` are declared free functions with
+`Cxx()` bodies, which is where a callable surface belongs.
+
+### What has to change with it
+
+- `LogRecord.action`'s docstring says "four kinds". Five.
+- `logging.hpp`'s `"msg" | "start" | "stop" | "result"` comment.
+- `@reads("request")` on `LogRecord`, which has to reach the manifest,
+  the stub, the codec and the proto. The `bindings-src` diff is what
+  proves it reached all four.
+
+### The gates
+
+- A subscribed evaluation's records carry the id, and the marker
+  arrives with the same id. Break by deleting the stamp.
+- The marker survives a queue filled to capacity with messages. Break
+  by adding `"finalized"` to `droppable`.
+- A record from nix's own thread carries 0. NOT a gate: nothing
+  reachable from Python raises one on demand. Written here instead of
+  pretended.
+
+### The pair carries NO threading policy, and that is not a detail
+
+A first draft wrote `@threading("pool")` on `begin_request` and
+`end_request`, copying `subscribe_process_logs` beside them. That is
+WRONG, and it would have been silently wrong: a declared free function
+gets an async form, and `call_function` hops it to the shared pool. So
+the pair would have set a `thread_local` on a POOL thread and left the
+affine thread's slot at 0, while every gate still passed on a
+pool-threaded call.
+
+The DSL already has the lane. `@threading` is what OPTS a free
+function in; omitting it means runtime plumbing, no async form and no
+rpc, and `declare.py:920` names `gc_release_thread` as the case. That
+function is the exact precedent in the other direction too:
+`runtime.py` imports `huggorm_bindings` and calls it DIRECTLY on the
+dying thread, because the thread is the point.
+
+`begin_request` and `end_request` are called the same way, inside
+`_invoke`, already on the target thread.
