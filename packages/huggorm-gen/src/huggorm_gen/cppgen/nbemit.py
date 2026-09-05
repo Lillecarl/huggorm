@@ -2094,9 +2094,17 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # but the signature until this line existed.
     doc = _doc(cls.doc)
     shown = f', "{doc}"' if doc else ""
+    # GC slots, when the class holds Python objects. The declaration
+    # names a `PyType_Slot[]` and the helper supplies it; there is
+    # nothing here to derive, because a traversal is a function over a
+    # member no declaration describes. Without it a class that stores
+    # a callable leaks itself as soon as that callable closes over it
+    # (`tasks/093`).
+    slots = (f", nb::type_slots({decl.gc_slots})"
+             if decl.gc_slots else "")
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
              f'{INDENT}auto cls = nb::class_<{", ".join(holds)}>'
-             f'(m, "{cls.name}"{shown}{final})']
+             f'(m, "{cls.name}"{shown}{final}{slots})']
     if cls.is_value:
         # A RECORD: the emitter declared the struct, so every accessor
         # is a member and the whole binding is derived from the field

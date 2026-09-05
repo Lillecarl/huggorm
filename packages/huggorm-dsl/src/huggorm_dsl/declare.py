@@ -324,6 +324,9 @@ class Decl:
     shown: str = ""
     order: bool = False
     custom: dict[str, str] = field(default_factory=dict)
+    # A `PyType_Slot[]` this class's binding installs, by C++ name.
+    # Empty for everything that holds no Python object. See `gc_slots`.
+    gc_slots: str = ""
     # What KIND of declaration this is. "class" binds a C++ type or
     # holds a produced value's slots; "words" is a vocabulary - a
     # StrEnum whose members ARE the strings a Nix parser takes, with
@@ -443,6 +446,7 @@ MARKERS: dict[str, Marker] = {
     "tagged": Marker(_t("class"), "once"),
     "binding": Marker(_t("class"), "once"),
     "custom": Marker(_t("class"), "once"),
+    "gc_slots": Marker(_t("class"), "once"),
     "header": Marker(_t("class"), "once"),
     "produced": Marker(_t("class"), "once"),
     "tree": Marker(_t("class"), "once"),
@@ -587,6 +591,34 @@ def words(parsed_by: str = "", enumerated: Enumerated | None = None,
     def apply(cls: type) -> type:
         d = _decl(cls)
         d.kind, d.parsed_by, d.enumerated = "words", parsed_by, enumerated
+        return cls
+    return apply
+
+
+def gc_slots(table: str) -> Callable[[type], type]:
+    """This class holds Python objects, and here is how to traverse
+    them.
+
+    `table` names a `PyType_Slot[]` in C++, and the emitted
+    `nb::class_` passes it as `nb::type_slots(...)`. That table
+    supplies `Py_tp_traverse` and `Py_tp_clear`.
+
+    WHY a C++ symbol rather than something the DSL spells: a traversal
+    is a function the interpreter calls during collection, over a
+    member no declaration knows about. There is nothing here to
+    derive it from, and nanobind offers no abstraction either - its
+    `refleaks.rst` says to drop to the CPython slots.
+
+    So this is the shape a helper should have. The declaration decides
+    that the class needs slots and names them; the helper supplies
+    them; generated code is what installs them.
+
+    A class that stores a Python callable and does NOT say this leaks
+    itself whenever that callable closes over it, which is the normal
+    way to write one (`tasks/093`). Nothing detects the omission
+    today."""
+    def apply(cls: type) -> type:
+        _decl(cls).gc_slots = table
         return cls
     return apply
 
