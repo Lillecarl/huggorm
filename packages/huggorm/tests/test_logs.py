@@ -637,7 +637,12 @@ async def test_a_drop_crosses_rather_than_vanishing(client: Any) -> None:
     between them and the count is exact rather than likely.
 
     The OUTERMOST trace prints first, so "the earliest survives" is
-    still what the bound says."""
+    still what the bound says.
+
+    It counts MESSAGES, not records. A `"finalized"` marker rides the
+    same stream and is never dropped (`tasks/089`), so the batch holds
+    the surviving message and the marker for the call that raised
+    it."""
     nest = "1"
     for i in reversed(range(5)):
         nest = f'builtins.trace "line{i}" ({nest})'
@@ -650,8 +655,9 @@ async def test_a_drop_crosses_rather_than_vanishing(client: Any) -> None:
     finally:
         await stream.aclose()
 
-    assert len(records) == 1, "the bound held over the wire"
-    assert "line0" in records[0].text(), records
+    msgs = [r for r in records if r.action() == "msg"]
+    assert len(msgs) == 1, "the bound held over the wire"
+    assert "line0" in msgs[0].text(), records
     assert dropped == 4, records
 
 
@@ -1028,3 +1034,126 @@ def test_a_subscriber_takes_the_message_off_stderr(
     out, err = capfd.readouterr()
     assert err == "", err
     assert out == ""
+
+
+# ---- the call a record was raised inside ---------------------------
+#
+# `tasks/089` step 3. A record carries the CALL, and a "finalized"
+# record says that call raised its last one. An id alone would let a
+# reader group records and never let it know a group was closed.
+#
+# The number is allocated per call by `runtime.py` and no caller is
+# told which one it got. So these gates check the RELATION - every
+# record of one call carries one number, and the marker carries that
+# same number - rather than any particular value.
+
+
+async def test_a_record_carries_the_call_it_was_raised_inside() -> None:
+    """The stamp, and the marker that closes it.
+
+    An `AsyncEvalState` hops to its own affine thread through
+    `BaseRunner.call`, which is where the id is set. So the records
+    that evaluation raises carry it, and the marker arrives behind
+    them on the same queue.
+
+    Perturbation: delete `r.request = thread_request()` from `route`
+    and every record here carries 0, so the first assert fails."""
+    from huggorm_generated import AsyncEvalState
+
+    state = AsyncEvalState(URI)
+    stream = await state.subscribe_logs()
+    try:
+        await state.eval_expr(TRACE % "inside a call")
+        records = stream.drain()
+    finally:
+        await state.unsubscribe_logs()
+        await state.aclose()
+
+    traces = [r for r in records if "inside a call" in r.text()]
+    assert traces, [r.action() for r in records]
+    assert traces[0].request() != 0, "the record names its call"
+
+    finals = [r for r in records if r.action() == "finalized"]
+    assert finals, [r.action() for r in records]
+    assert traces[0].request() in {r.request() for r in finals}, \
+        "the call that raised it also said it had finished"
+
+
+async def test_two_calls_get_two_numbers() -> None:
+    """One number per call, not one per subscription.
+
+    The allocator answers a fresh number every time, so two
+    evaluations on one state are two groups. A reader that merged
+    them would have no way back."""
+    from huggorm_generated import AsyncEvalState
+
+    state = AsyncEvalState(URI)
+    stream = await state.subscribe_logs()
+    try:
+        await state.eval_expr(TRACE % "first")
+        await state.eval_expr(TRACE % "second")
+        records = stream.drain()
+    finally:
+        await state.unsubscribe_logs()
+        await state.aclose()
+
+    first = [r.request() for r in records if "first" in r.text()]
+    second = [r.request() for r in records if "second" in r.text()]
+    assert first and second, [r.text() for r in records]
+    assert first[0] != second[0], "two calls, two numbers"
+
+
+def test_a_record_outside_a_wrapped_call_carries_zero(
+    subscribed: tuple[Any, Any]
+) -> None:
+    """Zero is an answer, and it is reachable.
+
+    The sync binding is called straight from this thread, so no
+    `begin_request` ever runs and nothing names a call. `tasks/089`
+    first wrote that this could not be driven from Python, which was
+    wrong: the async wrapper is the only thing that sets the id, and
+    the sync one is right here.
+
+    That matters because 0 is what a record raised by a fetcher or a
+    build thread carries too, and this is what says 0 means "no
+    wrapped call" rather than "the stamp is broken"."""
+    state, stream = subscribed
+    state.eval_expr(TRACE % "no call named this")
+
+    traces = [r for r in stream.drain() if "no call named this" in r.text()]
+    assert traces, "the trace arrived"
+    assert traces[0].request() == 0
+
+
+async def test_the_marker_survives_a_queue_full_of_messages() -> None:
+    """A CONTROL event, and the bound may not refuse it.
+
+    A lost marker is not a lost log line. It parks a reader that is
+    waiting for a call to end until that wait's own bound expires, and
+    leaves it unable to say whether the call finished or the record
+    vanished.
+
+    The guarantee is inherited rather than written: `LogQueue::push`
+    and `_Reader.offer` both name what to DROP, so an action neither
+    of them lists is kept. Perturbation: add "finalized" to either
+    droppable set and this fails."""
+    from huggorm_generated import AsyncEvalState
+
+    state = AsyncEvalState(URI)
+    stream = await state.subscribe_logs(capacity=1)
+    try:
+        for i in range(20):
+            await state.eval_expr(TRACE % f"overflow-{i}")
+        records = stream.drain()
+        dropped = stream.dropped()
+    finally:
+        await state.unsubscribe_logs()
+        await state.aclose()
+
+    assert dropped > 0, "the bound refused something, or this proves nothing"
+    finals = [r for r in records if r.action() == "finalized"]
+    # At least one per eval. `subscribe_logs` is a wrapped call too,
+    # and the queue exists by the time its own marker is pushed, so it
+    # adds one more - which is why this counts down and not equal.
+    assert len(finals) >= 20, \
+        f"every call said it finished, got {len(finals)}"

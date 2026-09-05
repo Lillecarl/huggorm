@@ -209,9 +209,16 @@ class _Reader:
 
     The DROP POLICY is the C++ queue's, restated over a `deque`
     because a reader is a second bound under the first. A full reader
-    refuses a "msg" and a "result" and never a "start" or a "stop",
-    for the reason `LogQueue` gives: a dropped stop leaks a node in
-    the reader's activity tree that nothing later closes.
+    refuses a "msg" and a "result" and nothing else, for the reason
+    `LogQueue` gives: a dropped stop leaks a node in the reader's
+    activity tree that nothing later closes.
+
+    The test names what to DROP, and that is what made `"finalized"`
+    safe to add without touching this class. A control event marks the
+    end of a call, so a lost one parks a reader waiting for that call.
+    Had this listed what to KEEP instead, the C++ guarantee would have
+    died here in silence - which is the eighth shape of this repo's
+    named failure mode, and it was checked for rather than assumed.
 
     `level` filters a "msg" only, which is the same rule and the same
     reason.

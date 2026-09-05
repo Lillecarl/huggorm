@@ -1715,9 +1715,13 @@ def test_every_wire_value_survives_its_own_round_trip(
         # and the two cases are one of each. So every field differs:
         # a message has no activity, no parent, no type and no fields,
         # and a start has all four.
+        #
+        # `request` differs too, and the two values it takes are the
+        # two it means: 0 for a record no wrapped call owns, and a
+        # number for one raised inside one.
         "LogRecord": (
-            _rebuild(LogRecord, "msg", 0, 0, 0, 0, "trace: hi", []),
-            [("start", 3, 7, 2, 105, "copying '/tmp/x' to the store",
+            _rebuild(LogRecord, "msg", 0, 0, 0, 0, 0, "trace: hi", []),
+            [("start", 3, 7, 2, 105, 41, "copying '/tmp/x' to the store",
               [_rebuild(LogField, False, 0, "/tmp/x")])]),
     }
 

@@ -675,11 +675,16 @@ class LogRecord:
 
     @reads("action")
     def action(self) -> Str:
-        """Which of the four kinds this is.
+        """Which of the five kinds this is.
 
         `"msg"` is a message, and the only kind `level` filters.
         `"start"` and `"stop"` open and close an activity. `"result"`
         reports progress inside one.
+
+        `"finalized"` is the odd one and comes from this binding
+        rather than from Nix. It carries only `request`, and it says
+        that the call named there raised its last record. Nothing
+        else on it means anything.
         """
 
     @reads("level")
@@ -707,6 +712,20 @@ class LogRecord:
     def type(self) -> I64:
         """`nix::ActivityType` for a `"start"`, `nix::ResultType` for
         a `"result"`, and 0 otherwise."""
+
+    @reads("request")
+    def request(self) -> I64:
+        """The call this was raised inside, or 0.
+
+        A reader GROUPS by this and learns the group is closed when a
+        `"finalized"` carrying the same number arrives. It cannot name
+        a call in advance: the number is allocated per call, by the
+        runtime, and no caller is told which one it got.
+
+        ZERO is an answer, not a gap. A fetcher thread, a
+        file-transfer thread and a build all raise records on threads
+        no wrapped call owns, so nothing about them belongs to a
+        call."""
 
     @reads("text")
     def text(self) -> Str:
@@ -1239,6 +1258,63 @@ def gc_release_thread() -> None:
     exits while still registered never answers, and the next
     collection aborts the process. That is what a dedicated affine
     executor does when its wrapper is closed."""
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def begin_request(request: I64) -> I64:
+    """Say which call this thread is inside. Answers the one before.
+
+    Runtime plumbing, like `gc_release_thread`, and it carries NO
+    threading policy for the same reason that one does not - plus a
+    sharper one. `@threading` is what gives a free function an async
+    form, and an async form hops to the shared pool. This writes a
+    `thread_local`, so a hop would set it on a pool thread and leave
+    the thread that does the work at 0. Declared, that mistake is
+    silent: every gate still passes.
+
+    So `runtime.py` calls it directly, on the thread that is about to
+    enter C++.
+
+    It ANSWERS the previous value and `end_request` takes it back, so
+    the pair nests. Nothing nests today, because every wrapped call
+    hops through an executor and arrives on a thread of its own. One
+    word of state removes the question anyway."""
+    Cxx("""
+if (request < 0)
+    throw std::invalid_argument("request id must not be negative");
+auto & slot = huggorm::thread_request();
+auto previous = slot;
+slot = static_cast<std::uint64_t>(request);
+return static_cast<std::int64_t>(previous);
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def end_request(previous: I64) -> None:
+    """Mark this thread's call finished, and restore what ran before.
+
+    Pushes one `"finalized"` record carrying the id that is ending. An
+    id alone says which call a record belongs to; it never says the
+    call has stopped, so a reader waiting for one would wait until its
+    own bound expired. The marker is what makes the id worth having.
+
+    It goes through the same routing every record does, so it lands in
+    the queue that call's records landed in - the thread's if it
+    subscribed, the process-wide one otherwise. A queue's drop policy
+    names what to DROP, and this is neither a `"msg"` nor a
+    `"result"`, so no bound and no level can refuse it.
+
+    Nobody taking it is FINE and is not an error. The fallback is a
+    `SimpleLogger` and a marker has no text to print, so an
+    unsubscribed caller simply never sees one."""
+    Cxx("""
+if (previous < 0)
+    throw std::invalid_argument("request id must not be negative");
+auto & slot = huggorm::thread_request();
+if (slot != 0)
+    huggorm::route({.action = "finalized", .request = slot});
+slot = static_cast<std::uint64_t>(previous);
+    """)
 
 
 @needs("huggorm_decl/cpp/logging.hpp")

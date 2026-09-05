@@ -79,12 +79,15 @@ struct LogField
  */
 struct LogRecord
 {
-    // "msg" | "start" | "stop" | "result".
+    // "msg" | "start" | "stop" | "result" | "finalized".
     std::string action;
     uint64_t level = 0;
     uint64_t id = 0;
     uint64_t parent = 0;
     uint64_t type = 0;
+    // The call this record was raised inside, or 0. See
+    // `thread_request` below for what 0 means.
+    uint64_t request = 0;
     std::string text;
     std::vector<LogField> fields;
 };
@@ -100,13 +103,21 @@ struct LogRecord
  *
  * The DROP POLICY is the interesting part of a bounded queue.
  *
- * A full queue refuses a "msg" and a "result", and NEVER a "start" or
- * a "stop". A dropped stop leaks a node in the reader's activity tree
- * forever, because nothing later says that activity ended - so the
- * cost of dropping is not the same for the two kinds, and one bound
- * for both would be the wrong answer for one of them. Activities are
- * bounded by the evaluation itself, so keeping them all is affordable
- * in a way that keeping every build log line is not.
+ * A full queue refuses a "msg" and a "result", and nothing else. A
+ * dropped stop leaks a node in the reader's activity tree forever,
+ * because nothing later says that activity ended - so the cost of
+ * dropping is not the same for the two kinds, and one bound for both
+ * would be the wrong answer for one of them. Activities are bounded
+ * by the evaluation itself, so keeping them all is affordable in a
+ * way that keeping every build log line is not.
+ *
+ * The test names what to DROP, not what to keep, and that is load
+ * bearing rather than a style. `"finalized"` was added later and is a
+ * CONTROL event: a lost one parks a reader that is waiting for a
+ * call to end, so it may never be dropped. It inherited the
+ * guarantee because this test enumerates the droppable set. The same
+ * test written the other way round would have made it droppable in
+ * silence.
  *
  * `level` filters a "msg" ONLY. Filtering a "start" by level would
  * leak a node the same way dropping one does, and upstream never
@@ -211,6 +222,26 @@ inline std::shared_ptr<LogQueue> & thread_queue()
 }
 
 /**
+ * The call this thread is inside, or 0.
+ *
+ * A `thread_local` for `thread_queue`'s reason and one more. Nix
+ * raises a record on the thread that is working, so the call is
+ * thread CONTEXT rather than logger state - and the push path runs
+ * inside evaluation, where a map keyed by thread id would take a lock
+ * per log line.
+ *
+ * ZERO is honest and not a gap. A record raised by a fetcher thread,
+ * a file-transfer thread or a build belongs to no call this binding
+ * made, and says so. Only the wrapped-call chokepoint in
+ * `runtime.py` ever writes this.
+ */
+inline uint64_t & thread_request()
+{
+    static thread_local uint64_t request = 0;
+    return request;
+}
+
+/**
  * The one slot for records raised on a thread that subscribed to none.
  *
  * The gap `thread_queue` names, closed. A fetcher thread, a
@@ -243,6 +274,47 @@ inline std::shared_ptr<LogQueue> process_queue()
     auto & sink = process_sink();
     std::lock_guard<std::mutex> held(sink.first);
     return sink.second;
+}
+
+/**
+ * One record to at most one queue. True if a queue took it.
+ *
+ * A FALLBACK and not a broadcast, which is the whole decision. A
+ * thread that subscribed CLAIMS its records, so a state's subscriber
+ * sees what it saw before this existed and the process-wide queue
+ * never repeats it. Broadcasting to both was the alternative: it
+ * would let one process-wide reader see everything, at the cost of a
+ * caller holding both subscriptions seeing every evaluation record
+ * twice, with nothing on a record to deduplicate by.
+ *
+ * So "everything in this process" is NOT what the process-wide queue
+ * answers. It answers what nobody else claimed, and the shape that
+ * answers the other question is fan-out over one subscription, which
+ * `server.py` now has.
+ *
+ * FREE rather than a private static of `LogTap`, which is where it
+ * lived until `tasks/089`. `end_request` pushes the finalized marker
+ * through it, and that marker has to land in the same queue the
+ * call's records did - so the choice of queue cannot belong to the
+ * logger.
+ *
+ * The STAMP is here for the same reason: one place decides which
+ * queue takes a record, so one place is where every record gets its
+ * call. An override that built a record without it would be a record
+ * that quietly belongs to no call.
+ */
+inline bool route(LogRecord && r)
+{
+    r.request = thread_request();
+    if (auto & queue = thread_queue()) {
+        queue->push(std::move(r));
+        return true;
+    }
+    if (auto queue = process_queue()) {
+        queue->push(std::move(r));
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -376,36 +448,6 @@ private:
                               ? LogField{.is_int = true, .integer = f.i}
                               : LogField{.is_int = false, .text = f.s});
         return out;
-    }
-
-    /**
-     * One record to at most one queue. True if a queue took it.
-     *
-     * A FALLBACK and not a broadcast, which is the whole decision. A
-     * thread that subscribed CLAIMS its records, so a state's
-     * subscriber sees what it saw before this existed and the
-     * process-wide queue never repeats it. Broadcasting to both was
-     * the alternative: it would let one process-wide reader see
-     * everything, at the cost of a caller holding both subscriptions
-     * seeing every evaluation record twice, with nothing on a record
-     * to deduplicate by.
-     *
-     * So "everything in this process" is NOT what the process-wide
-     * queue answers. It answers what nobody else claimed, and the
-     * shape that would answer the other question is fan-out over one
-     * subscription - `tasks/085`'s third gap, still open.
-     */
-    static bool route(LogRecord && r)
-    {
-        if (auto & queue = thread_queue()) {
-            queue->push(std::move(r));
-            return true;
-        }
-        if (auto queue = process_queue()) {
-            queue->push(std::move(r));
-            return true;
-        }
-        return false;
     }
 
     /**

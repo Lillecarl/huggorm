@@ -108,6 +108,61 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
         return _POOL
 
 
+_REQUEST_LOCK = threading.Lock()
+_REQUEST_SEQ = 0
+
+
+def _next_request() -> int:
+    """One number per wrapped call, for the life of the process.
+
+    A LOCK rather than `itertools.count`, whose atomicity is a
+    CPython implementation detail and not a promise. The cost is paid
+    once per call, beside a thread handover that costs far more.
+
+    Never 0. Zero is what a record carries when no wrapped call was on
+    the thread that raised it - a fetcher, a file transfer, a build -
+    so a real call must never collide with it."""
+    global _REQUEST_SEQ
+    with _REQUEST_LOCK:
+        _REQUEST_SEQ += 1
+        return _REQUEST_SEQ
+
+
+class _InRequest:
+    """Name the call, ON the thread that runs it.
+
+    Every wrapped call enters C++ through one of three places, and all
+    three use this: a record raised anywhere else carries 0, and that
+    has to mean "nix's own thread" rather than "a hole in the
+    chokepoint".
+
+    The id is allocated on the LOOP thread and passed in, because
+    `run_in_executor` carries no context - so an explicit argument is
+    the only plumbing that works.
+
+    The bindings are imported here rather than at module scope,
+    exactly as `_release_gc_thread` does it: the runtime otherwise
+    knows nothing about them."""
+
+    __slots__ = ("_previous", "_request")
+
+    def __init__(self, request: int) -> None:
+        self._request = request
+        self._previous = 0
+
+    def __enter__(self) -> None:
+        import huggorm_bindings
+
+        self._previous = huggorm_bindings.begin_request(self._request)
+
+    def __exit__(self, *exc: object) -> None:
+        import huggorm_bindings
+
+        # Pushes the "finalized" marker for the id that is ending, and
+        # puts back whatever this thread was inside before.
+        huggorm_bindings.end_request(self._previous)
+
+
 def _refuse_foreign(callee: Any, arg: Any, x: Any) -> None:
     """Refuse a proxy that belongs to another isolation.
 
@@ -281,14 +336,16 @@ class BaseRunner:
         # A wrapper argument contributes its target object.
         return [unwrap_arg(a) for a in args]
 
-    def _invoke(self, method: str, args: list[Any]) -> Any:
+    def _invoke(self, method: str, args: list[Any], request: int) -> Any:
         try:
-            obj = self._resolve()
-            attr = getattr(obj, method)
-            args = self._unwrap(args)
-            # Properties resolve to values, not callables: reading one
-            # still runs on this runner's thread, which is the point.
-            return attr(*args) if callable(attr) else attr
+            with _InRequest(request):
+                obj = self._resolve()
+                attr = getattr(obj, method)
+                args = self._unwrap(args)
+                # Properties resolve to values, not callables: reading
+                # one still runs on this runner's thread, which is the
+                # point.
+                return attr(*args) if callable(attr) else attr
         except Exception as e:
             if hasattr(e, "to_dict"):
                 raise  # typed wrapper error — pass through untouched
@@ -338,10 +395,12 @@ class BaseRunner:
         thread, so everything it touches is on that thread too."""
         await self.materialize()
         loop = asyncio.get_running_loop()
+        request = _next_request()
 
         def invoke() -> Any:
             try:
-                return fn(self.ensure())
+                with _InRequest(request):
+                    return fn(self.ensure())
             except Exception as e:
                 if hasattr(e, "to_dict"):
                     raise
@@ -353,7 +412,12 @@ class BaseRunner:
         _check_isolation(self, args)
         await _materialize_args(args)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor(), lambda: self._invoke(method, args))
+        # Allocated HERE, on the loop thread, and passed in.
+        # run_in_executor carries no context, so a contextvar set on
+        # this side would not reach the thread that does the work.
+        request = _next_request()
+        return await loop.run_in_executor(
+            self._executor(), lambda: self._invoke(method, args, request))
 
 
 def _release_gc_thread() -> None:
@@ -441,10 +505,12 @@ async def call_function(fn: Callable[..., Any], args: list[Any]) -> Any:
     as it would to a method."""
     await _materialize_args(args)
     loop = asyncio.get_running_loop()
+    request = _next_request()
 
     def invoke() -> Any:
         try:
-            return fn(*[unwrap_arg(a) for a in args])
+            with _InRequest(request):
+                return fn(*[unwrap_arg(a) for a in args])
         except Exception as e:
             if hasattr(e, "to_dict"):
                 raise  # typed wrapper error - pass through untouched
