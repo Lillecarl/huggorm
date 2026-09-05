@@ -207,3 +207,48 @@ It also has no dependency problem at all: the emitter already writes
 the include block of every emitted `.cpp`, so this is a fact it
 computes instead of one a header carries on the emitted file's
 behalf.
+
+## The dependency is not `@private_member`'s alone. 2026-09-05
+
+`@private_member` waits on who CONSUMES what an emitter would write.
+That test was applied to one item and it should have been applied to
+the list, because `logging.hpp` is the largest orphan and most of its
+derivable lines fail the same test.
+
+Measured, by grepping every consumer outside the header:
+
+    thread_queue          logging.hpp only
+    process_sink          logging.hpp only
+    process_queue         logging.hpp only
+    huggorm::LogRecord    eval.py, as a `@binding` target
+    huggorm::LogField     eval.py, as a `@binding` target
+    huggorm::subscribe_logs      eval.py, inside a `Cxx` body
+    huggorm::unsubscribe_logs    eval.py, inside a `Cxx` body
+
+So the block splits in two, and the earlier list did not:
+
+- **Blocked, for `@private_member`'s exact reason: 32 lines.** The
+  three slots and the two structs. Every consumer is `LogTap`, which
+  is hand-written and in the same header. A `@binding` naming
+  `huggorm::LogRecord` is not a consumer of a DEFINITION - it is a
+  type the emitter binds - so generating the struct would still leave
+  `LogTap` needing it from the generated side.
+- **Not blocked: 41 lines.** The four subscribe/unsubscribe
+  functions. Their only callers are `Cxx` bodies in `eval.py`, which
+  are already on the generated side.
+
+**Which changes what `tasks/084` is.** It was listed as "the biggest
+single win at 62 lines and also the hardest". It is also the UNLOCK:
+generate `LogTap` and the 32 blocked lines stop having a hand-written
+consumer. 62 plus 32 is most of what `logging.hpp` holds that is not
+`LogQueue`'s algorithm.
+
+The 41 unblocked lines are a separate question and this file does not
+answer it. Moving a helper into a `Cxx` body is a RELOCATION, not a
+derivation, and the census counts `cpp/` - so doing it for the number
+would be spending a budget `CLAUDE.md` says is not one. It needs an
+argument of its own.
+
+**And `tasks/089`'s request id adds to this file**, which is worth
+saying in the same place: about ten lines on the largest orphan, on
+the block `tasks/084` would delete. Small, and pointed at the target.
