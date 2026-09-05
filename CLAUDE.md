@@ -116,6 +116,41 @@ One source, many outputs. A fact stated twice will disagree once.
 
 When 1 and 2 conflict, 1 wins - and the conflict is a task.
 
+# anyio, not asyncio
+
+Carl's rule, 2026-09-05:
+
+> We should be using anyio primitives instead of asyncio to the
+> greatest extent possible (preferably only). anyio's structured async
+> model is good at preventing bugs.
+
+So `anyio.Lock`, `anyio.sleep`, `anyio.Event`, `anyio.fail_after` and
+`move_on_after`, and a TASK GROUP wherever a task is started. Never
+`asyncio.create_task`, `asyncio.ensure_future`, `asyncio.gather`,
+`asyncio.wait_for`, `asyncio.Lock` or `asyncio.sleep`.
+
+The point is the structure, not the spelling. A task group OWNS its
+children: it cannot lose one, it cannot leak one, and a failure in one
+reaches the caller. `asyncio.create_task` holds a weak reference, so a
+fire-and-forget task can be collected before it runs - which this repo
+worked around by retaining a set of them by hand.
+
+grpclib is asyncio-only and always will be, so the backend stays
+asyncio. That is not a reason to write asyncio: anyio runs ON asyncio,
+and everything above is available there.
+
+**One exception, and it is measured.** The thread bridge in the
+emitted runtime (`huggorm_gen/payload/runtime.py`) keeps
+`loop.run_in_executor`. `anyio.to_thread.run_sync` runs on a SHARED,
+CHURNING pool - `_asyncio.py` pops an idle worker off a deque and
+expires any that idled past `MAX_IDLE_TIME` - so it cannot name a
+thread. An `EvalState` is affine and must be touched from ONE thread,
+and `_refuse_foreign` compares executor IDENTITY to enforce the
+isolation Carl ruled on. `tasks/092` holds the reading and the
+alternative that was rejected.
+
+Anything new that needs a thread asks first. Anything else is anyio.
+
 # Not a goal yet
 
 **Speed.** Doing the right thing comes first. Fix a pathology when it

@@ -40,6 +40,9 @@ Findings reference three architectural reviews: 2026-08-23,
 
 ## Open, roughly by what blocks what
 
+- 092 (anyio, not asyncio) is a rule Carl set and a conversion that
+  follows it. It blocks nothing and touches every async file.
+
 - 030 (attribute sets on the wire) is closed, which unblocks the
   evaluation server: an attrset is what Nix evaluation mostly hands
   back, and Realize now fetches one in a single round trip.
