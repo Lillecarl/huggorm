@@ -46,8 +46,16 @@ In order:
 1. A defect that can corrupt a value, or drop one silently. This
    repo's named failure mode is the SILENT SKIP - an emitter skips
    what it does not recognise, and a skip is indistinguishable from an
-   absence. Six found so far: `tasks/073`, `075`, `078`, `082`,
-   `087`, `088`.
+   absence. Seven found so far: `tasks/073`, `075`, `078`, `082`,
+   `087`, `088`, `090`.
+
+   The seventh has a different shape and the same outcome. An emitter
+   ERASED what a later reader needed: `pyerrors.module` stripped the
+   `cxx` lines off the tree `corpus()` caches for the process, so a
+   reader after it saw a declaration with no C++ in it and emitted a
+   translator that catches nothing. So the rule is wider than
+   "skips what it does not recognise" - it is anything that leaves an
+   emitter with less than the declaration said, quietly.
 2. Whatever the destination above needs next and does not have.
 3. A task that is outstanding and blocks nothing.
 
