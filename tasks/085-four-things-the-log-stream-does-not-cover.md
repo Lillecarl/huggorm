@@ -430,18 +430,45 @@ state and one for the process sink; the fan-out is in Python, where
 goal 2 puts a rule that does not have to run on the evaluation
 thread.
 
-### The level is asked for WIDE, and narrowed per reader
+### The level is the WIDEST any reader asked for, and narrowed per reader
 
-The shared subscription opens at level 7, `lvlVomit`, and each reader
+The shared subscription opens at `_widest(readers)`, and each reader
 filters "msg" records against its own level.
 
 The alternative was to let the FIRST reader's level open the queue
 and refuse a later reader that wanted more. That makes the answer
 depend on ARRIVAL ORDER: a warnings-only client arriving first would
-refuse the CLI listener this gap exists for. Asking wide costs
-nothing real, because `nix::verbosity` filters before any logger runs
+refuse the CLI listener this gap exists for. So a reader that wants
+more REOPENS the subscription at its level, which costs the records
+in flight during the swap - records a joining reader was never going
+to see.
+
+**IT OPENED AT 7, `lvlVomit`, AND THAT IS THE PART THAT CHANGED.**
+The rationale written here was: "asking wide costs nothing real,
+because `nix::verbosity` filters before any logger runs
 (`logging.hh:314`) - a level-7 subscription still receives only what
-the process was already willing to raise.
+the process was already willing to raise."
+
+`tasks/089` step 4 made that false. A subscription RAISES
+`nix::verbosity` now - it has to, or a per-thread level could never
+widen past the process default - and `RemoteStore::setOptions` sends
+that global to the daemon (`remote-store.cc:118`). So the constant
+asked every daemon connection this server opens to narrate at vomit
+down the socket, whether or not any client wanted it. `tasks/095`
+measured what that costs and `tasks/096` fixed the never-lowering
+half of it.
+
+`LOG_LEVEL_ALL` is deleted rather than lowered, because the number
+was never the point: the level a subscription needs is a fact about
+its readers, and `_widest` states it.
+
+**One residue, and it stays.** `leave` does not NARROW. A reader that
+asked for 7 leaving a reader that asked for 3 keeps the subscription
+at 7 until the last one goes. Narrowing would reopen - costing the
+remaining reader the records in flight, to save a level that is
+already bounded by a live reader - and that is the worse trade. The
+same rule as everywhere else here: a raised level is what somebody
+asked for, and it ends when the asking does.
 
 Capacity stays per-reader, because a bound is a property of the
 reader that cannot keep up. A `_Reader` mirrors `LogQueue`'s policy

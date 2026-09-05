@@ -1168,10 +1168,15 @@ async def test_the_marker_survives_a_queue_full_of_messages() -> None:
 
 # ---- the level is the thread's, and it can widen --------------------
 #
-# `tasks/089` step 4. `nix::verbosity` is pinned wide open at import,
-# so nix's own macro rejects nothing and `effective_verbosity` decides
-# instead - per THREAD, so one caller asking for more does not flood
-# every other logger in the process.
+# `tasks/089` step 4. `nix::verbosity` rises to the widest level any
+# live subscription asks for, so nix's own macro produces what a
+# caller wants, and `effective_verbosity` decides who KEEPS it - per
+# THREAD, so one caller asking for more does not flood every other
+# logger in the process. `tasks/096` is the other half: the global
+# comes back down when the asking ends.
+#
+# It is NOT pinned wide open at import, which this said until
+# `tasks/095` measured what a pin costs the daemon.
 #
 # Before this, `subscribe_logs(level=...)` could only NARROW: the
 # global filtered first at lvlInfo, so asking for 4 got nothing that
@@ -1277,13 +1282,17 @@ def test_unsubscribing_puts_the_level_back(
 def test_an_unsubscribed_caller_still_sees_only_the_default(
     state: Any, tmp_path: pathlib.Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """The pin must not turn stderr into a firehose.
+    """A raised global must not turn stderr into a firehose.
 
     `LogTap::fallback` is a `SimpleLogger`, and `SimpleLogger::log`
-    gates on `nix::verbosity` - now pinned wide open. So every
-    override has to apply the thread level BEFORE forwarding, or a
-    console user who subscribed to nothing gets every line nix can
-    produce.
+    gates on `nix::verbosity` - which is the WIDEST level anyone has
+    asked for, not this thread's. So every override has to apply the
+    thread level BEFORE forwarding, or a console user who subscribed
+    to nothing gets every line the noisiest subscriber wanted.
+
+    This said "the pin" until `tasks/095`. There is no pin, and the
+    gate is the same either way: something else raised the global,
+    and this thread did not.
 
     Perturbation: remove the `effective_verbosity` test from
     `LogTap::log` and this fails with `evaluating file` on stderr."""
