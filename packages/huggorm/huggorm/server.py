@@ -155,18 +155,21 @@ def _never_a_proxy(obj: Any) -> str:
 async def _drop_subscription(target: Any) -> None:
     """Clear a state's subscription, on the state's own thread.
 
-    Detached rather than awaited, so the `finally` that calls it needs
-    no await of its own - a defence against a cancelled handler that
-    two perturbations failed to prove necessary, and that costs
-    nothing (tasks/032). Failures go nowhere on purpose: the stream
-    this belonged to is already over, and the queue is closed either
-    way."""
+    AWAITED, under `_Fanout`'s lock. It was detached until the
+    fan-out landed, and the reason it cannot be any more is the
+    fan-out itself: the next `join` must not open a subscription
+    while this one is still being dropped, because `unsubscribe`
+    clears the slot whatever is in it (`tasks/085`).
+
+    Failures go nowhere on purpose: the stream this belonged to is
+    already over, and the queue is closed either way."""
     with contextlib.suppress(Exception):
         await target.unsubscribe_logs()
 
 
 async def _drop_process_subscription() -> None:
-    """Clear the process-wide subscription. As `_drop_subscription`.
+    """Clear the process-wide subscription. As `_drop_subscription`,
+    awaited for the same reason.
 
     No target, because there is nothing to name: the sink belongs to
     the process. That is the whole difference between the two, which

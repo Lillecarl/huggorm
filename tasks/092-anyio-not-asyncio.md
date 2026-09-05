@@ -180,6 +180,19 @@ Recorded rather than left implied: the three fan-out gates from
 `tasks/085` still hold, and they are what proves the CancelScope and
 Event replace the Task correctly.
 
+### The tests, and one more thing not gated
+
+The first survey in this file excluded `tests/`, which the rule does
+not. One hit: `test_lifecycle.py` used `asyncio.wait_for` to bound one
+iteration of the real ping loop. Converted. `conftest.py` names
+asyncio twice and both are correct - it pins the anyio BACKEND, which
+grpclib fixes.
+
+`serve`'s two-group exit ordering is also argued rather than gated.
+The suite stops a server with SIGTERM, so nothing here ever runs the
+`finally` that cancels `loops` and lets `work` drain. Stated beside
+the teardown-order finding above for the same reason.
+
 ### The one spawn left, and why it needs Carl
 
 `NixClient._ping_loop` still starts with `asyncio.create_task`.

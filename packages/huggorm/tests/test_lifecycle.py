@@ -12,7 +12,6 @@ each test asserts against what survived. Doing it per test would be a
 minute of sleeping.
 """
 
-import asyncio
 import gc
 from dataclasses import dataclass
 from typing import Any
@@ -310,7 +309,8 @@ async def test_a_swept_client_stops_rather_than_rebinding(
 
     # One iteration of the real loop, which returns as soon as it
     # learns the answer.
-    await asyncio.wait_for(c._ping_loop(0.01), 5)
+    with anyio.fail_after(5):
+        await c._ping_loop(0.01)
     assert c._expired is True
 
     with pytest.raises(remote.ConnectionExpired, match="swept"):
