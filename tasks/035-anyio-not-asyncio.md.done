@@ -1,8 +1,9 @@
 # anyio, not asyncio
 
-**MOSTLY DONE.** The suite runs under anyio, and so does the library.
-One spawn is left and it needs Carl. Originally: the suite ran under
-anyio; the runtime did not, and `payload/runtime.py`'s four
+**DONE.** The suite runs under anyio, and so does the library. Every
+`asyncio` name outside `payload/runtime.py` is gone, and the four that
+stay there are the one measured exception. Originally: the suite ran
+under anyio; the runtime did not, and `payload/runtime.py`'s four
 `loop.run_in_executor` calls were the half this file called movable.
 They are not movable, and the 2026-09-05 section says why.
 
@@ -280,22 +281,97 @@ The suite stops a server with SIGTERM, so nothing here ever runs the
 `finally` that cancels `loops` and lets `work` drain. Stated beside
 the teardown-order finding above for the same reason.
 
-### The one spawn left, and why it needs Carl
+### The one spawn left, and why it was held for Carl
 
-`NixClient._ping_loop` still starts with `asyncio.create_task`.
+`NixClient._ping_loop` started with `asyncio.create_task`.
 
 anyio starts a task only inside a task group, and a task group is a
-scope somebody holds open. A `NixClient` has none: `connect()` builds
-it and a synchronous `stop_pinging()` stops it, so there is no
+scope somebody holds open. A `NixClient` had none: `connect()` built
+it and a synchronous `stop_pinging()` stopped it, so there was no
 `async with` to own the loop.
 
-Giving the client one is the fix and it is a BREAKING change to a
-surface other people use - the third audience in `CLAUDE.md`, and the
-kind of change that file calls expensive. So it is Carl's call:
+Giving the client one is a BREAKING change to a published surface,
+and `CLAUDE.md` called that the expensive kind - so it was written up
+as Carl's call rather than made.
 
-    async with await remote.connect(host, port) as client:
+**Carl answered by deleting the rule.**
+
+> Breaking compatibility is not frowned upon in this repo, it's
+> encouraged if it helps improve the codebase. This repo is an
+> elaborate spike, backwards compatibility is not in our terminology,
+> the best possible thing forwards is the only goal.
+
+The sentence that made this a question - "the third is what makes a
+breaking change expensive" - is gone from `CLAUDE.md`, and the
+section that replaces it says to take the break.
+
+## The break, 2026-09-05
+
+`connect()` is an async context manager. `NixClient` owns a task
+group, opened in `__aenter__` and closed in `__aexit__`.
+
+    client = await remote.connect(host, port)     # before
+    ...
+    client.stop_pinging()
+
+    async with remote.connect(host, port) as client:   # now
         ...
 
-against keeping `connect()` and `stop_pinging()` working for a caller
-that never enters a scope. The two cannot both be true, because a
-client used outside the scope would have no pinger and would be swept.
+What a caller written against the old shape sees is Python's own:
+
+    TypeError: object _AsyncGeneratorContextManager can't be used in
+    'await' expression
+
+Not gated, because it is the interpreter's sentence rather than ours
+and a test on it would assert CPython's wording. It names the type,
+which is enough to find this file.
+
+`bind()` REFUSES outside the context, with a message that names the
+fix. That refusal reaches the OTHER migration - a caller that builds
+a `NixClient` by hand - because the `await` above fires first for
+anyone who used `connect`. It is the one place a caller could still start a loop nothing
+owns, and letting it would put back exactly what this removed.
+
+`stop_pinging()` stays public. It is no longer cleanup - the context
+does that - but it is still how a test makes a connection go silent so
+the sweeper reaps it, which the `swept` fixture does three times.
+
+### Two shapes that do not work, both measured
+
+**An `AsyncExitStack` in a pytest fixture, clients added by tests.**
+It would have kept every call site as it was. anyio needs ONE task to
+enter and leave a cancel scope, and a fixture is not the task its
+tests run in:
+
+    ERROR at teardown of test_probe_task_identity
+    ExceptionGroup: errors during test teardown (2 sub-exceptions)
+
+A fixture body IS one task across its own yield, which is why the
+`client` fixture and the `swept` fixture can each hold clients open -
+they enter and leave them themselves.
+
+**A `fail_after` around the enter.** The `client` fixture had one, to
+report a server that never answers. Entering a client leaves a cancel
+scope OPEN, so the timeout's scope then tries to close inside it:
+
+    RuntimeError: Attempted to exit a cancel scope that isn't the
+    current tasks's current cancel scope
+
+Eleven tests failed on it. A guard on the connect would have to close
+after the client does, which is the opposite of what it is for, so it
+is gone and the suite's own timeouts cover that case.
+
+### Two gates, and what breaking one shows
+
+    bind() outside the context refuses
+    leaving the context stops the loop
+
+Dropping `stop_pinging()` from `__aexit__` hangs EVERY client test,
+not just the second gate: a task group waits for its children and the
+ping loop never returns. The first test to reach a client died on
+pytest-timeout at 180 seconds.
+
+That is the change stated as a cost: a forgotten `stop_pinging()` used
+to leak a task quietly, and now the equivalent mistake stops the
+program. Loud beats quiet, and this repo's named failure mode is the
+quiet one.

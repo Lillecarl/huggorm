@@ -20,11 +20,10 @@ from huggorm_generated import RPCValue
 async def state(server: Server) -> Any:
     """A fresh evaluator per test, on its own connection, so one test's
     handles never outlive it into another's assertions."""
-    c = await remote.connect(HOST, server.port)
-    s = await c.acquire("EvalState", "dummy://")
-    yield s
-    await s.aclose()
-    c.stop_pinging()
+    async with remote.connect(HOST, server.port) as c:
+        s = await c.acquire("EvalState", "dummy://")
+        yield s
+        await s.aclose()
 
 
 async def bag(state: Any) -> Any:

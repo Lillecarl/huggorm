@@ -21,11 +21,11 @@ behind handles. Identical semantics to the in-process layer, different
 location.
 """
 
-import asyncio
+import contextlib
 import logging
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import anyio
@@ -82,7 +82,12 @@ class NixClient:
         self.channel = grpclib.client.Channel(
             host, port, status_details_codec=SchemaStatusDetails(self.pool))
         self.token: str | None = None
-        self._pinger: asyncio.Task[None] | None = None
+        # The task group this client's background work runs in, and
+        # the ping loop's own cancel scope inside it. Both are None
+        # until `__aenter__`, which is why `bind` outside the context
+        # refuses rather than starting a task nothing owns.
+        self._tasks: Any = None
+        self._pinger: Any = None
         self._expired = False
         # How many live client objects point at each handle, and which
         # handles have lost their last one. A finalizer runs on
@@ -206,6 +211,34 @@ class NixClient:
             raise
 
     # -- connection lifecycle -----------------------------------------
+    async def __aenter__(self) -> NixClient:
+        """Open the scope this client's background work lives in.
+
+        A client PINGS, and a ping loop is a task, and anyio starts a
+        task only inside a task group - so the client has to own one.
+        That is what makes `async with` mandatory rather than
+        decorative (`tasks/035`).
+
+        The group is entered here and exited in `__aexit__`, which
+        anyio requires to be the SAME task. That rules out the shape
+        this was first written as - a client handed to an
+        `AsyncExitStack` in a pytest fixture - because the fixture and
+        the test do not share a task. Measured, not assumed: the probe
+        failed at teardown with an exception group."""
+        self._tasks = anyio.create_task_group()
+        await self._tasks.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool | None:
+        """Stop the ping loop and close the scope.
+
+        The pinger is cancelled BEFORE the group is exited, because a
+        task group waits for its children and this one never
+        returns."""
+        self.stop_pinging()
+        tasks, self._tasks = self._tasks, None
+        return await tasks.__aexit__(*exc)  # type: ignore[no-any-return]
+
     async def bind(self, claim_token: str | None = None) -> str:
         """Adopt or create a connection identity; claims escrowed
         handles when presenting a detached session's token. The server
@@ -219,23 +252,41 @@ class NixClient:
         ttl = getattr(resp, "lease_ttl", 0) or 0
         interval = max(0.5, min(ttl / 4, 15)) if ttl > 0 else 10.0
         if was_new:
-            if self._pinger is not None:
-                self._pinger.cancel()
-            # THE ONE asyncio SPAWN LEFT, and it is not an oversight.
-            # anyio starts a task only inside a task group, and a task
-            # group is a scope somebody has to hold open. A
-            # `NixClient` has none: it is built by `connect()` and
-            # stopped by a synchronous `stop_pinging()`, so there is
-            # no `async with` to own the loop.
-            #
-            # Giving the client one is the fix, and it is a BREAKING
-            # change to a surface other people use - which `CLAUDE.md`
-            # says is the expensive kind. So it is Carl's call, and it
-            # is written down rather than guessed (`tasks/035`).
-            self._pinger = asyncio.create_task(self._ping_loop(interval))
+            if self._tasks is None:
+                raise RuntimeError(
+                    "this client is not open. A ping loop is a task and a "
+                    "task needs a scope, so a NixClient owns a task group "
+                    "and `bind` starts the loop inside it. Use "
+                    "`async with remote.connect(host, port) as client:` - "
+                    "or `async with NixClient(host, port)` if you are "
+                    "binding by hand.")
+            self.stop_pinging()
+            # `start`, not `start_soon`: it waits for the loop to
+            # report its own cancel scope, so `stop_pinging` can never
+            # find nothing to cancel.
+            self._pinger = await self._tasks.start(self._ping_loop, interval)
         return str(resp.token)
 
-    async def _ping_loop(self, interval: float = 10.0) -> None:
+    async def _ping_loop(
+            self, interval: float = 10.0, *,
+            task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
+        """The loop, wrapped in the scope that stops it.
+
+        `bind` starts this with `tg.start`, which waits for
+        `task_status.started` and hands the scope back - so
+        `stop_pinging` always has something to cancel.
+
+        Awaiting it DIRECTLY also works, and a test does: the default
+        `TASK_STATUS_IGNORED` swallows the report, and the scope is
+        then entered and left by the awaiting task, which is what
+        anyio requires. `_ping_forever` is the body split out so that
+        call reads as one iteration of the real loop rather than as a
+        task."""
+        with anyio.CancelScope() as scope:
+            task_status.started(scope)
+            await self._ping_forever(interval)
+
+    async def _ping_forever(self, interval: float) -> None:
         while True:
             await anyio.sleep(interval)
             try:
@@ -267,6 +318,13 @@ class NixClient:
                 logger.warning("ping failed; retrying", exc_info=True)
 
     def stop_pinging(self) -> None:
+        """Stop the ping loop, without closing the client.
+
+        SYNCHRONOUS, because cancelling a scope is. A caller that just
+        wants the client gone uses `async with` and never calls this;
+        it stays for a test that needs the loop stopped mid-body, and
+        for `__aexit__`, which has to stop the loop before the group
+        waits for it."""
         if self._pinger is not None:
             self._pinger.cancel()
             self._pinger = None
@@ -548,10 +606,31 @@ class NixClient:
             lambda hid: self.proxy(m.returns, hid))
 
 
+@contextlib.asynccontextmanager
 async def connect(host: str = "127.0.0.1", port: int = 50051,
-                  claim: str | None = None) -> NixClient:
+                  claim: str | None = None) -> AsyncIterator[NixClient]:
     """Connect and bind a connection identity (claiming escrow when a
-    detached session's token is presented)."""
-    client = NixClient(host, port)
-    await client.bind(claim)
-    return client
+    detached session's token is presented).
+
+    A CONTEXT MANAGER, and it used to be a plain coroutine:
+
+        client = await remote.connect(host, port)   # before
+        ...
+        client.stop_pinging()
+
+        async with remote.connect(host, port) as client:   # now
+            ...
+
+    Breaking, deliberately. A client runs a ping loop, a loop is a
+    task, and anyio starts a task only inside a task group - so
+    something has to hold the scope open, and the client is the only
+    thing with the right lifetime. `CLAUDE.md` says to take the break
+    when the shape is better (`tasks/035`).
+
+    What it buys beyond spelling: the loop cannot outlive the client
+    and cannot be forgotten. `stop_pinging()` was a call a caller had
+    to remember, and a caller that forgot left a task pinging a server
+    for a connection nobody was using."""
+    async with NixClient(host, port) as client:
+        await client.bind(claim)
+        yield client

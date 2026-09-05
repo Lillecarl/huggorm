@@ -12,6 +12,7 @@ each test asserts against what survived. Doing it per test would be a
 minute of sleeping.
 """
 
+import contextlib
 import gc
 from dataclasses import dataclass
 from typing import Any
@@ -59,95 +60,84 @@ async def wrapper_error(coro: Any) -> dict[str, str]:
 # anything, not after.
 
 async def test_distinct_clients_get_distinct_tokens(ttl_server: Server) -> None:
-    a = await remote.connect(HOST, ttl_server.port)
-    b = await remote.connect(HOST, ttl_server.port)
-    assert a.token != b.token
-    a.stop_pinging()
-    b.stop_pinging()
+    async with (remote.connect(HOST, ttl_server.port) as a,
+                remote.connect(HOST, ttl_server.port) as b):
+        assert a.token != b.token
 
 
 async def test_a_handle_is_a_capability(ttl_server: Server) -> None:
     """Anyone holding the id may call. Lifetime is what tokens govern."""
-    a = await remote.connect(HOST, ttl_server.port)
-    b = await remote.connect(HOST, ttl_server.port)
-    store = await a.acquire("Store", "dummy://")
-    cross = b.proxy("Store", store.handle_id)
-    assert await cross.get_uri() == "dummy://"
-    a.stop_pinging()
-    b.stop_pinging()
+    async with (remote.connect(HOST, ttl_server.port) as a,
+                remote.connect(HOST, ttl_server.port) as b):
+        store = await a.acquire("Store", "dummy://")
+        cross = b.proxy("Store", store.handle_id)
+        assert await cross.get_uri() == "dummy://"
 
 
 async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     """Two processes share one object by passing its id between them
     however they like: the second calls, and the object stays alive for
     it without the first arranging anything (tasks/031)."""
-    a = await remote.connect(HOST, ttl_server.port)
-    b = await remote.connect(HOST, ttl_server.port)
-    shared = await a.acquire("Store", "dummy://")
-    hid = shared.handle_id
-    borrowed = b.proxy("Store", hid)
-    assert await borrowed.get_uri() == "dummy://"
+    async with (remote.connect(HOST, ttl_server.port) as a,
+                remote.connect(HOST, ttl_server.port) as b):
+        shared = await a.acquire("Store", "dummy://")
+        hid = shared.handle_id
+        borrowed = b.proxy("Store", hid)
+        assert await borrowed.get_uri() == "dummy://"
 
-    # Calling again owes no second release. A lease that counted calls
-    # would be one no client could balance: a client releases once per
-    # client-side object, not once per call.
-    await borrowed.get_uri()
-    await borrowed.get_uri()
-    await a.release(shared)
-    assert await borrowed.get_uri() == "dummy://", "outlives its acquirer"
+        # Calling again owes no second release. A lease that counted calls
+        # would be one no client could balance: a client releases once per
+        # client-side object, not once per call.
+        await borrowed.get_uri()
+        await borrowed.get_uri()
+        await a.release(shared)
+        assert await borrowed.get_uri() == "dummy://", "outlives its acquirer"
 
-    await b.release(borrowed)
-    gone = await wrapper_error(b.proxy("Store", hid).get_uri())
-    assert gone["cause_type"] == "KeyError", gone
-    a.stop_pinging()
-    b.stop_pinging()
+        await b.release(borrowed)
+        gone = await wrapper_error(b.proxy("Store", hid).get_uri())
+        assert gone["cause_type"] == "KeyError", gone
 
 
 async def test_double_release_fails_typed(ttl_server: Server) -> None:
     """Releasing the same handle twice, through a FRESH object each
     time. Reusing the spent one sent an empty id, so the old test
     asserted that releasing handle "" fails - which proves nothing."""
-    a = await remote.connect(HOST, ttl_server.port)
-    store = await a.acquire("Store", "dummy://")
-    hid = store.handle_id
-    await a.release(store)
-    again = a.proxy("Store", hid)
-    threw = await wrapper_error(a.release(again))
-    assert threw["cause_type"] == "ValueError", threw
-    assert hid[:8] in threw["cause_message"], threw
+    async with remote.connect(HOST, ttl_server.port) as a:
+        store = await a.acquire("Store", "dummy://")
+        hid = store.handle_id
+        await a.release(store)
+        again = a.proxy("Store", hid)
+        threw = await wrapper_error(a.release(again))
+        assert threw["cause_type"] == "ValueError", threw
+        assert hid[:8] in threw["cause_message"], threw
 
-    with pytest.raises(ValueError, match="already released"):
-        await a.release(store)  # blanked client-side
-    a.stop_pinging()
+        with pytest.raises(ValueError, match="already released"):
+            await a.release(store)  # blanked client-side
 
 
 # -- share -----------------------------------------------------------------
 
 async def test_share_copy_survives_the_granter(ttl_server: Server) -> None:
-    a = await remote.connect(HOST, ttl_server.port)
-    b = await remote.connect(HOST, ttl_server.port)
-    assert b.token is not None  # connect() binds
-    store = await a.acquire("Store", "dummy://")
-    hid = store.handle_id
-    await a.share(store, b.token, mode="copy")
-    await a.release(store)
-    assert await b.proxy("Store", hid).get_uri() == "dummy://"
-    a.stop_pinging()
-    b.stop_pinging()
+    async with (remote.connect(HOST, ttl_server.port) as a,
+                remote.connect(HOST, ttl_server.port) as b):
+        assert b.token is not None  # connect() binds
+        store = await a.acquire("Store", "dummy://")
+        hid = store.handle_id
+        await a.share(store, b.token, mode="copy")
+        await a.release(store)
+        assert await b.proxy("Store", hid).get_uri() == "dummy://"
 
 
 async def test_share_transfer_moves_ownership(ttl_server: Server) -> None:
-    a = await remote.connect(HOST, ttl_server.port)
-    b = await remote.connect(HOST, ttl_server.port)
-    assert b.token is not None
-    store = await a.acquire("Store", "dummy://")
-    hid = store.handle_id
-    await a.share(store, b.token, mode="transfer")
-    threw = await wrapper_error(a.release(store))
-    assert threw["cause_type"] == "ValueError", threw
-    assert await b.proxy("Store", hid).get_uri() == "dummy://"
-    a.stop_pinging()
-    b.stop_pinging()
+    async with (remote.connect(HOST, ttl_server.port) as a,
+                remote.connect(HOST, ttl_server.port) as b):
+        assert b.token is not None
+        store = await a.acquire("Store", "dummy://")
+        hid = store.handle_id
+        await a.share(store, b.token, mode="transfer")
+        threw = await wrapper_error(a.release(store))
+        assert threw["cause_type"] == "ValueError", threw
+        assert await b.proxy("Store", hid).get_uri() == "dummy://"
 
 
 # -- producer pinning ------------------------------------------------------
@@ -162,23 +152,22 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
     producer in this repo hands back a wire VALUE, which needs no
     pinning at all - so this test is the only exercise the pinning,
     the cascade and the adopt path get."""
-    a = await remote.connect(HOST, ttl_server.port)
-    state = await a.acquire("EvalState", "dummy://")
-    hid_state = state.handle_id
-    v = await state.make_int(42)
-    assert await v.integer() == 42
+    async with remote.connect(HOST, ttl_server.port) as a:
+        state = await a.acquire("EvalState", "dummy://")
+        hid_state = state.handle_id
+        v = await state.make_int(42)
+        assert await v.integer() == 42
 
-    await a.release(state)
-    assert await v.integer() == 42, "child keeps the producer alive"
+        await a.release(state)
+        assert await v.integer() == 42, "child keeps the producer alive"
 
-    hid_v = v.handle_id
-    await a.release(v)
-    for cls, hid in (("Value", hid_v), ("EvalState", hid_state)):
-        gone = await wrapper_error(a.proxy(cls, hid).is_gc_managed()
-                                   if cls == "Value"
-                                   else a.proxy(cls, hid).get_store_uri())
-        assert gone["cause_type"] == "KeyError", (cls, gone)
-    a.stop_pinging()
+        hid_v = v.handle_id
+        await a.release(v)
+        for cls, hid in (("Value", hid_v), ("EvalState", hid_state)):
+            gone = await wrapper_error(a.proxy(cls, hid).is_gc_managed()
+                                       if cls == "Value"
+                                       else a.proxy(cls, hid).get_store_uri())
+            assert gone["cause_type"] == "KeyError", (cls, gone)
 
 
 # -- everything that has to outlast the sweeper ----------------------------
@@ -210,56 +199,72 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
     Three scenarios share the wait: leases detached into escrow, an
     evaluation state handed over to a successor, and a connection
     abandoned without detaching. A pinging client is kept alive across
-    it as the control."""
-    # 1. detached leases, whose owner then dies.
-    a = await remote.connect(HOST, ttl_server.port)
-    state = await a.acquire("EvalState", "dummy://")
-    thunk = await state.parse_expr("42")
-    await state.force(thunk)
-    thunk_id = thunk.handle_id
-    assert await a.detach(all=True), "detach reports moved leases"
-    threw = await wrapper_error(a.release(thunk))
-    assert threw["cause_type"] == "ValueError", "detached leases are not ours"
-    assert await thunk.integer() == 42, "detached handles stay callable"
-    a.stop_pinging()
+    it as the control.
 
-    # 2. an evaluation state, with work done, handed to a successor.
-    maker = await remote.connect(HOST, ttl_server.port)
-    warm = await maker.acquire("EvalState", "dummy://")
-    bag = await warm.make_attrs()
-    await warm.attrs_set(bag, "answer", await warm.eval_expr("42"))
-    lazy = await warm.parse_expr("7")
-    assert await lazy.type_name() == "thunk"
-    await warm.force(lazy)
-    # ...and a FILE, which is the only warm thing libexpr keeps by
-    # itself. `evalFile` caches by resolved path, so deleting the file
-    # here leaves the cache as the only way to answer for it
-    # (eval.cc:1118, and tasks/016).
-    warm_file = tmp_path_factory.mktemp("warm") / "answer.nix"
-    warm_file.write_text("40 + 2\n")
-    assert await (await warm.eval_file(str(warm_file))).integer() == 42
-    warm_file.unlink()
-    state_id, bag_id, lazy_id = warm.handle_id, bag.handle_id, lazy.handle_id
-    assert await maker.detach(all=True)
-    maker.stop_pinging()
+    An `AsyncExitStack` rather than four nested `async with`, because
+    the four have nothing to do with each other and nesting them says
+    they do. It works HERE and not in a fixture a test adds to: anyio
+    needs one task to enter and leave a client's scope, and a fixture
+    body is one task across its yield (`tasks/035`).
 
-    # 3. a connection abandoned WITHOUT detaching: its handles go.
-    d = await remote.connect(HOST, ttl_server.port)
-    doomed = await d.acquire("Store", "dummy://")
-    doomed_id = doomed.handle_id
-    d.stop_pinging()
+    The `stop_pinging()` calls that survive are the POINT rather than
+    cleanup - each one makes a connection go silent so the sweeper
+    reaps it. Closing the client would do that too, and it would also
+    end the scenario the wait is for."""
+    async with contextlib.AsyncExitStack() as stack:
+        async def client() -> Any:
+            return await stack.enter_async_context(
+                remote.connect(HOST, ttl_server.port))
 
-    # 4. the control: a client that keeps pinging is immune.
-    live = await remote.connect(HOST, ttl_server.port)
-    alive = await live.acquire("Store", "dummy://")
+        # 1. detached leases, whose owner then dies.
+        a = await client()
+        state = await a.acquire("EvalState", "dummy://")
+        thunk = await state.parse_expr("42")
+        await state.force(thunk)
+        thunk_id = thunk.handle_id
+        assert await a.detach(all=True), "detach reports moved leases"
+        threw = await wrapper_error(a.release(thunk))
+        assert threw["cause_type"] == "ValueError", "detached leases are not ours"
+        assert await thunk.integer() == 42, "detached handles stay callable"
+        a.stop_pinging()
 
-    # connect() binds, so both tokens exist from that call onward.
-    assert a.token is not None and maker.token is not None
+        # 2. an evaluation state, with work done, handed to a successor.
+        maker = await client()
+        warm = await maker.acquire("EvalState", "dummy://")
+        bag = await warm.make_attrs()
+        await warm.attrs_set(bag, "answer", await warm.eval_expr("42"))
+        lazy = await warm.parse_expr("7")
+        assert await lazy.type_name() == "thunk"
+        await warm.force(lazy)
+        # ...and a FILE, which is the only warm thing libexpr keeps by
+        # itself. `evalFile` caches by resolved path, so deleting the file
+        # here leaves the cache as the only way to answer for it
+        # (eval.cc:1118, and tasks/016).
+        warm_file = tmp_path_factory.mktemp("warm") / "answer.nix"
+        warm_file.write_text("40 + 2\n")
+        assert await (await warm.eval_file(str(warm_file))).integer() == 42
+        warm_file.unlink()
+        state_id, bag_id, lazy_id = warm.handle_id, bag.handle_id, lazy.handle_id
+        assert await maker.detach(all=True)
+        maker.stop_pinging()
 
-    await anyio.sleep(SHORT_TTL * 1.5 + 1.0)
-    yield Swept(ttl_server.port, a.token, thunk_id, maker.token,
-                state_id, bag_id, lazy_id, str(warm_file), doomed_id, d, alive)
-    live.stop_pinging()
+        # 3. a connection abandoned WITHOUT detaching: its handles go.
+        d = await client()
+        doomed = await d.acquire("Store", "dummy://")
+        doomed_id = doomed.handle_id
+        d.stop_pinging()
+
+        # 4. the control: a client that keeps pinging is immune.
+        live = await client()
+        alive = await live.acquire("Store", "dummy://")
+
+        # connect() binds, so both tokens exist from that call onward.
+        assert a.token is not None and maker.token is not None
+
+        await anyio.sleep(SHORT_TTL * 1.5 + 1.0)
+        yield Swept(ttl_server.port, a.token, thunk_id, maker.token,
+                    state_id, bag_id, lazy_id, str(warm_file), doomed_id,
+                    d, alive)
 
 
 async def test_pinging_client_survives_the_sweeper(swept: Swept) -> None:
@@ -284,11 +289,47 @@ async def test_ping_reports_a_swept_connection(swept: Swept) -> None:
     ack = await c._rpc(f"/{PKG}.Session/Ping", c.msg("PingReq")(), "AckResp")
     assert ack.ok is False
 
-    fresh = await remote.connect(HOST, swept.port)
-    ok = await fresh._rpc(
-        f"/{PKG}.Session/Ping", fresh.msg("PingReq")(), "AckResp")
-    assert ok.ok is True
-    fresh.stop_pinging()
+    async with remote.connect(HOST, swept.port) as fresh:
+        ok = await fresh._rpc(
+            f"/{PKG}.Session/Ping", fresh.msg("PingReq")(), "AckResp")
+        assert ok.ok is True
+
+
+async def test_binding_outside_the_context_refuses(ttl_server: Server) -> None:
+    """A client that nobody opened cannot start a ping loop.
+
+    `bind` starts the loop, a loop is a task, and anyio starts a task
+    only inside a task group - so a `NixClient` built by hand and
+    bound without `async with` has nowhere to put it. The old code
+    reached for `asyncio.create_task` here, which worked and left a
+    task nothing owned (`tasks/035`).
+
+    Refused rather than tolerated, and the message names the fix.
+    Drop the check and this passes while leaking a loop that pings a
+    server for a connection nobody holds."""
+    client = remote.NixClient(HOST, ttl_server.port)
+    with pytest.raises(RuntimeError, match="not open"):
+        await client.bind()
+
+
+async def test_the_context_stops_the_ping_loop(ttl_server: Server) -> None:
+    """Leaving takes the loop with it, which is the whole point of the
+    break.
+
+    `stop_pinging()` was a call a caller had to remember. Nothing
+    remembers it now: the scope closes and the loop goes.
+
+    Perturbation: drop `self.stop_pinging()` from `__aexit__` and
+    EVERY client test hangs - a task group waits for its children and
+    the ping loop never returns. Measured: the first one to reach a
+    client, `test_distinct_clients_get_distinct_tokens`, died on
+    pytest-timeout at 180s. So the `fail_after` below is not this
+    test's own guard so much as the difference between a report and a
+    three-minute wait."""
+    with anyio.fail_after(20):
+        async with remote.connect(HOST, ttl_server.port) as c:
+            assert c._pinger is not None, "bind started it"
+        assert c._pinger is None, "and leaving stopped it"
 
 
 async def test_a_swept_client_stops_rather_than_rebinding(
@@ -318,20 +359,18 @@ async def test_a_swept_client_stops_rather_than_rebinding(
 
 
 async def test_abandoned_handles_are_reaped(swept: Swept) -> None:
-    c = await remote.connect(HOST, swept.port)
-    gone = await wrapper_error(c.proxy("Store", swept.doomed_id).get_uri())
-    assert gone["cause_type"] == "KeyError", gone
-    c.stop_pinging()
+    async with remote.connect(HOST, swept.port) as c:
+        gone = await wrapper_error(c.proxy("Store", swept.doomed_id).get_uri())
+        assert gone["cause_type"] == "KeyError", gone
 
 
 async def test_escrow_survives_connection_death(swept: Swept) -> None:
     """Escrow is deliberately untouched by the sweep: detached leases
     are unowned and never auto-reaped, which is what lets a creator
     exit entirely while its objects wait for a claim."""
-    c = await remote.connect(HOST, swept.port, claim=swept.escrow_token)
-    assert c.token == swept.escrow_token, "claim adopts the detached token"
-    assert await c.proxy("Value", swept.thunk_id).integer() == 42
-    c.stop_pinging()
+    async with remote.connect(HOST, swept.port, claim=swept.escrow_token) as c:
+        assert c.token == swept.escrow_token, "claim adopts the detached token"
+        assert await c.proxy("Value", swept.thunk_id).integer() == 42
 
 
 async def test_a_claimed_lease_is_a_normal_lease(swept: Swept) -> None:
@@ -339,30 +378,28 @@ async def test_a_claimed_lease_is_a_normal_lease(swept: Swept) -> None:
     lease instead of moving the escrowed one back - so no number of
     releases ever reached zero and every detach/claim round trip leaked
     its handle for good."""
-    c = await remote.connect(HOST, swept.port, claim=swept.escrow_token)
-    claimed = c.proxy("Value", swept.thunk_id)
-    await c.release(claimed)
-    gone = await wrapper_error(c.proxy("Value", swept.thunk_id).integer())
-    assert gone["cause_type"] == "KeyError", gone
-    c.stop_pinging()
+    async with remote.connect(HOST, swept.port, claim=swept.escrow_token) as c:
+        claimed = c.proxy("Value", swept.thunk_id)
+        await c.release(claimed)
+        gone = await wrapper_error(c.proxy("Value", swept.thunk_id).integer())
+        assert gone["cause_type"] == "KeyError", gone
 
 
 async def test_the_evaluator_outlives_its_creator(swept: Swept) -> None:
     """The vision the whole lifecycle exists for (tasks/016): one
     EvalState serving many connections over time."""
-    heir = await remote.connect(HOST, swept.port, claim=swept.maker_token)
-    assert heir.token == swept.maker_token, "the successor adopts the identity"
-    same = heir.proxy("EvalState", swept.state_id)
-    assert await same.get_store_uri() == "dummy://"
+    async with remote.connect(HOST, swept.port, claim=swept.maker_token) as heir:
+        assert heir.token == swept.maker_token, "the successor adopts the identity"
+        same = heir.proxy("EvalState", swept.state_id)
+        assert await same.get_store_uri() == "dummy://"
 
-    # Warm, not rebuilt. Forcing is the proof: it mutates a value in
-    # place, so a value that reads as an int on the far side of a
-    # handover is the one that was forced before it.
-    assert await heir.proxy("Value", swept.lazy_id).type_name() == "int"
-    assert await heir.realize(heir.proxy("Value", swept.bag_id)) == {"answer": 42}
-    fresh = await same.eval_expr('"after the handover"')
-    assert await fresh.string_value() == "after the handover"
-    heir.stop_pinging()
+        # Warm, not rebuilt. Forcing is the proof: it mutates a value in
+        # place, so a value that reads as an int on the far side of a
+        # handover is the one that was forced before it.
+        assert await heir.proxy("Value", swept.lazy_id).type_name() == "int"
+        assert await heir.realize(heir.proxy("Value", swept.bag_id)) == {"answer": 42}
+        fresh = await same.eval_expr('"after the handover"')
+        assert await fresh.string_value() == "after the handover"
 
 
 async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
@@ -381,24 +418,23 @@ async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
     The control is in the same test, on the same server, in the same
     moment. A FRESH EvalState asked for the same path goes to disk and
     says so."""
-    heir = await remote.connect(HOST, swept.port, claim=swept.maker_token)
-    same = heir.proxy("EvalState", swept.state_id)
+    async with remote.connect(HOST, swept.port, claim=swept.maker_token) as heir:
+        same = heir.proxy("EvalState", swept.state_id)
 
-    warm = await same.eval_file(swept.warm_file)
-    assert await warm.integer() == 42, "the claimed state still has it"
+        warm = await same.eval_file(swept.warm_file)
+        assert await warm.integer() == 42, "the claimed state still has it"
 
-    cold = await heir.acquire("EvalState", "dummy://")
-    # `SysError`, not the wrapper: a declared Nix error crosses as
-    # ITSELF (tasks/066), so `wrapper_error` - which catches only
-    # InternalError - does not see this one. Measured by writing it
-    # that way first and watching the SysError go straight through.
-    with pytest.raises(SysError) as caught:
-        await cold.eval_file(swept.warm_file)
-    # "opening file" is the cold state SAYING it went to disk, which is
-    # the half the claimed state is claimed not to do.
-    assert "opening file" in str(caught.value)
-    assert "answer.nix" in str(caught.value)
-    heir.stop_pinging()
+        cold = await heir.acquire("EvalState", "dummy://")
+        # `SysError`, not the wrapper: a declared Nix error crosses as
+        # ITSELF (tasks/066), so `wrapper_error` - which catches only
+        # InternalError - does not see this one. Measured by writing it
+        # that way first and watching the SysError go straight through.
+        with pytest.raises(SysError) as caught:
+            await cold.eval_file(swept.warm_file)
+        # "opening file" is the cold state SAYING it went to disk, which is
+        # the half the claimed state is claimed not to do.
+        assert "opening file" in str(caught.value)
+        assert "answer.nix" in str(caught.value)
 
 
 # -- a dropped client object releases its lease (tasks/028) ----------------

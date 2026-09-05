@@ -113,8 +113,10 @@ work happens rather than what it does.
 - **Async** - `AsyncStore` and friends, from `connect_local`. The same
   calls, awaited, with the blocking part moved onto a thread so an
   event loop keeps running.
-- **Remote** - `connect()` gives a client whose objects satisfy the
-  same protocols (`StoreLike`) and run on another process's store.
+- **Remote** - `async with connect() as client:` gives objects that
+  satisfy the same protocols (`StoreLike`) and run on another
+  process's store. A CONTEXT MANAGER, because the client pings in the
+  background and the scope is what stops the loop (`tasks/035`).
 
 A protocol is what both async surfaces promise, so code written
 against `StoreLike` runs either way.

@@ -153,14 +153,39 @@ async def ttl_server() -> AsyncIterator[Server]:
 
 @pytest.fixture
 async def client(server: Server) -> AsyncIterator[Any]:
-    """A connected, bound client. Pinging stops on the way out so the
-    next test does not inherit a background task."""
+    """A connected, bound client, closed on the way out.
+
+    The `async with` encloses the yield, so the client's task group -
+    and the ping loop in it - cannot outlive the fixture. anyio needs
+    the group entered and exited by ONE task, and a fixture body is
+    one task across its yield; a test is not the same task, which is
+    why this cannot be an `AsyncExitStack` a test adds clients to
+    (measured, `tasks/035`)."""
     from huggorm import remote
 
-    with anyio.fail_after(10):
-        c = await remote.connect(HOST, server.port)
-    yield c
-    c.stop_pinging()
+    # Entered and left by hand rather than with one `async with`,
+    # because the client has to stay open across the yield and a
+    # fixture cannot `async with` around one.
+    #
+    # NO `fail_after` around the enter, and it had one at first. A
+    # client opens a task group, so entering it leaves a cancel scope
+    # OPEN - and the timeout's scope then tries to close inside it:
+    #
+    #   RuntimeError: Attempted to exit a cancel scope that isn't the
+    #   current tasks's current cancel scope
+    #
+    # A guard on the connect would have to close after the client
+    # does, which is the opposite of what it is for. The suite's own
+    # timeouts cover a server that never answers.
+    opening = remote.connect(HOST, server.port)
+    # `opening` and not the client is what gets closed: `connect` is a
+    # generator, and exiting the client behind its back would leave
+    # the generator suspended forever.
+    client = await opening.__aenter__()
+    try:
+        yield client
+    finally:
+        await opening.__aexit__(None, None, None)
 
 
 @pytest.fixture

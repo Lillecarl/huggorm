@@ -40,9 +40,14 @@ Findings reference three architectural reviews: 2026-08-23,
 
 ## Open, roughly by what blocks what
 
-- 035 (anyio, not asyncio) is a rule Carl set and a conversion that
-  follows it. The library moved on 2026-09-05; one spawn is left and
-  it needs a decision about the client's surface.
+- 035 (anyio, not asyncio) is DONE. A rule Carl set, and the
+  conversion that follows it: two task groups in the server, and a
+  client that owns one. `remote.connect` is an async context manager
+  now, which is a deliberate break - Carl's answer to holding it as a
+  question was to delete the sentence that made it one.
+  The one exception is measured: the emitted runtime keeps
+  `run_in_executor`, because anyio's worker pool cannot name a thread
+  and an `EvalState` is affine.
 
 - 030 (attribute sets on the wire) is closed, which unblocks the
   evaluation server: an attrset is what Nix evaluation mostly hands

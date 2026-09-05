@@ -909,16 +909,16 @@ async def test_a_swept_connection_ends_the_stream(ttl_server: Server) -> None:
 
     from huggorm import remote
 
-    c = await remote.connect(HOST, ttl_server.port)
-    state = await c.acquire("EvalState", "dummy://")
-    stream = await opened(c, state)
-    # Nothing keeps the connection alive now, so the next sweep takes
-    # it - and the handle with it.
-    c.stop_pinging()
-    with pytest.raises(GRPCError) as caught:
-        await batch(stream, timeout=SHORT_TTL * 4 + 10)
-    assert caught.value.status is Status.UNAVAILABLE
-    assert "swept" in (caught.value.message or "")
+    async with remote.connect(HOST, ttl_server.port) as c:
+        state = await c.acquire("EvalState", "dummy://")
+        stream = await opened(c, state)
+        # Nothing keeps the connection alive now, so the next sweep takes
+        # it - and the handle with it.
+        c.stop_pinging()
+        with pytest.raises(GRPCError) as caught:
+            await batch(stream, timeout=SHORT_TTL * 4 + 10)
+        assert caught.value.status is Status.UNAVAILABLE
+        assert "swept" in (caught.value.message or "")
 
 
 async def test_the_descriptor_says_it_streams() -> None:
