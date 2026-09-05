@@ -1095,18 +1095,21 @@ self.register_primop(name, static_cast<std::size_t>(arity), fn);
         records are raised on, and the queue this returns holds that
         state's records and no other state's.
 
-        Two things it does NOT see, and both are named rather than
-        hidden.
+        `level` SETS this thread's verbosity, so it can widen as well
+        as narrow. Ask for `6` and debug records arrive.
 
-        The global `nix::verbosity` filters BEFORE any logger runs
-        (`logging.hh:314`), so `level` can only narrow. Asking for
-        more than the global gets nothing, and raising the global
-        would flood every other logger in the process too.
+        That sentence used to say the opposite, and it was true when
+        written: `nix::verbosity` filtered before any logger ran, so a
+        caller could only ask for less, and raising the global would
+        have flooded every other logger in the process. The global is
+        pinned wide open now and the level is per THREAD, so one
+        caller asking for debug costs no other caller anything
+        (`tasks/089`).
 
-        A record raised on a fetcher or a file-transfer thread reaches
-        no queue, because that thread subscribed to none. A
-        process-wide subscriber is what covers those, and the rpc is
-        what needs one.
+        What it still does NOT see is a record raised on a fetcher or
+        a file-transfer thread, because that thread subscribed to
+        none. A process-wide subscriber is what covers those, and the
+        rpc is what needs one.
 
         REPLACES any subscription this thread had, and closes it. Two
         live subscriptions on one thread would each get an arbitrary
@@ -1274,6 +1277,28 @@ def gc_release_thread() -> None:
 
 
 @needs("huggorm_decl/cpp/logging.hpp")
+def process_verbosity() -> I64:
+    """What nix will PRODUCE, process-wide, right now.
+
+    `nix::verbosity`, read. Not what any subscriber KEEPS - that is
+    per thread and `subscribe_logs` sets it.
+
+    Runtime plumbing, like `gc_release_thread`, and it exists because
+    an invariant nothing can observe is one that gets broken. A draft
+    of `tasks/089` step 4 pinned this to `lvlVomit` at import, which
+    asks every daemon connection to narrate everything down the
+    socket - `RemoteStore::setOptions` sends this global
+    (`remote-store.cc:118`) and `daemon.cc:239` assigns it there. The
+    suite could not see it, because `dummy://` opens no daemon
+    connection.
+
+    So it is readable, and a gate reads it."""
+    Cxx("""
+return static_cast<std::int64_t>(nix::verbosity);
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
 def begin_request(request: I64) -> I64:
     """Say which call this thread is inside. Answers the one before.
 
@@ -1355,6 +1380,13 @@ def subscribe_process_logs(capacity: I64 = 1024,
     deduplicate by. One reader over one subscription is the shape
     that answers the other question, and it is `tasks/085`'s third
     gap.
+
+    `level` RAISES THE PROCESS DEFAULT, and it has to. The records
+    this exists for come from threads that never set a level of their
+    own, so they read the default - and a default left at `lvlInfo`
+    would have the tap drop a debug record before this queue ever saw
+    it. Asking for `6` here means every unclaimed thread reports at
+    6 until the subscription ends.
 
     REPLACES any process-wide subscription, and closes it. Refusing
     was the other answer: an in-process caller that drops its

@@ -847,8 +847,8 @@ which was superseded rather than fixed.
   one MAPPING left in the headers; and `LogField`/`LogRecord` are
   plain structs whose every field the declaration already names with
   `@reads`.
-- 089 (correlating a log with the call that caused it) is OPEN, and is
-  a REFLECTION rather than a plan - Carl asked what nanopynix does
+- 089 (correlating a log with the call that caused it) is DONE, all
+  four steps. It began as a REFLECTION rather than a plan - Carl asked what nanopynix does
   about a per-request log id and granular verbosity, and how either
   fits here. Nothing is implemented.
   nanopynix keeps a `thread_local` request id that its logger passes
@@ -919,8 +919,51 @@ which was superseded rather than fixed.
   A "434 tests" written into 089 was NOT measured - the run passed
   `-q` and printed no totals line. The real one is 396 passed, 10
   deselected. Recorded rather than corrected quietly.
-  STEP 4, per-thread verbosity, is what is left, and still needs the
-  ceiling re-measured here rather than adopted.
+  STEP 4 IS DONE. `install_log_tap` pins `nix::verbosity` wide open
+  and `effective_verbosity()` decides instead - a `ThreadLevel
+  {own, level}` per thread over a `std::atomic<int>` process default.
+  Two fields, and the flag is load-bearing: a `thread_local`
+  initialiser runs once, so a fetcher thread that started before a
+  caller raised the default would hold the old value forever.
+  `subscribe_logs` sets the thread's level, `subscribe_process_logs`
+  raises the default - it has to, or its own level is a lie, because
+  the records it exists for come from threads that never set one.
+  NO PIN, and a draft had one - `nix::verbosity = lvlVomit` at
+  import, copying nanopynix. A review asked who else READS that
+  global: `RemoteStore::setOptions` sends it to the daemon
+  (`remote-store.cc:118`) and `daemon.cc:239` assigns it there. So the
+  pin asked every daemon connection to narrate at vomit down the
+  socket, forever. All 412 tests passed over `dummy://`, which opens
+  no daemon connection.
+  `raise_verbosity` instead, monotonic: nix's gate moves only when a
+  caller asks, which is what `-vvv` does. The trade is stated - a
+  race on a plain global where the pin had none, against a flood that
+  is observable and permanent and hits a machine this process does
+  not own.
+  It needed a gate, and that needed a READER: `process_verbosity()`
+  is plumbing-lane surface added because an invariant nothing can
+  observe is one that gets broken. Restoring the pin fails exactly
+  that gate.
+  The SERVER was asking for everything. `LOG_LEVEL_ALL = 7`, with the
+  destroyed rationale in its own comment - "asking wide costs nothing
+  real, because the global filters BEFORE any logger runs". Both log
+  rpcs used it, so either would have pinned the daemon through the
+  front door. Replaced by `_widest(readers)`, and a `_Fanout` reopens
+  when a joiner wants more, which keeps the arrival-order fairness
+  the constant protected.
+  The workload was MEASURED after a draft guessed wrong. A trace is
+  lvlError and a trivial `eval_expr` raises nothing under lvlInfo at
+  all; `evaluating file` is lvlTALKATIVE, from `eval_file`. So the
+  gates evaluate a file.
+  `LogQueue::level_` IS GONE, which is the "two filters on one axis"
+  question answered by measurement: perturbing the tap's gate failed
+  only ONE test, because the queue caught what the tap let through.
+  Nothing can reach a queue the thread's level did not admit. With the
+  duplicate removed the same perturbation fails THREE - two were
+  passing for the wrong reason.
+  414 passed. The totals line took two runs to read, because the
+  first passed `-q`: the same mistake this task already records from
+  step 3, made again in the same session.
 - 093 (a python primop that closes over its state leaks the state) is
   DONE. It was a DEFECT, not the shutdown warning it was opened as.
   Bisected to exactly four tests, one leak each, and the discriminator
@@ -961,6 +1004,12 @@ which was superseded rather than fixed.
   traverse on every type in a cycle and clear on only one, and a
   function object and a cell carry their own. Kept as correctness and
   recorded as untested.
+- 095 (what a raised verbosity costs) is OPEN and blocks nothing. The
+  formatting cost of `raise_verbosity`, named in 089 step 4 and not
+  measured there. Bounded by what a caller asked for, which is the
+  difference from the pin. Needs a LIVE store: the interesting sites
+  are in libstore, and `dummy://` reaches almost none - the same
+  blindness that let the daemon regression through.
 - 094 (nothing catches a missing @gc_slots) is DONE.
   `census_gc_slots` prints on every build, beside `census_cpp` and
   `census_markers`. PER FILE, which is a limit rather than a

@@ -180,24 +180,35 @@ async def _drop_process_subscription() -> None:
         await unsubscribe_process_logs()
 
 
-# The level a shared subscription asks the binding for: lvlVomit, the
-# widest there is. Every reader then filters in Python.
-#
-# The alternative was to let the FIRST reader's level open the queue
-# and refuse a later reader that wanted more. That makes the answer
-# depend on arrival order - a warnings-only reader arriving first
-# would refuse the CLI listener that wants everything, which is the
-# reader `tasks/085` exists for. Asking wide costs nothing real,
-# because the global `nix::verbosity` filters BEFORE any logger runs
-# (`logging.hh:314`), so a level-7 subscription still receives only
-# what the process was already willing to raise.
-LOG_LEVEL_ALL = 7
-
 # What a reader gets when the request names neither. The binding's own
 # defaults, restated here because the shared subscription no longer
 # passes them through (`decl/eval.py:1051`).
 LOG_CAPACITY = 1024
 LOG_LEVEL = 3
+
+
+# The WIDEST any reader has asked for, recomputed as readers come and
+# go. Not a constant, which is what this was.
+#
+# It used to be `LOG_LEVEL_ALL = 7`, on the argument that "asking wide
+# costs nothing real, because the global `nix::verbosity` filters
+# BEFORE any logger runs, so a level-7 subscription still receives
+# only what the process was already willing to raise".
+#
+# `tasks/089` step 4 made that FALSE. A subscription now raises
+# `nix::verbosity` to what it asked for - it has to, or a per-thread
+# level could never widen - and `RemoteStore::setOptions` sends that
+# global to the daemon (`remote-store.cc:118`). So subscribing at 7
+# asked every daemon connection this server opens to narrate at vomit
+# down the socket, for the life of the process, whether or not any
+# client wanted it.
+#
+# The arrival-order problem that constant solved is still solved: a
+# reader that wants more REOPENS the subscription at its level rather
+# than being refused, so a warnings-only reader arriving first cannot
+# shut out the CLI listener `tasks/085` exists for.
+def _widest(readers: Any) -> int:
+    return max((r.level for r in readers), default=LOG_LEVEL)
 
 
 class _Reader:
@@ -227,6 +238,10 @@ class _Reader:
     def __init__(self, fan: _Fanout, capacity: int, level: int) -> None:
         self._fan = fan
         self._capacity = capacity
+        # PUBLIC, because the fan-out reads it: the shared
+        # subscription is opened at the widest level any reader wants,
+        # and that is recomputed from these.
+        self.level = level
         self._level = level
         self._records: list[Any] = []
         self._dropped = 0
@@ -292,10 +307,13 @@ class _Fanout:
     this.
     """
 
-    def __init__(self, tasks: Any, open_sub: Callable[[], Awaitable[Any]],
+    def __init__(self, tasks: Any,
+                 open_sub: Callable[[int], Awaitable[Any]],
                  drop_sub: Callable[[], Awaitable[None]]) -> None:
         self._tasks = tasks
         self._open = open_sub
+        # The level the live subscription was opened at, or None.
+        self._level: int | None = None
         self._drop = drop_sub
         self._lock = anyio.Lock()
         self._sub: Any = None
@@ -311,13 +329,23 @@ class _Fanout:
         self.failure: BaseException | None = None
 
     async def join(self, capacity: int, level: int) -> _Reader:
-        """A reader, and the subscription behind it if it is the first."""
+        """A reader, and the subscription behind it if it is the first.
+
+        A reader that wants MORE than the live subscription reopens
+        it. That costs the records in flight during the swap, which a
+        joining reader was never going to see anyway - it is the
+        price of not subscribing at vomit by default, and `tasks/089`
+        step 4 says why that default had to go.
+        """
         reader = _Reader(self, capacity, level)
         async with self._lock:
+            if self._sub is not None and level > (self._level or 0):
+                await self._close()
             if self._sub is None:
                 self.dropped = 0
                 self.failure = None
-                self._sub = await self._open()
+                self._level = max(level, _widest(self._readers))
+                self._sub = await self._open(self._level)
                 self._stopped = anyio.Event()
                 # `start`, not `start_soon`: it waits for the task to
                 # report its cancel scope, so `leave` can never find
@@ -326,6 +354,24 @@ class _Fanout:
                     self._run, self._sub, self._stopped)
             self._readers.add(reader)
         return reader
+
+    async def _close(self) -> None:
+        """Stop the drain and drop the subscription. LOCK HELD.
+
+        Shared by `leave`, which ends the last reader, and by `join`,
+        which reopens at a wider level. Both have to stop the pump
+        before the unsubscribe, or the drain outlives the queue it
+        reads."""
+        scope, stopped, sub = self._scope, self._stopped, self._sub
+        self._scope, self._stopped, self._sub = None, None, None
+        self._level = None
+        if scope is not None:
+            scope.cancel()
+            await stopped.wait()
+        if sub is not None:
+            sub.close()
+        with contextlib.suppress(Exception):
+            await self._drop()
 
     async def leave(self, reader: _Reader) -> None:
         """Drop a reader, and the subscription with the last one.
@@ -352,14 +398,7 @@ class _Fanout:
         async with self._lock:
             if self._readers or self._sub is None:
                 return
-            scope, stopped, sub = self._scope, self._stopped, self._sub
-            self._scope, self._stopped, self._sub = None, None, None
-            if scope is not None:
-                scope.cancel()
-                await stopped.wait()
-            sub.close()
-            with contextlib.suppress(Exception):
-                await self._drop()
+            await self._close()
 
     async def _run(self, sub: Any, stopped: Any, *,
                    task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
@@ -400,14 +439,15 @@ class _Fanout:
         stopped.set()
 
 
-async def _open_process_subscription() -> Any:
-    """Subscribe to the process sink, at the widest level.
+async def _open_process_subscription(level: int) -> Any:
+    """Subscribe to the process sink, at the widest level any reader
+    wants.
 
     A function rather than the binding call itself, because the
     import is deferred: `huggorm_generated` is the built extension,
     and this module is imported by tools that never load it."""
     from huggorm_generated import subscribe_process_logs
-    return await subscribe_process_logs(level=LOG_LEVEL_ALL)
+    return await subscribe_process_logs(level=level)
 
 
 async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
@@ -514,7 +554,7 @@ class Dispatcher:
         if fan is None:
             fan = _Fanout(
                 self.loops,
-                lambda: target.subscribe_logs(level=LOG_LEVEL_ALL),
+                lambda level: target.subscribe_logs(level=level),
                 lambda: _drop_subscription(target))
             self._log_fanouts[key] = fan
         return fan

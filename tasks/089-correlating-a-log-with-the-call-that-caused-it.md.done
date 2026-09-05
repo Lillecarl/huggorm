@@ -1,16 +1,21 @@
 # Correlating a log with the call that caused it
 
-**OPEN.** A reflection first, and now one decision. Carl asked what
-nanopynix does about a per-request log id and about granular
-verbosity, and how either fits here. This is the answer, the parts
-of it that were verified against Nix's own source, and the question
-it forced.
+**DONE.** All four steps of "the order to do it in" below. The tee is
+gone, the fan-out is in `server.py`, a record names the call that
+raised it, and the level belongs to the thread.
 
-**The question is answered: REPLACE the logger, do not tee.** Carl
-decided it, for the stdio transport, and the last section holds what
-that costs. Everything else in this file is still a reflection.
+A reflection first. Carl asked what nanopynix does about a
+per-request log id and about granular verbosity, and how either fits
+here. What follows is the answer, the parts verified against Nix's
+own source, the questions it forced, and - at the end - what
+implementing each part refuted.
 
-Nothing is implemented. The C++ half needs a per-occasion ask.
+**READ THE FILE FORWARDS.** The early sections are the reflection as
+it was written, including two claims later measurements killed: that
+a `lvlWarn` fallback ceiling was worth having, and that the zero case
+of the request id could not be driven from Python. Each is corrected
+where it was found rather than edited away, because the correction is
+the part nothing else in the repo records.
 
 ## What nanopynix does
 
@@ -706,3 +711,168 @@ done: a caller is never told which number its call got. A reader
 groups and learns the group closed; it cannot ask "the logs for the
 call I just made". Handing the id back to the initiator is additive
 and nothing here blocks it.
+
+## Step 4 done: the level is the thread's. 2026-09-05
+
+The last piece, and the one this file said to do last because it
+needed a measurement rather than an adopted number.
+
+### What went in
+
+`install_log_tap` pins `nix::verbosity = lvlVomit`, once, at import,
+on the main thread - the same write-once-before-any-thread rule the
+tap install already had, and for the same reason: it is a plain
+non-atomic global.
+
+`effective_verbosity()` decides instead. A `ThreadLevel {own, level}`
+per thread, and a `std::atomic<int>` process default for the threads
+nix starts and this binding never sees.
+
+TWO fields rather than one, and the flag is the load-bearing half. A
+`thread_local` initialiser runs once per thread, so a fetcher thread
+that started before a caller raised the default would hold the old
+value forever. `own` is what makes the default live rather than a
+snapshot.
+
+`subscribe_logs` sets the thread's level and `unsubscribe_logs` puts
+it back. `subscribe_process_logs` raises the DEFAULT, because the
+records it exists for come from threads that never set a level - and
+a default left at `lvlInfo` would have the tap drop a talkative
+record before the queue that asked for it saw one.
+
+### THE PIN WAS WRONG, and the suite could not see it
+
+A draft of this step did what nanopynix does: `nix::verbosity =
+lvlVomit`, once, at import. It shipped nowhere, because a review
+asked one question the implementation had not - who else READS that
+global.
+
+    remote-store.cc:118   RemoteStore::setOptions sends `verbosity`
+                          to the daemon
+    daemon.cc:239         the daemon assigns it to its OWN
+                          nix::verbosity
+
+So the pin asks every daemon connection the process opens to narrate
+at vomit, down the worker socket, for the life of the process,
+whether or not anybody subscribed. `dummy://` opens no daemon
+connection, so all 412 tests passed over it.
+
+**What went in instead:** `raise_verbosity(level)`, monotonic. Nix's
+gate moves only when a caller asks, which is what nix's own CLI does
+for `-vvv`. The cost is a real race by the letter of the standard - a
+plain non-atomic global written after threads exist - where the pin
+had none. That is the trade, stated rather than hidden: the race is
+on an aligned int and is the same write nix performs while parsing
+arguments; the daemon flood is observable, permanent and affects a
+machine this process does not own.
+
+**And it needed a gate, which needed a reader.** `process_verbosity()`
+is a plumbing-lane free function returning `nix::verbosity`, added
+because an invariant nothing can observe is one that gets broken.
+`test_nothing_asks_nix_for_everything` reads it, and restoring the
+pin fails exactly that test and nothing else.
+
+### The server was asking for everything
+
+`LOG_LEVEL_ALL = 7`, and its own comment carried the rationale this
+step destroyed:
+
+> Asking wide costs nothing real, because the global
+> `nix::verbosity` filters BEFORE any logger runs, so a level-7
+> subscription still receives only what the process was already
+> willing to raise.
+
+True until this step, and the server relied on it in both places: a
+`Session/Logs` attach and the process sink. Either would have pinned
+the daemon at vomit through the front door.
+
+Replaced by `_widest(readers)`. A `_Fanout` opens at the widest level
+its readers actually want and REOPENS when a joiner wants more, which
+keeps the arrival-order fairness the constant was protecting - a
+warnings-only reader arriving first still cannot shut out the CLI
+listener `tasks/085` exists for. The cost is the records in flight
+during a reopen, which a joining reader was never going to see.
+
+### NO CEILING, and that is the measurement's answer
+
+This file said the ceiling had to be re-measured here rather than
+adopted from nanopynix's table. It is not adopted and it is not
+re-measured either, because the question went away: a ceiling is a
+SECOND gate on the same axis, and goal 3 says one of them owns it.
+Pinned at `lvlVomit`, `effective_verbosity` is the only gate.
+
+The cost the ceiling was meant to bound - every site at or under it
+formatting its message before the logger drops it - is real and is
+not measured here. What IS known: `.scratchpad/probe_levels.py` shows
+a whole evaluation of a file raising ONE record under lvlInfo. The
+evaluation hot loop is not where the logging is, which this file
+already established by counting sites.
+
+### The gate that did not exist, and the two the duplicate was hiding
+
+**The workload was measured, after a first draft guessed wrong.** That
+draft used `builtins.trace` at level 6 and failed: a trace is
+lvlError, and a trivial `eval_expr` raises nothing under lvlInfo at
+all. The probe asked nix instead:
+
+    eval_expr trivial   msgs by level {}
+    eval_expr trace     msgs by level {0: 1}
+    eval_file           msgs by level {4: 1}
+      lvl4: evaluating file '/tmp/.../default.nix'
+
+lvlTALKATIVE, not the debug the draft assumed. So the gates evaluate
+a FILE.
+
+**Then the duplicate filter turned up.** Removing the tap's test
+failed only ONE gate - the stderr one - because `LogQueue` carried a
+`level_` of its own and caught what the tap let through. That is the
+"two filters on one axis" this file opened, answered by measurement:
+the queue's was redundant.
+
+Nothing can reach a queue that the thread's level did not admit. A
+subscribed thread has `subscribe_logs`'s level; a thread with no
+level of its own reads the default that `subscribe_process_logs`
+sets, and a thread WITH one never reaches the process queue because
+`route` gives its records to its own.
+
+So `LogQueue::level_` is gone, and `LogQueue(capacity)` takes one
+argument. Breaking, and better.
+
+**The proof is in the count.** With the duplicate removed, perturbing
+the tap's gate fails THREE gates instead of one:
+
+    test_the_same_work_at_the_default_says_nothing
+    test_unsubscribing_puts_the_level_back
+    test_an_unsubscribed_caller_still_sees_only_the_default
+
+Two of those were passing for the wrong reason.
+
+Removing the pin fails the other one, and only it:
+
+    test_a_subscription_can_ask_for_more_than_the_default
+      - nothing at lvlTalkative arrived, so the pin did nothing
+
+### Measured
+
+    nix run --file . check          all checks passed
+    the suite                       414 passed
+
+Read off the totals line, and it took two runs to get one: the first
+passed `-q`, which prints no totals - the same mistake this file
+already records from step 3, made again in the same session.
+
+### What is still not measured
+
+The formatting cost. Every site at or under whatever level has been
+asked for runs `fmt(args)` before the tap decides. Monotonic raising
+bounds it to what callers actually wanted, which the pin did not -
+but the number is unmeasured, and `tasks/095` holds it rather than
+this file, because a measurement named and not taken is lost in a
+closed task.
+
+### The prose that became false
+
+`subscribe_logs`'s "can only narrow" sentence, which this file
+predicted would have to change in the same commit as the pinning. It
+did, in the declaration and in `logging.hpp`, and both now say the
+level SETS the thread's.

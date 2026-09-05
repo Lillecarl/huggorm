@@ -13,6 +13,7 @@
  * `LogField` have no method at all.
  */
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -119,22 +120,32 @@ struct LogRecord
  * test written the other way round would have made it droppable in
  * silence.
  *
- * `level` filters a "msg" ONLY. Filtering a "start" by level would
- * leak a node the same way dropping one does, and upstream never
- * filters activities either: `Activity::Activity` calls
- * `startActivity` with no test (logging.cc:196), and the `lvl` it
- * passes is a field of the record rather than a gate.
+ * A QUEUE NO LONGER FILTERS BY LEVEL, and that is `tasks/089` step 4
+ * removing a duplicate rather than a feature. It held a `level_` and
+ * refused a "msg" above it, which was the only gate a subscriber had
+ * while `nix::verbosity` decided everything else.
  *
- * The global `nix::verbosity` still filters BEFORE any logger runs
- * (logging.hh:314, :330), so this level can only narrow. Asking for
- * more than the global gets nothing.
+ * `effective_verbosity` decides now, per thread, and it reaches every
+ * record before any queue sees one. Nothing can arrive here that the
+ * thread's level did not already admit:
+ *
+ *   - a subscribed thread has `subscribe_logs`'s level, set from the
+ *     same number the queue used to hold;
+ *   - a thread with no level of its own reads the process default,
+ *     which `subscribe_process_logs` sets from ITS number - and a
+ *     thread with its own level never reaches the process queue,
+ *     because `route` gives its records to its own.
+ *
+ * So the two filters were one fact stated twice, and goal 3 says one
+ * of them owns it. Keeping both hid a gate: removing the tap's test
+ * left `test_the_same_work_at_the_default_says_nothing` PASSING,
+ * because this filter caught what the tap let through.
  */
 class LogQueue
 {
 public:
-    LogQueue(std::size_t capacity, uint64_t level)
+    explicit LogQueue(std::size_t capacity)
         : capacity_(capacity)
-        , level_(level)
     {
     }
 
@@ -147,8 +158,6 @@ public:
         const bool droppable = r.action == "msg" || r.action == "result";
         std::lock_guard<std::mutex> held(mutex_);
         if (!open_)
-            return;
-        if (r.action == "msg" && r.level > level_)
             return;
         if (droppable && records_.size() >= capacity_) {
             ++dropped_;
@@ -193,7 +202,6 @@ private:
     mutable std::mutex mutex_;
     std::deque<LogRecord> records_;
     std::size_t capacity_;
-    uint64_t level_;
     uint64_t dropped_ = 0;
     bool open_ = true;
 };
@@ -219,6 +227,107 @@ inline std::shared_ptr<LogQueue> & thread_queue()
 {
     static thread_local std::shared_ptr<LogQueue> queue;
     return queue;
+}
+
+/**
+ * Raise nix's own gate far enough to admit `level`. Never lowers.
+ *
+ * TWO GATES, and they are not the duplicate this task removed from
+ * `LogQueue`. That one was a second filter at the same layer. These
+ * are different questions:
+ *
+ *   nix::verbosity        will nix PRODUCE the record at all
+ *   effective_verbosity   will this thread KEEP it
+ *
+ * The first has to move, because `printMsg` gates on it before any
+ * logger runs (logging.hh:314) - so no per-thread level can widen
+ * past it, and pinning it wide open is not free either. It is what
+ * `RemoteStore::setOptions` SENDS TO THE DAEMON
+ * (remote-store.cc:118), and `daemon.cc:239` assigns it to the
+ * daemon's own `nix::verbosity`. A pin at `lvlVomit` would ask every
+ * daemon connection this process opens to narrate everything, down
+ * the socket, forever. `dummy://` cannot show that, which is why it
+ * was nearly shipped.
+ *
+ * MONOTONIC, so the write happens once per new high-water mark
+ * rather than on every subscribe. It is a plain non-atomic global and
+ * this is a race by the letter of the standard - the same write nix's
+ * own CLI performs while parsing arguments, on an aligned int.
+ * nanopynix pins once at import to avoid it entirely and pays the
+ * daemon cost; this pays the race and keeps the daemon quiet until
+ * somebody asks. Recorded in `tasks/089` as the trade it is.
+ */
+inline void raise_verbosity(nix::Verbosity level)
+{
+    if (level > nix::verbosity)
+        nix::verbosity = level;
+}
+
+/**
+ * The level a thread with no level of its own REPORTS at.
+ *
+ * Not `nix::verbosity`, and the difference is the point: that one
+ * only ever rises, because lowering it would silence a subscription
+ * somebody else still holds. This one goes back down, so a process
+ * sink that asked for everything stops flooding a console user's
+ * stderr when it detaches.
+ *
+ * An ATOMIC, and it has to be: nix starts threads this binding never
+ * sees - a curl worker, a substituter, a build hook reader - and none
+ * of them passes anything that could set a thread level. They read
+ * this instead, and they read it while another thread writes it.
+ *
+ * `lvlInfo` is nix's own default (`logging.cc:150`), so a caller who
+ * asks for nothing sees what it saw before any of this existed.
+ */
+inline std::atomic<int> & default_verbosity()
+{
+    static std::atomic<int> level{nix::lvlInfo};
+    return level;
+}
+
+/**
+ * What THIS thread asked for, and whether it asked at all.
+ *
+ * Two fields rather than one, and the flag is the load-bearing half.
+ * A thread that never chose must follow the process default AS IT
+ * CHANGES: `thread_local` initialisers run once, on first use, so a
+ * fetcher thread that started before a caller raised the default
+ * would keep the old value forever. `own` is what makes the default
+ * live rather than a snapshot.
+ */
+struct ThreadLevel
+{
+    bool own = false;
+    nix::Verbosity level = nix::lvlInfo;
+};
+
+inline ThreadLevel & thread_level()
+{
+    static thread_local ThreadLevel chosen;
+    return chosen;
+}
+
+/**
+ * The level that decides what this thread's records are worth.
+ *
+ * The only gate ON THIS SIDE, which is the whole of `tasks/089` step
+ * 4. A subscription raises `nix::verbosity` far enough that nix
+ * produces what it asked for, and this then decides who keeps it -
+ * per thread, so one caller asking for talkative does not put every
+ * other logger in the process on stderr.
+ *
+ * A relaxed load, because there is nothing to order against: the
+ * value is one int and a reader that sees the previous one for a
+ * moment prints one line differently.
+ */
+inline nix::Verbosity effective_verbosity()
+{
+    const auto & chosen = thread_level();
+    if (chosen.own)
+        return chosen.level;
+    return static_cast<nix::Verbosity>(
+        default_verbosity().load(std::memory_order_relaxed));
 }
 
 /**
@@ -342,11 +451,25 @@ public:
      * `resBuildLogLine` from `fields[0].s` (logging.cc:140), so a
      * fallback fed a `LogRecord` would have to rebuild `Fields` from
      * `LogField` to say the same thing. Forwarding the arguments
-     * says it with no reconstruction, and the fallback's own
-     * `nix::verbosity` gate stays exactly where nix put it.
+     * says it with no reconstruction.
+     *
+     * THE FALLBACK'S OWN GATE IS GONE, and that is why every override
+     * below tests `effective_verbosity()` before forwarding.
+     * `SimpleLogger::log` gates on `nix::verbosity` (logging.cc:118),
+     * which `install_log_tap` now pins wide open - so forwarding
+     * unguarded would put every debug line nix can produce on a
+     * console user's stderr. The tap does the filtering nix's global
+     * used to do, per thread.
+     *
+     * A MESSAGE is gated before routing too. An ACTIVITY is not, and
+     * the asymmetry is the same one `LogQueue::push` already makes:
+     * a start that never arrives leaves a node in the reader's tree
+     * that nothing closes.
      */
     void log(nix::Verbosity lvl, std::string_view s) override
     {
+        if (lvl > effective_verbosity())
+            return;
         if (!route({.action = "msg",
                     .level = static_cast<uint64_t>(lvl),
                     .text = std::string(s)}))
@@ -361,6 +484,8 @@ public:
         // beside the one the typed-status path already crosses with
         // (`tasks/036`). Those two should agree, and `tasks/032`
         // holds that question open rather than answering it twice.
+        if (ei.level > effective_verbosity())
+            return;
         std::ostringstream rendered;
         nix::showErrorInfo(rendered, ei, nix::loggerSettings.showTrace.get());
         if (!route({.action = "msg",
@@ -379,14 +504,14 @@ public:
                     .parent = parent,
                     .type = static_cast<uint64_t>(type),
                     .text = s,
-                    .fields = convert(fields)}))
+                    .fields = convert(fields)}) && lvl <= effective_verbosity())
             fallback().startActivity(act, lvl, type, s, fields, parent);
     }
 
     void stopActivity(nix::ActivityId act) override
     {
         if (!route({.action = "stop", .id = act}))
-            fallback().stopActivity(act);
+            fallback().stopActivity(act);  // no level to gate on
     }
 
     void result(nix::ActivityId act, nix::ResultType type,
@@ -502,6 +627,18 @@ private:
  */
 inline void install_log_tap()
 {
+    // NO PIN HERE, and a draft of `tasks/089` step 4 had one:
+    // `nix::verbosity = nix::lvlVomit`, once, at import, which is
+    // what nanopynix does. It is wrong for this binding, and the
+    // suite could not show it because `dummy://` opens no daemon
+    // connection.
+    //
+    // `RemoteStore::setOptions` SENDS `nix::verbosity` to the daemon
+    // (remote-store.cc:118) and `daemon.cc:239` assigns it there. So
+    // a pin asks every daemon connection to narrate at vomit, over
+    // the socket, whether or not anyone subscribed. `raise_verbosity`
+    // moves it only when a caller asks, which is what nix's own CLI
+    // does when a user passes `-vvv`.
     nix::logger = std::make_unique<LogTap>();
 }
 
@@ -515,16 +652,31 @@ inline void install_log_tap()
 inline std::shared_ptr<LogQueue> subscribe_logs(std::size_t capacity,
                                                 uint64_t level)
 {
+    // Two writes, and they answer two different questions. Raising
+    // nix's gate is what makes the record EXIST; the thread level is
+    // what keeps it here rather than on every other thread.
+    //
+    // Before `tasks/089` step 4 only the second existed, so this
+    // could narrow and never widen: nix's macro had already rejected
+    // anything above the process default.
+    raise_verbosity(static_cast<nix::Verbosity>(level));
+    thread_level() = {.own = true,
+                      .level = static_cast<nix::Verbosity>(level)};
     auto & slot = thread_queue();
     if (slot)
         slot->close();
-    slot = std::make_shared<LogQueue>(capacity, level);
+    slot = std::make_shared<LogQueue>(capacity);
     return slot;
 }
 
 /** Stop recording. A queue already handed out still drains. */
 inline void unsubscribe_logs()
 {
+    // Back to following the process default, rather than to a number.
+    // A thread that stops subscribing has no opinion again, and
+    // leaving its old level behind would filter records it no longer
+    // reads - including the ones the process-wide sink wants.
+    thread_level() = {};
     auto & slot = thread_queue();
     if (slot)
         slot->close();
@@ -553,7 +705,19 @@ inline void unsubscribe_logs()
 inline std::shared_ptr<LogQueue> subscribe_process_logs(std::size_t capacity,
                                                         uint64_t level)
 {
-    auto fresh = std::make_shared<LogQueue>(capacity, level);
+    // RAISES BOTH, or this subscription's level is a lie. The records this sink exists for are raised on nix's own
+    // threads - a fetcher, a file transfer, a build - and none of
+    // them ever sets a level, so they read the default. Leaving it at
+    // `lvlInfo` would have the tap drop a debug record before the
+    // queue that asked for it ever saw one.
+    //
+    // Process-wide state changed by one subscriber, which is what
+    // this function already is: it REPLACES any subscription that was
+    // there. `unsubscribe_process_logs` puts the default back.
+    raise_verbosity(static_cast<nix::Verbosity>(level));
+    default_verbosity().store(static_cast<int>(level),
+                              std::memory_order_relaxed);
+    auto fresh = std::make_shared<LogQueue>(capacity);
     std::shared_ptr<LogQueue> old;
     {
         auto & sink = process_sink();
@@ -568,6 +732,15 @@ inline std::shared_ptr<LogQueue> subscribe_process_logs(std::size_t capacity,
 /** Stop recording process-wide. A queue already handed out drains. */
 inline void unsubscribe_process_logs()
 {
+    // Back to nix's own default (`logging.cc:150`), so a thread with
+    // no level of its own sees what it saw before anyone subscribed.
+    //
+    // `nix::verbosity` is NOT lowered with it. It is the high-water
+    // mark of what anyone has asked for, and lowering it would
+    // silence a per-thread subscription somebody else still holds.
+    // The cost is that nix keeps FORMATTING at that level; the
+    // benefit is that nothing reaches stderr that nobody asked for.
+    default_verbosity().store(nix::lvlInfo, std::memory_order_relaxed);
     std::shared_ptr<LogQueue> old;
     {
         auto & sink = process_sink();

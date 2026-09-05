@@ -11,8 +11,9 @@ mutex and returns. So these tests drain, they never wait.
 Two things every gate here has to keep in mind, both measured against
 `logging.hh` and recorded in `tasks/032`:
 
-- the global `nix::verbosity` filters BEFORE any logger runs, so a
-  subscription level can only narrow;
+- `nix::verbosity` is pinned wide open at import, so a subscription
+  level can WIDEN as well as narrow, and the tap is the only filter
+  (`tasks/089` step 4);
 - an ACTIVITY is not filtered at all. `Activity::Activity` calls
   `startActivity` with no test, so a start arrives whatever its level
   says.
@@ -95,12 +96,15 @@ def test_a_warning_takes_the_other_path(subscribed: tuple[Any, Any]) -> None:
 
 
 def test_the_level_refuses_what_it_did_not_ask_for(state: Any) -> None:
-    """A subscription can narrow, and only narrow.
+    """A subscription narrows, and since `tasks/089` it can widen too.
 
     Level 0 is lvlError, which the trace is. The warning is lvlWarn,
-    which is 1, so it does not arrive. Both were RAISED - the queue is
-    what refuses one, and `dropped` does not move for it, because that
-    counter is the BOUND's rather than the filter's."""
+    which is 1, so it does not arrive. Both were RAISED - the TAP is
+    what refuses one now, and `dropped` does not move for it, because
+    that counter is the BOUND's rather than the filter's.
+
+    The queue used to do this refusing. It carried a `level_` beside
+    the thread's, which was one fact stated twice."""
     stream = state.subscribe_logs(level=0)
     try:
         state.eval_expr(TRACE % "kept")
@@ -1157,3 +1161,182 @@ async def test_the_marker_survives_a_queue_full_of_messages() -> None:
     # adds one more - which is why this counts down and not equal.
     assert len(finals) >= 20, \
         f"every call said it finished, got {len(finals)}"
+
+
+# ---- the level is the thread's, and it can widen --------------------
+#
+# `tasks/089` step 4. `nix::verbosity` is pinned wide open at import,
+# so nix's own macro rejects nothing and `effective_verbosity` decides
+# instead - per THREAD, so one caller asking for more does not flood
+# every other logger in the process.
+#
+# Before this, `subscribe_logs(level=...)` could only NARROW: the
+# global filtered first at lvlInfo, so asking for 4 got nothing that
+# asking for 3 did not. That is the sentence these gates replace.
+#
+# THE WORKLOAD IS A FILE, and that was measured rather than guessed.
+# A first draft used `builtins.trace` at level 6 and failed: a trace
+# is lvlError, and a trivial `eval_expr` raises nothing under lvlInfo
+# at all. `.scratchpad/probe_levels.py` asked nix instead, and
+# `evaluating file '...'` is lvlTALKATIVE - 4, not the 6 that draft
+# assumed.
+
+TALKATIVE = 4
+
+
+def evaluated(tmp_path: pathlib.Path) -> str:
+    """An expression whose evaluation nix narrates below lvlInfo."""
+    (tmp_path / "default.nix").write_text("1 + 1\n")
+    return str(tmp_path)
+
+
+def test_a_subscription_can_ask_for_more_than_the_default(
+    state: Any, tmp_path: pathlib.Path
+) -> None:
+    """The whole point, and the thing the old design could not do.
+
+    `evaluating file` is lvlTalkative, which is ABOVE the lvlInfo
+    default. Under the old design nix's macro rejected it before any
+    logger ran, so no subscription could ask for it.
+
+    Perturbation: drop the `nix::verbosity` pin from
+    `install_log_tap` and this fails - the macro rejects the record
+    before the tap sees it."""
+    where = evaluated(tmp_path)
+    stream = state.subscribe_logs(level=TALKATIVE)
+    try:
+        state.eval_file(where)
+        deep = [r for r in stream.drain()
+                if r.action() == "msg" and r.level() == TALKATIVE]
+    finally:
+        state.unsubscribe_logs()
+
+    assert deep, "nothing at lvlTalkative arrived, so the pin did nothing"
+    assert "evaluating file" in deep[0].text(), deep[0].text()
+
+
+def test_the_same_work_at_the_default_says_nothing(
+    state: Any, tmp_path: pathlib.Path
+) -> None:
+    """Pinning the global must not widen what a plain caller sees.
+
+    The SAME evaluation as above, at the default level. The pin moved
+    the gate; it did not remove it.
+
+    Perturbation: drop the `effective_verbosity` test from
+    `LogTap::log` and this fails, because every record nix raises now
+    reaches the queue."""
+    where = evaluated(tmp_path)
+    stream = state.subscribe_logs()
+    try:
+        state.eval_file(where)
+        records = stream.drain()
+    finally:
+        state.unsubscribe_logs()
+
+    loud = [r for r in records
+            if r.action() == "msg" and r.level() > 3]
+    assert not loud, [(r.level(), r.text()) for r in loud]
+
+
+def test_unsubscribing_puts_the_level_back(
+    state: Any, tmp_path: pathlib.Path
+) -> None:
+    """A level belongs to a subscription, not to the thread forever.
+
+    This is why the level is per thread rather than the global
+    `tasks/089` refused to raise. Both subscriptions run on this one
+    test thread, so what it checks is that the loud one RESTORES
+    rather than leaves its number behind."""
+    where = evaluated(tmp_path)
+    state.subscribe_logs(level=TALKATIVE)
+    try:
+        state.eval_file(where)
+    finally:
+        state.unsubscribe_logs()
+
+    state.forget_file(where)
+    quiet = state.subscribe_logs()
+    try:
+        state.eval_file(where)
+        after = [r for r in quiet.drain()
+                 if r.action() == "msg" and r.level() > 3]
+    finally:
+        state.unsubscribe_logs()
+
+    assert not after, f"the loud subscription left its level behind: {after}"
+
+
+def test_an_unsubscribed_caller_still_sees_only_the_default(
+    state: Any, tmp_path: pathlib.Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """The pin must not turn stderr into a firehose.
+
+    `LogTap::fallback` is a `SimpleLogger`, and `SimpleLogger::log`
+    gates on `nix::verbosity` - now pinned wide open. So every
+    override has to apply the thread level BEFORE forwarding, or a
+    console user who subscribed to nothing gets every line nix can
+    produce.
+
+    Perturbation: remove the `effective_verbosity` test from
+    `LogTap::log` and this fails with `evaluating file` on stderr."""
+    where = evaluated(tmp_path)
+    state.eval_file(where)
+    state.eval_expr(TRACE % "UNSUBSCRIBED-MARKER")
+
+    out, err = capfd.readouterr()
+    assert "UNSUBSCRIBED-MARKER" in err, "the fallback still forwards"
+    assert out == "", "descriptor 1 belongs to the protocol"
+    assert "evaluating file" not in err, err
+
+
+def test_nothing_asks_nix_for_everything(state: Any,
+                                         tmp_path: pathlib.Path) -> None:
+    """`nix::verbosity` is what the DAEMON is told to produce.
+
+    `RemoteStore::setOptions` sends this global over the worker
+    protocol (`remote-store.cc:118`) and `daemon.cc:239` assigns it
+    to the daemon's own. So pinning it at lvlVomit - which a draft of
+    `tasks/089` step 4 did, copying nanopynix - asks every daemon
+    connection this process opens to narrate everything down the
+    socket, forever, whether or not anybody subscribed.
+
+    `dummy://` opens no daemon connection, so the suite could not see
+    it. This gate is the substitute: nothing may raise the process
+    gate to vomit.
+
+    It is ORDER-INDEPENDENT but not future-proof: a later test that
+    legitimately asks for level 7 fails it. That is the right
+    failure - it makes the cost visible at the moment somebody takes
+    it - and this docstring is where they read why."""
+    from huggorm_bindings import process_verbosity
+
+    where = evaluated(tmp_path)
+    stream = state.subscribe_logs()
+    try:
+        state.eval_file(where)
+        stream.drain()
+    finally:
+        state.unsubscribe_logs()
+
+    assert process_verbosity() < 7, (
+        "nix::verbosity is wide open, so every daemon connection is "
+        "told to narrate at vomit")
+
+
+def test_a_subscription_raises_the_gate_it_needs(state: Any) -> None:
+    """Asking for more than the default has to move nix's own gate.
+
+    `printMsg` rejects before any logger runs, so a per-thread level
+    cannot widen past `nix::verbosity` - raising it is not a
+    shortcut, it is the mechanism.
+
+    Perturbation: drop the `raise_verbosity` call from
+    `subscribe_logs` and this fails."""
+    from huggorm_bindings import process_verbosity
+
+    state.subscribe_logs(level=TALKATIVE)
+    try:
+        assert process_verbosity() >= TALKATIVE
+    finally:
+        state.unsubscribe_logs()
