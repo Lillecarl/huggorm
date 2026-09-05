@@ -921,12 +921,30 @@ which was superseded rather than fixed.
   deselected. Recorded rather than corrected quietly.
   STEP 4, per-thread verbosity, is what is left, and still needs the
   ceiling re-measured here rather than adopted.
-- 093 (a leak report rides every suite run) is OPEN and blocks
-  nothing. nanobind reports four leaked `EvalState` instances, the
-  type and eighteen functions at shutdown on every run. NOT 089:
-  measured with those tests deselected and the same four appear. Four
-  is constant rather than growing with the test count, which points
-  at a few long-lived states - a guess, and the file says so.
+- 093 (a python primop that closes over its state leaks the state) is
+  OPEN and is a DEFECT, not the shutdown warning it was opened as.
+  Bisected to exactly four tests, one leak each, and the discriminator
+  is what the registered callable closes over: every leaking one names
+  `state`, every clean one does not. Four other tests register primops
+  and are clean.
+  `register_primop` captures the callable as a strong `nb::object`
+  inside a lambda that lives in the state's base env, so the cycle
+  runs wrapper -> EvalCore -> nix::EvalState -> PrimOp -> nb::object
+  -> closure cell -> wrapper. The `weak_ptr<EvalCore>` breaks the C++
+  arm; the arm that closes it is the Python reference held from inside
+  nix's memory, which Python's collector cannot traverse. Two
+  `gc.collect()` calls do not free it, so it is UNCOLLECTABLE.
+  It matters because closing over the state is the NATURAL way to
+  write a primop - the result has to come from `state.make_int` - so
+  the useful callables are exactly the leaking ones, and a service
+  that runs for days can never reclaim such a state.
+  One probe LIED and is recorded: it did `del state` first and read
+  "no leak" as "no cycle". The lambda shares that binding through a
+  cell, so `del` emptied the cell and broke the cycle by hand.
+  The fix is C++ and needs an ask: give the bound type `tp_traverse`
+  and `tp_clear` so the collector can see the callables. There is also
+  no gate today - the leak is reported after the last test, and the
+  type has no weakref slot.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE
