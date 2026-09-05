@@ -261,6 +261,93 @@ public:
 
     const std::string & store_uri() const { return store_uri_; }
 
+    // -- the ONE strong reference to each registered callable ------
+    //
+    // A primop's `impl` used to capture the `nb::object` itself, and
+    // that made an UNCOLLECTABLE cycle: the callable is normally a
+    // closure over the state that registered it - `state.make_int` is
+    // how a primop builds its result - so the state reached the
+    // callable through nix's base env, and the callable reached the
+    // state through its closure cell. Python's collector cannot walk
+    // the first arm, which lives in C++ memory it knows nothing
+    // about. Measured in `tasks/093`: two `gc.collect()` calls did
+    // not free it.
+    //
+    // So the reference lives HERE, in one place a `tp_traverse` slot
+    // can report and a `tp_clear` slot can drop, and the lambda
+    // carries an INDEX instead. The `weak_ptr` it already held is
+    // what it looks the index up through.
+    //
+    // `release` empties each slot rather than the vector, because an
+    // index handed to a lambda has to stay valid: a cleared slot is
+    // an empty `nb::object` the lambda refuses on, and a shorter
+    // vector would be an out-of-range read.
+    //
+    // EVERY READER AND WRITER OF `primops_` HOLDS THE GIL, and that
+    // is the invariant this vector is safe under rather than a
+    // remark. It is written on the state's affine thread and READ by
+    // `tp_traverse` on whichever thread runs a collection, so a
+    // `push_back` racing an iteration would reallocate under it.
+    //
+    // Nothing here takes a lock, because nothing needs one:
+    //
+    //   hold_primop     the emitted `register_primop` binding takes
+    //                   NO `nb::call_guard<nb::gil_scoped_release>`,
+    //                   unlike `subscribe_logs` beside it - checked
+    //                   in the emitted `eval.cpp`, not assumed
+    //   primop          the lambda reads after `gil_scoped_acquire`
+    //   tp_traverse     the collector holds it
+    //   release_primops `tp_clear`, likewise
+    //   ~EvalCore       acquires it, and is the last owner anyway
+    //
+    // So giving `register_primop` a release guard - which `blocking`
+    // decides - would be a data race, not a speed-up. Registration is
+    // a vector push and a map insert; there is nothing to release for.
+
+    std::size_t hold_primop(nb::object fn)
+    {
+        primops_.push_back(std::move(fn));
+        return primops_.size() - 1;
+    }
+
+    /** The callable at `slot`, or an empty object once cleared. */
+    nb::object primop(std::size_t slot) const
+    {
+        return slot < primops_.size() ? primops_[slot] : nb::object();
+    }
+
+    const std::vector<nb::object> & primops() const { return primops_; }
+
+    void release_primops()
+    {
+        for (auto & fn : primops_)
+            fn.reset();
+    }
+
+    /**
+     * Drops the callables with the GIL HELD, before anything else.
+     *
+     * An `nb::object` going out of scope decrements a Python
+     * refcount, and this destructor runs wherever the last share of
+     * the core is dropped - `make_core`'s deleter exists because that
+     * can be a pool worker, the server's reaper or a Python
+     * finalizer. Only the last of those holds the GIL.
+     *
+     * A destructor BODY runs before any member is destroyed, so this
+     * also removes the member-order question: the vector is empty by
+     * the time its own destructor runs, whatever position it holds.
+     *
+     * `gil_scoped_acquire` is re-entrant, so the common case - a
+     * Python finalizer that already holds it - costs a counter.
+     */
+    ~EvalCore()
+    {
+        if (primops_.empty())
+            return;
+        nb::gil_scoped_acquire gil;
+        primops_.clear();
+    }
+
 private:
     std::string store_uri_;
     bool read_only_ = false;
@@ -268,6 +355,7 @@ private:
     nix::EvalSettings eval_settings_;
     nix::ref<nix::Store> store_;
     nix::EvalState state_;
+    std::vector<nb::object> primops_;
 };
 
 /**
@@ -337,9 +425,89 @@ public:
     void register_primop(const std::string & name, std::size_t arity,
                          nb::object fn) const;
 
+    // What the GC slots below report and drop. On the CORE rather
+    // than here, because a Bridge shares the core and the callables
+    // have to outlive this wrapper exactly as the state does.
+    const std::vector<nb::object> & primops() const
+    {
+        return core_->primops();
+    }
+
+    void release_primops() const { core_->release_primops(); }
+
 private:
 
     std::shared_ptr<EvalCore> core_;
+};
+
+// ---- letting Python's collector see the callables ------------------
+//
+// A HELPER the EMITTER BINDS TO. The declaration says
+// `@gc_slots("huggorm::evaluator_slots")` and the generated
+// `nb::class_` names this table; nothing here resolves a Python name,
+// and generated code is the only caller.
+//
+// nanobind offers no abstraction for this - its own `refleaks.rst`
+// says so and says to drop to the CPython slots, which is what these
+// are. Read there rather than recalled, after `tasks/093` measured
+// the leak.
+//
+// A declaration cannot carry it. A traversal is a FUNCTION the
+// interpreter calls during collection, over a member the declaration
+// does not know exists, and the DSL has no way to say "visit this".
+
+/**
+ * Report the callables, so a cycle through them is visible.
+ *
+ * `Py_VISIT(Py_TYPE(self))` first: an instance depends on its type,
+ * and nanobind's own example starts there.
+ *
+ * The readiness check is not defensive noise. A traversal can run
+ * after `__new__` and before the C++ constructor finished, and
+ * reading the object then is reading uninitialised memory.
+ *
+ * A `const &` and no `nb::object` copy, deliberately: nanobind's doc
+ * changed its own example for this, because under free-threading a
+ * traversal that takes a reference to what it visits is wrong.
+ */
+inline int evaluator_tp_traverse(PyObject * self, visitproc visit, void * arg)
+{
+    Py_VISIT(Py_TYPE(self));
+    if (!nb::inst_ready(self))
+        return 0;
+    for (const auto & fn : nb::inst_ptr<Evaluator>(self)->primops())
+        Py_VISIT(fn.ptr());
+    return 0;
+}
+
+/**
+ * Break the cycle, by dropping the one reference that closes it.
+ *
+ * Python calls this only for an object it has already proved
+ * unreachable, so releasing the callables cannot strand a caller.
+ *
+ * NO GATE DRIVES THIS, and it was measured rather than assumed.
+ * Disabling this function changes nothing: the suite still passes and
+ * nothing leaks. The reason is CPython's rule, which nanobind's own
+ * doc states - every type in a cycle needs `tp_traverse`, and only
+ * ONE of them needs `tp_clear`. The other participants here are a
+ * function object and a cell, and both carry their own.
+ *
+ * It stays because that is a fact about THIS cycle, not about the
+ * class. An `EvalState` reached only through C++ participants would
+ * have nothing else to clear. Kept as correctness, and recorded as
+ * untested (`tasks/093`).
+ */
+inline int evaluator_tp_clear(PyObject * self)
+{
+    nb::inst_ptr<Evaluator>(self)->release_primops();
+    return 0;
+}
+
+inline PyType_Slot evaluator_slots[] = {
+    {Py_tp_traverse, reinterpret_cast<void *>(evaluator_tp_traverse)},
+    {Py_tp_clear, reinterpret_cast<void *>(evaluator_tp_clear)},
+    {0, nullptr},
 };
 
 // ---- one rooted value ---------------------------------------------
@@ -670,16 +838,23 @@ inline void Evaluator::register_primop(const std::string & name,
                                        nb::object fn) const
 {
     std::weak_ptr<EvalCore> weak = core_;
+    // The core OWNS the callable and the lambda carries an index, so
+    // the only strong Python reference is one a `tp_clear` slot can
+    // drop. Capturing `fn` here instead is what made the cycle in
+    // `tasks/093`, and no `weak_ptr` fixes that: the arm that closes
+    // it runs from C++ memory into Python, which is the direction
+    // Python's collector cannot follow.
+    const std::size_t slot = core_->hold_primop(std::move(fn));
     nix::PrimOp op{
         .name = name,
         // `args` stays empty on purpose. Upstream computes `arity`
         // from it when it is set, and names there are for
         // documentation this binding does not carry.
         .arity = arity,
-        .impl = [weak, fn, arity, name](nix::EvalState & state,
-                                        const nix::PosIdx pos,
-                                        nix::Value ** args,
-                                        nix::Value & out) {
+        .impl = [weak, slot, arity, name](nix::EvalState & state,
+                                          const nix::PosIdx pos,
+                                          nix::Value ** args,
+                                          nix::Value & out) {
             auto held = weak.lock();
             if (!held)
                 state.error<nix::EvalError>("the evaluator is gone")
@@ -690,6 +865,18 @@ inline void Evaluator::register_primop(const std::string & name,
                 state.forceValue(*args[i], pos);
 
             nb::gil_scoped_acquire gil;
+            // Empty once `tp_clear` has run, which happens only for a
+            // cycle Python already found unreachable - so nothing
+            // should be able to call this. It is checked rather than
+            // assumed, because the alternative is calling a null.
+            nb::object fn = held->primop(slot);
+            if (!fn.is_valid())
+                state
+                    .error<nix::EvalError>(
+                        "the Python implementation of builtins.%1% was "
+                        "released", name)
+                    .atPos(pos)
+                    .debugThrow();
             try {
                 nb::list made;
                 for (std::size_t i = 0; i < arity; ++i)

@@ -11,6 +11,7 @@ refuses to build an rpc for it - `test_no_rpc_surface` below is what
 holds that.
 """
 
+import gc
 from typing import Any
 
 import pytest
@@ -200,3 +201,93 @@ def test_every_registered_name_is_findable(state: Any) -> None:
 
     for n in names:
         assert state.eval_expr(f"builtins.{n} 7").integer() == 7, n
+
+
+# ---- the cycle a stored callable makes -----------------------------
+#
+# `tasks/093`. A primop's callable normally closes over the state that
+# registered it, because the result comes from `state.make_int`. The
+# state then reaches the callable through nix's base env, and the
+# callable reaches the state through its closure cell - a cycle whose
+# first arm lives in C++ memory Python's collector cannot walk.
+#
+# Measured before the fix: two `gc.collect()` calls did not free it,
+# and the suite reported four leaked EvalState instances at shutdown.
+#
+# A CANARY rather than a weakref, and not by preference: the bound
+# type has no weakref slot ("cannot create weak reference to
+# 'huggorm_bindings.eval.EvalState'"). The canary sits in the closure,
+# so it dies exactly when the closure does.
+
+
+class _Canary:
+    """Records its own death, which is the whole measurement."""
+
+    def __init__(self, died: list[str]) -> None:
+        self._died = died
+
+    def __del__(self) -> None:
+        self._died.append("collected")
+
+
+def test_a_primop_closing_over_its_state_does_not_leak_it() -> None:
+    """The state must be collectable, and it holds the callable.
+
+    Nothing here calls `del` on `state`. That looks like a neutral way
+    to drop a reference and is not: the lambda closes over the same
+    binding through a cell, so deleting it EMPTIES the cell and breaks
+    the cycle by hand. A probe that did it read "no leak" as "no
+    cycle" and was wrong (`tasks/093`).
+
+    So the reference goes out of scope on its own, and the collector
+    is asked.
+
+    Perturbation: make `evaluator_tp_traverse` report no callables.
+    This fails, and the four leaked instances come back.
+
+    Making `evaluator_tp_clear` release nothing changes NOTHING, and
+    that was measured rather than assumed. CPython needs `tp_traverse`
+    on every type in a cycle and `tp_clear` on only ONE of them; the
+    other participants here are a function object and a cell, and both
+    carry their own. So traverse is the load-bearing half and this
+    gate drives only that."""
+    from huggorm_bindings import EvalState
+
+    died: list[str] = []
+
+    def build() -> None:
+        state = EvalState(URI)
+        canary = _Canary(died)
+
+        def keep(v: Any) -> Any:
+            # Both are CAPTURED, and that is the point. `state` is
+            # what makes the cycle; `canary` is what reports whether
+            # the closure was ever freed.
+            assert canary is not None
+            return state.make_int(v.integer())
+
+        state.register_primop("keep", 1, keep)
+        assert state.eval_expr("builtins.keep 1").integer() == 1
+
+    build()
+    gc.collect()
+    gc.collect()
+
+    assert died == ["collected"], \
+        "the state and its callable survived a full collection"
+
+
+def test_the_callable_still_works_while_the_state_is_reachable() -> None:
+    """The fix moved the reference; it must not have weakened it.
+
+    The callable now lives on the core and the primop carries an
+    index, so a bug there would show as a callable released while
+    somebody can still call it. Holding the state and collecting
+    twice must change nothing."""
+    from huggorm_bindings import EvalState
+
+    state = EvalState(URI)
+    state.register_primop("twice2", 1, lambda v: state.make_int(v.integer() * 2))
+    gc.collect()
+    gc.collect()
+    assert state.eval_expr("builtins.twice2 21").integer() == 42

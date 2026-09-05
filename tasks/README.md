@@ -922,7 +922,7 @@ which was superseded rather than fixed.
   STEP 4, per-thread verbosity, is what is left, and still needs the
   ceiling re-measured here rather than adopted.
 - 093 (a python primop that closes over its state leaks the state) is
-  OPEN and is a DEFECT, not the shutdown warning it was opened as.
+  DONE. It was a DEFECT, not the shutdown warning it was opened as.
   Bisected to exactly four tests, one leak each, and the discriminator
   is what the registered callable closes over: every leaking one names
   `state`, every clean one does not. Four other tests register primops
@@ -941,10 +941,31 @@ which was superseded rather than fixed.
   One probe LIED and is recorded: it did `del state` first and read
   "no leak" as "no cycle". The lambda shares that binding through a
   cell, so `del` emptied the cell and broke the cycle by hand.
-  The fix is C++ and needs an ask: give the bound type `tp_traverse`
-  and `tp_clear` so the collector can see the callables. There is also
-  no gate today - the leak is reported after the last test, and the
-  type has no weakref slot.
+  FIXED. The core now owns the callable and the lambda carries an
+  index, so one strong reference sits where a GC slot can reach it.
+  `evaluator_tp_traverse` and `evaluator_tp_clear` are hand-written in
+  `cpp/eval.hpp` - nanobind's own `refleaks.rst` says it offers no
+  abstraction - and a new `@gc_slots("huggorm::evaluator_slots")`
+  makes the emitted `nb::class_` pass `nb::type_slots(...)`. That is
+  the helper shape Carl described the same day: manual C++ the emitter
+  BINDS TO.
+  A destructor drops the callables with the GIL held, because the
+  core's deleter can run on a pool worker or the reaper - which is
+  what `make_core` exists for - and only a Python finalizer holds it.
+  4 leaked instances before, 0 after, 408 passed.
+  The gate is a CANARY in the closure, not a weakref: the bound type
+  has no weakref slot. It calls no `del`, because `del` would empty
+  the cell and break the cycle by hand.
+  `tp_clear` is NOT covered by it, measured rather than assumed:
+  releasing nothing there changes nothing, because CPython needs
+  traverse on every type in a cycle and clear on only one, and a
+  function object and a cell carry their own. Kept as correctness and
+  recorded as untested.
+- 094 (nothing catches a missing @gc_slots) is OPEN and blocks
+  nothing. A bound class that stores a Python object and omits the
+  marker leaks itself silently. One such class exists today and it
+  says it; the count is one and holds by inspection, which is exactly
+  the situation that stops being true without warning.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE

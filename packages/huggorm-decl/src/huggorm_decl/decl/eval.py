@@ -38,6 +38,7 @@ from huggorm_dsl.declare import (
     blocks,
     cxx_name,
     fills,
+    gc_slots,
     guard,
     header,
     instant,
@@ -800,6 +801,12 @@ class LogStream:
 
 
 @header("huggorm_decl/cpp/eval.hpp")
+# A state HOLDS Python callables - `register_primop` gives it one -
+# and the natural way to write one closes over the state itself,
+# because the result comes from `state.make_int`. That is a cycle
+# Python's collector cannot see through, so the class says how to
+# traverse it (`tasks/093`).
+@gc_slots("huggorm::evaluator_slots")
 @binding(
     cxx="huggorm::Evaluator",
     # Not thread-safe, one per thread. libexpr says so and this is
@@ -1023,24 +1030,30 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         on its evaluation thread. A decision, in `tasks/033`, rather
         than something not written yet.
 
-        PERMANENT, and it keeps what it CLOSES OVER. Upstream stores
-        a primop with `new PrimOp(...)` in GC memory and the collector
-        runs no destructors, so the registration and its callable last
-        as long as the process. There is no unregister to add later;
-        upstream has nowhere to put one.
+        PERMANENT for this STATE's life, and not for the process's.
+        Upstream stores a primop with `new PrimOp(...)` in GC memory
+        and the collector runs no destructors, so a registration lasts
+        as long as the state that took it. There is no unregister to
+        add later; upstream has nowhere to put one.
 
-        So a callable that captures this state PINS it forever. The
-        C++ side takes a weak reference for exactly this reason, and a
-        Python closure puts the cycle back:
+        CLOSING OVER THE STATE IS FINE, and this paragraph said the
+        opposite until `tasks/093`. It said a callable capturing the
+        state pinned it forever, and told a caller to capture what the
+        callable needs instead - which is not advice anybody can take,
+        because a primop builds its result with `state.make_int`.
 
             state.register_primop(
-                "f", 1, lambda v: state.make_int(1))   # state leaks
+                "f", 1, lambda v: state.make_int(1))   # fine now
 
-        Measured, not feared: adding these gates made nanobind report
-        two leaked instances and the `EvalState` type at shutdown, and
-        removing them made the report go away. Capture what the
-        callable needs and not the state, or accept that the evaluator
-        lives as long as the process.
+        It was true when written, and measured: two leaked instances
+        at shutdown. The cycle ran through nix's own memory - the
+        state reached the callable through the base env, the callable
+        reached the state through its closure cell - and Python's
+        collector cannot walk the first arm. The C++ side's weak
+        reference broke the wrong arm.
+
+        The class now carries `@gc_slots`, so the collector is told how
+        to see it. Zero leaked instances, and a gate holds it.
 
         The name is not sanitised. Upstream treats a `__` prefix
         specially - it strips it for the `builtins` attribute and

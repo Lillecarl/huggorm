@@ -1,0 +1,169 @@
+# A python primop that closes over its state leaks the state
+
+**DONE.** Opened as "a leak report rides every suite run", diagnosed
+as an uncollectable reference cycle, and fixed by teaching the class
+to be traversed. Zero leaked instances now, where there were four.
+
+## What the suite said
+
+    nanobind: leaked 4 instances!
+     - leaked instance ... of type "huggorm_bindings.eval.EvalState"  (x4)
+    nanobind: leaked 1 types!
+    nanobind: leaked 18 functions!
+
+The type and its functions leaked BECAUSE the instances did: nanobind
+cannot free a type while an instance of it lives.
+
+Not `tasks/089`, and measured: the same four appeared with that
+task's new tests deselected.
+
+## Which four, and the discriminator
+
+Bisected by file, then by test. Exactly four tests, one each:
+
+    test_primop::test_a_python_function_answers_as_a_builtin
+    test_primop::test_the_arguments_arrive_forced
+    test_function::test_python_calls_nix_calling_python
+    test_function::test_a_python_primop_applied_through_a_lambda
+
+Forty other tests in those files leaked nothing, and four of THOSE
+also call `register_primop`. So it was never registration:
+
+    leaks      lambda a, b: state.make_int(a.integer() + b.integer())
+    leaks      def peek(v): ...; return state.make_int(...)
+    clean      lambda v: v
+    clean      lambda v: 42
+    clean      def boom(v): raise ValueError(...)
+
+Every leaking callable names `state`. Every clean one does not.
+
+## The cycle
+
+`register_primop` captured the callable BY VALUE as an `nb::object`
+inside the lambda it stored in the state's base environment. So:
+
+    Python EvalState wrapper
+      -> Evaluator -> shared_ptr<EvalCore> -> nix::EvalState
+      -> base env -> nix::PrimOp -> impl lambda
+      -> captured nb::object -> the closure's cell
+      -> Python EvalState wrapper
+
+The `weak_ptr<EvalCore>` already in that lambda breaks the C++ arm and
+was put there for this reason. It cannot help: the arm that CLOSES the
+cycle runs from C++ memory into Python, and Python's collector cannot
+follow it.
+
+Two `gc.collect()` calls did not free it. Uncollectable, not merely
+uncollected.
+
+## Why it mattered
+
+Closing over the state is the NATURAL way to write a primop - the
+result has to come from `state.make_int` - so the useful callables
+were exactly the leaking ones. The clean ones in the suite are clean
+because they return their argument or raise.
+
+For a service meant to run for days, such a state could never be
+reclaimed, and it holds a store, its GC roots and its thread
+registration.
+
+## One probe that lied
+
+An early probe did `del state` before checking and read "no leak" as
+"no cycle". The lambda closes over that same binding through a CELL,
+so `del` does not drop a reference - it EMPTIES the cell and breaks
+the cycle by hand. The probe was undoing the thing it measured, and
+the wrong reading was believed for two runs.
+
+`del` looks like a neutral way to drop a reference. It is not, when a
+closure shares the binding.
+
+## The fix
+
+**The core owns the callable; the lambda carries an index.** One
+strong Python reference, in one place a GC slot can report and drop.
+`release` empties each slot rather than the vector, because an index
+handed to a lambda has to stay valid.
+
+**Two CPython slots, and a DSL knob that names them.** nanobind offers
+no abstraction - its own `refleaks.rst` says to drop to the slots -
+so `evaluator_tp_traverse` and `evaluator_tp_clear` are hand-written
+in `cpp/eval.hpp`, and `evaluator_slots` is the table. The declaration
+says `@gc_slots("huggorm::evaluator_slots")` and the emitted
+`nb::class_` passes `nb::type_slots(...)`.
+
+That is the helper shape Carl described on the same day: manual C++
+the EMITTER BINDS TO. Nothing here resolves a Python name, and
+generated code is the only caller.
+
+**A destructor that drops the callables with the GIL held.** An
+`nb::object` going out of scope decrements a Python refcount, and the
+core's deleter can run on a pool worker or the server's reaper -
+`make_core` exists because of exactly that. A destructor body also
+runs before any member is destroyed, which removes the member-order
+question.
+
+## Measured
+
+    before      4 leaked instances, 1 type, 18 functions
+    after       0
+    suite       408 passed
+
+## The gate, and the half it does NOT cover
+
+`test_a_primop_closing_over_its_state_does_not_leak_it` uses a CANARY
+in the closure, not a weakref: the bound type has no weakref slot
+("cannot create weak reference to
+'huggorm_bindings.eval.EvalState'"). The canary dies exactly when the
+closure does. It calls no `del`, for the reason above.
+
+Proved by breaking it. `evaluator_tp_traverse` reporting nothing:
+
+    1 failed, 397 passed, 10 deselected
+    - leaked instance ... EvalState   (x4, the originals back)
+
+**`tp_clear` is NOT covered, and that was measured rather than
+assumed.** Making it release nothing changes nothing - 408 passed,
+zero leaks. CPython needs `tp_traverse` on every type in a cycle and
+`tp_clear` on only ONE of them, and the other participants here are a
+function object and a cell, which carry their own.
+
+It stays anyway. That is a fact about THIS cycle, not about the class:
+an `EvalState` reached only through C++ participants would have
+nothing else to clear. Kept as correctness, recorded as untested.
+
+## What is left, and it is not this file
+
+Nothing detects a class that stores a Python object and omits
+`@gc_slots`. Today there is one such class and it says it. `tasks/094`
+holds the check.
+
+Opened 2026-09-05, from a suite run for `tasks/089`. Closed the same
+day.
+
+## The invariant the fix leans on, checked rather than assumed
+
+`primops_` takes no lock. It is WRITTEN on the state's affine thread
+and READ by `tp_traverse` on whichever thread runs a collection, so a
+`push_back` racing an iteration would reallocate under it.
+
+What makes that safe is the GIL, and the one link worth checking is
+`hold_primop`. The emitted `register_primop` binding takes NO
+`nb::call_guard<nb::gil_scoped_release>` - read in the emitted
+`eval.cpp`, where `subscribe_logs` two lines below it DOES take one.
+So registration runs with the GIL held, as does every other reader.
+
+Written into the header, because a future `blocking` change or a
+release guard added for tidiness would turn it into a data race with
+nothing to say so.
+
+## The docstring that had become false
+
+`register_primop`'s declaration said the leak was PERMANENT and told
+a caller to "capture what the callable needs and not the state". That
+is not advice anybody can take - a primop builds its result with
+`state.make_int` - and it is now wrong as well.
+
+It was true and measured when written. Corrected in the same commit
+rather than left, because a declaration documenting the opposite of
+what happens is the shape `tasks/090` found and `CLAUDE.md` names.
