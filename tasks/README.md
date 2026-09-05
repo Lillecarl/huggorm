@@ -1020,16 +1020,25 @@ which was superseded rather than fixed.
   daemon line with `printError` and ERASES its level.
   It refuted a comment in `logging.hpp` claiming an unsubscribed
   caller sees what it saw before the tap existed.
-- 096 (a raised global narrates forever) is OPEN, and is the first
-  thing to do: 095 measured 1052 daemon debug lines reaching an
-  unsubscribed caller's stderr, deterministically. The fix is to
-  lower `nix::verbosity` when a subscription goes - to the WIDEST
-  level still live, never to lvlInfo, because lowering past a live
-  subscriber is a silent skip. `server.py`'s `_widest` is the same
-  rule one layer up. One thing lowering cannot reach: a connection
-  already open keeps the level `setOptions` gave it.
-  The gate must be LIVE - `dummy://` opens no connection and reaches
-  none of this.
+- 096 (a raised global narrates forever) is DONE. `VerbosityDemand`
+  counts holders per level and sets `nix::verbosity` to the widest
+  live one, with the floor read once rather than written as lvlInfo.
+  A COUNT rather than a maximum, because a maximum cannot be undone.
+  `ThreadLevel` owns the pairing and gives the level back from its
+  destructor, so a thread that exits while subscribed does not hold
+  the gate up.
+  It got that wrong first. A destructor on a plain aggregate turned
+  `chosen = {.own = true, ...}` into add-then-drop, because the
+  TEMPORARY is destroyed after the copy assignment - so every
+  per-thread subscription silently failed to raise the gate. Three
+  gates caught it, one of them 089's. The copy assignment is deleted
+  now, so the compiler rejects the line that was wrong.
+  Three gates, each proved by its own perturbation, and the LIVE one
+  fails with the defect's own text on captured stderr. It uses
+  `capfd`: the write is a C++ `writeToStderr`, and `capsys` only
+  replaces Python's objects.
+  One thing lowering cannot reach, and the docstring says so: a
+  connection already open keeps the level `setOptions` gave it.
 - 094 (nothing catches a missing @gc_slots) is DONE.
   `census_gc_slots` prints on every build, beside `census_cpp` and
   `census_markers`. PER FILE, which is a limit rather than a

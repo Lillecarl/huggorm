@@ -13,6 +13,7 @@
  * `LogField` have no method at all.
  */
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -230,9 +231,10 @@ inline std::shared_ptr<LogQueue> & thread_queue()
 }
 
 /**
- * Raise nix's own gate far enough to admit `level`. Never lowers.
+ * Every level a live subscription still needs, and nix's gate set to
+ * the widest of them.
  *
- * TWO GATES, and they are not the duplicate this task removed from
+ * TWO GATES, and they are not the duplicate `tasks/089` removed from
  * `LogQueue`. That one was a second filter at the same layer. These
  * are different questions:
  *
@@ -244,33 +246,124 @@ inline std::shared_ptr<LogQueue> & thread_queue()
  * past it, and pinning it wide open is not free either. It is what
  * `RemoteStore::setOptions` SENDS TO THE DAEMON
  * (remote-store.cc:118), and `daemon.cc:239` assigns it to the
- * daemon's own `nix::verbosity`. A pin at `lvlVomit` would ask every
- * daemon connection this process opens to narrate everything, down
- * the socket, forever. `dummy://` cannot show that, which is why it
- * was nearly shipped.
+ * daemon's own `nix::verbosity`.
  *
- * MONOTONIC, so the write happens once per new high-water mark
- * rather than on every subscribe. It is a plain non-atomic global and
- * this is a race by the letter of the standard - the same write nix's
- * own CLI performs while parsing arguments, on an aligned int.
- * nanopynix pins once at import to avoid it entirely and pays the
- * daemon cost; this pays the race and keeps the daemon quiet until
- * somebody asks. Recorded in `tasks/089` as the trade it is.
+ * THIS USED TO BE MONOTONIC and that was a defect, measured in
+ * `tasks/095`. A process that subscribed once and unsubscribed went
+ * on printing the daemon's debug lines on stderr, to every caller,
+ * forever: 1052 lines in every repetition of the probe. Nothing
+ * downstream can filter them, because
+ * `worker-protocol-connection.cc:75` re-raises every daemon line
+ * with `printError` and ERASES its level - a daemon `debug()`
+ * arrives at the client as lvlError, which passes every gate there
+ * is.
+ *
+ * So the gate goes back down. NOT TO A NUMBER, and that is the whole
+ * reason this is a registry rather than a second assignment:
+ * lowering to `lvlInfo` while another thread still holds a talkative
+ * subscription would drop that thread's records with nothing said,
+ * which is this repository's named failure mode. It goes to the
+ * WIDEST level any live subscription still asks for.
+ *
+ * `server.py` computes the same thing one layer up, in `_widest`,
+ * over the readers of one fanout. This is that rule for the process.
+ *
+ * A COUNT PER LEVEL rather than a maximum, because a maximum cannot
+ * be undone: two subscriptions at talkative and one at debug, and
+ * the debug one leaving has to return talkative rather than lvlInfo.
+ * Eight counters, one per `nix::Verbosity`, and the widest non-empty
+ * one wins.
+ *
+ * The FLOOR is read once rather than written as `lvlInfo`. It is
+ * whatever `nix::verbosity` held before anything here touched it -
+ * nix's own default (`logging.cc:150`) in this process, but a
+ * caller that raised it for its own reasons keeps what it set.
+ *
+ * The write is still conditional, so it happens only when the widest
+ * level actually changes. It is a plain non-atomic global and this
+ * is a race by the letter of the standard - the same write nix's own
+ * CLI performs while parsing arguments, on an aligned int.
+ * `tasks/089` records that trade; this only makes the write happen
+ * in both directions.
+ *
+ * ONE THING THIS CANNOT REACH: a daemon connection already open.
+ * `setOptions` runs once, at handshake, so a `Store` opened while a
+ * vomit subscription was live keeps receiving vomit until it is
+ * closed. `tasks/096` says so rather than hiding it.
  */
-inline void raise_verbosity(nix::Verbosity level)
+class VerbosityDemand
 {
-    if (level > nix::verbosity)
-        nix::verbosity = level;
+public:
+    VerbosityDemand()
+        : floor_(nix::verbosity)
+    {
+    }
+
+    void add(nix::Verbosity level)
+    {
+        std::lock_guard<std::mutex> held(mutex_);
+        ++holders_[index(level)];
+        reconcile();
+    }
+
+    void drop(nix::Verbosity level)
+    {
+        std::lock_guard<std::mutex> held(mutex_);
+        auto & count = holders_[index(level)];
+        if (count > 0)
+            --count;
+        reconcile();
+    }
+
+private:
+    static std::size_t index(nix::Verbosity level)
+    {
+        const auto raw = static_cast<std::size_t>(level);
+        return raw < kLevels ? raw : kLevels - 1;
+    }
+
+    /** Under `mutex_`. */
+    void reconcile()
+    {
+        nix::Verbosity widest = floor_;
+        for (std::size_t i = kLevels; i-- > 0;)
+            if (holders_[i] > 0) {
+                if (static_cast<nix::Verbosity>(i) > widest)
+                    widest = static_cast<nix::Verbosity>(i);
+                break;
+            }
+        if (nix::verbosity != widest)
+            nix::verbosity = widest;
+    }
+
+    static constexpr std::size_t kLevels = nix::lvlVomit + 1;
+
+    std::mutex mutex_;
+    nix::Verbosity floor_;
+    std::array<int, kLevels> holders_{};
+};
+
+/**
+ * LEAKED, for `LogTap::fallback`'s reason. A thread that exits during
+ * process teardown drops its level through `ThreadLevel`'s
+ * destructor, and a function-local static destroyed before that
+ * would be used after it was gone.
+ */
+inline VerbosityDemand & verbosity_demand()
+{
+    static VerbosityDemand * demand = new VerbosityDemand();
+    return *demand;
 }
 
 /**
  * The level a thread with no level of its own REPORTS at.
  *
- * Not `nix::verbosity`, and the difference is the point: that one
- * only ever rises, because lowering it would silence a subscription
- * somebody else still holds. This one goes back down, so a process
- * sink that asked for everything stops flooding a console user's
- * stderr when it detaches.
+ * Not `nix::verbosity`, and the difference is still the point even
+ * though both now go back down. That one is one number for the whole
+ * process, so it can only ever be the WIDEST thing anyone asked for -
+ * `VerbosityDemand` keeps it there. This one is what a thread that
+ * asked for nothing KEEPS, and it goes to nix's own default the
+ * moment the process sink detaches.
  *
  * An ATOMIC, and it has to be: nix starts threads this binding never
  * sees - a curl worker, a substituter, a build hook reader - and none
@@ -287,6 +380,44 @@ inline std::atomic<int> & default_verbosity()
 }
 
 /**
+ * What the process-wide sink asks nix to produce. -1 releases.
+ *
+ * `ThreadLevel::set` for the process, and the same rule: one place
+ * owns the pairing of an add with the drop it replaces.
+ *
+ * `default_verbosity` cannot stand in for the number held here. It
+ * reads `lvlInfo` both when nobody is subscribed and when a sink
+ * asked for exactly `lvlInfo`, and a release has to give back what
+ * was taken rather than a number that happens to match.
+ *
+ * A MUTEX rather than an atomic exchange, and that is not caution.
+ * With an exchange, two concurrent subscribers race: B's exchange
+ * reads A's level and drops it before A's add has landed, the
+ * guarded decrement finds a zero and does nothing, and A's add then
+ * has no owner - so the gate stays up after both unsubscribe. The
+ * rpc admits one process-logs stream at a time, so it is
+ * unreachable through the service; an in-process caller has no such
+ * rule.
+ *
+ * ADD BEFORE DROP, so the gate never dips between a replacement and
+ * what it replaces.
+ *
+ * Lock order: this one, then `VerbosityDemand`'s. Nothing takes them
+ * the other way round.
+ */
+inline void set_process_demand(int wanted)
+{
+    static std::mutex mutex;
+    static int held = -1;
+    std::lock_guard<std::mutex> guard(mutex);
+    if (wanted >= 0)
+        verbosity_demand().add(static_cast<nix::Verbosity>(wanted));
+    if (held >= 0)
+        verbosity_demand().drop(static_cast<nix::Verbosity>(held));
+    held = wanted;
+}
+
+/**
  * What THIS thread asked for, and whether it asked at all.
  *
  * Two fields rather than one, and the flag is the load-bearing half.
@@ -295,11 +426,79 @@ inline std::atomic<int> & default_verbosity()
  * fetcher thread that started before a caller raised the default
  * would keep the old value forever. `own` is what makes the default
  * live rather than a snapshot.
+ *
+ * A CLASS, and NOT ASSIGNABLE, and that is a fix rather than a
+ * style. This was a plain aggregate with two public fields until
+ * `tasks/096` gave it a destructor - so that a thread exiting while
+ * still subscribed gives its level back. The two call sites then
+ * read:
+ *
+ *     chosen = {.own = true, .level = wanted};
+ *
+ * which builds a TEMPORARY, copy-assigns it, and destroys the
+ * temporary - running the new destructor on a copy that says it owns
+ * the level, and dropping the demand that had just been added. Net
+ * zero. Every per-thread subscription silently failed to move nix's
+ * gate, and the suite said so in three gates at once.
+ *
+ * So the pairing lives in ONE place that owns both halves, and the
+ * copy assignment that made the mistake possible is deleted. The
+ * compiler now rejects the line that was wrong.
  */
-struct ThreadLevel
+class ThreadLevel
 {
-    bool own = false;
-    nix::Verbosity level = nix::lvlInfo;
+public:
+    ThreadLevel() = default;
+    ThreadLevel(const ThreadLevel &) = delete;
+    ThreadLevel & operator=(const ThreadLevel &) = delete;
+
+    bool own() const { return own_; }
+    nix::Verbosity level() const { return level_; }
+
+    /**
+     * Ask for `level`, and give back whatever this thread held.
+     *
+     * ADD BEFORE DROP. A subscription replacing its own would
+     * otherwise let nix's gate dip between the two calls, and a
+     * record raised in that window is one nobody can get back.
+     */
+    void set(nix::Verbosity level)
+    {
+        verbosity_demand().add(level);
+        release();
+        own_ = true;
+        level_ = level;
+    }
+
+    /** No opinion again, and the demand goes back. */
+    void clear()
+    {
+        release();
+    }
+
+    /**
+     * The last resort, and it fires only for a thread that exits
+     * while still subscribed - one nix started and this binding
+     * never sees. Without it that thread's level would hold nix's
+     * gate up for the life of the process, which is the defect
+     * `tasks/096` removes.
+     */
+    ~ThreadLevel()
+    {
+        release();
+    }
+
+private:
+    void release()
+    {
+        if (!own_)
+            return;
+        own_ = false;
+        verbosity_demand().drop(level_);
+    }
+
+    bool own_ = false;
+    nix::Verbosity level_ = nix::lvlInfo;
 };
 
 inline ThreadLevel & thread_level()
@@ -324,8 +523,8 @@ inline ThreadLevel & thread_level()
 inline nix::Verbosity effective_verbosity()
 {
     const auto & chosen = thread_level();
-    if (chosen.own)
-        return chosen.level;
+    if (chosen.own())
+        return chosen.level();
     return static_cast<nix::Verbosity>(
         default_verbosity().load(std::memory_order_relaxed));
 }
@@ -653,9 +852,10 @@ inline void install_log_tap()
     // `RemoteStore::setOptions` SENDS `nix::verbosity` to the daemon
     // (remote-store.cc:118) and `daemon.cc:239` assigns it there. So
     // a pin asks every daemon connection to narrate at vomit, over
-    // the socket, whether or not anyone subscribed. `raise_verbosity`
-    // moves it only when a caller asks, which is what nix's own CLI
-    // does when a user passes `-vvv`.
+    // the socket, whether or not anyone subscribed.
+    // `VerbosityDemand` moves it only while a caller asks, which is
+    // what nix's own CLI does when a user passes `-vvv` - and unlike
+    // the CLI it moves back, because this process outlives the ask.
     nix::logger = std::make_unique<LogTap>();
 }
 
@@ -676,9 +876,10 @@ inline std::shared_ptr<LogQueue> subscribe_logs(std::size_t capacity,
     // Before `tasks/089` step 4 only the second existed, so this
     // could narrow and never widen: nix's macro had already rejected
     // anything above the process default.
-    raise_verbosity(static_cast<nix::Verbosity>(level));
-    thread_level() = {.own = true,
-                      .level = static_cast<nix::Verbosity>(level)};
+    //
+    // `set` owns the pairing of the two demands, because doing it
+    // here by hand is exactly what `tasks/096` got wrong.
+    thread_level().set(static_cast<nix::Verbosity>(level));
     auto & slot = thread_queue();
     if (slot)
         slot->close();
@@ -693,7 +894,7 @@ inline void unsubscribe_logs()
     // A thread that stops subscribing has no opinion again, and
     // leaving its old level behind would filter records it no longer
     // reads - including the ones the process-wide sink wants.
-    thread_level() = {};
+    thread_level().clear();
     auto & slot = thread_queue();
     if (slot)
         slot->close();
@@ -731,8 +932,9 @@ inline std::shared_ptr<LogQueue> subscribe_process_logs(std::size_t capacity,
     // Process-wide state changed by one subscriber, which is what
     // this function already is: it REPLACES any subscription that was
     // there. `unsubscribe_process_logs` puts the default back.
-    raise_verbosity(static_cast<nix::Verbosity>(level));
-    default_verbosity().store(static_cast<int>(level),
+    const auto wanted = static_cast<nix::Verbosity>(level);
+    set_process_demand(static_cast<int>(wanted));
+    default_verbosity().store(static_cast<int>(wanted),
                               std::memory_order_relaxed);
     auto fresh = std::make_shared<LogQueue>(capacity);
     std::shared_ptr<LogQueue> old;
@@ -752,12 +954,18 @@ inline void unsubscribe_process_logs()
     // Back to nix's own default (`logging.cc:150`), so a thread with
     // no level of its own sees what it saw before anyone subscribed.
     //
-    // `nix::verbosity` is NOT lowered with it. It is the high-water
-    // mark of what anyone has asked for, and lowering it would
+    // `nix::verbosity` follows, and this comment used to say it does
+    // NOT - that it is a high-water mark, because lowering it would
     // silence a per-thread subscription somebody else still holds.
-    // The cost is that nix keeps FORMATTING at that level; the
-    // benefit is that nothing reaches stderr that nobody asked for.
+    // The premise was right and the conclusion was wrong: the answer
+    // is to lower it to what those subscriptions still need, not to
+    // leave it up. `VerbosityDemand` knows that number; dropping
+    // this one holder is the whole of what has to be said here.
+    //
+    // `tasks/095` measured what leaving it up cost: 1052 daemon
+    // debug lines on an unsubscribed caller's stderr.
     default_verbosity().store(nix::lvlInfo, std::memory_order_relaxed);
+    set_process_demand(-1);
     std::shared_ptr<LogQueue> old;
     {
         auto & sink = process_sink();

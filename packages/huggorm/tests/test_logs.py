@@ -11,14 +11,17 @@ mutex and returns. So these tests drain, they never wait.
 Two things every gate here has to keep in mind, both measured against
 `logging.hh` and recorded in `tasks/032`:
 
-- `nix::verbosity` is pinned wide open at import, so a subscription
-  level can WIDEN as well as narrow, and the tap is the only filter
-  (`tasks/089` step 4);
+- `nix::verbosity` rises to the widest level any live subscription
+  asks for and falls back when one ends, so a subscription level can
+  WIDEN as well as narrow, and the tap is the only filter
+  (`tasks/089` step 4, `tasks/096`). It is not pinned - this said so
+  until `tasks/095` measured what a pin costs the daemon;
 - an ACTIVITY is not filtered at all. `Activity::Activity` calls
   `startActivity` with no test, so a start arrives whatever its level
   says.
 """
 
+import os
 import pathlib
 from collections.abc import Iterator
 from typing import Any
@@ -1183,6 +1186,10 @@ async def test_the_marker_survives_a_queue_full_of_messages() -> None:
 
 TALKATIVE = 4
 
+# nix's own default (`logging.cc:150`), and the floor everything
+# here returns to.
+LOG_INFO = 3
+
 
 def evaluated(tmp_path: pathlib.Path) -> str:
     """An expression whose evaluation nix narrates below lvlInfo."""
@@ -1305,10 +1312,16 @@ def test_nothing_asks_nix_for_everything(state: Any,
     it. This gate is the substitute: nothing may raise the process
     gate to vomit.
 
-    It is ORDER-INDEPENDENT but not future-proof: a later test that
-    legitimately asks for level 7 fails it. That is the right
-    failure - it makes the cost visible at the moment somebody takes
-    it - and this docstring is where they read why."""
+    It is ORDER-INDEPENDENT, and `tasks/096` made it durable: a test
+    that asks for 7 and then unsubscribes gives the level back, so
+    the one below this file does exactly that and this still passes.
+    What fails it is a test that asks for 7 and STAYS subscribed.
+    That is the right failure - it makes the cost visible at the
+    moment somebody takes it - and this docstring is where they read
+    why.
+
+    This used to say that any later test asking for 7 fails it. True
+    while the global only ever rose, and false now."""
     from huggorm_bindings import process_verbosity
 
     where = evaluated(tmp_path)
@@ -1331,7 +1344,7 @@ def test_a_subscription_raises_the_gate_it_needs(state: Any) -> None:
     cannot widen past `nix::verbosity` - raising it is not a
     shortcut, it is the mechanism.
 
-    Perturbation: drop the `raise_verbosity` call from
+    Perturbation: drop the `verbosity_demand().add` call from
     `subscribe_logs` and this fails."""
     from huggorm_bindings import process_verbosity
 
@@ -1340,3 +1353,113 @@ def test_a_subscription_raises_the_gate_it_needs(state: Any) -> None:
         assert process_verbosity() >= TALKATIVE
     finally:
         state.unsubscribe_logs()
+
+
+DEBUG = 6
+
+
+def test_the_gate_goes_back_down_when_a_subscription_ends(
+        state: Any) -> None:
+    """The other half of the gate above, and it was missing.
+
+    `subscribe_logs` raises `nix::verbosity` and this used to be all
+    it ever did. `tasks/095` measured the cost of never lowering it:
+    the level reaches the DAEMON through
+    `RemoteStore::setOptions` (`remote-store.cc:118`), and a process
+    that subscribed once went on printing the daemon's debug lines on
+    an unsubscribed caller's stderr for the rest of its life.
+
+    Perturbation: drop the `verbosity_demand().drop` call from
+    `ThreadLevel::release` and this fails, along with the gate
+    below.
+
+    lvlInfo is the floor, not a choice: `VerbosityDemand` reads
+    `nix::verbosity` once, before anything raises it, and never goes
+    below what it found."""
+    from huggorm_bindings import process_verbosity
+
+    state.subscribe_logs(level=TALKATIVE)
+    assert process_verbosity() >= TALKATIVE, "the gate went up"
+    state.unsubscribe_logs()
+
+    assert process_verbosity() == LOG_INFO, \
+        "nothing asks for more than the default any more"
+
+
+def test_the_gate_stays_up_for_a_subscription_that_is_still_live(
+        state: Any) -> None:
+    """Lowering has to stop at what someone else still needs.
+
+    The whole reason `VerbosityDemand` counts per level instead of
+    holding one number. A subscription ending must not silence a
+    subscription that did not end - that is a SILENT SKIP, and it is
+    what makes the naive fix (lower to lvlInfo) worse than the defect
+    it fixes.
+
+    Two live demands here, one process-wide and one per-thread, so no
+    second thread is needed to state the rule.
+
+    Perturbation: make `drop` set the floor directly instead of
+    reconciling, and this fails while the test above still passes.
+    That is the naive fix, and the pair is what tells them apart."""
+    from huggorm_bindings import process_verbosity, subscribe_process_logs, unsubscribe_process_logs
+
+    subscribe_process_logs(level=DEBUG)
+    try:
+        state.subscribe_logs(level=TALKATIVE)
+        state.unsubscribe_logs()
+        assert process_verbosity() >= DEBUG, \
+            "the process-wide subscription still needs it"
+    finally:
+        unsubscribe_process_logs()
+
+    assert process_verbosity() == LOG_INFO, "and now nobody does"
+
+
+@pytest.mark.live
+def test_a_daemon_told_to_narrate_is_told_to_stop(
+        tmp_path: pathlib.Path,
+        capfd: pytest.CaptureFixture[str]) -> None:
+    """The defect `tasks/095` found, as a gate.
+
+    The chain, and no gate above it can stand in for this one:
+    a subscription raises `nix::verbosity`; `setOptions` sends that
+    to the daemon; the daemon narrates every worker op back as
+    STDERR_NEXT; and the client calls `printError` on the text
+    (`worker-protocol-connection.cc:75`), which ERASES the level. The
+    line arrives as lvlError, passes every gate this binding has, and
+    lands on stderr.
+
+    So the only place to stop it is before it is produced, which
+    means lowering the global - and the only way to see that is a
+    LIVE daemon store. `dummy://` opens no connection and reaches
+    none of this, which is exactly how the pin regression got as far
+    as it did.
+
+    `capfd`, not `capsys`: the write is a C++ `writeToStderr` on
+    descriptor 2, and `capsys` only replaces Python's objects.
+
+    Perturbation: make `set_process_demand` skip its drop, and this
+    fails with roughly one line per worker op below - the defect's
+    own text."""
+    from huggorm_bindings import Store, subscribe_process_logs, unsubscribe_process_logs
+
+    subscribe_process_logs(level=7)
+    unsubscribe_process_logs()
+
+    # AFTER the cycle, because `setOptions` runs once at handshake.
+    # A connection opened while the level was up keeps it, and that
+    # is the one thing lowering cannot reach (`tasks/096`).
+    store = Store("auto")
+    # A path that is already there, rather than one this test adds.
+    # Every worker op narrates, so nothing has to be written - and
+    # `tasks/062` is why a suite does not write to the real store
+    # when it has a choice.
+    name = next(n for n in sorted(os.listdir("/nix/store"))
+                if len(n) > 33 and n[32] == "-")
+    held = store.parse_store_path(f"/nix/store/{name}")
+    for _ in range(8):
+        store.is_valid_path(held)
+
+    err = capfd.readouterr().err
+    assert "performing daemon worker op" not in err, err

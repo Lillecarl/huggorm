@@ -1101,10 +1101,21 @@ self.register_primop(name, static_cast<std::size_t>(arity), fn);
         That sentence used to say the opposite, and it was true when
         written: `nix::verbosity` filtered before any logger ran, so a
         caller could only ask for less, and raising the global would
-        have flooded every other logger in the process. The global is
-        pinned wide open now and the level is per THREAD, so one
-        caller asking for debug costs no other caller anything
-        (`tasks/089`).
+        have flooded every other logger in the process. Two things
+        changed it (`tasks/089`). The level is per THREAD now, so what
+        a caller KEEPS costs no other caller anything. And the global
+        rises to the widest level any live subscription asks for, so
+        the record exists to be kept.
+
+        The global then goes back DOWN when this subscription ends -
+        to what the remaining subscriptions still need, never past
+        them. `tasks/095` measured what leaving it up cost: the
+        daemon narrating on an unsubscribed caller's stderr, for the
+        life of the process.
+
+        It does not say "pinned wide open", which an earlier draft of
+        this docstring did. There has been no pin since `tasks/089`
+        step 4 removed it, and a pin is exactly what costs the daemon.
 
         What it still does NOT see is a record raised on a fetcher or
         a file-transfer thread, because that thread subscribed to
@@ -1130,6 +1141,13 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
 
         A queue already handed out still drains what it holds. This
         says only that nothing more goes into it.
+
+        It also gives back the verbosity this thread asked for.
+        `nix::verbosity` drops to the widest level any subscription
+        that is still live needs - never below one, because that
+        would drop a still-subscribed thread's records with nothing
+        said. A thread that exits without calling this gives its
+        level back anyway (`tasks/096`).
 
         It CROSSES the wire and `subscribe_logs` does not, which looks
         like an accident and is not. `subscribe_logs` answers a
@@ -1388,6 +1406,13 @@ def subscribe_process_logs(capacity: I64 = 1024,
     it. Asking for `6` here means every unclaimed thread reports at
     6 until the subscription ends.
 
+    It raises `nix::verbosity` too, and that one reaches further than
+    this process: `RemoteStore::setOptions` sends it to the daemon
+    (`remote-store.cc:118`), which then narrates every worker op back
+    over the socket. `unsubscribe_process_logs` gives it back. A
+    daemon connection ALREADY OPEN keeps what the handshake gave it,
+    which is the one thing giving it back cannot reach (`tasks/096`).
+
     REPLACES any process-wide subscription, and closes it. Refusing
     was the other answer: an in-process caller that drops its
     `LogStream` without unsubscribing would then wedge the sink for
@@ -1420,6 +1445,12 @@ def unsubscribe_process_logs() -> None:
     A queue already handed out still drains what it holds, exactly
     like `EvalState.unsubscribe_logs`. This says only that nothing
     more goes into it.
+
+    It puts BOTH levels back: the process default returns to nix's
+    own `lvlInfo`, and `nix::verbosity` drops to the widest level any
+    per-thread subscription still holds. `tasks/095` measured what
+    the second one cost while it was missing - 1052 daemon debug
+    lines on an unsubscribed caller's stderr.
 
     It CROSSES the wire, and its counterpart does not, for the same
     reason the pair on `EvalState` splits that way: this answers

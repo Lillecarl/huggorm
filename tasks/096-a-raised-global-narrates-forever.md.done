@@ -1,0 +1,148 @@
+# A raised global narrates forever
+
+**DONE.** From `tasks/095`, which measured it. Fixed 2026-09-05.
+
+## The defect
+
+A process that has once called `subscribe_logs` or
+`subscribe_process_logs` with a level above lvlInfo prints the
+DAEMON's debug lines on stderr for the rest of its life - to every
+caller, subscribed or not, on every thread.
+
+`tasks/095` counted 1052 lines on an unsubscribed caller, from 1051
+worker ops, deterministically across 12 repetitions.
+
+## Why no gate catches it
+
+The level is erased on the wire.
+`worker-protocol-connection.cc:75` reads a `STDERR_NEXT` frame and
+calls `printError` on its text. A daemon `debug()` therefore reaches
+the client as **lvlError**, which is 0 and passes every gate this
+repository has and every gate nix has. `tasks/095` holds the full
+chain.
+
+So this cannot be fixed downstream. Nothing downstream still knows
+what the level was.
+
+## The fix
+
+Lower `nix::verbosity` when the subscription that raised it goes.
+
+**Not to lvlInfo.** To the WIDEST level any LIVE subscription still
+needs, or lvlInfo when there is none. Lowering to lvlInfo would
+silently stop a still-subscribed thread's records, which is a silent
+skip and this repository's named failure mode.
+
+`packages/huggorm/huggorm/server.py` already computes exactly this
+one layer up, in `_widest(readers)`, and re-opens a subscription when
+a joiner wants more than the current one. The C++ needs the same
+rule over live subscriptions: a count per level, or a max over a
+registry - the shape is a decision, the rule is not.
+
+## What lowering cannot reach
+
+**A connection already open keeps the level it was given.**
+`setOptions` runs once, at handshake. So a `Store` opened while a
+vomit subscription was live goes on receiving vomit from its daemon
+until it is closed, whatever the global says afterwards.
+
+That is a bounded remainder and it should be written down rather than
+hidden: lowering fixes every connection opened after it, which is the
+common case (subscribe, work, unsubscribe, later open a store).
+
+Whether to go further - reconnect, or refuse to raise once a
+connection is open - is a separate question and probably not worth
+it. Say what the limit is.
+
+## What was built
+
+`VerbosityDemand` in `huggorm_decl/cpp/logging.hpp`. Eight counters,
+one per `nix::Verbosity`, under one mutex. `add` and `drop` each
+reconcile: the widest level with a live holder wins, and the floor is
+whatever `nix::verbosity` held before anything touched it - read once
+in the constructor rather than written as `lvlInfo`.
+
+A COUNT PER LEVEL rather than a maximum, because a maximum cannot be
+undone. Two subscriptions at talkative and one at debug, and the
+debug one leaving has to return talkative rather than the floor.
+
+`ThreadLevel` owns the pairing for a thread. `subscribe_logs` calls
+`set`, `unsubscribe_logs` calls `clear`, and the destructor calls the
+same `release` - so a thread that exits while still subscribed gives
+its level back.
+
+`set_process_demand` is the same for the process-wide sink. It holds
+the number itself, because `default_verbosity` reads `lvlInfo` both
+when nobody is subscribed and when a sink asked for exactly
+`lvlInfo`, and a release has to give back what was taken.
+
+It takes a MUTEX, and an atomic exchange was written first. The
+exchange races: B reads A's level and drops it before A's add has
+landed, the guarded decrement finds a zero and does nothing, A's add
+then has no owner, and the gate stays up after both unsubscribe - a
+phantom holder, which is the defect this task removes, reintroduced
+by the fix. Unreachable through the rpc, which admits one
+process-logs stream at a time. An in-process caller has no such rule,
+so the mutex is the answer rather than the argument that nobody will
+do it.
+
+## What was got wrong, and what refuted it
+
+The first version left `ThreadLevel` a plain aggregate and gave it a
+destructor. The call site then read:
+
+    chosen = {.own = true, .level = wanted};
+
+which builds a TEMPORARY, copy-assigns it, and destroys the
+temporary - running the new destructor on a copy that claims to own
+the level, and dropping the demand that had just been added. Net
+zero.
+
+Every per-thread subscription silently failed to raise nix's gate.
+The suite said so immediately, in three gates at once, including the
+one `tasks/089` had already written. That is what a gate is for: the
+reasoning was wrong, and the reasoning is not what caught it.
+
+The fix is not "be careful". `ThreadLevel` is a class now, its copy
+assignment is DELETED, and `set`/`clear`/`~ThreadLevel` are the only
+things that touch the demand. The compiler rejects the line that was
+wrong.
+
+## The gates, each proved by breaking it
+
+Three, in `test_logs.py`, one perturbation each:
+
+1. `test_the_gate_goes_back_down_when_a_subscription_ends`.
+   Perturbation: `release` never calls `drop`. **2 fail.**
+2. `test_the_gate_stays_up_for_a_subscription_that_is_still_live`.
+   Perturbation: `drop` sets the floor directly - the naive fix this
+   task rejects. **1 fails**, and it is this one; the gate above
+   still passes, which is what makes the pair discriminating.
+3. `test_a_daemon_told_to_narrate_is_told_to_stop`, `live`.
+   Perturbation: `unsubscribe_process_logs` keeps its demand.
+   The hermetic half fails gate 2; the LIVE gate fails with
+   `performing daemon worker op: 1` on captured stderr, which is the
+   defect itself.
+
+Gate 3 needs `capfd`, not `capsys`: the write is a C++
+`writeToStderr` on descriptor 2, and `capsys` only replaces Python's
+objects. It reads a path that is already in the store rather than
+adding one - every worker op narrates, so nothing has to be written,
+and `tasks/062` is why a suite does not write to the real store when
+it has a choice.
+
+Suite: 417 passed, 0 failed, everything including `live`.
+
+## The remainder, stated
+
+A daemon connection already open keeps the level `setOptions` gave
+it. So a `Store` opened while a vomit subscription was live goes on
+receiving vomit until it is closed, whatever the global says
+afterwards. Lowering fixes every connection opened after it, which is
+the common case: subscribe, work, unsubscribe, later open a store.
+
+Going further - reconnecting, or refusing to raise once a connection
+is open - is not worth it, and the limit is written into
+`subscribe_process_logs`'s docstring where a caller reads it.
+
+Opened 2026-09-05, from `tasks/095`. Done the same day.
