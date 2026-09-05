@@ -15,7 +15,6 @@ entry point; runs after codegen-generate, stdlib only:
 
 import argparse
 import ast
-import asyncio
 import gc
 import importlib
 import inspect
@@ -23,6 +22,8 @@ import pathlib
 import re
 import sys
 from typing import Any
+
+import anyio
 
 
 def test_parse(out: pathlib.Path) -> None:
@@ -254,6 +255,49 @@ def test_runtime_contract(out: pathlib.Path) -> None:
     )
 
 
+async def _all(*aws: Any) -> list[Any]:
+    """Every awaitable concurrently, results in order.
+
+    anyio has no `gather`, and that absence is the point: a task
+    group OWNS its children, so a failure in one cancels the rest
+    rather than being handed back as a value nobody looks at.
+    Ordering by index is the only thing `gather` gave that a task
+    group does not, so it is the only thing restated here."""
+    out: list[Any] = [None] * len(aws)
+
+    async def one(i: int, aw: Any) -> None:
+        out[i] = await aw
+
+    async with anyio.create_task_group() as tg:
+        for i, aw in enumerate(aws):
+            tg.start_soon(one, i, aw)
+    return out
+
+
+async def _all_errors(*aws: Any) -> list[Any]:
+    """As `_all`, but every awaitable is EXPECTED to fail.
+
+    `gather(return_exceptions=True)` in one call. Separate from `_all`
+    because a task group's default is the opposite - the first
+    failure cancels its siblings - and a flag that inverts a task
+    group's whole contract reads better as a second name.
+
+    `Exception` and not `BaseException`: swallowing the cancellation
+    exception is the one thing anyio's contract forbids."""
+    out: list[Any] = [None] * len(aws)
+
+    async def one(i: int, aw: Any) -> None:
+        try:
+            await aw
+        except Exception as exc:
+            out[i] = exc
+
+    async with anyio.create_task_group() as tg:
+        for i, aw in enumerate(aws):
+            tg.start_soon(one, i, aw)
+    return out
+
+
 async def test_behavior() -> None:
     import tempfile
 
@@ -285,12 +329,12 @@ async def test_behavior() -> None:
     root = tempfile.mkdtemp(prefix="huggorm-smoke-")
     local = AsyncStore(root)
     assert await local.query_all_valid_paths() == [], "a fresh chroot is empty"
-    t0 = asyncio.get_running_loop().time()
-    p1, p2 = await asyncio.gather(
+    t0 = anyio.current_time()
+    p1, p2 = await _all(
         local.add_to_store("hello.txt", b"world", CA.NAR, HashAlgorithm.SHA256),
         local.add_to_store("note.txt", b"nix real", CA.NAR, HashAlgorithm.SHA256),
     )
-    elapsed = asyncio.get_running_loop().time() - t0
+    elapsed = anyio.current_time() - t0
     assert elapsed < 0.18, f"expected overlapped adds, took {elapsed:.2f}s"
     # StorePath is pool AND non-blocking, so it has no wrapper: an
     # awaited store method hands back the binding object itself, and
@@ -316,7 +360,7 @@ async def test_behavior() -> None:
         return _Probe()
 
     runner = _runtime.PoolRunner(factory)
-    results = await asyncio.gather(*(runner.call("noop", []) for _ in range(8)))
+    results = await _all(*(runner.call("noop", []) for _ in range(8)))
     assert results == ["ok"] * 8
     assert len(made) == 1, f"factory ran {len(made)}x under concurrent first-calls"
 
@@ -329,9 +373,7 @@ async def test_behavior() -> None:
         raise RuntimeError("no")
 
     bad_runner = _runtime.PoolRunner(bad_factory)
-    errs = await asyncio.gather(
-        *(bad_runner.call("noop", []) for _ in range(4)), return_exceptions=True
-    )
+    errs = await _all_errors(*(bad_runner.call("noop", []) for _ in range(4)))
     assert len(failed) == 1, f"failing factory ran {len(failed)}x"
     assert all(isinstance(e, InternalError) for e in errs)
     assert all(type(e.__cause__) is RuntimeError for e in errs)
@@ -762,7 +804,7 @@ async def test_behavior() -> None:
     # scheduler noise and passes or fails on the machine's mood. A
     # single worker is the property the policy actually promises, and
     # a thread name is not a stopwatch.
-    await asyncio.gather(state.eval_expr("1"), state.eval_expr("2"))
+    await _all(state.eval_expr("1"), state.eval_expr("2"))
     assert len(state._runner.workers_seen) == 1, (
         f"evals must serialize on one thread, saw {state._runner.workers_seen}")
 
@@ -1568,7 +1610,11 @@ def main(argv: list[str] | None = None) -> None:
             call(fn)
     for fn in checks:
         if inspect.iscoroutinefunction(fn):
-            asyncio.run(call(fn))
+            # `anyio.run` takes the function and its arguments, where
+            # `asyncio.run` took the coroutine. `call` decides the
+            # arguments from the signature, so a lambda is what hands
+            # anyio something to call.
+            anyio.run(lambda f=fn: call(f))  # type: ignore[arg-type,misc]
     print(f"smoke test OK ({len(checks)} checks)")
 
 

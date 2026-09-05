@@ -9,12 +9,12 @@ result. Handlers are built in a loop from the emitted specs; nothing is
 hand-written per method.
 """
 
-import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+import anyio
 import grpclib
 import grpclib.const
 import grpclib.exceptions
@@ -282,13 +282,20 @@ class _Fanout:
     this.
     """
 
-    def __init__(self, open_sub: Callable[[], Awaitable[Any]],
+    def __init__(self, tasks: Any, open_sub: Callable[[], Awaitable[Any]],
                  drop_sub: Callable[[], Awaitable[None]]) -> None:
+        self._tasks = tasks
         self._open = open_sub
         self._drop = drop_sub
-        self._lock = asyncio.Lock()
+        self._lock = anyio.Lock()
         self._sub: Any = None
-        self._task: asyncio.Task[None] | None = None
+        # The drain's own cancel scope, and the event it sets on the
+        # way out. A TASK GROUP hands back no task handle, so this is
+        # how `leave` says stop and then waits to be told it stopped -
+        # and that ordering is what keeps the unsubscribe after the
+        # last drain (`tasks/092`).
+        self._scope: Any = None
+        self._stopped: Any = None
         self._readers: set[_Reader] = set()
         self.dropped = 0
         self.failure: BaseException | None = None
@@ -301,7 +308,12 @@ class _Fanout:
                 self.dropped = 0
                 self.failure = None
                 self._sub = await self._open()
-                self._task = asyncio.ensure_future(self._run(self._sub))
+                self._stopped = anyio.Event()
+                # `start`, not `start_soon`: it waits for the task to
+                # report its cancel scope, so `leave` can never find
+                # `self._scope` still None.
+                self._scope = await self._tasks.start(
+                    self._run, self._sub, self._stopped)
             self._readers.add(reader)
         return reader
 
@@ -330,40 +342,52 @@ class _Fanout:
         async with self._lock:
             if self._readers or self._sub is None:
                 return
-            task, sub = self._task, self._sub
-            self._task, self._sub = None, None
-            if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
+            scope, stopped, sub = self._scope, self._stopped, self._sub
+            self._scope, self._stopped, self._sub = None, None, None
+            if scope is not None:
+                scope.cancel()
+                await stopped.wait()
             sub.close()
             with contextlib.suppress(Exception):
                 await self._drop()
 
-    async def _run(self, sub: Any) -> None:
+    async def _run(self, sub: Any, stopped: Any, *,
+                   task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
         """Drain the one queue, offer to every reader.
 
-        `sub` is a parameter and not `self._sub`, because `leave`
-        clears the attribute before this task notices the cancel.
+        `sub` and `stopped` are parameters and not `self._sub` and
+        `self._stopped`, because `leave` clears both attributes
+        before this task notices the cancel. Reading `self._stopped`
+        here raised `AttributeError: 'NoneType' object has no
+        attribute 'set'` on the first run, and the server died at
+        startup - so the parameters are the fix and not a style.
 
         The readers set is mutated by `join` and `leave` and read
         here, all on one event loop and none of them across an await
         while iterating - so it needs no lock of its own. The lock
-        above is for the awaits, not for the set."""
-        try:
-            while True:
-                self.dropped = sub.dropped()
-                records = sub.drain()
-                if not records:
-                    await asyncio.sleep(LOG_POLL)
-                    continue
-                for record in records:
-                    for reader in self._readers:
-                        reader.offer(record)
-        except asyncio.CancelledError:
-            raise
-        except BaseException as exc:  # handed to the readers, not swallowed
-            self.failure = exc
+        above is for the awaits, not for the set.
+
+        `Exception` and never the cancellation exception: a cancel
+        leaves through the scope, which is what `leave` is waiting
+        for. Catching it would make `leave` wait for a task that has
+        decided not to stop."""
+        with anyio.CancelScope() as scope:
+            task_status.started(scope)
+            try:
+                while True:
+                    self.dropped = sub.dropped()
+                    records = sub.drain()
+                    if not records:
+                        await anyio.sleep(LOG_POLL)
+                        continue
+                    for record in records:
+                        for reader in self._readers:
+                            reader.offer(record)
+            except Exception as exc:  # handed to the readers, not swallowed
+                self.failure = exc
+        # OUTSIDE the scope, so a cancel reaches it too. `set` takes no
+        # checkpoint, so nothing can cancel it away.
+        stopped.set()
 
 
 async def _open_process_subscription() -> Any:
@@ -403,7 +427,7 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
         alive()
         records = sub.drain()
         if not records:
-            await asyncio.sleep(LOG_POLL)
+            await anyio.sleep(LOG_POLL)
             continue
         resp = resp_cls()
         codec.encode(resp, "records", "list[LogRecord]", records,
@@ -413,7 +437,8 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
 
 
 class Dispatcher:
-    def __init__(self, pool: Any, lease_ttl: float = 120.0) -> None:
+    def __init__(self, pool: Any, tasks: Any, loops: Any,
+                 lease_ttl: float = 120.0) -> None:
         """No manifest. Every table it unpacked is emitted, in
         `huggorm_generated._policy`, so this reads them by name.
 
@@ -422,9 +447,18 @@ class Dispatcher:
         the same for every method. What differs is the spec, and the
         build writes that."""
         self.pool = pool
+        # Two task groups, and which one a task goes in is decided
+        # by whether it ENDS. `serve` explains the split; both OWN
+        # their children, so nothing here retains a set of tasks by
+        # hand any more (`tasks/092`).
+        #
+        # `tasks` finishes what it holds: a runner shutdown releases
+        # an affine thread from the collector's list, and cancelling
+        # that is how a dead thread stays registered.
+        self.tasks = tasks
+        # `loops` is cancelled: a log drain never returns on its own.
+        self.loops = loops
         self.table = HandleTable(ttl=lease_ttl)
-        # Runner-shutdown tasks in flight; see _on_drop.
-        self._closing: set[asyncio.Task[None]] = set()
         self.table.on_drop = self._on_drop
         self.codec = WireCodec()
         # One fan-out per state, so many readers share one
@@ -444,7 +478,7 @@ class Dispatcher:
         # One fan-out for the process sink. Not a map, because there
         # is one sink and nothing to key by, and not created lazily
         # for the same reason.
-        self._process_fanout = _Fanout(_open_process_subscription,
+        self._process_fanout = _Fanout(loops, _open_process_subscription,
                                        _drop_process_subscription)
         # A failure crosses the same way a value does: as messages, by
         # what the bindings declare, never by a type this file names
@@ -469,6 +503,7 @@ class Dispatcher:
         fan = self._log_fanouts.get(key)
         if fan is None:
             fan = _Fanout(
+                self.loops,
                 lambda: target.subscribe_logs(level=LOG_LEVEL_ALL),
                 lambda: _drop_subscription(target))
             self._log_fanouts[key] = fan
@@ -477,11 +512,16 @@ class Dispatcher:
     def _on_drop(self, obj: Any) -> None:
         """Shut a dropped wrapper's runner down, off the sweep.
 
-        The task is RETAINED. asyncio holds only a weak reference to a
-        running task, so a fire-and-forget one can be collected before
-        it ever runs - and this is the path that shuts an affine
-        thread down, which is also where that thread leaves the
-        collector's list. Losing it silently costs both."""
+        The task group OWNS it, which is why nothing retains it here.
+        `asyncio.create_task` held only a weak reference, so a
+        fire-and-forget task could be collected before it ever ran -
+        and this is the path that shuts an affine thread down, which
+        is also where that thread leaves the collector's list. Losing
+        it silently cost both, and a hand-kept set of tasks was the
+        old defence (`tasks/092`).
+
+        `start_soon` is a plain method, not a coroutine, so a
+        callback the sweep calls synchronously can still use it."""
         async def _close() -> None:
             # Nothing to report a failure to: the connection that owned
             # this handle is already gone.
@@ -492,18 +532,7 @@ class Dispatcher:
         # cannot race a reader: the wrapper is being dropped, so no
         # request can resolve to it any more.
         self._log_fanouts.pop(id(obj), None)
-        self._detach(_close())
-
-    def _detach(self, coro: Any) -> None:
-        """Run a coroutine to completion with nobody awaiting it.
-
-        RETAINED, for the reason above: asyncio holds a running task
-        only weakly. Used where the awaiting code is about to stop
-        existing - a dropped handle, and a cancelled log stream whose
-        `finally` cannot await anything."""
-        task = asyncio.ensure_future(coro)
-        self._closing.add(task)
-        task.add_done_callback(self._closing.discard)
+        self.tasks.start_soon(_close)
 
     def msg(self, name: str) -> Any:
         return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
@@ -974,60 +1003,88 @@ class Dispatcher:
 
 async def serve(host: str = "127.0.0.1", port: int = 50051,
                 lease_ttl: float = 120.0) -> None:
+    """The server, and the two scopes every background task lives in.
+
+    TWO task groups, nested, because the tasks divide into two kinds
+    and one exit rule does not fit both.
+
+    `work` is the outer one and it is AWAITED. It holds the runner
+    shutdowns `_on_drop` starts, and each of those releases an affine
+    thread from the collector's list - a thing that must finish, not
+    be cancelled. A task group waiting for its children is exactly
+    right here.
+
+    `loops` is the inner one and it is CANCELLED. It holds the
+    sweeper and the log drains, which never return on their own, so
+    waiting for them would hang the shutdown. Being inner is what
+    orders the two: the loops stop first, and anything they started
+    is still awaited by `work` afterwards.
+
+    That split is the trap `tasks/092` names first: a task group does
+    not cancel its children on exit, it waits for them."""
     pool = schema.load_pool()
-    dispatcher = Dispatcher(pool, lease_ttl=lease_ttl)
 
-    # Connection liveness: transports never report death; the sweeper
-    # notices silence past the TTL and releases what the dead
-    # connection held (tasks/002).
-    async def sweeper() -> None:
-        interval = max(0.5, min(lease_ttl / 4 if lease_ttl else 5, 5))
-        while True:
-            await asyncio.sleep(interval)
-            dropped = dispatcher.table.sweep()
-            if dropped:
-                # One line per sweep, not per handle: a reaped
-                # connection can hold hundreds, and a library writing
-                # hundreds of lines into someone else's log is the
-                # same mistake as writing them to stdout.
-                logger.info("swept %d handle(s): %s", len(dropped),
-                            ", ".join(hid[:8] for hid in sorted(dropped)))
+    # One `with`, two groups, and the ORDER inside it is the whole
+    # point: `loops` is entered second, so it exits first. Ruff asks
+    # for the combined form and it says the same thing.
+    async with (anyio.create_task_group() as work,
+                anyio.create_task_group() as loops):
+        dispatcher = Dispatcher(pool, work, loops, lease_ttl=lease_ttl)
 
-    sweep_task = asyncio.create_task(sweeper()) if lease_ttl else None
+        # Connection liveness: transports never report death; the
+        # sweeper notices silence past the TTL and releases what
+        # the dead connection held (tasks/002).
+        async def sweeper() -> None:
+            interval = max(0.5, min(lease_ttl / 4 if lease_ttl else 5, 5))
+            while True:
+                await anyio.sleep(interval)
+                dropped = dispatcher.table.sweep()
+                if dropped:
+                    # One line per sweep, not per handle: a reaped
+                    # connection can hold hundreds, and a library
+                    # writing hundreds of lines into someone
+                    # else's log is the same mistake as writing
+                    # them to stdout.
+                    logger.info("swept %d handle(s): %s", len(dropped),
+                                ", ".join(hid[:8]
+                                          for hid in sorted(dropped)))
 
-    # Reflection serves descriptors out of the same pool the handlers
-    # use, so external tools see exactly the generated schema.
-    # One servable PER SERVICE: reflection's list_services reports one
-    # name per handler object.
-    services = []
-    grouped: dict[str, dict[str, grpclib.const.Handler]] = {}
-    for path, h in dispatcher.mapping.items():
-        svc_name = path.split("/")[1]
-        grouped.setdefault(svc_name, {})[path] = h
-    for subset in grouped.values():
-        class Servable:
-            def __mapping__(
-                self, _subset: dict[str, grpclib.const.Handler] = subset
-            ) -> dict[str, grpclib.const.Handler]:
-                return _subset
-        services.append(Servable())
-    # A new name: extend() hands back reflection's own servable type,
-    # not the list that went in.
-    reflected = ServerReflection.extend(services, pool=pool)
-    # Typed failures ride in grpc-status-details-bin, resolved
-    # against this pool rather than protobuf's default symbol
-    # database - these descriptors were built at import from
-    # grpc_schema.pb and are in no global registry (tasks/036).
-    server = grpclib.server.Server(
-        reflected, status_details_codec=SchemaStatusDetails(pool))
-    await server.start(host, port)
-    logger.info("listening on %s:%d (lease ttl: %s)", host, port,
-                lease_ttl if lease_ttl else "off")
-    try:
-        await server.wait_closed()
-    finally:
-        if sweep_task is not None:
-            sweep_task.cancel()
+        if lease_ttl:
+            loops.start_soon(sweeper)
+
+        # Reflection serves descriptors out of the same pool the
+        # handlers use, so external tools see exactly the
+        # generated schema. One servable PER SERVICE: reflection's
+        # list_services reports one name per handler object.
+        services = []
+        grouped: dict[str, dict[str, grpclib.const.Handler]] = {}
+        for path, h in dispatcher.mapping.items():
+            svc_name = path.split("/")[1]
+            grouped.setdefault(svc_name, {})[path] = h
+        for subset in grouped.values():
+            class Servable:
+                def __mapping__(
+                    self,
+                    _subset: dict[str, grpclib.const.Handler] = subset,
+                ) -> dict[str, grpclib.const.Handler]:
+                    return _subset
+            services.append(Servable())
+        # A new name: extend() hands back reflection's own servable
+        # type, not the list that went in.
+        reflected = ServerReflection.extend(services, pool=pool)
+        # Typed failures ride in grpc-status-details-bin, resolved
+        # against this pool rather than protobuf's default symbol
+        # database - these descriptors were built at import from
+        # grpc_schema.pb and are in no global registry (tasks/036).
+        server = grpclib.server.Server(
+            reflected, status_details_codec=SchemaStatusDetails(pool))
+        await server.start(host, port)
+        logger.info("listening on %s:%d (lease ttl: %s)", host, port,
+                    lease_ttl if lease_ttl else "off")
+        try:
+            await server.wait_closed()
+        finally:
+            loops.cancel_scope.cancel()
 
 
 if __name__ == "__main__":
@@ -1035,4 +1092,4 @@ if __name__ == "__main__":
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 50051
     ttl = float(sys.argv[3]) if len(sys.argv) > 3 else 120.0
-    asyncio.run(serve(host, port, lease_ttl=ttl))
+    anyio.run(serve, host, port, ttl)

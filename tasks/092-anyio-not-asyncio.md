@@ -1,6 +1,6 @@
 # anyio, not asyncio
 
-**OPEN.** Carl, 2026-09-05:
+**MOSTLY DONE.** Carl, 2026-09-05:
 
 > We should be using anyio primitives instead of asyncio to the
 > greatest extent possible (preferably only), record this in
@@ -107,3 +107,95 @@ reader does not re-derive it.
 4. `remote.py`'s ping loop.
 
 Opened 2026-09-05.
+
+## Done, 2026-09-05, except one spawn
+
+Every `asyncio` name outside `runtime.py` is gone but one.
+
+    watch.py       Lock            -> anyio.Lock
+    server.py      Lock, sleep     -> anyio
+    server.py      ensure_future   -> two task groups
+    server.py      create_task     -> loops.start_soon
+    server.py      run             -> anyio.run
+    smoke_test.py  gather x4       -> `_all` / `_all_errors`
+    smoke_test.py  loop().time()   -> anyio.current_time
+    smoke_test.py  run             -> anyio.run
+    remote.py      sleep, wait_for -> anyio.sleep, anyio.fail_after
+    remote.py      create_task     -> STILL asyncio, see below
+
+### The two task groups in `serve`
+
+`work` is outer and AWAITED. It holds the runner shutdowns `_on_drop`
+starts, and each of those releases an affine thread from the
+collector's list - work that must finish rather than be cancelled.
+
+`loops` is inner and CANCELLED. It holds the sweeper and the log
+drains, which never return on their own.
+
+Being inner is what orders them: the loops stop first, and anything
+they started is still awaited by `work` afterwards. This is trap 1
+above, answered.
+
+`_detach`, the retained `self._closing` set, and the comment
+explaining that "asyncio holds only a weak reference to a running
+task" are all GONE. That is the concrete thing Carl's point buys
+here: the workaround existed because nothing owned the task, and a
+task group owns it.
+
+`start_soon` is a plain method rather than a coroutine, which is what
+lets `_on_drop` - a callback the sweep calls synchronously - still
+start one.
+
+### The bug the conversion caused, and the suite caught
+
+`_Fanout._run` set `self._stopped` after its cancel scope exited, and
+`leave` clears that attribute before the drain notices the cancel. So
+the first run died at startup:
+
+    File "huggorm/server.py", line 385, in _run
+    AttributeError: 'NoneType' object has no attribute 'set'
+
+The server never listened and 11 tests failed with
+`ConnectionRefusedError`. Both `sub` and `stopped` are parameters
+now, for the same reason `sub` already was.
+
+### The teardown ORDER is argued, not gated
+
+`leave` cancels the drain, waits for it, and only then unsubscribes.
+Two perturbations were tried and NEITHER produced a failing test:
+
+    drop `await stopped.wait()`     ruff refuses it - F841, `stopped`
+                                    assigned and never used. So the
+                                    linter holds the shape, and no
+                                    test was reached.
+    wait AFTER the unsubscribe      396 passed. The ordering is not
+                                    gated.
+
+The second one is the honest finding. `sub.close()` empties the queue
+anyway, so a late drain finds a closed queue and the binding tolerates
+the race. The wait stays because it makes the sequence say what it
+means, not because a test proves it must.
+
+Recorded rather than left implied: the three fan-out gates from
+`tasks/085` still hold, and they are what proves the CancelScope and
+Event replace the Task correctly.
+
+### The one spawn left, and why it needs Carl
+
+`NixClient._ping_loop` still starts with `asyncio.create_task`.
+
+anyio starts a task only inside a task group, and a task group is a
+scope somebody holds open. A `NixClient` has none: `connect()` builds
+it and a synchronous `stop_pinging()` stops it, so there is no
+`async with` to own the loop.
+
+Giving the client one is the fix and it is a BREAKING change to a
+surface other people use - the third audience in `CLAUDE.md`, and the
+kind of change that file calls expensive. So it is Carl's call:
+
+    async with await remote.connect(host, port) as client:
+        ...
+
+against keeping `connect()` and `stop_pinging()` working for a caller
+that never enters a scope. The two cannot both be true, because a
+client used outside the scope would have no pinger and would be swept.

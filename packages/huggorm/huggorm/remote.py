@@ -28,6 +28,7 @@ import weakref
 from collections.abc import Callable
 from typing import Any
 
+import anyio
 import grpclib
 import grpclib.client
 import grpclib.const
@@ -220,16 +221,28 @@ class NixClient:
         if was_new:
             if self._pinger is not None:
                 self._pinger.cancel()
+            # THE ONE asyncio SPAWN LEFT, and it is not an oversight.
+            # anyio starts a task only inside a task group, and a task
+            # group is a scope somebody has to hold open. A
+            # `NixClient` has none: it is built by `connect()` and
+            # stopped by a synchronous `stop_pinging()`, so there is
+            # no `async with` to own the loop.
+            #
+            # Giving the client one is the fix, and it is a BREAKING
+            # change to a surface other people use - which `CLAUDE.md`
+            # says is the expensive kind. So it is Carl's call, and it
+            # is written down rather than guessed (`tasks/092`).
             self._pinger = asyncio.create_task(self._ping_loop(interval))
         return str(resp.token)
 
     async def _ping_loop(self, interval: float = 10.0) -> None:
         while True:
-            await asyncio.sleep(interval)
+            await anyio.sleep(interval)
             try:
                 req = self.msg("PingReq")()
-                ack = await asyncio.wait_for(
-                    self._rpc(f"/{schema.PKG}.Session/Ping", req, "AckResp"), 5)
+                with anyio.fail_after(5):
+                    ack = await self._rpc(
+                        f"/{schema.PKG}.Session/Ping", req, "AckResp")
                 if not ack.ok:
                     # Swept. Say so once, loudly, and stop - the next
                     # call raises ConnectionExpired rather than
@@ -243,7 +256,8 @@ class NixClient:
                 # The ping loop is the flush's home: it already runs on
                 # the event loop on a timer, which is exactly what a
                 # finalizer cannot do.
-                await asyncio.wait_for(self.flush_dropped(), 5)
+                with anyio.fail_after(5):
+                    await self.flush_dropped()
             except Exception:
                 # A blip is not a death: the server sweeps a client
                 # that stays silent, and this loop is what keeps it

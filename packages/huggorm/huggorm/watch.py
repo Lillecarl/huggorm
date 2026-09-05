@@ -64,10 +64,11 @@ filesystem with its evaluator; one driven by `changed()` does not.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
+
+import anyio
 
 if TYPE_CHECKING:
     from huggorm_generated.protocols import EvalStateLike, ValueLike
@@ -114,7 +115,7 @@ class Watcher:
         # well as mtime because a write inside one filesystem tick is
         # invisible to mtime alone, and a test writes fast.
         self._seen: dict[str, tuple[int, int]] = {}
-        self._lock = asyncio.Lock()
+        self._lock = anyio.Lock()
 
     @property
     def roots(self) -> list[str]:
