@@ -231,7 +231,7 @@ class NixClient:
             # Giving the client one is the fix, and it is a BREAKING
             # change to a surface other people use - which `CLAUDE.md`
             # says is the expensive kind. So it is Carl's call, and it
-            # is written down rather than guessed (`tasks/092`).
+            # is written down rather than guessed (`tasks/035`).
             self._pinger = asyncio.create_task(self._ping_loop(interval))
         return str(resp.token)
 

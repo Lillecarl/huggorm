@@ -40,8 +40,9 @@ Findings reference three architectural reviews: 2026-08-23,
 
 ## Open, roughly by what blocks what
 
-- 092 (anyio, not asyncio) is a rule Carl set and a conversion that
-  follows it. It blocks nothing and touches every async file.
+- 035 (anyio, not asyncio) is a rule Carl set and a conversion that
+  follows it. The library moved on 2026-09-05; one spawn is left and
+  it needs a decision about the client's surface.
 
 - 030 (attribute sets on the wire) is closed, which unblocks the
   evaluation server: an attrset is what Nix evaluation mostly hands

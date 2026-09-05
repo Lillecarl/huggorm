@@ -146,7 +146,7 @@ CHURNING pool - `_asyncio.py` pops an idle worker off a deque and
 expires any that idled past `MAX_IDLE_TIME` - so it cannot name a
 thread. An `EvalState` is affine and must be touched from ONE thread,
 and `_refuse_foreign` compares executor IDENTITY to enforce the
-isolation Carl ruled on. `tasks/092` holds the reading and the
+isolation Carl ruled on. `tasks/035` holds the reading and the
 alternative that was rejected.
 
 Anything new that needs a thread asks first. Anything else is anyio.

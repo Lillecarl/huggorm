@@ -296,7 +296,7 @@ class _Fanout:
         # way out. A TASK GROUP hands back no task handle, so this is
         # how `leave` says stop and then waits to be told it stopped -
         # and that ordering is what keeps the unsubscribe after the
-        # last drain (`tasks/092`).
+        # last drain (`tasks/035`).
         self._scope: Any = None
         self._stopped: Any = None
         self._readers: set[_Reader] = set()
@@ -453,7 +453,7 @@ class Dispatcher:
         # Two task groups, and which one a task goes in is decided
         # by whether it ENDS. `serve` explains the split; both OWN
         # their children, so nothing here retains a set of tasks by
-        # hand any more (`tasks/092`).
+        # hand any more (`tasks/035`).
         #
         # `tasks` finishes what it holds: a runner shutdown releases
         # an affine thread from the collector's list, and cancelling
@@ -521,7 +521,7 @@ class Dispatcher:
         and this is the path that shuts an affine thread down, which
         is also where that thread leaves the collector's list. Losing
         it silently cost both, and a hand-kept set of tasks was the
-        old defence (`tasks/092`).
+        old defence (`tasks/035`).
 
         `start_soon` is a plain method, not a coroutine, so a
         callback the sweep calls synchronously can still use it."""
@@ -1023,7 +1023,7 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     orders the two: the loops stop first, and anything they started
     is still awaited by `work` afterwards.
 
-    That split is the trap `tasks/092` names first: a task group does
+    That split is the trap `tasks/035` names first: a task group does
     not cancel its children on exit, it waits for them."""
     pool = schema.load_pool()
 
