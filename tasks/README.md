@@ -63,9 +63,6 @@ Findings reference three architectural reviews: 2026-08-23,
   twice: free-function requests number their fields positionally too,
   and the manifest's "schema": 1 is written by the generator and read
   by nobody.
-- 035 (anyio, not asyncio) is half done: the suites are anyio, the
-  library is not. The movable half is the runtime and the ping loop;
-  the rest waits on 014, because grpclib is an asyncio library.
 - 015 (real Nix) is under way: nix::StorePath is bound, validated by
   libstore, and crossing the wire. The next questions are typed errors
   (done: typed, plain, and the colour kept as a field) and which type
