@@ -453,13 +453,19 @@ public:
      * `LogField` to say the same thing. Forwarding the arguments
      * says it with no reconstruction.
      *
-     * THE FALLBACK'S OWN GATE IS GONE, and that is why every override
-     * below tests `effective_verbosity()` before forwarding.
-     * `SimpleLogger::log` gates on `nix::verbosity` (logging.cc:118),
-     * which `install_log_tap` now pins wide open - so forwarding
-     * unguarded would put every debug line nix can produce on a
-     * console user's stderr. The tap does the filtering nix's global
-     * used to do, per thread.
+     * THE FALLBACK GATES ON THE WRONG LEVEL, and that is why every
+     * override below tests `effective_verbosity()` before
+     * forwarding. `SimpleLogger::log` reads `nix::verbosity`
+     * (logging.cc:118), and one thread's `subscribe_logs` RAISES
+     * that global for the whole process, because nix has no
+     * per-thread gate of its own. So forwarding unguarded would put
+     * one thread's debug lines on every other caller's stderr. The
+     * tap does the filtering per thread that nix's global cannot.
+     *
+     * This used to say the fallback had NO gate, and that
+     * `install_log_tap` pins the global wide open. It does not, and
+     * has not since `tasks/089` step 4 removed the pin. The comment
+     * outlived the code it described.
      *
      * A MESSAGE is gated before routing too. An ACTIVITY is not, and
      * the asymmetry is the same one `LogQueue::push` already makes:
@@ -581,8 +587,19 @@ private:
      * The logger nix itself installs at static init
      * (`logging.cc:35`), built here a second time because
      * `install_log_tap` no longer keeps the first one. It writes
-     * descriptor 2 and gates on `nix::verbosity`, so an unsubscribed
-     * caller sees exactly what it saw before the tap existed.
+     * descriptor 2 and gates on `nix::verbosity`.
+     *
+     * IT IS NOT A SUFFICIENT GATE, and this used to claim it was:
+     * "an unsubscribed caller sees exactly what it saw before the
+     * tap existed". Measured false (`tasks/095`). A daemon store
+     * sends `nix::verbosity` to the daemon (remote-store.cc:118),
+     * the daemon narrates back as STDERR_NEXT, and the client
+     * re-raises every one of those with `printError`
+     * (worker-protocol-connection.cc:75). That ERASES the daemon's
+     * level: the line arrives as lvlError, passes every gate here
+     * and every gate above, and lands on stderr. The probe counted
+     * 1052 such lines on an UNSUBSCRIBED caller, in a process that
+     * subscribed once and unsubscribed.
      *
      * NO SECOND CEILING. A `level <= lvlWarn` cut was written into
      * `tasks/089` first, on the argument that a library must not
