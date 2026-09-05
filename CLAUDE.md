@@ -126,15 +126,39 @@ file.
 
 The build prints the `huggorm_decl/cpp` line count. It is not a budget to spend.
 
-**ASK BEFORE WRITING ANY C++ THAT THE CODEGEN DID NOT WRITE.** Every
-line of it needs the user's explicit approval, in advance, per
-occasion. Not "I will note it in the commit" and not "I will write a
-task for deriving it later" - those are what happened while
-`cpp/eval.hpp` grew from 108 lines to 417, and every one of those
-lines looked reasonable on its own.
+**A HELPER NEEDS NO ASK. A MAPPING IS STILL BANNED.** Carl,
+2026-09-05:
 
-Show what the line does, say why a declaration cannot carry it, and
-wait. A "no" means the answer is to teach the declaration.
+> Writing a bit of manual C++ is OK to "help" the codegen, of course
+> there are things which won't be expressible in Python DSL and in
+> these cases we write C++ that "assists" the DSL (manual C++ can be
+> something the emitter can bind to pretty much).
+
+So the line above is the whole rule, and it is the line that was
+always there. Write the helper. Say in the commit what it does and
+why a declaration cannot carry it.
+
+**This used to say ASK BEFORE WRITING ANY C++, per occasion.** That
+rule was written after `cpp/eval.hpp` grew from 108 lines to 417 by
+accretion, and it over-corrected: it made a GC traversal slot - pure
+infrastructure, no Python name resolving to it - into a question
+instead of a fix. The thing that grew `eval.hpp` was mappings sneaking
+in as "just one more line", and the MAPPING ban is what stops that.
+
+Two tests, and both have to pass before you write it:
+
+1. **Who calls it.** Generated code calls a helper. If a Python name
+   resolves to it, it is a mapping and it is banned however small.
+2. **Could a declaration say this?** If yes, teach the declaration -
+   that is still the answer, and the helper is still the wrong file.
+
+The best helpers are the ones the emitter BINDS TO: a table, a
+symbol, a slot the generated `nb::class_` names. That keeps the
+generated side the caller and the helper the thing called.
+
+Still ask when the answer is a design choice rather than a shape -
+an ownership model, a threading rule, a lifetime nobody has decided.
+That is the "materially different work" test, not a C++ test.
 
 ## 3. Maintainability, which is why 2 exists
 
