@@ -961,11 +961,21 @@ which was superseded rather than fixed.
   traverse on every type in a cycle and clear on only one, and a
   function object and a cell carry their own. Kept as correctness and
   recorded as untested.
-- 094 (nothing catches a missing @gc_slots) is OPEN and blocks
-  nothing. A bound class that stores a Python object and omits the
-  marker leaks itself silently. One such class exists today and it
-  says it; the count is one and holds by inspection, which is exactly
-  the situation that stops being true without warning.
+- 094 (nothing catches a missing @gc_slots) is DONE.
+  `census_gc_slots` prints on every build, beside `census_cpp` and
+  `census_markers`. PER FILE, which is a limit rather than a
+  shortcut: the `Evaluator` does not hold the callables itself -
+  `EvalCore` does, and nothing binds `EvalCore` - so a per-class check
+  would follow C++ members through a type no declaration mentions.
+  It would have caught the original.
+  The member test is text, not a parse, and the clause that does the
+  work was measured: a line carrying `nb::object` and ending in `;`
+  matched the member AND the wrapped tail of `register_primop`'s
+  declaration, so a line with any parenthesis is excluded.
+  Proved by breaking it. Removing the marker prints TWO reports -
+  `census_markers` says nothing carries it, this says which file
+  needs it - and both are kept, because either alone reads as noise
+  and together they name the fix.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE

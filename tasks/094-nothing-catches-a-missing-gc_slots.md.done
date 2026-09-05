@@ -1,0 +1,80 @@
+# Nothing catches a missing @gc_slots
+
+**DONE.** `census_gc_slots` reports it on every build. Opened and
+closed the same day as `tasks/093`, which created the omission it
+guards.
+
+## The shape of the miss
+
+A bound class that holds an `nb::object` and does NOT carry
+`@gc_slots(...)` leaks itself the moment that object closes over it.
+Silent: the suite passes, and nanobind reports it at interpreter
+shutdown, after the last test.
+
+It is this repo's named failure mode with a new face. NOT an emitter
+skipping what it does not recognise - the emitter wrote exactly what
+the declaration said. The declaration omitted something no rule
+required it to say, so the rule is what was missing.
+
+## What was written
+
+`census_gc_slots(have)`, beside `census_cpp` and `census_markers`,
+printed on every build:
+
+    gc slots: eval.hpp stores a Python object, and EvalState says
+    how to traverse it
+
+PER FILE, and that is a limit rather than a shortcut. The `Evaluator`
+this exists for does not hold the callables itself - `EvalCore` does,
+and nothing binds `EvalCore` - so a per-class check would have to
+follow C++ members through a type no declaration mentions. "Does any
+declaration over this file say it" is the question a text scan can
+answer honestly.
+
+**It would have caught the original.** `eval.hpp` held the callable
+and no declaration anywhere carried the marker.
+
+## The member test, and why it is not a parse
+
+A C++ parser here would be a second compiler. The test is: the line
+carries `nb::object`, `nb::callable` or `nb::handle`, ends in `;`,
+and holds NO parenthesis.
+
+That last clause is what does the work, and it was measured on the
+real file. The naive version matched two lines:
+
+    std::vector<nb::object> primops_;          the member
+    nb::object fn) const;                      a wrapped parameter
+
+The second is the tail of `register_primop`'s declaration. Excluding
+any line with a parenthesis drops it and keeps the member.
+
+What it misses is stated in the docstring rather than hidden: a
+member reached through a typedef, a template parameter, or a
+`std::function` wrapping a callable.
+
+## Printed, not raised
+
+`census_markers`'s reason, and it applies harder here. A helper
+storing a Python object may be safe for a reason only a person knows,
+and failing the build would get the marker added blindly rather than
+thought about.
+
+## Proved by breaking it
+
+Removing `@gc_slots` from the declaration:
+
+    markers: 25 declared, 23 used
+      @gc_slots: no declaration carries it - the emitter branches
+      behind it have never run
+      eval.hpp: stores a Python object and NO declaration over it
+      carries @gc_slots - such a class leaks itself whenever that
+      object closes over it (tasks/093)
+        std::vector<nb::object> primops_;
+
+TWO reports for one omission, and that is worth keeping rather than
+deduplicating. `census_markers` notices the marker is unused;
+this notices the file that needs it. Either alone could be read as
+noise; together they name the fix.
+
+Opened and closed 2026-09-05, from `tasks/093`.

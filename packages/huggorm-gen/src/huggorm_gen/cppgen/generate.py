@@ -673,6 +673,104 @@ def census_markers(have: Any) -> None:
               f"branches behind it have never run")
 
 
+# A member that HOLDS a Python object, as opposed to a parameter that
+# passes one through. `nb::object fn) const;` is the wrapped tail of a
+# function declaration and is not a member, so a line carrying a
+# parenthesis is not one either.
+_HOLDS = re.compile(r"nb::(object|callable|handle)\b")
+
+
+def _python_members(text: str) -> list[str]:
+    """Lines that declare a member holding a Python object.
+
+    TEXT, not a parse. A C++ parser here would be a second compiler,
+    and this only has to be right enough to ask a question - it
+    reports, and a person answers.
+
+    What it can miss is stated rather than hidden: a member reached
+    through a typedef, a template parameter or a `std::function` that
+    happens to wrap a callable. What it will not do is fire on a
+    parameter, a call or a comment, which is what makes it quiet
+    enough to be worth reading.
+    """
+    found = []
+    for line in text.splitlines():
+        bare = line.strip()
+        if bare.startswith(("*", "//", "/*")):
+            continue
+        if "(" in bare or ")" in bare or not bare.endswith(";"):
+            continue
+        if _HOLDS.search(bare):
+            found.append(bare)
+    return found
+
+
+def census_gc_slots(have: Any) -> None:
+    """Every helper that stores a Python object, and whether anything
+    declared over it says how to traverse one.
+
+    `tasks/093` is why. A bound class that holds an `nb::object` and
+    carries no `@gc_slots` leaks itself the moment that object closes
+    over it - which is the NORMAL way to write the one case this repo
+    has, because a primop builds its result with `state.make_int`.
+    The leak is silent: the suite passes, and nanobind reports it at
+    interpreter shutdown, after the last test.
+
+    It is not an emitter skipping what it does not recognise. The
+    emitter wrote exactly what the declaration said, and the
+    declaration omitted something no rule required it to say. So the
+    rule is here.
+
+    PER FILE rather than per class, and that is a real limit. The
+    `Evaluator` this exists for does not hold the callables itself -
+    `EvalCore` does, and nothing binds `EvalCore` - so a per-class
+    check would have to follow C++ members through a type nothing
+    declares. Asking "does any declaration over this file say it" is
+    the question a text scan can answer honestly.
+
+    It WOULD have caught the original: `eval.hpp` held the callable
+    and no declaration anywhere carried the marker.
+
+    Printed, not raised, like `census_markers`. A helper storing a
+    Python object may be perfectly safe for a reason only a person
+    knows, and failing the build would get the marker added blindly
+    rather than thought about."""
+    slotted: dict[str, set[str]] = {}
+    for name in have.module_names:
+        for node in ast.walk(have.tree(name)):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            header, has_slots = "", False
+            for dec in node.decorator_list:
+                if not isinstance(dec, ast.Call) or not isinstance(
+                        dec.func, ast.Name):
+                    continue
+                if dec.func.id == "header" and dec.args:
+                    arg = dec.args[0]
+                    if isinstance(arg, ast.Constant):
+                        header = str(arg.value)
+                elif dec.func.id == "gc_slots":
+                    has_slots = True
+            if header:
+                slotted.setdefault(pathlib.Path(header).name, set())
+                if has_slots:
+                    slotted[pathlib.Path(header).name].add(node.name)
+    for f in sorted(CPP.glob("*.hpp")):
+        members = _python_members(f.read_text())
+        if not members:
+            continue
+        says = slotted.get(f.name, set())
+        if says:
+            print(f"gc slots: {f.name} stores a Python object, and "
+                  f"{', '.join(sorted(says))} says how to traverse it")
+            continue
+        print(f"  {f.name}: stores a Python object and NO declaration "
+              f"over it carries @gc_slots - such a class leaks itself "
+              f"whenever that object closes over it (tasks/093)")
+        for line in members:
+            print(f"    {line}")
+
+
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     # The package directory is EMPTY in the checkout - every file in
@@ -714,6 +812,7 @@ def main(out_dir: str) -> int:
     print(f"front door -> {target}: {names} name(s)")
     census_cpp(set(have.module_names))
     census_markers(have)
+    census_gc_slots(have)
     # LAST of the three, and the only one that raises. It reads the
     # RAW parse, so it is the one check no earlier stage can have
     # already agreed with (tasks/081).
