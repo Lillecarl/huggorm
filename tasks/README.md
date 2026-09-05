@@ -781,6 +781,15 @@ which was superseded rather than fixed.
   or unsayable - six, five of them open, and one habit rather than six
   gaps. Refusing was right each time, and six is where it stops being
   the answer.
+  The DEPENDENCY test it applied to `@private_member` applies to the
+  list, and it did not say so. Grepped every consumer: the three
+  slots and the two log structs are used only by `LogTap`, which is
+  hand-written and in the same file, so 32 of the derivable lines are
+  blocked for the identical reason. The four subscribe functions are
+  called only from `Cxx` bodies, so 41 are not. That makes 084 the
+  UNLOCK rather than merely the largest item.
+  Moving the unblocked 41 into `Cxx` bodies is a RELOCATION and not a
+  derivation, so the census is not a reason to do it.
   It first claimed `CLAUDE.md:95` was stale - that nothing prints the
   `huggorm_decl/cpp` line count. WRONG, and corrected in the file:
   `census_cpp` prints `hand-written C++ in cpp/: 593 lines in 5
@@ -881,6 +890,43 @@ which was superseded rather than fixed.
   the tee stands.
   `subscribe_logs`'s "can only narrow" sentence becomes FALSE under
   this, and has to change in the same commit as the pinning.
+  STEP 3 IS WRITTEN. A record carries `request`, the call it was
+  raised inside, and an `end_request` pushes a `"finalized"` marker
+  saying that call raised its last one. Carl approved the four C++
+  lines it needed; the callable pair is `Cxx()` bodies in the
+  declaration, carrying NO threading policy - that is the
+  `gc_release_thread` lane, and a declared one would have hopped to
+  the pool and set the thread_local on the wrong thread, silently.
+  The id is per CALL and Python allocates it. A caller-supplied one
+  was rejected: a request spans calls, so a marker per call would
+  fire many times for one id. So a reader GROUPS by the number and
+  learns the group is closed; it cannot ask for the logs of a call it
+  just made. That is additive and is not done.
+  Both drop policies - `LogQueue::push` and `_Reader.offer` - name
+  what to DROP by membership, so the marker inherited never-dropped
+  on both layers. Checked before designing on it: written the other
+  way round, this was the eighth silent skip.
+  Two claims in the file were REFUTED by writing it. The zero case is
+  a gate after all (the sync binding never sets an id, so its records
+  carry 0), and a marker changes what an existing reader sees - a
+  capacity-1 gate that asserted `len(records) == 1` now counts
+  messages instead.
+  Both gates were proved by BREAKING them: deleting the stamp fails
+  the two id gates and nothing else, and making `"finalized"`
+  droppable fails the marker gate with `got 1` - the one marker
+  `subscribe_logs` pushed into an empty queue, which is the right
+  reason rather than zero.
+  A "434 tests" written into 089 was NOT measured - the run passed
+  `-q` and printed no totals line. The real one is 396 passed, 10
+  deselected. Recorded rather than corrected quietly.
+  STEP 4, per-thread verbosity, is what is left, and still needs the
+  ceiling re-measured here rather than adopted.
+- 093 (a leak report rides every suite run) is OPEN and blocks
+  nothing. nanobind reports four leaked `EvalState` instances, the
+  type and eighteen functions at shutdown on every run. NOT 089:
+  measured with those tests deselected and the same four appear. Four
+  is constant rather than growing with the test count, which points
+  at a few long-lived states - a guess, and the file says so.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. The five `LogTap` overrides are one shape stated five
   times, which is what an emitter is for - and there is exactly ONE

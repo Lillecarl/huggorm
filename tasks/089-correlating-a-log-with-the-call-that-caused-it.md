@@ -610,3 +610,99 @@ dying thread, because the thread is the point.
 
 `begin_request` and `end_request` are called the same way, inside
 `_invoke`, already on the target thread.
+
+## Written, and what the writing changed. 2026-09-05
+
+Carl approved the four C++ items. Everything above is now in the
+tree, and three things the design did not predict came out of it.
+
+**The zero case IS a gate, and this file said it was not.** It read
+"nothing reachable from Python raises one on demand. Written here
+instead of pretended." Wrong, and the fix was to write the test: the
+SYNC binding is called straight from the test thread, so no
+`begin_request` runs and every record carries 0. Only the async
+wrapper sets the id, and the sync one is right there. So 0 is proved
+to mean "no wrapped call" rather than "the stamp is broken".
+
+**A marker changes what an existing reader sees, and one gate said
+so.** `test_a_drop_crosses_rather_than_vanishing` asserted
+`len(records) == 1` over a capacity-1 queue. It now sees two: the one
+message the bound kept, and the never-dropped marker. The test counts
+MESSAGES now. That is a wire-visible change and it is the right one -
+a reader that groups by `request` needs the marker in the same stream
+the records came in - but a client counting records will see it.
+
+**`subscribe_logs` is a wrapped call too.** Its own marker lands in
+the queue it just created, because the queue exists by the time
+`end_request` runs on that thread. So a subscription starts with one
+marker in it for the call that opened it. Harmless, and it is why the
+full-queue gate counts `>= 20` rather than `== 20`.
+
+Also `test_every_wire_value_survives_its_own_round_trip` needed the
+new field in both LogRecord samples, which is that gate working: a
+wire value gained a part and the round trip refused to pass until the
+sample carried it.
+
+### Measured
+
+    nix run --file . check          all checks passed
+    the suite                       396 passed, 10 deselected
+
+**The first number written here was 434, and it was not measured.**
+The run that produced it passed `-q`, which suppressed the totals
+line, so there was nothing to read and 434 came from counting
+progress dots badly. Recorded rather than quietly corrected: this
+repo has burned on exactly this, and `CLAUDE.md` says a number
+recalled at the end is a number you did not check. The real line
+came from the perturbation runs, which print it.
+
+### Both gates were proved by breaking them
+
+    stamp deleted from `route`
+      FAILED test_a_record_carries_the_call_it_was_raised_inside
+             - AssertionError: the record names its call
+      FAILED test_two_calls_get_two_numbers
+             - AssertionError: two calls, two numbers
+      2 failed, 394 passed, 10 deselected
+
+    "finalized" added to `droppable`
+      FAILED test_the_marker_survives_a_queue_full_of_messages
+             - AssertionError: every call said it finished, got 1
+      1 failed, 395 passed, 10 deselected
+
+Each perturbation fails exactly the gate it should and nothing else.
+The first one taking TWO tests is the honest answer rather than a
+surprise: `test_two_calls_get_two_numbers` reads the same stamp.
+
+`got 1` in the second is worth keeping. One marker survived - the one
+`subscribe_logs` pushed into an empty queue - and the twenty from the
+evaluations were all refused. So the gate fails for the right reason
+and not by arriving at zero.
+
+### One inconsistency, named rather than fixed
+
+`materialize()` runs `_resolve` with NO request, and `_invoke` runs
+the same constructor INSIDE one when a call materialises the object
+lazily. So a record raised during construction carries 0 or the first
+call's id, depending on which path built it.
+
+Not a defect - construction raises little and neither answer is
+wrong - but it is the kind of thing a reader trips on. Fixing it
+means deciding whether construction is its own call, and that is a
+question about the id's meaning rather than a bug.
+
+A nanobind leak report rides that run - four `EvalState` instances,
+one type, eighteen functions. It is NOT this change: the same four
+appear with these four tests deselected. `tasks/093` holds it.
+
+### What is still open here
+
+Step 4, per-thread verbosity, unchanged and last. It needs the
+ceiling re-measured on this repo's workloads rather than adopted from
+nanopynix's table.
+
+And the thing this does NOT do, named again so it is not mistaken for
+done: a caller is never told which number its call got. A reader
+groups and learns the group closed; it cannot ask "the logs for the
+call I just made". Handing the id back to the initiator is additive
+and nothing here blocks it.
