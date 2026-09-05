@@ -26,7 +26,31 @@ fact stated six times disagrees once.
 Three audiences, and the order is not a ranking - all three are real:
 Carl's own Nix tooling, editor and direnv-style workflows that want a
 warm evaluation behind them, and other people who want Nix from Python
-as a library. The third is what makes a breaking change expensive.
+as a library.
+
+## Break it, if breaking it is better
+
+Carl, 2026-09-05:
+
+> Breaking compatibility is not frowned upon in this repo, it's
+> encouraged if it helps improve the codebase. This repo is an
+> elaborate spike, backwards compatibility is not in our terminology,
+> the best possible thing forwards is the only goal.
+
+So a published name, a wire field, a constructor, a signature - none
+of them is a reason to keep a worse shape. If a change makes the
+codebase better, make it.
+
+**This line used to say the opposite.** It read "the third is what
+makes a breaking change expensive", about the third audience above.
+It is deleted rather than softened, because it was steering: it is
+what turned `NixClient`'s asyncio spawn into a question for Carl
+instead of a change to make (`tasks/035`).
+
+What DOES still stop and ask is unchanged and is a different thing: an
+action that is irreversible outside this repository, and a choice
+between options that lead to materially different work. Breaking an
+interface is neither. Say what broke in the commit message, and go.
 
 ## The goal reached
 
