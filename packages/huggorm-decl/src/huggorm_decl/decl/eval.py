@@ -1324,9 +1324,16 @@ def _log_tap_init() -> None:
     and replacing it while another thread reads it is a race with no
     lock to take.
 
-    A TEE: the logger that was there stays the MAIN one, so it keeps
-    writing to stdout and keeps being the one Nix asks a question
-    with. Subscribing to nothing therefore changes nothing."""
+    A REPLACEMENT, and it was a tee until `tasks/089`. A tee kept the
+    logger that was already there as the MAIN one, so every record
+    reached stderr whether a subscriber took it or not - and a client
+    reading this protocol over stdin/stdout cannot have that.
+
+    Subscribing to nothing still changes nothing. `LogTap` carries a
+    `SimpleLogger` fallback and forwards to it whatever no queue
+    claimed, so an unsubscribed caller sees what it saw before. What
+    DOES change is the subscribed case: a claimed record no longer
+    also appears on stderr."""
 
 
 @needs("huggorm_decl/cpp/gc.hpp")
