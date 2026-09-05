@@ -1004,12 +1004,32 @@ which was superseded rather than fixed.
   traverse on every type in a cycle and clear on only one, and a
   function object and a cell carry their own. Kept as correctness and
   recorded as untested.
-- 095 (what a raised verbosity costs) is OPEN and blocks nothing. The
-  formatting cost of `raise_verbosity`, named in 089 step 4 and not
-  measured there. Bounded by what a caller asked for, which is the
-  difference from the pin. Needs a LIVE store: the interesting sites
-  are in libstore, and `dummy://` reaches almost none - the same
-  blindness that let the daemon regression through.
+- 095 (what a raised verbosity costs) is DONE. Measured over the
+  daemon store, four conditions, 12 rotated repetitions.
+  The CLIENT-side formatting cost is not measurable: the condition
+  that raises after the handshake is the baseline within noise on all
+  three phases, which confirms 089's count of the sites.
+  The DAEMON-side cost is 1.05x to 1.46x, because
+  `RemoteStore::setOptions` sends the level and the daemon then
+  narrates every worker op back over the socket. Writing to stderr is
+  not the cost - a condition that queues the records instead is no
+  faster.
+  The probe also found what it was not looking for, and 096 is that:
+  a process that subscribed once prints daemon debug lines on stderr
+  forever, because `worker-protocol-connection.cc:75` re-raises every
+  daemon line with `printError` and ERASES its level.
+  It refuted a comment in `logging.hpp` claiming an unsubscribed
+  caller sees what it saw before the tap existed.
+- 096 (a raised global narrates forever) is OPEN, and is the first
+  thing to do: 095 measured 1052 daemon debug lines reaching an
+  unsubscribed caller's stderr, deterministically. The fix is to
+  lower `nix::verbosity` when a subscription goes - to the WIDEST
+  level still live, never to lvlInfo, because lowering past a live
+  subscriber is a silent skip. `server.py`'s `_widest` is the same
+  rule one layer up. One thing lowering cannot reach: a connection
+  already open keeps the level `setOptions` gave it.
+  The gate must be LIVE - `dummy://` opens no connection and reaches
+  none of this.
 - 094 (nothing catches a missing @gc_slots) is DONE.
   `census_gc_slots` prints on every build, beside `census_cpp` and
   `census_markers`. PER FILE, which is a limit rather than a

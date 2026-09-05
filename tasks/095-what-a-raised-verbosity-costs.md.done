@@ -1,0 +1,151 @@
+# What a raised verbosity costs
+
+**DONE.** Measured 2026-09-05. The client-side cost is nothing. The
+DAEMON-side cost is real, and the probe found a defect beside it.
+`tasks/096` is the fix.
+
+## The question
+
+`printMsg` gates on `nix::verbosity` in a MACRO, so the arguments are
+lazy and a rejected message costs nothing (`logging.hh:327`). Raising
+the global moves that: every site at or under the new level runs
+`fmt(args)` and builds a string the tap may then drop.
+
+`subscribe_logs(level=N)` raises it to N and never lowers, so a
+process that once served a talkative subscriber formats at talkative
+for the rest of its life.
+
+## What was measured
+
+`.scratchpad/095/`. Four conditions, one per subprocess, because the
+global is monotonic and no process can hold two levels in turn. The
+order rotates per repetition. 12 repetitions, medians reported.
+
+The store is `auto`, which on this machine is the daemon
+(`nix store info --store auto`: `Store URL: daemon`, `Version:
+2.34.8`, `Trusted: 1`). The daemon is the same 2.34.8 the bindings
+link, so no version skew.
+
+Workload: 16 real store paths, 60 rounds each of `is_valid_path`,
+`query_path_info` and `compute_fs_closure`.
+
+| condition | `nix::verbosity` | subscriber | connection opened at |
+| --- | --- | --- | --- |
+| `baseline` | 3 (lvlInfo) | none | 3 |
+| `raised` | 7 (lvlVomit) | none - subscribed once, unsubscribed | 7 |
+| `raised-quiet` | 7 | process-wide, kept open | 7 |
+| `raised-after` | 7 | none | **3** |
+
+`raised-after` is the attribution. The connection is LAZY, so the
+raise happens after one warm-up call has already forced the handshake
+at the default. Nothing raised reaches the wire, so its delta is
+client-side `fmt` alone.
+
+**lvlInfo is the baseline, not lvlError.** The task asked for
+lvlError. It is not reachable: the global starts at lvlInfo and
+`raise_verbosity` only goes up. lvlInfo is also the honest floor -
+no real process runs below it.
+
+## The numbers
+
+Medians of 12, in milliseconds, for 960 calls (16 paths x 60 rounds):
+
+| phase | baseline | raised | raised-quiet | raised-after |
+| --- | --- | --- | --- | --- |
+| `is_valid_path` | 40.9 | 58.0 | 59.7 | 38.6 |
+| `query_path_info` | 3.1 | 3.3 | 3.9 | 3.0 |
+| `compute_fs_closure` | 15.0 | 16.2 | 17.8 | 15.2 |
+
+As a ratio to the baseline:
+
+| phase | raised | raised-quiet | raised-after |
+| --- | --- | --- | --- |
+| `is_valid_path` | 1.42x | 1.46x | **0.95x** |
+| `query_path_info` | 1.05x | 1.24x | **0.95x** |
+| `compute_fs_closure` | 1.08x | 1.19x | **1.01x** |
+
+Three readings, and they agree:
+
+1. **The client-side formatting cost is not measurable.**
+   `raised-after` is the baseline within noise on all three phases.
+   This confirms 089's count - libexpr holds 4 literal `printMsg(`
+   and 29 across the macro family, against 228 tree-wide - and the
+   probe that showed one record for a whole file evaluation.
+2. **The whole cost is the daemon narrating over the socket.**
+   `raised` and `raised-quiet` differ from the baseline by 1.05x to
+   1.46x, and from each other by noise. `RemoteStore::setOptions`
+   sends `nix::verbosity` (remote-store.cc:118) and `daemon.cc:239`
+   assigns it, so the daemon's `TunnelLogger::log` (daemon.cc:88)
+   starts formatting and enqueueing at vomit for every worker op.
+3. **Writing to stderr is not the cost.** `raised-quiet` gives every
+   record to a queue instead and is no faster.
+
+`query_path_info` is nearly flat because `Store::queryPathInfo`
+caches client-side: 960 calls produced 91 worker ops, not 960.
+
+## What the probe found that it was not looking for
+
+**A process that once subscribed prints daemon debug lines on stderr
+forever, for every caller, subscribed or not.**
+
+Deterministic. 1052 lines in every `raised` repetition, 0 in every
+other condition:
+
+```
+    960 performing daemon worker op: 1
+     91 performing daemon worker op: 26
+```
+
+960 = 16 paths x 60 rounds of `is_valid_path` (`wopIsValidPath`), 91
+= the uncached `query_path_info` ops. The text is `daemon.cc:1091`,
+a `debug()` inside the daemon.
+
+The mechanism, read rather than guessed:
+
+1. `raise_verbosity` moves `nix::verbosity` to 7 and never lowers it.
+2. `RemoteStore::setOptions` sends that 7 to the daemon
+   (remote-store.cc:118); `daemon.cc:239` assigns it to the daemon's
+   own `nix::verbosity`.
+3. The daemon's `TunnelLogger::log` now passes `lvl > verbosity` and
+   sends the line back as `STDERR_NEXT` (daemon.cc:94).
+4. The client reads it and calls
+   **`printError(chomp(readString(from)))`**
+   (`worker-protocol-connection.cc:75`).
+
+Step 4 is the one that matters. It **ERASES the level**: a daemon
+`debug()` arrives at the client as **lvlError**. lvlError is 0, so it
+passes `LogTap::log`'s `effective_verbosity()` gate, passes the
+fallback `SimpleLogger`'s `nix::verbosity` gate, and reaches
+descriptor 2. No gate anywhere downstream can tell it from a real
+error, because on the wire it no longer is one.
+
+`unsubscribe_process_logs` does not help. It restores
+`default_verbosity()` to lvlInfo, which is what `effective_verbosity`
+reads - but the daemon was told 7 at handshake time and keeps it for
+the life of the connection.
+
+This refuted a comment in `logging.hpp` that said an unsubscribed
+caller "sees exactly what it saw before the tap existed". Corrected
+in its own commit.
+
+## What follows
+
+The task said: if the difference is large, the answer is probably to
+LOWER the global when the last subscription that needed it goes.
+
+The timing alone would not have carried that - 1.1x to 1.5x on store
+ops, and only while someone asked. The stderr leak does, because it
+is unbounded in time and reaches a caller who asked for nothing.
+
+`tasks/096` holds the fix and its argument, including the part
+lowering cannot reach: a connection already open keeps the level it
+was given.
+
+## What this is NOT
+
+A reason to pin. The pin costs the daemon permanently and for every
+process, which is the same defect with no subscription needed.
+`tasks/089` records why it was removed, and this measurement is the
+first direct evidence of what it would have cost.
+
+Opened 2026-09-05, from `tasks/089` step 4. Measured the same day.
