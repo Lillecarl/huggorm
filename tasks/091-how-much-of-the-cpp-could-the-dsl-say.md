@@ -208,6 +208,18 @@ the include block of every emitted `.cpp`, so this is a fact it
 computes instead of one a header carries on the emitted file's
 behalf.
 
+**DONE, both halves, 2026-09-05.** `BODY_HEADERS` derives the
+standard headers a `Cxx` body spells, and `decl/errors.py` says
+`header = "nix/..."` beside each `cxx` so the emitter writes the
+translator's includes too. `tasks/090` holds the detail, including
+that neither perturbation broke the BUILD - nix's own headers reach
+`<stdexcept>` along some chain - so the gate is a text gate on what
+the emitter derived.
+
+So item 1 of the order below is finished. Item 2 is blocked, item 3
+is `tasks/084`, and `tasks/084` got harder rather than easier - see
+its own 2026-09-06 section.
+
 ## The dependency is not `@private_member`'s alone. 2026-09-05
 
 `@private_member` waits on who CONSUMES what an emitter would write.

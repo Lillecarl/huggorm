@@ -76,3 +76,87 @@ The line count is the thing to watch. `cpp/eval.hpp` grew from 331 to
 estimated 130. The extra is the queue's accessors and the record
 structs, not the overrides; the five overrides and their `convert` are
 about 45 of it. The build prints the total on every run.
+
+## Three facts in this file are stale, 2026-09-06
+
+The conclusion is unchanged and the premises under it have moved.
+Corrected rather than rewritten, because what moved is the argument's
+own evidence.
+
+**It is not in `cpp/eval.hpp`.** `LogTap` lives in
+`cpp/logging.hpp`, split out when `eval.hpp` had grown to hold four
+unrelated things. The line figures below refer to that file.
+
+**`install_log_tap` does not use `makeTeeLogger`.** This file's third
+requirement - "who owns the instance" - says the tap goes under
+`nix::logger` through a tee that keeps it forever. `tasks/089` step 4
+made it a REPLACEMENT:
+
+    nix::logger = std::make_unique<LogTap>();
+
+A tee kept the previous logger as the MAIN one, so every record
+reached stderr whether a subscriber took it or not, which a client
+reading the protocol over stdin/stdout cannot have. The ownership
+question the requirement names is still real - a `unique_ptr` held
+by a global - but the mechanism named is gone.
+
+**There are SEVEN overrides, not five**, and this is the one that
+matters. `writeToStdout` and `isVerbose` joined the original five.
+
+## The uniformity premise is the one that broke
+
+This file's second requirement said the body is generatable *because*
+it is uniform: "build one record, route it". That was true of five
+identical overrides. It is not true of the seven:
+
+    log             gate on effective_verbosity, THEN route
+    logEI           gate, RENDER the ErrorInfo to a string, route
+    startActivity   route unconditionally; gate only the FALLBACK
+    stopActivity    route. the original shape, and the only one left
+    result          route
+    writeToStdout   delegate to log, at lvlInfo
+    isVerbose       return true
+
+Four different shapes across seven methods. The asymmetry is not
+incidental either - `startActivity` routes unconditionally because a
+dropped start leaves a node in a reader's activity tree that nothing
+ever closes, and `logEI` renders because an `ErrorInfo` carries a
+trace of positions that `tasks/036` has not decided how to cross.
+
+So a declaration form would now have to express a per-override GATE,
+a per-override transformation, and two methods that build no record
+at all. That is the "arbitrary body" this file already named as the
+line between a declaration and a language - and the overrides walked
+across it while nobody was generating them.
+
+## What that does to the case for doing this
+
+It weakens it, and `tasks/091` should read this before quoting the
+line count again.
+
+91 lists 084 as "the biggest single win" and as the UNLOCK for 32
+further lines. Both are still true by the numbers - `LogTap` is 75
+code lines now rather than 62 - but the numbers were never the
+argument. The argument was that five copies of one sentence belong in
+an emitter, and there are no longer five copies of one sentence.
+
+The original reason to wait is unchanged and now has company:
+
+1. There is still ONE implementer, and a DSL feature with one case
+   cannot be shown to be right.
+2. The one case is no longer uniform, so generating it would mean
+   inventing per-override syntax for a gate and a transformation -
+   for a single class.
+
+`stopActivity` and `result` are the two that still read as the shape
+this task was opened about. Two is not five.
+
+## What did NOT change
+
+It is still not a mapping. `LogTap` is a callback RECEIVER; generated
+code calls `install_log_tap`, and no Python name resolves to an
+override. Goal 2 allows it as a helper, and the census counts it.
+
+And the unlock is real: the 32 lines `tasks/091` names - the typed
+slots and the two record structs - have `LogTap` as their only
+consumer, so they stay hand-written while it does.

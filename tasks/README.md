@@ -1088,9 +1088,21 @@ which was superseded rather than fixed.
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
-  nothing. The five `LogTap` overrides are one shape stated five
-  times, which is what an emitter is for - and there is exactly ONE
-  implementer, so the shape cannot be shown to generalise yet.
+  nothing. It got HARDER, 2026-09-06, and the file says so.
+  It was five `LogTap` overrides of one shape - build a record, route
+  it - which is what an emitter is for. There are SEVEN now, in four
+  shapes: `log` gates then routes, `logEI` gates and RENDERS,
+  `startActivity` routes unconditionally and gates only its fallback,
+  `writeToStdout` delegates, `isVerbose` builds no record at all.
+  Only `stopActivity` and `result` still read as the original shape.
+  So the uniformity premise the case rested on is gone, and a
+  declaration form would need per-override syntax for a gate and a
+  transformation - for one class. The ONE-implementer reason to wait
+  now has a second reason beside it.
+  Two more facts in that file were stale and are corrected: `LogTap`
+  is in `cpp/logging.hpp`, not `eval.hpp`, and `install_log_tap` no
+  longer uses `makeTeeLogger` - 089 step 4 made it a replacement.
+  Still not a mapping, and the 32-line unlock is still real.
 - 045 (wire names) and 048 (proto3 optional) want doing BEFORE 022:
   both change the schema, and the lockfile should pin the fixed
   names and the synthetic oneofs, not the current ones.
