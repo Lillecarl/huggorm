@@ -1,9 +1,15 @@
 # The suite fills the disk
 
-**OPEN.** The test suite leaves 463 MB in `/tmp` per run, and a
-failed cleanup path lets that accumulate without bound. It reached
-16 GB and filled a 61 GB root, which stopped a build with a SIGBUS
-inside sqlite.
+**DONE**, 2026-09-06. Read the status section at the end first: the
+premise of this opening paragraph is wrong, and the file records how
+it was refuted rather than deleting it.
+
+It said: the test suite leaves 463 MB in `/tmp` per run, and a failed
+cleanup path lets that accumulate without bound. It reached 16 GB and
+filled a 61 GB root, which stopped a build with a SIGBUS inside
+sqlite.
+
+The disk filling was real. The suite was not what filled it.
 
 ## What was measured
 
@@ -265,3 +271,109 @@ Read the TOTALS line, and drop `-q` so it survives:
 An absent totals line is now the signal it should always have been:
 the suite did not run. Which is this repo's named failure mode in the
 tooling rather than in the code - a skip that reads as an absence.
+
+## The 574 husks are explained, 2026-09-06
+
+`LOCK_TIMEOUT = 60 * 60 * 24 * 3` in `_pytest/pathlib.py:45`. **Three
+days**, and `keep=3` does not apply to a directory whose `.lock` is
+younger than that.
+
+`cleanup_candidates` yields every numbered directory at or below
+`max_existing - keep`, so an old one IS considered. `try_cleanup` then
+asks `ensure_deletable`, which returns False while a `.lock` file
+exists and is younger than the timeout (`pathlib.py:307-332`). No
+rename, no `garbage-*`, no warning - the directory simply stays, and
+stays a candidate that is refused on every later run.
+
+A session that exits cleanly unlinks its lock. One that is KILLED
+does not. So every pytest killed on this machine leaves a directory
+immortal for exactly three days, from every project sharing the root.
+
+Proved on a synthetic root rather than argued, because the real one
+cannot be perturbed. Six numbered directories, `keep=3`:
+
+    before: pytest-10 pytest-11 pytest-12 pytest-20 pytest-21 pytest-22
+    after:            pytest-11           pytest-20 pytest-21 pytest-22
+
+`pytest-10` has no lock and goes. `pytest-12` has a lock four days
+old and goes. `pytest-11` has a lock HALF A DAY old and survives,
+though it is as far below the window as the other two.
+
+So the growth is bounded after all, at three days rather than at
+three runs.
+
+That the 574 were all young-locked is what the mechanism PREDICTS,
+not something measured: the evidence was deleted to get the disk
+back, which the 2026-09-03 section already records. 574 in a
+three-day window implies about 190 killed sessions a day across
+every project sharing the root, and nobody counted them. Consistent
+with the mechanism, and not a finding.
+
+### The one live example, and it is not this suite's either
+
+    /tmp/pytest-of-lillecarl/pytest-266   323 MB   .lock from 2026-09-04
+
+Two days old, so it has one more day to live. Its tests are
+`test_bisect_run`, `test_workspace_async_concurren0` and
+`test_short_prefixes_*`. None exists in this repository - grepped,
+no match. The third time this file has had to say that.
+
+## Fixed: this suite gets its own root, 2026-09-06
+
+    export PYTEST_DEBUG_TEMPROOT="${PYTEST_DEBUG_TEMPROOT:-/tmp/huggorm}"
+
+in the `test` runner. pytest's default root is keyed by USER and not
+by project, and that one fact caused every confusion in this file:
+another project's leftovers counted as this suite's twice, its
+unremovable directories warned 177 times on a run here, and
+reclaiming meant deleting everybody's.
+
+A FIXED path, not a per-run one. The retention machinery lives under
+the basedir, so a fresh root per run would defeat the pruning it
+depends on.
+
+The variable only replaces the PARENT. `pytest-of-$USER`, the
+numbering, the locks and the retention all still work. Measured
+after the change:
+
+    one full run             /tmp/huggorm   562 MB   pytest-0
+    four more runs           /tmp/huggorm    28 KB   pytest-2 3 4
+
+`pytest-0` was pruned by the fourth, which is the retention doing
+exactly what it did before. The old root is untouched.
+
+**562 MB is this suite's honest per-run cost**, measured in isolation
+for the first time. Three retained is 1.7 GB steady, on a 61 GB disk.
+That answers question 3: acceptable.
+
+### No gate, and why not one
+
+The suite runs inside the build sandbox too, where the variable is
+unset and the default root is correct. A test asserting the root
+would have to SKIP there - and a gate that skips when it breaks is
+this repo's named failure mode, so it would be worse than nothing.
+
+The runner prints the root instead:
+
+    temp: /tmp/huggorm/pytest-of-lillecarl
+
+One line, on every run, so a run that lost the variable says so.
+An invariant nothing can observe is one that gets broken.
+
+## Status
+
+**DONE.** All three questions are answered and the last unexplained
+number is explained.
+
+1. `reserved-size` - closed 2026-09-01 on a wrong premise. The
+   setting is global, not per-store, and no store URI reaches it.
+2. The `chmod` finalizer - closed 2026-09-01. pytest already does it,
+   measured identical with and without.
+3. 562 MB per run, 1.7 GB retained - acceptable, and now measurable
+   on its own.
+
+Plus the 574: a three-day lock timeout, not a leak.
+
+What actually filled the disk was never bounded by this suite. It was
+one shared root, three days of every project on the machine, and two
+immortal directories from an OverlayFS test that does not exist here.

@@ -253,6 +253,27 @@ rec {
   #
   # `frontDoor` first, or the tree's huggorm is a namespace portion
   # and the store's package wins the whole directory. See its comment.
+  #
+  # PYTEST_DEBUG_TEMPROOT gives this suite its OWN basedir, and that
+  # is `tasks/062`. pytest's default is `$TMPDIR/pytest-of-$USER`,
+  # keyed by USER and not by project, so every pytest on this machine
+  # shares one directory. Three consequences, all measured:
+  #
+  #   - another project's leftovers are counted as this suite's, and
+  #     were, twice;
+  #   - its unremovable directories warn on every run here - 177 of
+  #     them once, enough to push the totals line off the screen,
+  #     which is how a broken build read as `0 FAILED`;
+  #   - reclaiming means deleting everybody's.
+  #
+  # A FIXED path, not a per-run one. pytest keeps the three newest
+  # numbered directories under the basedir and prunes the rest, so a
+  # fresh root per run would defeat the pruning it relies on.
+  #
+  # The variable is named for debugging and is documented surface -
+  # `pytest --help` lists it - and it only replaces the PARENT. The
+  # `pytest-of-$USER` directory, the numbering, the locks and the
+  # retention all still work exactly as they did.
   test = pkgs.writeShellApplication {
     name = "test";
     runtimeInputs = [
@@ -264,6 +285,15 @@ rec {
       ${frontDoor}
       cd packages/huggorm
       export PYTHONPATH="$PWD''${PYTHONPATH:+:$PYTHONPATH}"
+      export PYTEST_DEBUG_TEMPROOT="''${PYTEST_DEBUG_TEMPROOT:-/tmp/huggorm}"
+      mkdir -p "$PYTEST_DEBUG_TEMPROOT"
+      # SAID OUT LOUD, because no gate can hold this. The suite runs
+      # inside a build sandbox too, where the variable is unset and
+      # the default root is right - so a test asserting the root
+      # would have to skip there, and a gate that skips when it
+      # breaks is this repo's named failure mode. One line names the
+      # root instead, and a run that lost it says so.
+      echo "temp: $PYTEST_DEBUG_TEMPROOT/pytest-of-$(id -un)"
       exec pytest "$@"
     '';
   };

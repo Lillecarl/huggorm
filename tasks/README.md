@@ -118,7 +118,27 @@ which was superseded rather than fixed.
   diagnostics carry `path:line:col` and are collected. The reader has
   one cross-class check, which is why collection produces no bogus
   errors.
-- 062 (the suite fills the disk) is OPEN.
+- 062 (the suite fills the disk) is DONE. Its own title is the wrong
+  diagnosis, and the file keeps it and records the refutation.
+  The 574 unexplained husks are a THREE-DAY lock timeout, not a leak:
+  `keep=3` does not apply to a numbered directory whose `.lock` is
+  younger than `LOCK_TIMEOUT` (`_pytest/pathlib.py:45`), and only a
+  KILLED session leaves a lock behind. The MECHANISM is proved; that
+  those 574 were all young-locked is what it predicts, not something
+  measured - the evidence was deleted to reclaim the disk. Proved on
+  a synthetic root -
+  a dir with a half-day-old lock survives while one with a four-day
+  lock, equally far below the window, is removed.
+  Fixed by giving this suite its OWN basedir, because pytest's
+  default is keyed by USER and not by project - the one fact behind
+  every confusion in that file. `PYTEST_DEBUG_TEMPROOT` in the `test`
+  runner, a FIXED path so the retention still prunes.
+  562 MB per full run, measured in isolation for the first time, and
+  1.7 GB retained. Acceptable, which answers the last open question.
+  NO GATE, deliberately: the suite also runs in the build sandbox
+  where the variable is unset and the default root is right, so a
+  gate would have to skip when it broke. The runner prints the root
+  instead.
 - 063 (the hpp files hold mappings) is DONE. Its three original
   fronts closed, `errors.hpp` stopped naming its Python module,
   `open_store` is emitted, and `derived_path.hpp` is deleted - the
