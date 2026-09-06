@@ -252,3 +252,98 @@ argument of its own.
 **And `tasks/089`'s request id adds to this file**, which is worth
 saying in the same place: about ten lines on the largest orphan, on
 the block `tasks/084` would delete. Small, and pointed at the target.
+
+## Remeasured 2026-09-06, after `tasks/089`, `095` and `096`
+
+The audit above is from 2026-09-04 and its numbers have moved a lot.
+`logging.hpp` was the largest orphan at 208 code lines. It is 356
+now, and `cpp/` as a whole went from 593 to **793**.
+
+    errors.hpp      110 total    32 code   (was 35)
+    eval.hpp        936 total   335 code   (was 280)
+    gc.hpp          165 total    58 code   (was 58)
+    libstore.hpp     48 total    12 code   (was 12)
+    logging.hpp     978 total   356 code   (was 208)
+                              -----
+                                793        (was 593)
+
+`logging.hpp` is now 45% of every hand-written line in `cpp/`, and
+that is the number Carl's question was about. It went UP.
+
+### Where the 356 are
+
+Per top-level definition, counted the way `census_cpp` counts:
+
+     75  LogTap                    the five overrides. `tasks/084`.
+     48  LogQueue                  the bounded queue's drop policy
+     44  VerbosityDemand           NEW
+     34  ThreadLevel               NEW as a class; was ~4
+     18  subscribe_process_logs
+     13  route
+     13  unsubscribe_process_logs
+     11  set_process_demand        NEW
+     10  subscribe_logs
+      8  unsubscribe_logs
+      8  effective_verbosity
+      6  process_queue
+      6  LogField
+     11  LogRecord
+     30  six typed slots           thread_queue, process_sink,
+                                   verbosity_demand,
+                                   default_verbosity, thread_level,
+                                   thread_request - 5 lines each
+      4  install_log_tap
+
+### The growth is mostly NOT derivable, and that is the finding
+
+Of the 148 new lines, about 100 fall on the not-derivable side of
+this file's own test:
+
+    49  VerbosityDemand + its accessor   a counted registry with a
+                                         floor and a reconcile step.
+                                         An ALGORITHM.
+    30  ThreadLevel becoming a class     a lifetime rule: a
+                                         destructor that gives a
+                                         demand back, and a DELETED
+                                         copy assignment that exists
+                                         because the aggregate form
+                                         was wrong (`tasks/096`).
+    11  set_process_demand               the same pairing for the
+                                         process, under a mutex,
+                                         because the atomic form
+                                         raced.
+     4  route                            grew with the request id.
+
+So `logging.hpp` did not grow because the codegen fell behind. It
+grew because `tasks/089`, `095` and `096` were concurrency and
+lifetime work, which goal 2 explicitly allows a helper to be. A
+declaration form for "count holders per level and reconcile a global"
+would be inventing a language to express one program.
+
+The rest, about 48 lines, is derivable and joins the list above.
+
+### Two of the earlier figures change
+
+**`tasks/084` is worth more.** `LogTap` was 62 lines and is 75. With
+the 32 lines it unblocks - the slots and the two structs, whose only
+consumer is `LogTap` itself - it is now over 100.
+
+**"A typed slot, three times" is six times.** `verbosity_demand`,
+`default_verbosity` and `thread_request` joined `thread_queue`,
+`process_sink` and `thread_level`. Six identical five-line accessors,
+30 lines, and the shape has not changed at all: a function-local
+static of some type, returned by reference. Two of the six leak
+deliberately and say why; the decorator would have to carry that.
+
+That is now the second-cheapest derivable item after includes, and
+unlike `@private_member` it has NO dependency problem: every consumer
+is in `logging.hpp`, which is also where the definitions are. The
+emitter would have to write into that file, which is the same
+blocker - so it waits on `tasks/084` too.
+
+### What this says about the habit
+
+Nothing new, and that is worth recording. `tasks/089` through `096`
+added no refusal and no new marker, so the list of six declines is
+still six. The DSL was not asked anything it could not answer,
+because the work never reached it.

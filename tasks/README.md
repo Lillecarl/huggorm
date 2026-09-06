@@ -782,7 +782,20 @@ which was superseded rather than fixed.
   gap is still open, but it is now required rather than speculative,
   and nanopynix shows it needs no C++.
   Gap 4 is unchanged: the ErrorInfo overlap with 036.
-- 091 (how much of the C++ could the DSL say) is OPEN, and answers
+- 091 (how much of the C++ could the DSL say) is OPEN. REMEASURED
+  2026-09-06: `cpp/` went from 593 code lines to 793 and
+  `logging.hpp` from 208 to 356, which is 45% of the total and the
+  number Carl's question was about.
+  About 100 of the 148 new lines are NOT derivable by this file's own
+  test - `VerbosityDemand` is a counted registry, `ThreadLevel` is a
+  lifetime rule with a deleted copy assignment, `set_process_demand`
+  is a pairing under a mutex. The file grew because 089, 095 and 096
+  were concurrency work, not because the codegen fell behind.
+  Two figures move: 084's `LogTap` is 75 lines, not 62, so with the
+  32 it unblocks it is over 100. And "a typed slot, three times" is
+  now SIX times, 30 lines - the second-cheapest derivable item, and
+  blocked by 084 for the same reason everything in that file is.
+  It answers
   Carl's "I'm surprised there's so much C++". About a THIRD, not most.
   1545 lines, of which 593 are code - the rest is 828 comment and 124
   blank, which is deliberate here and does inflate what a reader sees.
