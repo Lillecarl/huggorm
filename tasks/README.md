@@ -63,7 +63,25 @@ Findings reference three architectural reviews: 2026-08-23,
 - 026 (typed proxy parameters) is a design question, not a defect. It
   is the one place the two locations genuinely disagree.
 - 015 (real-Nix spike) substitutes into the surface 017 settled.
-- 008 (transitive policy), 012 (test blind spots), 022 (proto field
+- 012 (test blind spots) lost one of its four, 2026-09-06: "unknown
+  CLASS on Acquire". The shape it named was already gone - the
+  server-side lookup went when construction moved onto each class's
+  own service, so an unknown class is an unknown gRPC path that
+  grpclib answers before a handler runs. The CLIENT's check is what
+  was left, and it was ungated on both branches.
+  Folded into the gate that already drove one of them rather than
+  written twice, and it now covers a DECLARED class that is still
+  refused (`PathInfo`, which crosses as a value) beside an unknown
+  name - either alone leaves "being declared is not what decides
+  this" unstated. It also asserts the message names what IS
+  acquirable; `match=` on the class name passed for a message that
+  said nothing else.
+  The arity check is gated at BOTH ends, and each half fails on its
+  own perturbation. Recorded there: the first perturbation could not
+  be "delete the branch", because the typechecker needs it to narrow
+  `Acquire | None` - a check the typechecker will not let you delete
+  still needs a gate, because it holds the shape and not the meaning.
+- 008 (transitive policy), 022 (proto field
   stability), and the derivation half of 025 are hardening. 022 grew
   twice: free-function requests number their fields positionally too,
   and the manifest's "schema": 1 is written by the generator and read

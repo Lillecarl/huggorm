@@ -198,9 +198,32 @@ async def test_an_unknown_handle_fails_typed(client: Any) -> None:
 async def test_a_produced_class_refuses_remote_construction(
         client: Any) -> None:
     """A produced class has no constructor to construct with. It comes
-    back from the method that makes it, and nowhere else."""
-    with pytest.raises(ValueError, match="PathInfo"):
-        await client.acquire("PathInfo")
+    back from the method that makes it, and nowhere else.
+
+    Two names, and the pair is the point. `PathInfo` is DECLARED and
+    bound and still refused, because it crosses as a VALUE - there is
+    no handle to construct into. `Nonexistent` is the ordinary case.
+    A gate on either alone would not show that being declared is not
+    what decides this.
+
+    The message names what IS acquirable, so a caller who guessed
+    wrong does not have to go looking. Asserted, because a refusal
+    that only says no is one somebody has to debug - and `match=` on
+    the class name alone passed for a message that said nothing else.
+
+    `tasks/012` lists "unknown CLASS on Acquire" as a blind spot and
+    describes a check that is no longer there: `Session/Acquire` took
+    a class NAME and the server looked it up. Construction moved onto
+    each class's own service, so an unknown class is now an unknown
+    gRPC PATH and grpclib answers it before a handler runs. What is
+    left is the CLIENT's check, and this is it."""
+    for name in ("PathInfo", "Nonexistent"):
+        with pytest.raises(ValueError) as refused:
+            await client.acquire(name)
+        said = str(refused.value)
+        assert name in said, said
+        assert "Store" in said and "EvalState" in said, \
+            "it names what a caller can construct instead"
 
 
 # -- free functions --------------------------------------------------------
@@ -695,3 +718,26 @@ async def test_a_function_with_no_rpc_surface_says_why(client: Any) -> None:
 async def test_an_unknown_free_function_fails_typed(client: Any) -> None:
     with pytest.raises(ValueError, match="nope"):
         await client.call_function("nope")
+
+
+async def test_acquire_refuses_the_wrong_number_of_arguments(
+        client: Any) -> None:
+    """The arity check beside it, and it was ungated too.
+
+    A constructor's arguments cross exactly like a method's, so a
+    caller passing too many gets no complaint from the codec - the
+    extra ones are simply not read. This is what notices.
+
+    BOTH ENDS of the range, because `required` and `len(args)` are
+    two different numbers and a check that used one for both would
+    pass half of this. `Store` takes 0..1 and `EvalState` takes 1..1,
+    so the pair covers an optional argument and a mandatory one.
+
+    The message names the parameters. A caller who passed two
+    positional arguments needs to know which one was wanted."""
+    with pytest.raises(TypeError, match=r"takes 0\.\.1"):
+        await client.acquire("Store", "dummy://", "extra")
+
+    with pytest.raises(TypeError) as short:
+        await client.acquire("EvalState")
+    assert "store_uri" in str(short.value), str(short.value)
