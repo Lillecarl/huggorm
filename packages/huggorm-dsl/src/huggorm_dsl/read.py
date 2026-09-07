@@ -1351,8 +1351,82 @@ def load(path: str) -> ModuleType:
         # would send a reader to the wrong file.
         raise DeclarationError.already(
             f"{here}: the declaration does not import, so nothing says "
-            f"which definitions exist. {type(e).__name__}: {e}") from e
+            f"which definitions exist. {type(e).__name__}: {e}"
+            f"{_descriptor_hint(e)}") from e
     return mod
+
+
+# A marker decorator applied to a `property`. Python's own message
+# names the descriptor and the attribute and stops there, which says
+# WHAT broke and not what to do about it.
+#
+# `property` ONLY, and the first version of this named `staticmethod`
+# and `classmethod` beside it. Measured on 3.14.7, and they do not
+# belong:
+#
+#     property       REFUSES - no __dict__ for setting new attributes
+#     staticmethod   accepts an attribute
+#     classmethod    accepts an attribute
+#
+# So `@instant` over a `@staticmethod` IMPORTS, and the declaration
+# reaches `_method`'s own refusal instead - which already names the
+# real problem, that a static method's first parameter would be
+# dropped. The two arms were text that could never run, claiming a
+# coverage this hint does not have (`tasks/075`).
+_ON_DESCRIPTOR = re.compile(
+    r"'(property)' object has no attribute '_(\w+)'")
+
+
+def _descriptor_hint(exc: BaseException) -> str:
+    """The one-line fix, when the import failed for the known reason.
+
+    `@property` and a marker on one accessor is legal, and the ORDER
+    decides whether it imports. Measured both ways (`tasks/076`):
+
+        @instant                  AttributeError, at import
+        @property                 - a property takes no attribute
+        def base16(self): ...
+
+        @property                 prop=True instant=True
+        @instant                  - the marker gets the function
+        def base16(self): ...
+
+    So `@property` OUTERMOST is the answer, and it costs the reader
+    nothing: `_apply` runs the file's decorators against a throwaway
+    and SKIPS the builtin ones, so the marker reaches the probe from
+    either position and `prop` is read from the tree. Only Python's
+    own execution cares, and only about which object gets the
+    attribute.
+
+    The MARKER is derived rather than listed. Every marker in
+    `declare.py` writes `_<name>` onto what it is handed, so the
+    shape is the fact and a list would be that fact stated twice and
+    would go stale on the next marker.
+
+    The DESCRIPTOR is named, and only one of them is: `property` is
+    the only builtin descriptor that refuses an attribute. That is
+    measured, and the regex comment holds the measurement.
+
+    `tasks/076` asked for this to be said in a REFUSAL rather than in
+    a comment, because a comment is not where a reader who hit it is
+    looking. The comment above is now the second copy, and the
+    refusal is the one that reaches them.
+    """
+    m = _ON_DESCRIPTOR.search(str(exc))
+    if m is None:
+        return ""
+    descriptor, marker = m.group(1), m.group(2)
+    # HONEST ABOUT WHAT THE ORDER BUYS. It fixes the IMPORT and
+    # nothing else: the emitter still refuses a `@property` accessor
+    # (`tasks/076`). A hint that stopped at the order would send a
+    # reader to a second refusal with no warning that it was coming,
+    # which is worse than the raw AttributeError it replaces.
+    return (f"\nWrite @{descriptor} OUTERMOST, above @{marker}. A marker "
+            f"sets `_{marker}` on what it is handed, and a {descriptor} "
+            f"object takes no attribute - so the marker has to reach the "
+            f"function underneath it. That fixes the IMPORT. An emitter "
+            f"still refuses a @{descriptor} accessor - see tasks/076 - so "
+            f"declare it as a plain method until that changes.")
 
 
 def _live(path: str) -> set[int]:

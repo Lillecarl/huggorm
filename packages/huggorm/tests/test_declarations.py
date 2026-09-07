@@ -752,6 +752,106 @@ def test_a_declaration_that_will_not_import_is_refused(
         read(path)
 
 
+# The SAME accessor with the decorators the other way round. The
+# marker reaches the function, the property wraps what it returns,
+# and the module imports.
+IMPORTABLE = UNIMPORTABLE.replace("    @instant\n    @property",
+                                  "    @property\n    @instant")
+
+# A file that will not import for a reason that has nothing to do
+# with a descriptor. The control: the hint must not be appended to
+# every import failure, or it says nothing.
+UNRELATED = '''"""One accessor naming something that does not exist."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    NOT_A_NAME
+
+    def base16(self) -> Str:
+        """The digest as lowercase hex."""
+        Cxx("return self.to_string();")
+'''
+
+
+def test_a_marker_over_a_descriptor_says_which_order_to_write(
+        tmp_path: pathlib.Path) -> None:
+    """Python's message says WHAT broke. This says what to do.
+
+    `AttributeError: 'property' object has no attribute '_instant'`
+    is accurate and is not actionable: it names the descriptor and
+    the attribute and stops, so a reader has to work out on their own
+    that the two decorators can simply be swapped.
+
+    `tasks/076` asked for the answer to be in a REFUSAL rather than
+    in a comment, and this is it. The answer was MEASURED both ways
+    rather than reasoned about - see the second assertion, which is
+    the one that says the advice is true.
+
+    Derived from the message shape, not from a list of markers: every
+    marker in `declare.py` writes `_<name>` onto what it is handed,
+    so a list would be that fact stated twice and would go stale on
+    the next marker.
+
+    It is honest about what the swap buys, and that is deliberate.
+    The order fixes the IMPORT and nothing else - an emitter still
+    refuses a `@property` accessor - so a hint that stopped at the
+    order would send a reader to a second refusal with no warning
+    that one was coming."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    with pytest.raises(DeclarationError) as caught:
+        read(_declaration(tmp_path, UNIMPORTABLE))
+    said = str(caught.value)
+    assert "@property OUTERMOST" in said, said
+    assert "@instant" in said, "it names the marker it read, not a list"
+    assert "tasks/076" in said, "and where the path ends"
+
+    # THE ADVICE IS TRUE, measured rather than asserted. Written the
+    # way the refusal says, the file imports AND both facts survive:
+    # `_apply` skips a builtin decorator and applies the marker to
+    # its throwaway, so the marker reaches it from either position,
+    # and `prop` is read from the tree either way.
+    good = tmp_path / "good"
+    good.mkdir()
+    method = read(_declaration(good, IMPORTABLE)).classes[0].methods[0]
+    assert method.prop, "the tree still says it is an attribute"
+    assert method.instant, "and the marker was not lost on the way"
+
+    # THE CONTROL. An import failure with no descriptor in it gets no
+    # hint - without this the gate passes for a hint appended to
+    # everything, which would be advice on a file it does not fit.
+    other = tmp_path / "other"
+    other.mkdir()
+    with pytest.raises(DeclarationError) as unrelated:
+        read(_declaration(other, UNRELATED))
+    assert "does not import" in str(unrelated.value)
+    assert "OUTERMOST" not in str(unrelated.value), str(unrelated.value)
+
+    # `property` IS THE ONLY ONE, and the first version of the hint
+    # named `staticmethod` and `classmethod` beside it. Measured on
+    # 3.14.7: only a property refuses an attribute, so a marker over
+    # a `@staticmethod` IMPORTS and reaches `_method`'s own refusal -
+    # which already names the real problem. Those two arms were text
+    # that could never run (tasks/075), and this is what says so.
+    static = tmp_path / "static"
+    static.mkdir()
+    marked = STATIC.replace("    @staticmethod",
+                            "    @instant\n    @staticmethod")
+    marked = marked.replace("binding, header",
+                            "binding, header, instant")
+    with pytest.raises(DeclarationError) as over_static:
+        read(_declaration(static, marked))
+    assert "@staticmethod" in str(over_static.value)
+    assert "does not import" not in str(over_static.value), \
+        "a staticmethod takes the attribute, so the import survives"
+
+
 def test_an_accessor_declared_static_is_refused(
         tmp_path: pathlib.Path) -> None:
     """`@staticmethod` says the first parameter is not self, and the

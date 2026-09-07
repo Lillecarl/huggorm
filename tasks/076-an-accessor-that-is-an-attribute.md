@@ -73,10 +73,8 @@ that half - the import error now reaches a reader with Python's own
 reason attached, so a declaration written this way fails and says
 which line to fix.
 
-The question it leaves is still open, and it is the one this task
-has to answer: do the marker decorators look through a descriptor,
-or must a declaration write `@property` outermost? Whichever it is
-has to be said in a refusal rather than in a comment.
+The question it leaves is answered, 2026-09-06. **A declaration
+writes `@property` OUTERMOST**, and the refusal says so now.
 
 ## One more thing the reader fix changed
 
@@ -154,3 +152,143 @@ emitters read it the wrong way. `__call__` was never KEPT - the
 class-body loop dropped every `__`-prefixed name, in silence. One is
 a reading, the other is an absence, and nothing about `__call__`
 needs `@property`.
+
+## The decorator order is answered, 2026-09-06
+
+Still **OPEN**, and its own rule still holds: nothing needs an
+attribute, so `@property` is still refused by the emitter. What is
+closed is the sub-question this file said it had to answer - whether
+the markers look through a descriptor, or a declaration writes
+`@property` outermost.
+
+**Outermost.** Measured both ways rather than reasoned about:
+
+    @instant                  AttributeError, at import
+    @property                 'property' object has no attribute
+    def base16(self): ...     '_instant'
+
+    @property                 reads. prop=True instant=True
+    @instant
+    def base16(self): ...
+
+The reader does not care, and that is why the answer is free. `_apply`
+runs the file's decorators against a THROWAWAY and skips the builtin
+ones, so `@instant` reaches the probe from either position; and `prop`
+is read from the TREE, not from the live object. Only Python's own
+execution cares, and only about which object gets the attribute.
+
+### Said in the refusal, which is what the file asked for
+
+`_descriptor_hint` in `read.py`. The import failure carried Python's
+own message - accurate, and not actionable: it names the descriptor
+and the attribute and stops, so a reader had to work out on their own
+that two lines can simply be swapped.
+
+    hash.py: the declaration does not import, so nothing says which
+    definitions exist. AttributeError: 'property' object has no
+    attribute '_instant' and no __dict__ for setting new attributes
+    Write @property OUTERMOST, above @instant. A marker sets
+    `_instant` on what it is handed, and a property object takes no
+    attribute - so the marker has to reach the function underneath
+    it. That fixes the IMPORT. An emitter still refuses a @property
+    accessor - see tasks/076 - so declare it as a plain method until
+    that changes.
+
+The MARKER is derived, not listed. Every marker in `declare.py`
+writes `_<name>` onto what it is handed, so the shape is the fact and
+a list would go stale on the next marker.
+
+The DESCRIPTOR is named, and only one of them is - which the first
+version of this got wrong. See below.
+
+**Honest about what the swap buys**, and that half was added on
+purpose. The order fixes the IMPORT and nothing else - the emitter
+still refuses `@property`, and `_method` still refuses
+`@staticmethod` and `@classmethod` (`tasks/082`). A hint that stopped
+at the order would send a reader to a second refusal with no warning
+that one was coming, which is worse than the raw `AttributeError` it
+replaces.
+
+### One gate, three assertions, three perturbations
+
+`test_a_marker_over_a_descriptor_says_which_order_to_write`.
+
+1. the wrong order gets the hint, naming the marker it read and
+   where the path ends;
+2. **the advice is TRUE** - the file written the way the refusal says
+   reads, with `prop` AND `instant` both kept. This is the assertion
+   that makes the message worth having rather than plausible;
+3. the CONTROL - an import failure with no descriptor in it gets no
+   hint.
+
+Each fails on its own perturbation, and the three are different:
+
+    no hint at all              1, on "@property OUTERMOST"
+    hint on every failure       3, the control
+    `_apply` stops skipping     2, "the marker was not lost"
+    the builtin decorators
+
+The third is worth naming. With `_apply` applying `property` to its
+own probe, `@property` outermost puts the marker UNDER a property
+object, `getattr` answers False, and `instant` is lost in silence -
+this repo's named failure mode, in the arm the refusal now sends
+readers to. The skip is what prevents it, and nothing held that until
+this gate.
+
+Both perturbations 1 and 3 print a message beginning "errs.py: the
+declaration does not import", so the two failures LOOK the same in a
+truncated report. Checked rather than assumed: the full traceback
+names a different assert line for each. A gate whose perturbations
+are indistinguishable in the output is one nobody can tell apart
+later.
+
+### `property` is the only descriptor here, and the first draft said three
+
+The hint matched `'(property|staticmethod|classmethod)' object has no
+attribute` and branched on which. Two of those three arms could never
+run. Measured on 3.14.7:
+
+    property       REFUSES - no __dict__ for setting new attributes
+    staticmethod   accepts an attribute
+    classmethod    accepts an attribute
+
+So `@instant` over a `@staticmethod` IMPORTS. The declaration then
+reaches `_method`'s own refusal, which already names the real problem
+- a static method read as one that takes self loses its first
+parameter (`tasks/082`). The hint was never going to be the thing a
+reader saw.
+
+Dead text claiming a coverage it did not have, which is `tasks/075`'s
+shape, in a file written to close a `tasks/075` descendant. Found by
+probing the arm rather than by reading it, after review asked what
+drove it.
+
+**NO GATE DRIVES THE TRIM.** Putting the two arms back fails nothing:
+
+    407 passed, 11 deselected
+
+...and it cannot, because an unreachable alternation changes no
+behaviour. That is the same position `tasks/093` recorded for
+`tp_clear`, and the same answer: keep the correction, and say that
+nothing tests it rather than leave it looking covered.
+
+What IS gated is the measurement behind it. The fourth assertion in
+the gate asserts a marker over a `@staticmethod` reaches
+`_method`'s refusal and NOT "does not import" - so the day a Python
+release makes `staticmethod` refuse an attribute, that assertion
+fails and this section is what a reader finds. It guards a language
+behaviour rather than this repo's code, which is worth knowing about
+it.
+
+### One thing found in passing, not fixed here
+
+`DeclarationError.__init__` does `where += f":{line}"`, and `where` is
+whatever the caller passed. `read(path)` is typed `str`, so a `Path`
+gets a `TypeError: unsupported operand type(s) for +=: 'PosixPath'
+and 'str'` - raised INSIDE the refusal, so a mistyped call loses the
+message it was about to give.
+
+In-repo callers pass strings and `zuban --strict` holds them to it,
+so nothing live hits it. Recorded rather than fixed, because it is
+not this task's subject and a one-line `str(where)` deserves its own
+commit and its own reason.

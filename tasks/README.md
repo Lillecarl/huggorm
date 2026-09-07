@@ -318,7 +318,32 @@ which was superseded rather than fixed.
   reading moved two: 015 (real-Nix spike) to DONE, 050 (shim methods)
   to CLOSED on a premise Cython took with it. 034 looked closed and is
   not - what Carl aborted was the MOCK version of it.
-- 076 (an accessor that is an attribute) is OPEN. `@property` in a
+- 076 (an accessor that is an attribute) is OPEN, and one of its two
+  questions is CLOSED 2026-09-06: a declaration writes `@property`
+  OUTERMOST. Measured both ways - the marker over the property dies
+  at import, the property over the marker reads with `prop` and
+  `instant` both kept. The reader never cared: `_apply` runs the
+  decorators against a throwaway and SKIPS the builtin ones, and
+  `prop` comes from the tree.
+  Said in a refusal, which is what the file asked for.
+  `_descriptor_hint` reads the descriptor and the marker out of
+  Python's own message and names the swap back - derived from the
+  message shape, not from a list of markers. It is honest that the
+  swap fixes only the IMPORT, because the emitter still refuses
+  `@property`, and a hint that stopped short would send a reader to a
+  second refusal with no warning.
+  One gate, four assertions, three perturbations that hit three
+  different asserts. The interesting one: with `_apply` applying
+  `property` to its own probe, the marker lands UNDER a property
+  object and is lost in SILENCE - in the arm the refusal now
+  recommends. Nothing held that before.
+  The first draft matched `staticmethod` and `classmethod` too, and
+  both arms were DEAD: measured on 3.14.7, only a property refuses an
+  attribute, so a marker over a `@staticmethod` imports and reaches
+  `_method`'s refusal instead. Trimmed, and NO GATE drives the trim -
+  an unreachable alternation changes no behaviour, so putting it back
+  fails nothing. Said, rather than left looking covered.
+  The rest of 076 is unchanged. `@property` in a
   declaration is refused, and the file says what honouring it would
   cost. Do it when a declaration needs an attribute, not for
   prettiness.
