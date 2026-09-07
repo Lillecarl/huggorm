@@ -56,6 +56,7 @@ import ast
 import contextlib
 import difflib
 import functools
+import os
 import pathlib
 import re
 from collections.abc import Iterator
@@ -199,15 +200,35 @@ def _survive(err: DeclarationError, unsound: str = "") -> None:
 
 
 @contextlib.contextmanager
-def reading(path: str) -> Iterator[None]:
+def reading(path: str | os.PathLike[str]) -> Iterator[None]:
     """Name the declaration a diagnostic raised in here belongs to.
 
-    `read` does this for itself. This is for the emitters, which read
-    a tree the corpus already parsed and can still refuse it -
-    `pyerrors.entries` does, when the exception declaration will not
-    import - and which otherwise raise a diagnostic with no file on
-    it."""
-    _READING.append(path)
+    THE ONLY PUSH. `read` and `resolved` called it for themselves,
+    each with its own `append` / `try` / `finally` / `pop` - one fact
+    written three times, which goal 3 says belongs in one place. They
+    use this now.
+
+    `str`, because `_READING[-1]` is concatenated with `:{line}` to
+    build a diagnostic's position. The annotation said `list[str]`
+    and nothing enforced it, so a caller passing a `pathlib.Path`
+    - which every other function here tolerates, `load` does
+    `pathlib.Path(path).stem` - got
+
+        TypeError: unsupported operand type(s) for +=: 'PosixPath'
+        and 'str'
+
+    raised INSIDE the refusal, losing the message it was about to
+    give. No caller in this repository does that: `huggorm_decl`
+    normalises at its own boundary. Found from a probe, and fixed
+    here rather than at the concatenation because this is where the
+    value enters.
+
+    So the PARAMETER says `os.PathLike` too, and that is not a
+    widening for its own sake: this function already accepted one and
+    mishandled it. A signature that admits what the body handles is
+    the honest one, and it is what a gate can call without going
+    off-contract."""
+    _READING.append(str(path))
     try:
         yield
     finally:
@@ -229,7 +250,11 @@ class DeclarationError(Exception):
     The path comes from `_READING` rather than from an argument, so
     the 36 raise sites in this module stay as they are. Threading a
     path through 36 signatures to print it in one place is the shape
-    this codebase spends its effort removing."""
+    this codebase spends its effort removing.
+
+    It is a `str` because `reading` makes it one. Doing it here
+    instead would be the same normalisation at every read of the
+    stack rather than at the one write to it."""
 
     def __init__(self, node: ast.AST, message: str) -> None:
         line = getattr(node, "lineno", None)
@@ -1565,11 +1590,8 @@ def read(path: str) -> Module:
 
     The import is the authority on WHAT exists. The tree is the source
     for HOW to render it. No fact is taken from both."""
-    _READING.append(path)
-    try:
+    with reading(path):
         return _read(path)
-    finally:
-        _READING.pop()
 
 
 def resolved(path: str) -> ast.Module:
@@ -1593,11 +1615,8 @@ def resolved(path: str) -> ast.Module:
     so saw neither arm of a branch, while the module transform copied
     both through - three holes at once, and none of them loud
     (tasks/073)."""
-    _READING.append(path)
-    try:
+    with reading(path):
         return _chosen(path)[0]
-    finally:
-        _READING.pop()
 
 
 def _chosen(path: str) -> tuple[ast.Module, set[int]]:

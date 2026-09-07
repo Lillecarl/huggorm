@@ -280,15 +280,16 @@ fails and this section is what a reader finds. It guards a language
 behaviour rather than this repo's code, which is worth knowing about
 it.
 
-### One thing found in passing, not fixed here
+### One thing found in passing, fixed in its own commit
 
 `DeclarationError.__init__` does `where += f":{line}"`, and `where` is
-whatever the caller passed. `read(path)` is typed `str`, so a `Path`
-gets a `TypeError: unsupported operand type(s) for +=: 'PosixPath'
-and 'str'` - raised INSIDE the refusal, so a mistyped call loses the
-message it was about to give.
+whatever went onto `_READING`. That stack is annotated `list[str]`
+and nothing enforced it, so a `pathlib.Path` gave
+`TypeError: unsupported operand type(s) for +=: 'PosixPath' and
+'str'` - raised INSIDE the refusal, losing the message it was about
+to give.
 
-In-repo callers pass strings and `zuban --strict` holds them to it,
-so nothing live hits it. Recorded rather than fixed, because it is
-not this task's subject and a one-line `str(where)` deserves its own
-commit and its own reason.
+Fixed at the one WRITE to the stack rather than at every read of it,
+which took removing two copies of that write first: `read` and
+`resolved` each hand-rolled the same append/try/finally/pop that
+`reading` already is. See the commit for the rest.

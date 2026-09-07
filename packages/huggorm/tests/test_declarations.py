@@ -779,6 +779,47 @@ class Digest:
 '''
 
 
+def test_a_refusal_names_the_file_whatever_type_the_path_was(
+        tmp_path: pathlib.Path) -> None:
+    """The position is built by concatenation, so the stack holds str.
+
+    `DeclarationError` reads `_READING[-1]` and does `where +=
+    f":{line}"`. `_READING` is annotated `list[str]` and nothing
+    enforced it, so a `pathlib.Path` pushed onto it raised
+
+        TypeError: unsupported operand type(s) for +=: 'PosixPath'
+        and 'str'
+
+    INSIDE the refusal - losing the message it was about to give,
+    which is the worst place to fail. Every other function in the
+    reader tolerates a Path: `load` does `pathlib.Path(path).stem`.
+
+    Normalised at the one WRITE to the stack rather than at every
+    read of it. `read` and `resolved` push through `reading` now
+    instead of each hand-rolling the same append/try/finally/pop, so
+    there is one place to normalise.
+
+    Perturbation: drop the `str()` in `reading` and this fails with
+    the TypeError above."""
+    import ast
+
+    from huggorm_dsl.read import DeclarationError, reading
+
+    node = ast.parse("x = 1").body[0]
+    with reading(tmp_path / "decl.py"), \
+            pytest.raises(DeclarationError) as caught:
+        raise DeclarationError(node, "refused")
+
+    assert "decl.py:1:1: refused" in str(caught.value), str(caught.value)
+
+    # The str path is unchanged, which is what says the fix widened
+    # rather than moved.
+    with reading(str(tmp_path / "decl.py")), \
+            pytest.raises(DeclarationError) as same:
+        raise DeclarationError(node, "refused")
+    assert str(same.value) == str(caught.value)
+
+
 def test_a_marker_over_a_descriptor_says_which_order_to_write(
         tmp_path: pathlib.Path) -> None:
     """Python's message says WHAT broke. This says what to do.
