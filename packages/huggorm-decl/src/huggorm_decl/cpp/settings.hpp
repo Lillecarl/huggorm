@@ -30,6 +30,10 @@
 #include <map>
 #include <string>
 
+// `GlobalConfig::toJSON` returns one, and config-global.hh only
+// forward-declares it.
+#include <nlohmann/json.hpp>
+
 #include "nix/expr/eval-settings.hh"
 #include "nix/expr/eval.hh"
 #include "nix/fetchers/fetch-settings.hh"

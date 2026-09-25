@@ -1373,6 +1373,89 @@ slot = static_cast<std::uint64_t>(previous);
     """)
 
 
+# --- nix.conf, and what a caller changes after it ------------------
+#
+# Here and not in a module of their own, because the eval and fetcher
+# settings are registered from this module (`cpp/settings.hpp`). A
+# second module that registers them would hold a second copy.
+#
+# No threading policy, so no async form and no rpc. These change the
+# PROCESS, and a remote client changing the configuration of a shared
+# service is a decision nobody has made.
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
+def get_setting(name: Str) -> "Str | None":
+    """The effective value of one setting, or None for an unknown name.
+
+    Every registered setting: the store's, the evaluator's and the
+    fetchers'. The value is Nix's own rendering, so a list comes back
+    space-separated, the way nix.conf spells it."""
+    Cxx("""
+std::map<std::string, nix::Config::SettingInfo> all;
+nix::globalConfig.getSettings(all);
+if (auto i = all.find(name); i != all.end())
+    return i->second.value;
+return std::nullopt;
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
+def set_setting(name: Str, value: Str) -> None:
+    """Set one setting for the process, as a line of nix.conf would.
+
+    An `EvalState` reads the evaluator and fetcher settings when it is
+    built, so a state that already exists keeps what it read. A store
+    reads most of its settings at each call.
+
+    Raises `UsageError` for a name no registered setting answers to.
+    `GlobalConfig::set` answers false there and says nothing, which
+    is how a misspelt name would otherwise vanish."""
+    Cxx("""
+if (!nix::globalConfig.set(name, value))
+    throw nix::UsageError("unknown setting '%s'", name);
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
+def list_settings(overridden_only: Bint = False) -> "dict[str, Str]":
+    """Every registered setting and its effective value.
+
+    `overridden_only` keeps the ones something set: nix.conf,
+    NIX_CONFIG or `set_setting`. Nix tracks that per setting."""
+    Cxx("""
+std::map<std::string, nix::Config::SettingInfo> all;
+nix::globalConfig.getSettings(all, overridden_only);
+std::map<std::string, std::string> out;
+for (auto & [key, info] : all)
+    out.emplace(key, info.value);
+return out;
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
+def settings_json() -> Str:
+    """Every registered setting as Nix describes it, in JSON.
+
+    Nix's own document: value, default, description, aliases and the
+    experimental feature a setting needs. What `nix config show
+    --json` prints, less the settings of libraries not linked here."""
+    Cxx("""
+return nix::globalConfig.toJSON().dump();
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
+@binds("huggorm::register_configured_settings")
+@startup
+def _settings_init() -> None:
+    """Register the evaluator and fetcher settings, once, at import.
+
+    So `get_setting("pure-eval")` answers before any state exists. An
+    `Evaluator` also registers them on construction, and whichever
+    comes first does the work."""
+
+
 @needs("huggorm_decl/cpp/logging.hpp")
 @threading("pool")
 def subscribe_process_logs(capacity: I64 = 1024,

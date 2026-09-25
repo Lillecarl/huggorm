@@ -68,9 +68,16 @@ old bindings in the two cases that expect purity.
 
 ## Ranked by what blocks the most
 
-1. Settings and init. The nix.conf defect above is fixed. Still
-   missing: reading, setting and listing a setting, the metadata,
-   and experimental features.
+1. Settings and init. The nix.conf defect above is fixed, and
+   `get_setting`, `set_setting`, `list_settings(overridden_only)`
+   and `settings_json` are declared in `decl/eval.py`. A feature is
+   enabled with `set_setting("extra-experimental-features", ...)`,
+   because `Config::set` takes nix.conf's `extra-` prefix. No
+   function of its own. None of them has an rpc: they change the
+   process, and a remote client changing a shared service's
+   configuration is a decision nobody has made. Still missing:
+   per-state eval and fetch settings at `EvalState` construction,
+   and `current_system`.
 2. Cancellation. Every long call in `_core` runs under an interrupt
    scope.
 3. `Derivation`, `get_build_log`, build mode and `copy_closure`.
