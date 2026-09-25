@@ -86,6 +86,7 @@ namespace nb = nanobind;
 // used to be.
 #include "huggorm_decl/cpp/gc.hpp"
 #include "huggorm_decl/cpp/logging.hpp"
+#include "huggorm_decl/cpp/settings.hpp"
 
 namespace huggorm {
 
@@ -249,6 +250,7 @@ public:
     explicit EvalCore(const std::string & store_uri)
         : store_uri_(store_uri)
         , eval_settings_(read_only_)
+        , configured_(apply_configured(fetch_settings_, eval_settings_))
         , store_(nix::openStore(store_uri))
         , state_(nix::LookupPath{}, store_, fetch_settings_, eval_settings_)
     {
@@ -353,6 +355,9 @@ private:
     bool read_only_ = false;
     nix::fetchers::Settings fetch_settings_;
     nix::EvalSettings eval_settings_;
+    // Between the settings and the state: nix.conf has to reach the
+    // settings before `state_` reads them.
+    bool configured_;
     nix::ref<nix::Store> store_;
     nix::EvalState state_;
     std::vector<nb::object> primops_;
