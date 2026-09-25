@@ -115,7 +115,12 @@ bare `RuntimeError`.
    waits, shielded, until the thread has stopped. `Interrupted` is a
    `BaseException`. The rpc side is `tasks/098`.
 3. `Derivation`, `get_build_log`, build mode and `copy_closure`.
-   `pynix build` needs these.
+   `pynix build` needs these. Build mode was already there (069's
+   table above was stale). `get_build_log` and `copy_closure` are
+   declared. `copy_closure` needed a proxy parameter the call writes
+   to, so a proxy now crosses into C++ as `T &` and only a wire value
+   as `const T &`. Still missing: `Derivation`, and `eval_store` on
+   `build_paths`.
 4. Eval constructor arguments, `eval_string(path)` and the `Value`
    conversions. `pynix eval` needs these.
 5. Flakes and fetchers.

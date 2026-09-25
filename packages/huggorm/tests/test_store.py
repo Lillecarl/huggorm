@@ -2100,3 +2100,44 @@ def test_a_limit_above_the_signed_range_crosses_as_itself() -> None:
     codec.value_to_msg("GCOptions", sent, msg)
     assert msg.max_freed == huge
     assert codec.value_from_msg("GCOptions", msg).max_freed() == huge
+
+
+def test_a_closure_copies_with_what_it_references(
+        tmp_path: pathlib.Path) -> None:
+    """`nix copy`, between two chroot stores. Asking for the holder
+    brings the path it refers to as well; that is the closure."""
+    here = Store(str(tmp_path / "here"))
+    there = Store(str(tmp_path / "there"))
+    target = here.add_to_store("target", b"referenced\n")
+    holder = here.add_to_store("holder", b"refers\n", references=[target])
+    assert not there.is_valid_path(target)
+
+    here.copy_closure(there, [holder])
+
+    assert there.is_valid_path(holder)
+    assert there.is_valid_path(target)
+    assert there.query_path_info(holder).references() == [target]
+
+
+def test_a_copy_of_what_the_destination_has_is_a_no_op(
+        tmp_path: pathlib.Path) -> None:
+    here = Store(str(tmp_path / "here"))
+    there = Store(str(tmp_path / "there"))
+    path = here.add_to_store("once", b"once\n")
+    here.copy_closure(there, [path])
+    here.copy_closure(there, [path])
+    assert there.query_all_valid_paths() == [path]
+
+
+def test_a_store_with_no_logs_says_so(store: Store) -> None:
+    """A raise, not None: `dummy://` keeps no logs at all, which is a
+    different answer from a path with none. `UsageError` is what
+    libstore's `require<LogStore>` throws."""
+    path = store.parse_store_path(f"/nix/store/{HELLO}")
+    with pytest.raises(UsageError, match="Build log storage"):
+        store.get_build_log(path)
+
+
+def test_a_path_with_no_log_reads_as_none(chroot: Store) -> None:
+    path = chroot.add_to_store("added", b"never built\n")
+    assert chroot.get_build_log(path) is None

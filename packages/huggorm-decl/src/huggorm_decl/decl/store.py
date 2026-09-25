@@ -693,6 +693,45 @@ return nix::Realisation{*found, id};
 
         Raises on a cycle. A store path graph cannot have one, so
         that is a corrupt store rather than a bad ask."""
+    @needs("nix/store/log-store.hh", "nix/store/store-cast.hh")
+    def get_build_log(self, path: "StorePath") -> "Str | None":
+        """The log of the build that made this path, or None.
+
+        `path` may be the derivation or one of its outputs; libstore
+        finds the derivation from an output through its deriver.
+
+        None when the store keeps logs and has none for this path.
+        Raises `UsageError` for a store that keeps no logs at all,
+        such as `dummy://`: that is a different answer from an empty
+        log. The class is libstore's, from `require<LogStore>`."""
+        # The free template, as `nix-store --read-log` does. 2.34's
+        # header also declares a static `LogStore::require`, and no
+        # library defines it: the import failed on the symbol.
+        Cxx("return nix::require<nix::LogStore>(self).getBuildLog(path);")
+    def copy_closure(
+        self,
+        destination: "Store",
+        paths: "list[StorePath]",
+        repair: Bint = False,
+        check_sigs: Bint = True,
+        substitute: Bint = False,
+    ) -> None:
+        """Copy these paths and everything they reference to another
+        store.
+
+        What `nix copy` does. Paths the destination already holds are
+        skipped. `check_sigs` is libstore's default and refuses a path
+        no trusted key signed, unless the destination trusts this
+        store; turn it off only for a destination that does not care.
+        `substitute` lets the destination fetch from its own
+        substituters instead of receiving the bytes."""
+        Cxx("""
+nix::copyClosure(
+    self, destination, as_set<nix::StorePathSet>(paths),
+    repair ? nix::Repair : nix::NoRepair,
+    check_sigs ? nix::CheckSigs : nix::NoCheckSigs,
+    substitute ? nix::Substitute : nix::NoSubstitute);
+        """)
     @cxx_name("queryPathFromHashPart")
     def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
         """Which store path has this hash part, or None.
