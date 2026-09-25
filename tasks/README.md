@@ -1130,6 +1130,9 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 098 (what a dropped rpc stream cancels) is OPEN and undecided. A
+  cancelled server handler now cancels its Nix work too; nobody chose
+  that as the rule.
 - 097 (what replacing nanopynix-bindings needs) is OPEN. The gap
   between what nanopynix's `_core` calls and what huggorm declares,
   area by area, ranked. Settings and init come first.

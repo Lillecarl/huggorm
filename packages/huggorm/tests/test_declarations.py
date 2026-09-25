@@ -1147,7 +1147,8 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
     headers = pyerrors.headers(have.resolved(have.errors))
     assert headers == ["nix/store/store-api.hh",
                        "nix/store/store-dir-config.hh",
-                       "nix/util/error.hh"], headers
+                       "nix/util/error.hh",
+                       "nix/util/signals.hh"], headers
 
     mod = have.module("path.py")
     assert mod.translators, "the control below means nothing otherwise"

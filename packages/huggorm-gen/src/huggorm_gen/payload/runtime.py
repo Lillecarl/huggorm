@@ -29,6 +29,8 @@ import threading
 from collections.abc import Callable, Iterable
 from typing import Any
 
+import anyio
+
 _POOL: concurrent.futures.ThreadPoolExecutor | None = None
 _POOL_LOCK = threading.Lock()
 # How many blocking calls may be in flight at once. Four is a default,
@@ -161,6 +163,37 @@ class _InRequest:
         # Pushes the "finalized" marker for the id that is ending, and
         # puts back whatever this thread was inside before.
         huggorm_bindings.end_request(self._previous)
+
+
+async def _until_done(future: asyncio.Future[Any], request: int) -> Any:
+    """Await work on an executor thread, and stop it when cancelled.
+
+    Cancelling the awaiting task does not stop a thread that is
+    already running, and cancelling `future` would only detach it. So
+    this never cancels the future. It waits on an event the future
+    sets, and on cancellation it marks the request cancelled, which
+    Nix sees at its next `checkInterrupt` on that thread.
+
+    Then it waits again, shielded, until the thread has stopped. A
+    caller whose cancellation returned while the evaluator still ran
+    would queue its next call behind that work. The outcome of the
+    stopped work is discarded: the caller was cancelled, and the
+    cancellation is what it gets."""
+    done = anyio.Event()
+    future.add_done_callback(lambda _: done.set())
+    try:
+        await done.wait()
+    except BaseException:
+        import huggorm_bindings
+
+        huggorm_bindings.cancel_request(request)
+        try:
+            with anyio.CancelScope(shield=True):
+                await done.wait()
+        finally:
+            huggorm_bindings.forget_request(request)
+        raise
+    return future.result()
 
 
 def _refuse_foreign(callee: Any, arg: Any, x: Any) -> None:
@@ -406,7 +439,8 @@ class BaseRunner:
                     raise
                 raise InternalError("run failed", cause=e) from e
 
-        return await loop.run_in_executor(self._executor(), invoke)
+        return await _until_done(
+            loop.run_in_executor(self._executor(), invoke), request)
 
     async def call(self, method: str, args: list[Any]) -> Any:
         _check_isolation(self, args)
@@ -416,8 +450,9 @@ class BaseRunner:
         # run_in_executor carries no context, so a contextvar set on
         # this side would not reach the thread that does the work.
         request = _next_request()
-        return await loop.run_in_executor(
-            self._executor(), lambda: self._invoke(method, args, request))
+        return await _until_done(loop.run_in_executor(
+            self._executor(), lambda: self._invoke(method, args, request)),
+            request)
 
 
 def _release_gc_thread() -> None:
@@ -516,7 +551,8 @@ async def call_function(fn: Callable[..., Any], args: list[Any]) -> Any:
                 raise  # typed wrapper error - pass through untouched
             raise InternalError(f"{fn.__name__} failed", cause=e) from e
 
-    return await loop.run_in_executor(_shared_pool(), invoke)
+    return await _until_done(
+        loop.run_in_executor(_shared_pool(), invoke), request)
 
 
 def attach_runner(obj: Any, parent: BaseRunner, policy: str) -> BaseRunner:

@@ -189,6 +189,37 @@ class BadStorePathName(BadStorePath):
     header = "nix/store/store-dir-config.hh"
 
 
+class Interrupted(BaseException):
+    """nix::Interrupted - a call cancelled at Nix's next checkInterrupt.
+
+    A BaseException, as `asyncio.CancelledError` is, so an `except
+    Exception` does not swallow a cancellation. Not a NixError for the
+    same reason, and because upstream agrees: `nix::Interrupted`
+    derives `BaseError`, not `Error`. So the `nix::Error` catch never
+    matched it, and a cancelled call raised a bare RuntimeError."""
+
+    cxx = "nix::Interrupted"
+    header = "nix/util/signals.hh"
+
+    _wire_fields = (("message", "str"), ("colored", "str"))
+
+    def __init__(self, message: str, colored: str | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.colored = message if colored is None else colored
+
+    @property
+    def code(self) -> str:
+        """The label this error's class travels under, as NixError's."""
+        return type(self).__name__
+
+    def to_dict(self) -> dict[str, str]:
+        """This error as its declared parts, as NixError's."""
+        parts = {name: str(getattr(self, name))
+                 for name, _ in self._wire_fields}
+        return {"code": self.code, **parts}
+
+
 class BuildError(NixError):
     """nix::BuildError - a build that did not produce its outputs.
 

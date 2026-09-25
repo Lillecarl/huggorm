@@ -84,6 +84,12 @@ A warm state that outlives a cancelled call does see it. nanopynix
 ships it today, and reports the rethrow as `KeyboardInterrupt`
 because no token is armed any more.
 
+Upstream fixed it in 2.35.0 (5c4f498d3, NixOS/nix#15980), in the
+same shape: a recovery thunk for `Interrupted`. huggorm binds 2.34.8
+and carries that commit as `nix/patches/nix-interrupted-thunk-
+recovers.patch`. nanopynix's 2.35 and git lanes have it already; its
+2.34 lane does not (nanopynix#309).
+
 `nix::Interrupted` also derives `BaseError` and not `Error`, so a
 catch chain rooted at `nix::Error` misses it and nanobind raises a
 bare `RuntimeError`.
@@ -103,8 +109,11 @@ bare `RuntimeError`.
    state has none of its own. Adding it found an emitter defect: a
    constructor default without a C++ body never reached the binding.
    Still missing: `current_system`.
-2. Cancellation. Every long call in `_core` runs under an interrupt
-   scope.
+2. Cancellation. Done in process: `begin_request` installs a hook on
+   `nix::unix::interruptCheck`, `cancel_request` marks a request, and
+   the runtime cancels the request when its await is cancelled, then
+   waits, shielded, until the thread has stopped. `Interrupted` is a
+   `BaseException`. The rpc side is `tasks/098`.
 3. `Derivation`, `get_build_log`, build mode and `copy_closure`.
    `pynix build` needs these.
 4. Eval constructor arguments, `eval_string(path)` and the `Value`

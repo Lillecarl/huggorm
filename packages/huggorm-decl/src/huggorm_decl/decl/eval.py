@@ -1323,7 +1323,7 @@ return static_cast<std::int64_t>(nix::verbosity);
     """)
 
 
-@needs("huggorm_decl/cpp/logging.hpp")
+@needs("huggorm_decl/cpp/logging.hpp", "huggorm_decl/cpp/interrupt.hpp")
 def begin_request(request: I64) -> I64:
     """Say which call this thread is inside. Answers the one before.
 
@@ -1345,6 +1345,7 @@ def begin_request(request: I64) -> I64:
     Cxx("""
 if (request < 0)
     throw std::invalid_argument("request id must not be negative");
+huggorm::install_interrupt_check();
 auto & slot = huggorm::thread_request();
 auto previous = slot;
 slot = static_cast<std::uint64_t>(request);
@@ -1377,6 +1378,40 @@ auto & slot = huggorm::thread_request();
 if (slot != 0)
     huggorm::route({.action = "finalized", .request = slot});
 slot = static_cast<std::uint64_t>(previous);
+    """)
+
+
+@needs("huggorm_decl/cpp/interrupt.hpp")
+def cancel_request(request: I64) -> None:
+    """Stop the call `begin_request` named, from any thread.
+
+    The call raises `Interrupted` at Nix's next `checkInterrupt`. A
+    call still queued stops at its first one, and a call that never
+    reaches one finishes as if nothing happened. A blocking system
+    call runs to its end first.
+
+    Runtime plumbing, like `begin_request`: the async runtime calls it
+    when the awaiting task is cancelled. The request stays cancelled
+    until `forget_request`, so an id is never reused while one is
+    pending."""
+    Cxx("""
+if (request <= 0)
+    throw std::invalid_argument("request id must be positive");
+huggorm::cancellations().cancel(static_cast<std::uint64_t>(request));
+    """)
+
+
+@needs("huggorm_decl/cpp/interrupt.hpp")
+def forget_request(request: I64) -> None:
+    """Drop a cancellation once its call is over.
+
+    Separate from `end_request`, because a cancel can arrive after the
+    call ended, and only the canceller knows when it has stopped
+    waiting."""
+    Cxx("""
+if (request <= 0)
+    throw std::invalid_argument("request id must be positive");
+huggorm::cancellations().forget(static_cast<std::uint64_t>(request));
     """)
 
 
