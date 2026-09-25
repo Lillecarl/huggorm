@@ -77,7 +77,8 @@ async def store(request: Any, client: Any) -> Any:
     return await client.acquire("Store", URI)
 
 
-async def open_state(surface: str, client: Any) -> Any:
+async def open_state(surface: str, client: Any,
+                     settings: dict[str, str] | None = None) -> Any:
     """One evaluator of the named surface.
 
     A function rather than only a fixture, because a test that is
@@ -87,12 +88,12 @@ async def open_state(surface: str, client: Any) -> Any:
     if surface == "sync":
         from huggorm_bindings import EvalState
 
-        return EvalState(URI)
+        return EvalState(URI, settings)
     if surface == "async":
         from huggorm_generated import AsyncEvalState
 
-        return AsyncEvalState(URI)
-    return await client.acquire("EvalState", URI)
+        return AsyncEvalState(URI, settings)
+    return await client.acquire("EvalState", URI, settings)
 
 
 @pytest.fixture(params=SURFACES)
@@ -223,6 +224,17 @@ async def test_an_evaluated_integer_is_the_same_everywhere(
     v = await call(state, "eval_expr", "1 + 2")
     assert await call(v, "type_name") == "int"
     assert await call(v, "integer") == 3
+
+
+async def test_a_state_takes_its_own_settings_everywhere(
+        surface: str, client: Any) -> None:
+    """The service case: a remote client asks for a pure evaluator.
+    The settings cross as a map, in `Acquire` on the rpc surface."""
+    probe = "builtins ? currentTime"
+    pure = await open_state(surface, client, {"pure-eval": "true"})
+    assert await call(await call(pure, "eval_expr", probe), "boolean") is False
+    plain = await open_state(surface, client)
+    assert await call(await call(plain, "eval_expr", probe), "boolean") is True
 
 
 async def test_a_built_value_reads_back_the_same_everywhere(
