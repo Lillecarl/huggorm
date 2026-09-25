@@ -33,7 +33,15 @@ rec {
   # make good bindings for now, eventually I'll work on upstreaming
   # dynamic env sizing".
   #
-  # ONE patch on ONE version, and nanopynix's shape is deliberately
+  # The second patch lets an interrupted thunk be forced again. Nix
+  # caches every non-recoverable error in the thunk it came from, and
+  # `nix::Interrupted` is one, so a cancelled call left every value
+  # it was forcing rethrowing "interrupted by the user" for the life
+  # of the state (tasks/097). Carl's call, 2026-09-25: patch Nix, not
+  # abandon the state. It is upstream's own fix, 5c4f498d3, released
+  # in 2.35.0, so it goes when `pkgs.nix` reaches 2.35.
+  #
+  # One version, and nanopynix's shape is deliberately
   # not copied. It keys a patch table by `majorMinor` and builds a
   # scope per version, because it supports 2.34 through git. This
   # repository binds the nix that `pkgs.nix` is, and Carl put it this
@@ -49,7 +57,10 @@ rec {
   # It raises both sizes to 512 and makes the two base-environment
   # writes TEST the bound, so a consumer that still exceeds it reads
   # an error instead of corrupting the heap.
-  nix = pkgs.nix.appendPatches [ ./nix/patches/nix-base-env-size.patch ];
+  nix = pkgs.nix.appendPatches [
+    ./nix/patches/nix-base-env-size.patch
+    ./nix/patches/nix-interrupted-thunk-recovers.patch
+  ];
   # The LANGUAGE a declaration is written in, and the reader that
   # parses one. No declaration and no emitter is in here, which is
   # what lets the two below depend on it without depending on each
