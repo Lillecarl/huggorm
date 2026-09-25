@@ -853,7 +853,7 @@ async def test_behavior() -> None:
     # Caching of a GENUINE factory failure is covered directly above,
     # via PoolRunner(bad_factory); that guarantee is unchanged.
     try:
-        AsyncEvalState("dummy://", "unexpected-arg")  # type: ignore[call-arg]
+        AsyncEvalState("dummy://", None, "unexpected-arg")  # type: ignore[call-arg]
         raise AssertionError("wrong arity must fail at construction")
     except TypeError:
         pass

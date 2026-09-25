@@ -149,3 +149,39 @@ def test_the_json_is_nix_s_own_description() -> None:
     described = json.loads(settings_json())
     assert described["pure-eval"]["value"] is False
     assert "description" in described["pure-eval"]
+
+
+def test_a_state_takes_its_own_settings() -> None:
+    """Over what the process has, and for that state alone."""
+    from huggorm_bindings import EvalState
+
+    probe = "builtins ? currentTime"
+    pure = EvalState("dummy://", {"pure-eval": "true"})
+    assert pure.eval_expr(probe).boolean() is False
+    assert EvalState("dummy://").eval_expr(probe).boolean() is True
+
+
+def test_a_state_setting_beats_the_process_one(
+        setting: Callable[[str, str], None]) -> None:
+    from huggorm_bindings import EvalState
+
+    setting("pure-eval", "true")
+    impure = EvalState("dummy://", settings={"pure-eval": "false"})
+    assert impure.eval_expr("builtins ? currentTime").boolean() is True
+
+
+def test_a_fetcher_setting_is_a_state_setting_too() -> None:
+    from huggorm_bindings import EvalState
+
+    EvalState("dummy://", {"warn-dirty": "false"})
+
+
+@pytest.mark.parametrize("name", ["no-such-setting", "sandbox"])
+def test_a_name_the_state_does_not_hold_refuses(name: str) -> None:
+    """`sandbox` is a store setting, and a state has none of its own:
+    taking it would change nothing and say nothing."""
+    from huggorm_bindings import EvalState
+    from huggorm_bindings.errors import UsageError
+
+    with pytest.raises(UsageError, match=name):
+        EvalState("dummy://", {name: "false"})

@@ -40,6 +40,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -247,10 +248,10 @@ inline void forget_file(nix::EvalState & state, const nix::SourcePath & given)
 class EvalCore
 {
 public:
-    explicit EvalCore(const std::string & store_uri)
+    EvalCore(const std::string & store_uri, const Settings & settings)
         : store_uri_(store_uri)
         , eval_settings_(read_only_)
-        , configured_(apply_configured(fetch_settings_, eval_settings_))
+        , configured_(apply_configured(fetch_settings_, eval_settings_, settings))
         , store_(nix::openStore(store_uri))
         , state_(nix::LookupPath{}, store_, fetch_settings_, eval_settings_)
     {
@@ -377,9 +378,9 @@ private:
  * during MEMBER destruction whether or not it holds the last share of
  * the core, so the deleter would not always run for it.
  */
-inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri)
+inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri, const Settings & settings)
 {
-    return {new EvalCore(store_uri), [](EvalCore * core) {
+    return {new EvalCore(store_uri, settings), [](EvalCore * core) {
                 gc_register_thread();
                 delete core;
             }};
@@ -388,8 +389,8 @@ inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri)
 class Evaluator
 {
 public:
-    explicit Evaluator(const std::string & store_uri)
-        : core_(make_core(store_uri))
+    explicit Evaluator(const std::string & store_uri, const std::optional<Settings> & settings = std::nullopt)
+        : core_(make_core(store_uri, settings.value_or(Settings{})))
     {
         gc_register_thread();
     }

@@ -594,7 +594,7 @@ def test_every_declared_constructor_default_reaches_the_binding() -> None:
                  init.__nb_signature__]
         assert declared in bound, (cls.name, declared, bound)
         checked.append(cls.name)
-    assert checked, "no declared constructor has a default"
+    assert "EvalState" in checked, checked
 
 
 def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:

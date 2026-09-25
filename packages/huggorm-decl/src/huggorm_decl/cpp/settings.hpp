@@ -84,19 +84,30 @@ inline void replay_overridden(nix::Config & target, const nix::Config & source)
         target.set(name, info.value);
 }
 
+/** One state's own settings: a name, and its value as nix.conf spells it. */
+using Settings = std::map<std::string, std::string>;
+
 /**
- * Copy the configured pair onto a state's own, before the state exists.
+ * Copy the configured pair onto a state's own, then the state's own
+ * settings over them, before the state exists.
  *
  * Before, because `EvalState`'s constructor reads them: `pure-eval`
  * decides whether `builtins.currentTime` is created at all. Returns a
  * value so an `Evaluator` member initialiser can call it in order.
+ *
+ * One map for both objects, because no name is in both. A name
+ * neither holds raises: a store setting here would change nothing,
+ * and saying nothing would hide that.
  */
-inline bool apply_configured(nix::fetchers::Settings & fetch, nix::EvalSettings & eval)
+inline bool apply_configured(nix::fetchers::Settings & fetch, nix::EvalSettings & eval, const Settings & own)
 {
     register_configured_settings();
     auto & configured = configured_settings();
     replay_overridden(fetch, configured.fetch);
     replay_overridden(eval, configured.eval);
+    for (auto & [name, value] : own)
+        if (!eval.set(name, value) && !fetch.set(name, value))
+            throw nix::UsageError("'%s' is not an evaluator or fetcher setting", name);
     return true;
 }
 

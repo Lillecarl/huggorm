@@ -849,7 +849,8 @@ class EvalState:
     what it binds. Carl decided this; `tasks/085` records it.
     """
 
-    def __init__(self, store_uri: Str) -> None:
+    def __init__(self, store_uri: Str,
+                 settings: "dict[str, Str] | None" = None) -> None:
         """Open a state against a store URI.
 
         REQUIRED, with no default. A state is bound to a store and a
@@ -857,7 +858,13 @@ class EvalState:
 
         `nix::EvalState` takes a `ref<Store>` and two settings objects
         that must outlive it, so `huggorm::Evaluator` owns all four
-        and this parameter is the one a caller can answer."""
+        and these parameters are the ones a caller can answer.
+
+        `settings` are this state's own evaluator and fetcher
+        settings, spelled as in nix.conf, applied over what the
+        process has (`set_setting`, nix.conf). A name that neither
+        object holds raises `UsageError`, store settings included:
+        the state has no store settings of its own."""
 
     def get_store_uri(self) -> Str:
         """The URI this state was opened with."""

@@ -75,9 +75,12 @@ old bindings in the two cases that expect purity.
    because `Config::set` takes nix.conf's `extra-` prefix. No
    function of its own. None of them has an rpc: they change the
    process, and a remote client changing a shared service's
-   configuration is a decision nobody has made. Still missing:
-   per-state eval and fetch settings at `EvalState` construction,
-   and `current_system`.
+   configuration is a decision nobody has made. `EvalState(store_uri,
+   settings)` takes one state's own evaluator and fetcher settings
+   over the process's. A store setting there raises, because the
+   state has none of its own. Adding it found an emitter defect: a
+   constructor default without a C++ body never reached the binding.
+   Still missing: `current_system`.
 2. Cancellation. Every long call in `_core` runs under an interrupt
    scope.
 3. `Derivation`, `get_build_log`, build mode and `copy_closure`.
