@@ -1131,6 +1131,13 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     decoration."""
     if cls.ctor is None:
         return []
+    # By attribute, not by unpacking: a `Param` unpacks as (name,
+    # type), so `for n, _ in params` never sees a default. This path
+    # did that, and a constructor default reached no binding.
+    names = "".join(
+        f', "{pr.name}"_a'
+        + (f" = {_default(pr, known)}" if pr.default is not None else "")
+        for pr in cls.ctor.params)
     if cls.ctor.cxx_body:
         # Placement new, because `__init__` is handed storage rather
         # than asked for an object. One Python signature over several
@@ -1140,10 +1147,6 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
         # so and a named set when it carries names.
         obj = _self(cls)
         args, opening = _signature(cls, cls.ctor, known)
-        names = "".join(
-            f', "{pr.name}"_a'
-            + (f" = {_default(pr, known)}" if pr.default is not None else "")
-            for pr in cls.ctor.params)
         body = [f"{INDENT * 4}{ln}".rstrip()
                 for ln in cls.ctor.cxx_body.strip().splitlines()]
         head = (f'{INDENT * 2}.def("__init__", '
@@ -1155,8 +1158,7 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
         return [head, *opening, *body, tail + ",",
                 f'{INDENT * 3}     "{doc}")']
     types = ", ".join(_param(t, known)[0] for _, t in cls.ctor.params)
-    args = "".join(f', "{n}"_a' for n, _ in cls.ctor.params)
-    line = f"{INDENT * 2}.def(nb::init<{types}>(){args}"
+    line = f"{INDENT * 2}.def(nb::init<{types}>(){names}"
     if not cls.ctor.doc:
         return [line + ")"]
     # One line, however the declaration wrapped it: a C++ string

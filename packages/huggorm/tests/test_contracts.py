@@ -568,6 +568,35 @@ def test_a_class_with_no_door_refuses_to_be_built(
     assert len(checked) >= 5, checked
 
 
+def test_every_declared_constructor_default_reaches_the_binding() -> None:
+    """A default a declaration gives, a caller may leave out.
+
+    `Param` unpacks as (name, type), so an emitter written as
+    `for n, _ in params` never sees a default. The `nb::init` path was
+    written that way, and `EvalState(store_uri, settings=None)` bound
+    `settings` as required, while the stub said it was optional
+    (tasks/097). Only a constructor with a C++ body wrote defaults.
+
+    nanobind keeps a signature's defaults as the third item of
+    `__nb_signature__`, so the count is read off the compiled class."""
+    import huggorm_bindings
+    import huggorm_decl
+
+    checked = []
+    for cls in huggorm_decl.corpus().classes:
+        if cls.ctor is None:
+            continue
+        declared = sum(pr.default is not None for pr in cls.ctor.params)
+        if not declared:
+            continue
+        init = getattr(huggorm_bindings, cls.name).__init__
+        bound = [len(defaults or ()) for _, _, defaults in
+                 init.__nb_signature__]
+        assert declared in bound, (cls.name, declared, bound)
+        checked.append(cls.name)
+    assert checked, "no declared constructor has a default"
+
+
 def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
     """A type that crosses as its PARTS must be final.
 
