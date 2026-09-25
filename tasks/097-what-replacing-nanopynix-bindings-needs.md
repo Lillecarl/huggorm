@@ -62,7 +62,9 @@ any verbosity and never dropped. That is a rule the tap can carry.
 `globalConfig`. `nix` registers them from libcmd, and huggorm does
 not link libcmd. So `pure-eval = true` in nix.conf left
 `builtins.currentTime` defined, where `nix eval` answers false, and
-nothing warned. `cpp/settings.hpp` registers both and replays what
+nothing warned. `NIX_PATH` was lost the same way: `initGC` copies it
+into the `nix-path` setting through `globalConfig`, so `<nixpkgs>`
+never resolved from the environment. `cpp/settings.hpp` registers both and replays what
 the file set onto each state. `tests/test_settings.py` failed on the
 old bindings in the two cases that expect purity.
 
@@ -134,8 +136,12 @@ bare `RuntimeError`.
 4. Eval constructor arguments, `eval_string(path)` and the `Value`
    conversions. `pynix eval` needs these. Floats are done: the DSL
    has `F64` (a C++ double, a proto double), and a float crosses a
-   realized tree as itself. Still missing: a search path and a build
-   store on the constructor, a base path for `eval_expr`, and
+   realized tree as itself. The search path needs no parameter:
+   `nix-path` and `extra-nix-path` are evaluator settings, so
+   `EvalState(uri, {"nix-path": ...})` sets it per state. One
+   difference from `-I`: `-I` entries come before `nix-path`. Still
+   missing: a build store on the constructor, a base path for
+   `eval_expr`, and
    `to_json`, `realise_string` and `realise_argv`.
 5. Flakes and fetchers.
 6. REPL, Python store implementations, the daemon protocol.

@@ -11,6 +11,7 @@ import, and the process keeps what it read.
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -33,6 +34,30 @@ def has_current_time(nix_config: str) -> bool:
 def test_pure_eval_from_the_config_reaches_the_state() -> None:
     """`nix eval` answers false here, and so must a state."""
     assert has_current_time("pure-eval = true") is False
+
+
+def test_nix_path_from_the_environment_reaches_the_state(
+        tmp_path: pathlib.Path) -> None:
+    """`initGC` copies NIX_PATH into the `nix-path` setting, through
+    `globalConfig`. So it was lost with pure-eval: before the settings
+    were registered, `<probe>` did not resolve."""
+    (tmp_path / "default.nix").write_text("42")
+    probe = ("from huggorm_bindings import EvalState;"
+             "print(EvalState('dummy://').eval_expr('import <probe>')"
+             ".integer())")
+    env = {**os.environ, "NIX_CONFIG": "", "NIX_PATH": f"probe={tmp_path}"}
+    out = subprocess.run([sys.executable, "-c", probe], env=env,
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "42"
+
+
+def test_a_state_takes_its_own_search_path(tmp_path: pathlib.Path) -> None:
+    """No constructor parameter: `nix-path` is an evaluator setting."""
+    from huggorm_bindings import EvalState
+
+    (tmp_path / "default.nix").write_text("7")
+    state = EvalState("dummy://", {"nix-path": f"probe={tmp_path}"})
+    assert state.eval_expr("import <probe>").integer() == 7
 
 
 def test_the_control_has_current_time() -> None:
