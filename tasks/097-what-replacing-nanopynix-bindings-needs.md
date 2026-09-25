@@ -66,6 +66,28 @@ nothing warned. `cpp/settings.hpp` registers both and replays what
 the file set onto each state. `tests/test_settings.py` failed on the
 old bindings in the two cases that expect purity.
 
+## Cancellation poisons the thunk it interrupts
+
+Measured 2026-09-25, with nanopynix's own bindings, because huggorm
+has no interrupt yet (`.scratchpad/poison_probe.py`):
+
+    force root.a under a scope cancelled at 0.2s  -> OperationCancelled, 0.34s
+    force root.a again, no scope                  -> KeyboardInterrupt:
+                                                     "interrupted by the user", 0.00s
+
+`EvalState::handleEvalExceptionForThunk` (`eval.cc:2188`) stores any
+exception in the thunk with `mkFailed`. Only a `RecoverableEvalError`
+keeps a recovery thunk, and `nix::Interrupted` derives `BaseError`,
+so an interrupted thunk rethrows the interruption on every later
+force. `nix` never sees this, because an interrupt ends its process.
+A warm state that outlives a cancelled call does see it. nanopynix
+ships it today, and reports the rethrow as `KeyboardInterrupt`
+because no token is armed any more.
+
+`nix::Interrupted` also derives `BaseError` and not `Error`, so a
+catch chain rooted at `nix::Error` misses it and nanobind raises a
+bare `RuntimeError`.
+
 ## Ranked by what blocks the most
 
 1. Settings and init. The nix.conf defect above is fixed, and
