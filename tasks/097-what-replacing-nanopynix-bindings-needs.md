@@ -140,7 +140,10 @@ bare `RuntimeError`.
    `nix-path` and `extra-nix-path` are evaluator settings, so
    `EvalState(uri, {"nix-path": ...})` sets it per state. One
    difference from `-I`: `-I` entries come before `nix-path`. Still
-   missing: a build store on the constructor. `eval_expr(expr, base)`,
+   missing: nothing in this item. `EvalState(uri, settings,
+   build_store_uri)` splits evaluating from building, as `nix
+   --eval-store` does; no gate builds in it, because the sandbox
+   cannot run a builder. `eval_expr(expr, base)`,
    `to_json`, `realise_string` and `realise_argv` are done. The two
    realises pass `isIFD = false`, where nanopynix passes true: a
    caller realising a value it holds is not an import during

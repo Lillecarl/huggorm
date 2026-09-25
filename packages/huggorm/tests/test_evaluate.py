@@ -145,3 +145,19 @@ def test_realising_is_not_an_import_from_derivation(
     with pytest.raises(NixError) as caught:
         state.eval_expr(f'"${{{DRV}}}"').realise_string()
     assert "allow-import-from-derivation" not in str(caught.value)
+
+
+def test_a_build_store_is_opened_with_the_state(
+        tmp_path: pathlib.Path) -> None:
+    """Opened, not only recorded: a URI no store answers fails at
+    construction. No build runs here, because the gate's sandbox
+    cannot run a builder, so this proves the store is used and not
+    what is built in it."""
+    from huggorm_bindings import EvalState
+    from huggorm_bindings.errors import NixError
+
+    builds = str(tmp_path / "builds")
+    state = EvalState(str(tmp_path / "evals"), None, builds)
+    assert state.eval_expr("1 + 1").integer() == 2
+    with pytest.raises(NixError, match="no-such-scheme"):
+        EvalState(str(tmp_path / "evals"), None, "no-such-scheme://")

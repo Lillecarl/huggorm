@@ -950,7 +950,8 @@ class EvalState:
     """
 
     def __init__(self, store_uri: Str,
-                 settings: "dict[str, Str] | None" = None) -> None:
+                 settings: "dict[str, Str] | None" = None,
+                 build_store_uri: "Str | None" = None) -> None:
         """Open a state against a store URI.
 
         REQUIRED, with no default. A state is bound to a store and a
@@ -964,7 +965,12 @@ class EvalState:
         settings, spelled as in nix.conf, applied over what the
         process has (`set_setting`, nix.conf). A name that neither
         object holds raises `UsageError`, store settings included:
-        the state has no store settings of its own."""
+        the state has no store settings of its own.
+
+        `build_store_uri` names a second store to BUILD in, as `nix
+        --eval-store A --store B` splits them: evaluation writes
+        `.drv` files to the first, and a realise builds in the second
+        and copies the outputs back. None builds where it evaluates."""
 
     def get_store_uri(self) -> Str:
         """The URI this state was opened with."""

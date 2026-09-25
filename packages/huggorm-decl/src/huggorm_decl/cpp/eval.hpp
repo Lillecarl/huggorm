@@ -248,12 +248,14 @@ inline void forget_file(nix::EvalState & state, const nix::SourcePath & given)
 class EvalCore
 {
 public:
-    EvalCore(const std::string & store_uri, const Settings & settings)
+    EvalCore(const std::string & store_uri, const Settings & settings,
+             const std::optional<std::string> & build_store_uri)
         : store_uri_(store_uri)
         , eval_settings_(read_only_)
         , configured_(apply_configured(fetch_settings_, eval_settings_, settings))
         , store_(nix::openStore(store_uri))
-        , state_(nix::LookupPath{}, store_, fetch_settings_, eval_settings_)
+        , build_store_(build_store_uri ? nix::openStore(*build_store_uri).get_ptr() : nullptr)
+        , state_(nix::LookupPath{}, store_, fetch_settings_, eval_settings_, build_store_)
     {
     }
 
@@ -360,6 +362,9 @@ private:
     // settings before `state_` reads them.
     bool configured_;
     nix::ref<nix::Store> store_;
+    // Null when the state builds where it evaluates, which is what
+    // `EvalState` itself takes a null to mean.
+    std::shared_ptr<nix::Store> build_store_;
     nix::EvalState state_;
     std::vector<nb::object> primops_;
 };
@@ -378,9 +383,10 @@ private:
  * during MEMBER destruction whether or not it holds the last share of
  * the core, so the deleter would not always run for it.
  */
-inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri, const Settings & settings)
+inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri, const Settings & settings,
+                                           const std::optional<std::string> & build_store_uri)
 {
-    return {new EvalCore(store_uri, settings), [](EvalCore * core) {
+    return {new EvalCore(store_uri, settings, build_store_uri), [](EvalCore * core) {
                 gc_register_thread();
                 delete core;
             }};
@@ -389,8 +395,9 @@ inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri, const 
 class Evaluator
 {
 public:
-    explicit Evaluator(const std::string & store_uri, const std::optional<Settings> & settings = std::nullopt)
-        : core_(make_core(store_uri, settings.value_or(Settings{})))
+    explicit Evaluator(const std::string & store_uri, const std::optional<Settings> & settings = std::nullopt,
+                       const std::optional<std::string> & build_store_uri = std::nullopt)
+        : core_(make_core(store_uri, settings.value_or(Settings{}), build_store_uri))
     {
         gc_register_thread();
     }
