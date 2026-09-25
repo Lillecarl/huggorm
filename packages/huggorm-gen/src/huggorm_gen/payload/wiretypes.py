@@ -49,7 +49,7 @@ import ast
 # Found by `GCOptions.max_freed`, whose upstream default is the
 # largest uint64_t: sending the default options object raised
 # `ValueError: Value out of range: 18446744073709551615` (tasks/079).
-SCALAR_NAMES = ("str", "int", "uint", "bool", "bytes")
+SCALAR_NAMES = ("str", "int", "uint", "float", "bool", "bytes")
 
 # A declared type that is not a builtin and still goes in a field as
 # one, with the builtin it goes in as.

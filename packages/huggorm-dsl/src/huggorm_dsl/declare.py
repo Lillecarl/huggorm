@@ -132,6 +132,8 @@ Bytes = Annotated[bytes, Cxx("string")]
 # guess, and it would guess the same for two fields that differ.
 U64 = Annotated[int, Cxx("uint64_t")]
 I64 = Annotated[int, Cxx("int64_t")]
+# A Nix float is a C++ double (`NixFloat`), and so is a Python float.
+F64 = Annotated[float, Cxx("double")]
 # A std::string at the boundary and a pathlib.Path above it. Not the
 # same as `Str`, and the difference is the whole point of the two:
 # `print_store_path` answers in the STORE's terms, which may name a

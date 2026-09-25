@@ -74,6 +74,7 @@ PYTHON = {
     # caller holds.
     "uint64_t": "int",
     "int64_t": "int",
+    "double": "float",
     # A span, and Python has a type for one. Not `int`, which is what
     # the two widths above read as: a timedelta says what the number
     # MEANS, and nanobind's chrono caster hands one over already.

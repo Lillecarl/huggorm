@@ -69,6 +69,15 @@ async def test_realize_returns_the_shape(state: Any) -> None:
     assert list(tree) == ["apple", "xs", "zebra"], "still alphabetical"
 
 
+async def test_a_float_realizes_as_a_float(state: Any) -> None:
+    """A float in a tree crosses as a float. With no scalar arm for
+    it, it would cross as a proxy, and the shape would hold a handle."""
+    client = state._client
+    tree = await client.realize(await state.eval_expr("{ x = 0.5; n = 2; }"))
+    assert tree == {"n": 2, "x": 0.5}, tree
+    assert isinstance(tree["x"], float)
+
+
 async def test_realize_forces_nothing(state: Any) -> None:
     """A thunk is exactly what cannot be serialized, so it crosses as a
     proxy and the caller forces it with the call that already exists."""

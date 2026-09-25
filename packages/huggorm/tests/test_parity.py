@@ -226,6 +226,22 @@ async def test_an_evaluated_integer_is_the_same_everywhere(
     assert await call(v, "integer") == 3
 
 
+async def test_an_evaluated_float_is_the_same_everywhere(
+        state: Any) -> None:
+    """A double on the wire, so a value no int can carry must survive."""
+    v = await call(state, "eval_expr", "0.1 + 0.2")
+    assert await call(v, "type_name") == "float"
+    assert await call(v, "floating") == 0.1 + 0.2
+    built = await call(state, "make_float", -2.5)
+    assert await call(built, "floating") == -2.5
+
+
+async def test_an_int_is_not_a_float(state: Any) -> None:
+    v = await call(state, "eval_expr", "1")
+    with pytest.raises(Exception, match="float"):
+        await call(v, "floating")
+
+
 async def test_a_state_takes_its_own_settings_everywhere(
         surface: str, client: Any) -> None:
     """The service case: a remote client asks for a pure evaluator.

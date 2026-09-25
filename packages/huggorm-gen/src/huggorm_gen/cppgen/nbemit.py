@@ -69,6 +69,7 @@ CXX_PARAM = {
     "bint": ("bool", None),
     "uint64_t": ("std::uint64_t", None),
     "int64_t": ("std::int64_t", None),
+    "double": ("double", None),
     # A duration, which nanobind casts to a datetime.timedelta both
     # ways - so the caster IS the whole binding and nothing here
     # converts. `chrono` names <nanobind/stl/chrono.h>, like every

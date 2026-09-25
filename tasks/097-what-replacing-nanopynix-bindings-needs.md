@@ -132,7 +132,11 @@ bare `RuntimeError`.
    `pynix develop`. Still missing: `Derivation`, and `eval_store` on
    `build_paths`.
 4. Eval constructor arguments, `eval_string(path)` and the `Value`
-   conversions. `pynix eval` needs these.
+   conversions. `pynix eval` needs these. Floats are done: the DSL
+   has `F64` (a C++ double, a proto double), and a float crosses a
+   realized tree as itself. Still missing: a search path and a build
+   store on the constructor, a base path for `eval_expr`, and
+   `to_json`, `realise_string` and `realise_argv`.
 5. Flakes and fetchers.
 6. REPL, Python store implementations, the daemon protocol.
 7. The Nix version matrix (055).

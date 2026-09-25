@@ -28,6 +28,7 @@ in this binding a declaration could not have written, and
 
 from huggorm_decl.decl.path import StorePath
 from huggorm_dsl.declare import (
+    F64,
     I64,
     Bint,
     Cxx,
@@ -110,6 +111,7 @@ from huggorm_dsl.declare import (
     # is what picks the arm, so the layer above reads a declared type
     # name rather than a label this file invented.
     scalars={"int": ["int", "integer"],
+             "float": ["float", "floating"],
              "string": ["str", "string_value"],
              "bool": ["bool", "boolean"]},
     list={"size": "size", "item": "at"},
@@ -167,6 +169,14 @@ class Value:
         nix::Value::integer answers a NixInt, which is a checked
         int64 with an explicit conversion - so the cast the emitter
         already writes for an I64 return is the whole of it."""
+
+    @guard("float")
+    @cxx_name("fpoint")
+    def floating(self) -> F64:
+        """This value as a float. Raises as `integer` does.
+
+        `1.0` is a float and `1` is an int in Nix, so neither accessor
+        converts the other's arm."""
 
     @guard("string")
     @cxx_name("string_view")
@@ -1222,6 +1232,10 @@ huggorm::unsubscribe_logs();
     @produces("mkInt")
     def make_int(self, value: I64) -> "Value":
         """A forced integer value."""
+
+    @produces("mkFloat")
+    def make_float(self, value: F64) -> "Value":
+        """A forced float value."""
 
     def make_string(self, value: Str) -> "Value":
         """A forced string value, with no string context.

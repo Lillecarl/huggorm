@@ -59,7 +59,8 @@ from huggorm_generated._wiretypes import (
 # proto type the field has, which is the schema's business and not
 # this table's (tasks/079).
 _SCALARS: dict[str, Callable[[Any], Any]] = {
-    "str": str, "int": int, "uint": int, "bool": bool, "bytes": bytes}
+    "str": str, "int": int, "uint": int, "float": float, "bool": bool,
+    "bytes": bytes}
 
 # The unit a duration crosses in, as the timedelta that is one of it.
 # Microseconds, which is both Carl's decision and the only lossless
