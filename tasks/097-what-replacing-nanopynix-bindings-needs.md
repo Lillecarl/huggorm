@@ -34,7 +34,7 @@ What nanopynix calls outside its own tests, and what huggorm has.
 | Settings | `init_libstore(load_config)`, `set/get/list_settings`, `reset_overridden`, `enable_experimental_feature`, three `*_settings_metadata_json`, `build_info()` capabilities, `current_system()`; eval, fetch and flake settings registered on `GlobalConfig` so nix.conf reaches them | none |
 | Cancellation | `InterruptToken`, `interrupt_scope` over the thread-local `interruptCheck`; `nix::Interrupted` raises `OperationCancelled` | none |
 | Logger | one leaked `nix::Logger` calling a Python callback; per-thread verbosity; thread-local request id; `set_activity_tracking` filters build and copy activities in C++ | a queue tap (`subscribe_logs`, `drain`), `begin_request`/`end_request`, `process_verbosity`. A pull model, not a callback |
-| Store | `close`, `get_store_dir(s)`, `get_uri(with_params)`, `get_build_log`, `read_derivation_typed` (a `Derivation` class), `write_dev_shell_derivation`, `dump_db`, `copy_closure`, `compute_store_path`, `find_roots`, `add_perm_root`, `add_indirect_root`, `optimise_store`, `verify_store`, `query_derivation_outputs`, `build_paths_with_results(build_mode, eval_store)`; `parse/render_store_reference`, `list_store_types_json` | about half: path info, closure, referrers, missing, build, GC, temp roots, substitutable. No derivation, no copy, no roots beyond temp, no build mode (069) |
+| Store | `close`, `get_store_dir(s)`, `get_uri(with_params)`, `get_build_log`, `read_derivation_typed` (a `Derivation` class), `write_dev_shell_derivation`, `dump_db`, `copy_closure`, `compute_store_path`, `find_roots`, `add_perm_root`, `add_indirect_root`, `optimise_store`, `verify_store`, `query_derivation_outputs`, `build_paths_with_results(build_mode, eval_store)`; `parse/render_store_reference`, `list_store_types_json` | about half: path info, closure, referrers, missing, build with a mode, GC, temp roots, substitutable, `copy_closure`, `get_build_log`. No derivation, no roots beyond temp, no `eval_store` |
 | Eval | `EvalState(store, search_path, build_store, eval_settings, fetch_settings)`, `eval_string(expr, path)`, the REPL family (9 methods), `statistics_json`, `reset_file_cache`, `value_from_python`; `parse_nix_path`, `is_pseudo_url`, eval counters, evaluator-thread enter/exit | `EvalState(store)`, `eval_expr`, `eval_file`, `forget_file`, `register_primop` |
 | Value | `to_python`, `to_json(copy_to_store)`, floats, `realise_string`, `realise_argv`, `edit_location`, `get_doc`, `attr_doc`, `call`, `auto_call`, `build`, `derived_path` | ints, strings, bools, lists, attrs, `apply`, `apply_auto`, lambda and primop introspection, `doc` |
 | Primops | `register_primop(name, arity, arg_names, doc, cb)`, `PrimopError`, `__sleep` | `register_primop` (033) |
@@ -114,6 +114,12 @@ bare `RuntimeError`.
    the runtime cancels the request when its await is cancelled, then
    waits, shielded, until the thread has stopped. `Interrupted` is a
    `BaseException`. The rpc side is `tasks/098`.
+   A deadline is NOT honoured for work that never reaches a
+   `checkInterrupt`, such as a long fetch: the shielded wait lasts
+   until the call ends. The alternative not taken is nanopynix's: a
+   grace period, then an abandoned ("poisoned") executor that refuses
+   later calls. Waiting keeps the state usable; abandoning keeps the
+   deadline.
 3. `Derivation`, `get_build_log`, build mode and `copy_closure`.
    `pynix build` needs these. Build mode was already there (069's
    table above was stale). `get_build_log` and `copy_closure` are
