@@ -1130,6 +1130,9 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 097 (what replacing nanopynix-bindings needs) is OPEN. The gap
+  between what nanopynix's `_core` calls and what huggorm declares,
+  area by area, ranked. Settings and init come first.
 - 084 (a declaration cannot implement a virtual) is OPEN and blocks
   nothing. It got HARDER, 2026-09-06, and the file says so.
   It was five `LogTap` overrides of one shape - build a record, route
