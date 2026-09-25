@@ -36,7 +36,7 @@ What nanopynix calls outside its own tests, and what huggorm has.
 | Logger | one leaked `nix::Logger` calling a Python callback; per-thread verbosity; thread-local request id; `set_activity_tracking` filters build and copy activities in C++ | a queue tap (`subscribe_logs`, `drain`), `begin_request`/`end_request`, `process_verbosity`. A pull model, not a callback |
 | Store | `close`, `get_store_dir(s)`, `get_uri(with_params)`, `get_build_log`, `read_derivation_typed` (a `Derivation` class), `write_dev_shell_derivation`, `dump_db`, `copy_closure`, `compute_store_path`, `find_roots`, `add_perm_root`, `add_indirect_root`, `optimise_store`, `verify_store`, `query_derivation_outputs`, `build_paths_with_results(build_mode, eval_store)`; `parse/render_store_reference`, `list_store_types_json` | about half: path info, closure, referrers, missing, build with a mode, GC, temp roots, substitutable, `copy_closure`, `get_build_log`. No derivation, no roots beyond temp, no `eval_store` |
 | Eval | `EvalState(store, search_path, build_store, eval_settings, fetch_settings)`, `eval_string(expr, path)`, the REPL family (9 methods), `statistics_json`, `reset_file_cache`, `value_from_python`; `parse_nix_path`, `is_pseudo_url`, eval counters, evaluator-thread enter/exit | `EvalState(store)`, `eval_expr`, `eval_file`, `forget_file`, `register_primop` |
-| Value | `to_python`, `to_json(copy_to_store)`, floats, `realise_string`, `realise_argv`, `edit_location`, `get_doc`, `attr_doc`, `call`, `auto_call`, `build`, `derived_path` | ints, strings, bools, lists, attrs, `apply`, `apply_auto`, lambda and primop introspection, `doc` |
+| Value | `to_python`, `to_json(copy_to_store)`, floats, `realise_string`, `realise_argv`, `edit_location`, `get_doc`, `attr_doc`, `call`, `auto_call`, `build`, `derived_path` | ints, floats, strings, bools, lists, attrs, `apply`, `apply_auto`, lambda and primop introspection, `doc`, `to_json`, `drv_path`. The realize tree is the `to_python` |
 | Primops | `register_primop(name, arity, arg_names, doc, cb)`, `PrimopError`, `__sleep` | `register_primop` (033) |
 | Fetchers | `Input.to_attrs`, the registry (list, add, remove, pin, user path) | none |
 | Flakes | `parse_flake_ref`, `lock_flake`, `get_flake`, `call_flake`, `eval_flake`, `metadata_json`, `LockedFlake` | none |
@@ -140,9 +140,8 @@ bare `RuntimeError`.
    `nix-path` and `extra-nix-path` are evaluator settings, so
    `EvalState(uri, {"nix-path": ...})` sets it per state. One
    difference from `-I`: `-I` entries come before `nix-path`. Still
-   missing: a build store on the constructor, a base path for
-   `eval_expr`, and
-   `to_json`, `realise_string` and `realise_argv`.
+   missing: a build store on the constructor, `realise_string` and
+   `realise_argv`. `eval_expr(expr, base)` and `to_json` are done.
 5. Flakes and fetchers.
 6. REPL, Python store implementations, the daemon protocol.
 7. The Nix version matrix (055).

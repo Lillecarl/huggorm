@@ -1,8 +1,11 @@
-"""From an evaluated derivation to something a store can build.
+"""What `nix eval` and `nix build` need from an evaluated value.
 
-`Value.drv_path` is the join: evaluation answers an attribute set,
-and `DerivedPathBuilt` needs the `.drv` it names. Reading `drvPath`
-writes the `.drv`, so the state runs against a chroot store.
+`Value.drv_path` joins evaluation to building: `DerivedPathBuilt`
+needs the `.drv` a derivation names. `to_json` is `nix eval --json`,
+and `base` is the directory a relative path names from.
+
+The state runs against a chroot store, because reading `drvPath` and
+copying a path both write to it.
 """
 
 import pathlib
@@ -71,3 +74,27 @@ def test_without_a_base_it_names_from_the_working_directory(
     monkeypatch.chdir(tmp_path)
     assert state.eval_expr("toString ./foo").string_value() == \
         f"{tmp_path}/foo"
+
+
+def test_json_is_what_nix_eval_prints(state: Any) -> None:
+    import json
+
+    got = state.eval_expr('{ a = [ 1 2.5 "x" null true ]; b.c = 1 + 1; }')
+    assert json.loads(got.to_json()) == {
+        "a": [1, 2.5, "x", None, True], "b": {"c": 2}}
+
+
+def test_a_path_stays_a_path_unless_copied(
+        state: Any, tmp_path: pathlib.Path) -> None:
+    (tmp_path / "f").write_text("hi\n")
+    got = state.eval_expr("./f", str(tmp_path))
+    assert got.to_json() == f'"{tmp_path}/f"'
+    copied = got.to_json(copy_to_store=True)
+    assert copied.startswith('"/nix/store/') and copied.endswith('-f"')
+
+
+def test_a_function_has_no_json(state: Any) -> None:
+    from huggorm_bindings.errors import NixError
+
+    with pytest.raises(NixError, match="function"):
+        state.eval_expr("{ f = x: x; }").to_json()

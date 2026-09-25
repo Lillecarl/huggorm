@@ -267,6 +267,25 @@ if (attr == nullptr)
 return self.wrap(attr->value);
         """)
 
+    @blocks
+    @needs("nix/expr/value-to-json.hh", "nlohmann/json.hpp")
+    def to_json(self, copy_to_store: Bint = False) -> Str:
+        """This value as JSON text, forced all the way down.
+
+        What `nix eval --json` prints: strict, and a path stays a
+        path rather than being copied into the store. `copy_to_store`
+        copies it and answers the store path, as `builtins.toJSON`
+        does.
+
+        BLOCKS: it forces every value it reaches. Raises for a
+        function, which JSON cannot hold."""
+        Cxx("""
+huggorm::gc_register_thread();
+nix::NixStringContext context;
+return nix::printValueAsJSON(
+    self.state(), true, *self.get(), nix::noPos, context, copy_to_store).dump();
+        """)
+
     # -- functions -------------------------------------------------------
     #
     # `nFunction` is ONE type name over THREE payloads - a lambda, a
