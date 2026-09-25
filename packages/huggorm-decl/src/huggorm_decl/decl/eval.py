@@ -26,6 +26,7 @@ in this binding a declaration could not have written, and
 `cpp/eval.hpp` says why line by line.
 """
 
+from huggorm_decl.decl.path import StorePath
 from huggorm_dsl.declare import (
     I64,
     Bint,
@@ -380,6 +381,33 @@ huggorm::gc_register_thread();
 auto * out = self.state().allocValue();
 self.state().autoCallFunction(*args.get()->attrs(), *self.get(), *out);
 return self.wrap(out);
+        """)
+
+    @guard("attrs")
+    @blocks
+    @needs("nix/expr/get-drvs.hh")
+    def drv_path(self) -> "StorePath":
+        """The `.drv` this derivation value names.
+
+        What joins evaluation to building: `DerivedPathBuilt` takes
+        this and an output spec, and `Store.build_paths` takes that.
+        libexpr's `getDerivation` decides what counts as a derivation,
+        the same test `nix build` uses on an installable.
+
+        BLOCKS: reading `drvPath` forces it, and that instantiates the
+        derivation, so the `.drv` is written to the state's store.
+
+        Raises for an attribute set that is not a derivation, and for
+        a derivation with no `drvPath`."""
+        Cxx("""
+huggorm::gc_register_thread();
+auto info = nix::getDerivation(self.state(), *self.get(), false);
+if (!info)
+    throw nix::EvalError(self.state(), "the value is not a derivation");
+auto path = info->queryDrvPath();
+if (!path)
+    throw nix::EvalError(self.state(), "the derivation has no drvPath");
+return *path;
         """)
 
     @guard("function")

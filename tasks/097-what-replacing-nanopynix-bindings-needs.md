@@ -125,7 +125,11 @@ bare `RuntimeError`.
    table above was stale). `get_build_log` and `copy_closure` are
    declared. `copy_closure` needed a proxy parameter the call writes
    to, so a proxy now crosses into C++ as `T &` and only a wire value
-   as `const T &`. Still missing: `Derivation`, and `eval_store` on
+   as `const T &`. `Value.drv_path()` joins evaluation to building:
+   it answers the `.drv` of a derivation value, through libexpr's
+   `getDerivation`, and `DerivedPathBuilt` takes it. `pynix build`
+   needs that join more than it needs `Derivation`, which is for
+   `pynix develop`. Still missing: `Derivation`, and `eval_store` on
    `build_paths`.
 4. Eval constructor arguments, `eval_string(path)` and the `Value`
    conversions. `pynix eval` needs these.
