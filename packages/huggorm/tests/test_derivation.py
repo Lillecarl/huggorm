@@ -56,3 +56,18 @@ def test_it_joins_to_what_a_store_plans(
     missing = Store(str(tmp_path)).query_missing(
         [DerivedPathBuilt(drv, OutputsSpec(all=True))])
     assert missing.will_build() == [drv]
+
+
+def test_a_relative_path_names_from_the_base(
+        state: Any, tmp_path: pathlib.Path) -> None:
+    got = state.eval_expr("toString ./foo", str(tmp_path))
+    assert got.string_value() == f"{tmp_path}/foo"
+
+
+def test_without_a_base_it_names_from_the_working_directory(
+        state: Any, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path) -> None:
+    """What `nix eval --expr` does."""
+    monkeypatch.chdir(tmp_path)
+    assert state.eval_expr("toString ./foo").string_value() == \
+        f"{tmp_path}/foo"

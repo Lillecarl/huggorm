@@ -907,8 +907,11 @@ class EvalState:
     def get_store_uri(self) -> Str:
         """The URI this state was opened with."""
 
-    def parse_expr(self, expr: Str) -> "Value":
+    def parse_expr(self, expr: Str, base: "Str | None" = None) -> "Value":
         """Parse without evaluating: the result is an unforced thunk.
+
+        `base` is the directory a relative path such as `./foo` names
+        from, as `eval_expr` takes it.
 
         Not a `@produces`: that marker is for a value made by ONE
         initialiser, and this parses first and then builds a thunk
@@ -917,18 +920,25 @@ class EvalState:
         Cxx("""
 if (expr.empty())
     throw std::invalid_argument("empty expression");
-auto * e = self.state().parseExprFromString(expr, self.state().rootPath("."));
+auto * e = self.state().parseExprFromString(
+    expr, self.state().rootPath(std::string_view(base ? *base : ".")));
 auto * made = self.alloc();
 made->mkThunk(&self.state().baseEnv, e);
 return self.wrap(made);
         """)
 
-    def eval_expr(self, expr: Str) -> "Value":
-        """Parse and evaluate: slow, fully forced result."""
+    def eval_expr(self, expr: Str, base: "Str | None" = None) -> "Value":
+        """Parse and evaluate: slow, fully forced result.
+
+        `base` is the directory a relative path such as `./foo` names
+        from. Without it, that is this process's working directory, as
+        `nix eval --expr` has it. A remote caller wants its own: the
+        server's working directory is not the client's."""
         Cxx("""
 if (expr.empty())
     throw std::invalid_argument("empty expression");
-auto * e = self.state().parseExprFromString(expr, self.state().rootPath("."));
+auto * e = self.state().parseExprFromString(
+    expr, self.state().rootPath(std::string_view(base ? *base : ".")));
 auto * made = self.alloc();
 self.state().eval(e, *made);
 self.state().forceValue(*made, nix::noPos);
