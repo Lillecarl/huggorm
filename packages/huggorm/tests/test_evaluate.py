@@ -98,3 +98,50 @@ def test_a_function_has_no_json(state: Any) -> None:
 
     with pytest.raises(NixError, match="function"):
         state.eval_expr("{ f = x: x; }").to_json()
+
+
+def test_a_string_with_nothing_to_build_realises_as_itself(
+        state: Any) -> None:
+    assert state.eval_expr('"plain"').realise_string() == "plain"
+
+
+def test_a_realised_string_names_a_path_that_is_there(
+        state: Any, tmp_path: pathlib.Path) -> None:
+    """A path interpolated into a string is copied to the store, and
+    the context names it. Realising it answers a path the state's
+    store holds."""
+    from huggorm_bindings import Store
+
+    (tmp_path / "f").write_text("hi\n")
+    got = state.eval_expr('"${./f}"', str(tmp_path)).realise_string()
+    store = Store(str(tmp_path))
+    assert store.is_valid_path(store.parse_store_path(got))
+
+
+def test_an_argument_vector_realises_each_element(state: Any) -> None:
+    got = state.eval_expr('[ "a" "b${toString 1}" ]').realise_argv()
+    assert got == ["a", "b1"]
+
+
+def test_an_unbuildable_context_raises(state: Any) -> None:
+    """The derivation's builder does not exist, so the build fails,
+    and the realise says so rather than answering a missing path."""
+    from huggorm_bindings.errors import NixError
+
+    with pytest.raises(NixError):
+        state.eval_expr(f'"${{{DRV}}}"').realise_string()
+
+
+def test_realising_is_not_an_import_from_derivation(
+        tmp_path: pathlib.Path) -> None:
+    """With IFD off, the realise still tries the build. It fails
+    here, because the builder does not exist, and the failure must be
+    the build's own, not the IFD refusal."""
+    from huggorm_bindings import EvalState
+    from huggorm_bindings.errors import NixError
+
+    state = EvalState(str(tmp_path),
+                      {"allow-import-from-derivation": "false"})
+    with pytest.raises(NixError) as caught:
+        state.eval_expr(f'"${{{DRV}}}"').realise_string()
+    assert "allow-import-from-derivation" not in str(caught.value)

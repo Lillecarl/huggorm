@@ -286,6 +286,49 @@ return nix::printValueAsJSON(
     self.state(), true, *self.get(), nix::noPos, context, copy_to_store).dump();
         """)
 
+    @blocks
+    def realise_string(self) -> Str:
+        """This value as a string, with everything it names built.
+
+        A string's context names the store paths it refers to, and a
+        derivation output in it may not exist yet. This builds or
+        substitutes each one first, so the answer names paths that
+        are there: `"${pkgs.hello}/bin/hello"` becomes a program to
+        run.
+
+        Not an import from a derivation: the caller holds the value,
+        and evaluation is over. So `allow-import-from-derivation =
+        false` does not refuse it, as it does not refuse `nix build`.
+
+        BLOCKS: it may build."""
+        Cxx("""
+huggorm::gc_register_thread();
+return self.state().realiseString(*self.get(), nullptr, false, nix::noPos);
+        """)
+
+    @guard("list")
+    @blocks
+    def realise_argv(self) -> "list[Str]":
+        """A list of strings, with everything they name built.
+
+        `realise_string` for each element, with ONE build for the
+        whole list, so an argument vector costs one round of building
+        rather than one per argument."""
+        Cxx("""
+huggorm::gc_register_thread();
+nix::NixStringContext context;
+std::vector<std::string> argv;
+for (auto * element : self.get()->listView())
+    argv.emplace_back(self.state().coerceToString(
+        nix::noPos, *element, context,
+        "while evaluating an element of an argument vector",
+        false, false).toOwned());
+auto rewrites = self.state().realiseContext(context, nullptr, false);
+for (auto & argument : argv)
+    argument = nix::rewriteStrings(argument, rewrites);
+return argv;
+        """)
+
     # -- functions -------------------------------------------------------
     #
     # `nFunction` is ONE type name over THREE payloads - a lambda, a

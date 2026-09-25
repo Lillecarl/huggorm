@@ -140,8 +140,12 @@ bare `RuntimeError`.
    `nix-path` and `extra-nix-path` are evaluator settings, so
    `EvalState(uri, {"nix-path": ...})` sets it per state. One
    difference from `-I`: `-I` entries come before `nix-path`. Still
-   missing: a build store on the constructor, `realise_string` and
-   `realise_argv`. `eval_expr(expr, base)` and `to_json` are done.
+   missing: a build store on the constructor. `eval_expr(expr, base)`,
+   `to_json`, `realise_string` and `realise_argv` are done. The two
+   realises pass `isIFD = false`, where nanopynix passes true: a
+   caller realising a value it holds is not an import during
+   evaluation, so `allow-import-from-derivation = false` must not
+   refuse it.
 5. Flakes and fetchers.
 6. REPL, Python store implementations, the daemon protocol.
 7. The Nix version matrix (055).
