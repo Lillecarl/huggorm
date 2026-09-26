@@ -355,3 +355,52 @@ now.
 Lane: 2044 passed, 575 failed, 181 errors, 4 minutes. The groups:
 `expr.EvalState` (847), `Store.add_to_store` (154),
 `expr.register_primop` (75), the flake registry (40).
+
+## The evaluator opens
+
+nanopynix's huggorm engine has an `EvalState` and a `Value` now. They
+answer the raw names `CoreEvalState` and `CoreValue` call, over this
+repository's `EvalState` and `Value`. Each read forces first, because
+a `Value` here refuses a thunk. `auto_call` follows Nix's
+`autoCallFunction`: defaulted formals, `__functor`, and anything else
+unapplied, where `apply_auto` refuses.
+
+Three changes here, each with a gate:
+
+- `EvalState` takes a `Store`, not a URI (Carl's call). The URI form
+  opened a second store, and `dummy://` opened twice is two empty
+  stores. `test_the_state_shares_its_store` adds a path to a writable
+  dummy store and reads it through the state, and a state over a second
+  store opened from the same URI cannot. RPC callers acquire a `Store`
+  first and pass the handle: the shape `test_remote` said `tasks/060`
+  planned.
+- `make_null`, the one JSON scalar the producers lacked.
+- Arity 0 is a lazy constant, as Nix makes it (Carl's call). This
+  reverses the refusal: nanopynix's API takes arity 0 and means that
+  constant, and its shared test fixtures register one.
+
+Two defects in nanopynix's side, both found by the lane:
+
+- The log pump kept its lock across `fork()` and lost its thread. A
+  child forked mid-drain waited on the lock for ever. At-fork hooks
+  hold the lock across the fork and start a new pump in the child.
+- The primop bridge held its evaluator, which holds the bridge. Only
+  the cyclic collector frees that, and each store kept its database
+  open until it ran: the lane crossed 1024 descriptors, prompt_toolkit's
+  `select()` refused its pipe on every pass of the loop, and anyio's
+  test runner kept each exception until the host swapped at 8 GB. A
+  weak reference fixed it: 20 descriptors against 35 without.
+
+Wrong on the way, and what refuted it: a flood of progress records
+(31 a second, measured); an evaluator that leaks (300 states, 17 MB);
+Boehm and `fork()` (0 of 40 children hung). Three later "hangs" were
+leftover processes of lanes I had stopped: `TaskStop` ends the shell,
+not a `systemd-run --scope` under it.
+
+Not ported: the REPL (`begin_repl`, 31), the per-state setters,
+`statistics_json`, `Value.build`, a primop that returns a callable,
+primop argument names and docs.
+
+Lane: 2276 passed, 366 failed, 170 errors, 4 min 26 s. The groups:
+`Store.add_to_store` (154), `flake.parse_flake_ref` (50), the flake
+registry (55), `EvalState.begin_repl` (31).
