@@ -380,7 +380,7 @@ inline std::atomic<int> & default_verbosity()
 }
 
 /**
- * What the process-wide sink asks nix to produce. -1 releases.
+ * What the process default asks nix to produce. -1 releases.
  *
  * `ThreadLevel::set` for the process, and the same rule: one place
  * owns the pairing of an add with the drop it replaces.
@@ -415,6 +415,21 @@ inline void set_process_demand(int wanted)
     if (held >= 0)
         verbosity_demand().drop(static_cast<nix::Verbosity>(held));
     held = wanted;
+}
+
+/**
+ * The level a thread with no level of its own reports at, and the
+ * demand that makes nix produce it.
+ *
+ * One call for both, because the two are one fact. A default that
+ * moved without its demand would name a level nix never produces, so
+ * the tap would have nothing to keep.
+ */
+inline void set_default_verbosity(nix::Verbosity level)
+{
+    set_process_demand(static_cast<int>(level));
+    default_verbosity().store(static_cast<int>(level),
+                              std::memory_order_relaxed);
 }
 
 /**
@@ -932,10 +947,7 @@ inline std::shared_ptr<LogQueue> subscribe_process_logs(std::size_t capacity,
     // Process-wide state changed by one subscriber, which is what
     // this function already is: it REPLACES any subscription that was
     // there. `unsubscribe_process_logs` puts the default back.
-    const auto wanted = static_cast<nix::Verbosity>(level);
-    set_process_demand(static_cast<int>(wanted));
-    default_verbosity().store(static_cast<int>(wanted),
-                              std::memory_order_relaxed);
+    set_default_verbosity(static_cast<nix::Verbosity>(level));
     auto fresh = std::make_shared<LogQueue>(capacity);
     std::shared_ptr<LogQueue> old;
     {

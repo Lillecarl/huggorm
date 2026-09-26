@@ -1443,6 +1443,84 @@ return static_cast<std::int64_t>(nix::verbosity);
     """)
 
 
+@needs("huggorm_decl/cpp/logging.hpp")
+def thread_verbosity() -> I64:
+    """The level this thread keeps records at.
+
+    Its own level, when `set_thread_verbosity` or `subscribe_logs` gave
+    it one. The process default otherwise, read live, so a thread with
+    no level follows `set_default_verbosity`.
+
+    No `@threading`, for `begin_request`'s reason: the answer is a fact
+    about the calling thread, and a hop to the pool would read a pool
+    thread."""
+    Cxx("""
+return static_cast<std::int64_t>(huggorm::effective_verbosity());
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def set_thread_verbosity(level: I64) -> None:
+    """Give this thread a level of its own, with no queue.
+
+    The level half of `subscribe_logs`, for a caller that reads every
+    record through the process queue and still wants a level per call.
+    It raises `nix::verbosity` as far as the level needs, and
+    `clear_thread_verbosity` gives that back.
+
+    `subscribe_logs` replaces this level, and `unsubscribe_logs`
+    clears it: one thread holds one level."""
+    Cxx("""
+if (level < 0 || level > nix::lvlVomit)
+    throw std::invalid_argument("level must be from 0 (error) to 7 (vomit)");
+huggorm::thread_level().set(static_cast<nix::Verbosity>(level));
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def clear_thread_verbosity() -> None:
+    """Take this thread's own level away, so it follows the default."""
+    Cxx("""
+huggorm::thread_level().clear();
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def default_verbosity() -> I64:
+    """The level of a thread with no level of its own.
+
+    Nix starts threads this binding never sees - a file transfer, a
+    substituter - and each of them keeps records at this level."""
+    Cxx("""
+return static_cast<std::int64_t>(
+    huggorm::default_verbosity().load(std::memory_order_relaxed));
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def set_default_verbosity(level: I64) -> None:
+    """Set the level of every thread with no level of its own.
+
+    It raises `nix::verbosity` as far as the level needs, like a
+    subscription does. `subscribe_process_logs` sets this too, and
+    `unsubscribe_process_logs` puts nix's own `lvlInfo` back."""
+    Cxx("""
+if (level < 0 || level > nix::lvlVomit)
+    throw std::invalid_argument("level must be from 0 (error) to 7 (vomit)");
+huggorm::set_default_verbosity(static_cast<nix::Verbosity>(level));
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def current_request() -> I64:
+    """The call this thread is inside, as `begin_request` named it, or 0.
+
+    No `@threading`, for `begin_request`'s reason."""
+    Cxx("""
+return static_cast<std::int64_t>(huggorm::thread_request());
+    """)
+
+
 @needs("huggorm_decl/cpp/logging.hpp", "huggorm_decl/cpp/interrupt.hpp")
 def begin_request(request: I64) -> I64:
     """Say which call this thread is inside. Answers the one before.

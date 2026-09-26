@@ -23,6 +23,7 @@ Two things every gate here has to keep in mind, both measured against
 
 import os
 import pathlib
+import threading
 from collections.abc import Iterator
 from typing import Any
 
@@ -1423,6 +1424,96 @@ def test_the_gate_stays_up_for_a_subscription_that_is_still_live(
         unsubscribe_process_logs()
 
     assert process_verbosity() == LOG_INFO, "and now nobody does"
+
+
+def test_a_thread_level_needs_no_queue(state: Any,
+                                       tmp_path: pathlib.Path,
+                                       process_sink: Any) -> None:
+    """The shape nanopynix reads: one process queue, a level per call.
+
+    This thread subscribes to nothing, so its records fall back to the
+    process queue. Its own level still decides what they are worth.
+
+    Perturbation: drop the `thread_level().set` call from
+    `set_thread_verbosity` and this fails - the default keeps nothing
+    above lvlInfo."""
+    from huggorm_bindings import (
+        clear_thread_verbosity,
+        process_verbosity,
+        set_thread_verbosity,
+        thread_verbosity,
+    )
+
+    where = evaluated(tmp_path)
+    set_thread_verbosity(TALKATIVE)
+    try:
+        assert thread_verbosity() == TALKATIVE
+        assert process_verbosity() >= TALKATIVE, "the gate went up"
+        state.eval_file(where)
+    finally:
+        clear_thread_verbosity()
+
+    deep = [r for r in process_sink.drain()
+            if r.action() == "msg" and r.level() == TALKATIVE]
+    assert any("evaluating file" in r.text() for r in deep), deep
+    assert thread_verbosity() == LOG_INFO, "back to the default"
+    assert process_verbosity() == LOG_INFO, "and the gate back down"
+
+
+def test_a_thread_with_no_level_follows_the_default() -> None:
+    """A thread nix starts never sets a level, so it reads this one.
+
+    Read LIVE, not copied when the thread starts: the thread below
+    exists before the default moves."""
+    from huggorm_bindings import (
+        default_verbosity,
+        process_verbosity,
+        set_default_verbosity,
+        thread_verbosity,
+    )
+
+    moved = threading.Event()
+    seen: list[int] = []
+
+    def other() -> None:
+        moved.wait()
+        seen.append(thread_verbosity())
+
+    worker = threading.Thread(target=other)
+    worker.start()
+    set_default_verbosity(DEBUG)
+    try:
+        assert default_verbosity() == DEBUG
+        assert process_verbosity() >= DEBUG, "the gate went up"
+        moved.set()
+        worker.join()
+    finally:
+        set_default_verbosity(LOG_INFO)
+
+    assert seen == [DEBUG]
+    assert process_verbosity() == LOG_INFO
+
+
+@pytest.mark.parametrize("level", [-1, 8])
+def test_a_level_nix_does_not_have_is_refused(level: int) -> None:
+    from huggorm_bindings import set_default_verbosity, set_thread_verbosity
+
+    with pytest.raises(ValueError, match="from 0"):
+        set_thread_verbosity(level)
+    with pytest.raises(ValueError, match="from 0"):
+        set_default_verbosity(level)
+
+
+def test_the_current_request_is_the_one_begun() -> None:
+    from huggorm_bindings import begin_request, current_request, end_request
+
+    assert current_request() == 0
+    previous = begin_request(41)
+    try:
+        assert current_request() == 41
+    finally:
+        end_request(previous)
+    assert current_request() == 0
 
 
 @pytest.mark.live
