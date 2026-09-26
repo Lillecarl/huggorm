@@ -220,7 +220,7 @@ throw std::runtime_error("value is not a list or an attribute set");
         """)
 
     @guard("list")
-    def at(self, index: I64) -> "Value":
+    def at(self, index: I64) -> Value:
         """One element of a list.
 
         It may still be a thunk: forcing a list forces the list, not
@@ -243,7 +243,7 @@ return self.symbol(by_name[static_cast<std::size_t>(index)]->name);
         """)
 
     @guard("attrs")
-    def value_at(self, index: I64) -> "Value":
+    def value_at(self, index: I64) -> Value:
         """One attribute value, in alphabetical order of name."""
         Cxx("""
 const auto & by_name = self.sorted();
@@ -258,7 +258,7 @@ return self.wrap(by_name[static_cast<std::size_t>(index)]->value);
         Cxx("return self.get()->attrs()->get(self.intern(name)) != nullptr;")
 
     @guard("attrs")
-    def get(self, name: Str) -> "Value":
+    def get(self, name: Str) -> Value:
         """One attribute by name. Raises when it is missing."""
         Cxx("""
 const auto * attr = self.get()->attrs()->get(self.intern(name));
@@ -308,7 +308,7 @@ return self.state().realiseString(*self.get(), nullptr, false, nix::noPos);
 
     @guard("list")
     @blocks
-    def realise_argv(self) -> "list[Str]":
+    def realise_argv(self) -> list[Str]:
         """A list of strings, with everything they name built.
 
         `realise_string` for each element, with ONE build for the
@@ -376,7 +376,7 @@ return argv;
 
     @guard("function")
     @blocks
-    def apply(self, arg: "Value") -> "Value":
+    def apply(self, arg: Value) -> Value:
         """Apply one argument. `f x`, and the answer may be a function.
 
         The curried form, so this is how every Nix function is called
@@ -407,7 +407,7 @@ return self.wrap(out);
 
     @guard("function")
     @blocks
-    def apply_auto(self, args: "Value") -> "Value":
+    def apply_auto(self, args: Value) -> Value:
         """Apply an attribute set BY NAME, filling defaults.
 
         `autoCallFunction`, which is what `--arg` reaches. One round
@@ -458,7 +458,7 @@ return self.wrap(out);
     @guard("attrs")
     @blocks
     @needs("nix/expr/get-drvs.hh")
-    def drv_path(self) -> "StorePath":
+    def drv_path(self) -> StorePath:
         """The `.drv` this derivation value names.
 
         What joins evaluation to building: `DerivedPathBuilt` takes
@@ -567,7 +567,7 @@ return formals.has_value() && formals->ellipsis;
     # positions this declaration does not carry.
 
     @guard("function")
-    def formal_names(self) -> "list[Str]":
+    def formal_names(self) -> list[Str]:
         """Every formal this lambda declares, alphabetically.
 
         Empty for a `x:` lambda, which declares none.
@@ -589,7 +589,7 @@ return names;
         """)
 
     @guard("function")
-    def defaulted_formals(self) -> "list[Str]":
+    def defaulted_formals(self) -> list[Str]:
         """The formals that have a default, alphabetically.
 
         A SUBSET of `formal_names`, not the defaults themselves. A
@@ -642,7 +642,7 @@ return static_cast<std::int64_t>(self.get()->primOp()->arity);
         """)
 
     @guard("function")
-    def primop_args(self) -> "list[Str]":
+    def primop_args(self) -> list[Str]:
         """This builtin's argument names, in declaration order.
 
         Real order, unlike `formal_names`: these are a vector the
@@ -840,7 +840,7 @@ class LogRecord:
         question open rather than answering it twice."""
 
     @reads("fields")
-    def fields(self) -> "list[LogField]":
+    def fields(self) -> list[LogField]:
         """The typed payload, for a `"start"` or a `"result"`.
 
         What it MEANS depends on `type`. A `resProgress` carries done,
@@ -877,7 +877,7 @@ class LogStream:
     a missing log line. `dropped` counts what the bound refused.
     """
 
-    def drain(self) -> "list[LogRecord]":
+    def drain(self) -> list[LogRecord]:
         """Everything waiting, and the queue is empty afterwards.
 
         Empty when nothing happened. It does not block and it does not
@@ -950,8 +950,8 @@ class EvalState:
     """
 
     def __init__(self, store_uri: Str,
-                 settings: "dict[str, Str] | None" = None,
-                 build_store_uri: "Str | None" = None) -> None:
+                 settings: dict[str, Str] | None = None,
+                 build_store_uri: Str | None = None) -> None:
         """Open a state against a store URI.
 
         REQUIRED, with no default. A state is bound to a store and a
@@ -975,7 +975,7 @@ class EvalState:
     def get_store_uri(self) -> Str:
         """The URI this state was opened with."""
 
-    def parse_expr(self, expr: Str, base: "Str | None" = None) -> "Value":
+    def parse_expr(self, expr: Str, base: Str | None = None) -> Value:
         """Parse without evaluating: the result is an unforced thunk.
 
         `base` is the directory a relative path such as `./foo` names
@@ -995,7 +995,7 @@ made->mkThunk(&self.state().baseEnv, e);
 return self.wrap(made);
         """)
 
-    def eval_expr(self, expr: Str, base: "Str | None" = None) -> "Value":
+    def eval_expr(self, expr: Str, base: Str | None = None) -> Value:
         """Parse and evaluate: slow, fully forced result.
 
         `base` is the directory a relative path such as `./foo` names
@@ -1013,7 +1013,7 @@ self.state().forceValue(*made, nix::noPos);
 return self.wrap(made);
         """)
 
-    def eval_file(self, path: Str) -> "Value":
+    def eval_file(self, path: Str) -> Value:
         """Evaluate a file, and remember it.
 
         The one call that is CHEAP the second time. `evalFile` keeps a
@@ -1049,7 +1049,7 @@ self.state().evalFile(self.state().rootPath(path), *made);
 return self.wrap(made);
         """)
 
-    def cached_files(self) -> "list[Str]":
+    def cached_files(self) -> list[Str]:
         """Every file whose evaluation this state has cached.
 
         What a watcher watches. `tasks/016` wants a change to a file an
@@ -1204,7 +1204,7 @@ self.register_primop(name, static_cast<std::size_t>(arity), fn);
         """)
 
     def subscribe_logs(self, capacity: I64 = 1024,
-                       level: I64 = 3) -> "LogStream":
+                       level: I64 = 3) -> LogStream:
         """Record what Nix says on THIS state's thread.
 
         The direction `register_primop` runs, without a call: nix
@@ -1289,7 +1289,7 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
 huggorm::unsubscribe_logs();
         """)
 
-    def force(self, v: "Value") -> None:
+    def force(self, v: Value) -> None:
         """Force a value in place. Idempotent.
 
         Mutates GC-resident memory, and the async layer routes the
@@ -1308,14 +1308,14 @@ huggorm::unsubscribe_logs();
     # RPC surface at all. One element per call is what crosses.
 
     @produces("mkInt")
-    def make_int(self, value: I64) -> "Value":
+    def make_int(self, value: I64) -> Value:
         """A forced integer value."""
 
     @produces("mkFloat")
-    def make_float(self, value: F64) -> "Value":
+    def make_float(self, value: F64) -> Value:
         """A forced float value."""
 
-    def make_string(self, value: Str) -> "Value":
+    def make_string(self, value: Str) -> Value:
         """A forced string value, with no string context.
 
         Not a `@produces`: `mkString` takes the state's allocator as a
@@ -1328,10 +1328,10 @@ return self.wrap(made);
         """)
 
     @produces("mkBool")
-    def make_bool(self, value: Bint) -> "Value":
+    def make_bool(self, value: Bint) -> Value:
         """A forced boolean value."""
 
-    def make_list(self) -> "Value":
+    def make_list(self) -> Value:
         """An empty list. Fill it with `list_append`."""
         Cxx("""
 auto * made = self.alloc();
@@ -1340,11 +1340,11 @@ return self.wrap_builder(made);
         """)
 
     @fills("make_list", "list")
-    def list_append(self, target: "Value", item: "Value") -> None:
+    def list_append(self, target: Value, item: Value) -> None:
         """Add one element to a list, in place."""
         Cxx("return target.stage(item.get());")
 
-    def make_attrs(self) -> "Value":
+    def make_attrs(self) -> Value:
         """An empty attribute set. Fill it with `attrs_set`."""
         Cxx("""
 auto * made = self.alloc();
@@ -1354,7 +1354,7 @@ return self.wrap_builder(made);
         """)
 
     @fills("make_attrs", "attrs")
-    def attrs_set(self, target: "Value", name: Str, item: "Value") -> None:
+    def attrs_set(self, target: Value, name: Str, item: Value) -> None:
         """Set one attribute, in place.
 
         Setting a name twice replaces its value, matching an attribute
@@ -1367,7 +1367,7 @@ return self.wrap_builder(made);
 
 @needs("huggorm_decl/cpp/gc.hpp")
 @threading("pool")
-def gc_stats() -> "dict[str, I64]":
+def gc_stats() -> dict[str, I64]:
     """Live collector counters, bound straight from gc.h.
 
     These prove the collector is ACTIVE: a no-op integration cannot
@@ -1547,7 +1547,7 @@ huggorm::cancellations().forget(static_cast<std::uint64_t>(request));
 
 
 @needs("huggorm_decl/cpp/settings.hpp")
-def get_setting(name: Str) -> "Str | None":
+def get_setting(name: Str) -> Str | None:
     """The effective value of one setting, or None for an unknown name.
 
     Every registered setting: the store's, the evaluator's and the
@@ -1580,7 +1580,7 @@ if (!nix::globalConfig.set(name, value))
 
 
 @needs("huggorm_decl/cpp/settings.hpp")
-def list_settings(overridden_only: Bint = False) -> "dict[str, Str]":
+def list_settings(overridden_only: Bint = False) -> dict[str, Str]:
     """Every registered setting and its effective value.
 
     `overridden_only` keeps the ones something set: nix.conf,
@@ -1621,7 +1621,7 @@ def _settings_init() -> None:
 @needs("huggorm_decl/cpp/logging.hpp")
 @threading("pool")
 def subscribe_process_logs(capacity: I64 = 1024,
-                           level: I64 = 3) -> "LogStream":
+                           level: I64 = 3) -> LogStream:
     """Record what no subscribed thread claims.
 
     A FREE function, because there is nothing to hang it on. Every

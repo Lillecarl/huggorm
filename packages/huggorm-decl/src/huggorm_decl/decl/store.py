@@ -61,7 +61,7 @@ class StoreLocation:
     is the result of a split that only a store can perform, because
     only a store knows its own directory."""
 
-    def path(self) -> "StorePath":
+    def path(self) -> StorePath:
         """The store path that holds the file."""
 
     def sub_path(self) -> str:
@@ -94,18 +94,18 @@ class MissingPaths:
     """
 
     @reads("willBuild")
-    def will_build(self) -> "list[StorePath]":
+    def will_build(self) -> list[StorePath]:
         """The derivations that would be BUILT here.
 
         Sorted, because Nix keeps them in a set and the order is that
         set's."""
 
     @reads("willSubstitute")
-    def will_substitute(self) -> "list[StorePath]":
+    def will_substitute(self) -> list[StorePath]:
         """The outputs that would be FETCHED from a substituter."""
 
     @reads("unknown")
-    def unknown(self) -> "list[StorePath]":
+    def unknown(self) -> list[StorePath]:
         """The paths this store cannot account for at all.
 
         Neither buildable nor substitutable from here - usually a
@@ -181,7 +181,7 @@ class Store:
         declaring the whole config type for one string."""
         Cxx("return self.config.getHumanReadableURI();")
     @cxx_name("isValidPath")
-    def is_valid_path(self, path: "StorePath") -> Bint:
+    def is_valid_path(self, path: StorePath) -> Bint:
         """Whether the store has that path."""
     # The first declared methods that take a VOCABULARY. A member IS
     # the string libstore parses, so it crosses as one and nothing
@@ -199,8 +199,8 @@ class Store:
         # `list[StorePath] | None`. Writing the wider type here would
         # say nothing new to a caller, so the rule is silenced rather
         # than followed.
-        references: "list[StorePath]" = None,  # noqa: RUF013
-    ) -> "StorePath":
+        references: list[StorePath] = None,  # noqa: RUF013
+    ) -> StorePath:
         """Add one file's contents to the store, and name the result.
 
         `data` is a regular file's CONTENTS - bytes, not text, because
@@ -259,8 +259,8 @@ return self.addToStoreFromDump(
         # `list[StorePath] | None`. Writing the wider type here would
         # say nothing new to a caller, so the rule is silenced rather
         # than followed.
-        references: "list[StorePath]" = None,  # noqa: RUF013
-    ) -> "StorePath":
+        references: list[StorePath] = None,  # noqa: RUF013
+    ) -> StorePath:
         """Add a file or a directory from the filesystem to the store.
 
         The other half of `add_to_store`. That one takes a regular
@@ -302,7 +302,7 @@ return self.addToStore(
     as_set<nix::StorePathSet>(references));
         """)
     @cxx_name("queryAllValidPaths")
-    def query_all_valid_paths(self) -> "list[StorePath]":
+    def query_all_valid_paths(self) -> list[StorePath]:
         """Every path this store holds.
 
         Not every store answers it. nix::Store's own implementation
@@ -315,8 +315,8 @@ return self.addToStore(
     @cxx_name("queryValidDerivers")
     def query_valid_derivers(
         self,
-        path: "StorePath",
-    ) -> "list[StorePath]":
+        path: StorePath,
+    ) -> list[StorePath]:
         """Every derivation this store still holds that has `path` as
         an output.
 
@@ -332,8 +332,8 @@ return self.addToStore(
     @cxx_name("queryValidPaths")
     def query_valid_paths(
         self,
-        paths: "list[StorePath]",
-    ) -> "list[StorePath]":
+        paths: list[StorePath],
+    ) -> list[StorePath]:
         """Which of these paths this store actually holds.
 
         The set form of `is_valid_path`, and not merely a loop over
@@ -352,11 +352,11 @@ return self.addToStore(
     # gets what `nix-store -qR` does.
     def compute_fs_closure(
         self,
-        paths: "list[StorePath]",
+        paths: list[StorePath],
         flip_direction: Bint = False,
         include_outputs: Bint = False,
         include_derivers: Bint = False,
-    ) -> "list[StorePath]":
+    ) -> list[StorePath]:
         """Every path reachable from these, transitively.
 
         What `nix-store --query --requisites` answers, and the reason
@@ -385,8 +385,8 @@ return as_list(out);
         """)
     def query_referrers(
         self,
-        path: "StorePath",
-    ) -> "list[StorePath]":
+        path: StorePath,
+    ) -> list[StorePath]:
         """Which store paths point AT this one.
 
         The inverse of `PathInfo.references`, and the direction a
@@ -407,7 +407,7 @@ return as_list(referrers);
     # answer names a file on THIS machine, so it is a path a caller
     # can open.
     @needs("nix/store/local-fs-store.hh")
-    def real_path(self, path: "StorePath") -> Path:
+    def real_path(self, path: StorePath) -> Path:
         """Where this store object's files really are.
 
         A different question from `print_store_path`, which joins the
@@ -440,7 +440,7 @@ return fs->toRealPath(path);
     # copy. Holding the share instead is available and is not needed
     # yet: a VALUE is what the store said when it was asked, and a
     # caller who holds one should not see it change.
-    def query_path_info(self, path: "StorePath") -> "PathInfo":
+    def query_path_info(self, path: StorePath) -> PathInfo:
         """What this store knows about one path it holds.
 
         Raises InvalidPath when it does not hold it, which is a
@@ -464,7 +464,7 @@ return fs->toRealPath(path);
     # say is how to build one. The emitter still declares the struct,
     # because `toStorePath` answers a std::pair and there is no
     # upstream type to bind.
-    def to_store_path(self, path: Str) -> "StoreLocation":
+    def to_store_path(self, path: Str) -> StoreLocation:
         """Which store path CONTAINS this file, and where inside it.
 
         A different question from `parse_store_path`, which takes the
@@ -500,7 +500,7 @@ return huggorm::StoreLocation{store_path, sub.absOrEmpty()};
     # binding hands back the KEYED type instead, and this is where
     # the key is put back: it is the caller's own argument.
     @needs("nix/store/realisation.hh")
-    def query_realisation(self, id: "DrvOutput") -> "Realisation | None":
+    def query_realisation(self, id: DrvOutput) -> Realisation | None:
         """What a CA derivation's output turned out to be, or None.
 
         None is a normal answer twice over. The store may simply not
@@ -527,7 +527,7 @@ return nix::Realisation{*found, id};
     # READ-ONLY, which is why this is the first consumer rather than
     # `build_paths`: it answers against a chroot store with nothing
     # built, so the hermetic suite can exercise the whole shape.
-    def query_missing(self, targets: "list[DerivedPath]") -> "MissingPaths":
+    def query_missing(self, targets: list[DerivedPath]) -> MissingPaths:
         """What building these would have to do.
 
         Nothing is built, fetched or locked. A path already valid here
@@ -545,7 +545,7 @@ return nix::Realisation{*found, id};
     # hard-coded `dict[str, int]` serving one free function.
     @cxx_name("queryDerivationOutputMap")
     def query_derivation_output_map(
-            self, path: "StorePath") -> "dict[str, StorePath]":
+            self, path: StorePath) -> dict[str, StorePath]:
         """Which path each of this derivation's outputs has.
 
         Keyed by output NAME - `out`, `dev`, `man` - because that is
@@ -574,8 +574,8 @@ return nix::Realisation{*found, id};
     # The pair is upstream's own, and it is why the union exists
     # (tasks/059): both take the same list, and only one of them
     # changes the store.
-    def build_paths(self, targets: "list[DerivedPath]",
-                    mode: "BuildMode" = BuildMode.NORMAL) -> None:
+    def build_paths(self, targets: list[DerivedPath],
+                    mode: BuildMode = BuildMode.NORMAL) -> None:
         """Build or fetch every one of these, and wait.
 
         A target that is a derivation gets BUILT, which means its
@@ -607,9 +607,9 @@ return nix::Realisation{*found, id};
     @needs("nix/store/build-result.hh")
     @cxx_name("buildPathsWithResults")
     def build_paths_with_results(
-            self, targets: "list[DerivedPath]",
-            mode: "BuildMode" = BuildMode.NORMAL,
-    ) -> "list[KeyedBuildResult]":
+            self, targets: list[DerivedPath],
+            mode: BuildMode = BuildMode.NORMAL,
+    ) -> list[KeyedBuildResult]:
         """Build or fetch every one of these, and report on each.
 
         The same work `build_paths` does, and the other shape of the
@@ -633,7 +633,7 @@ return nix::Realisation{*found, id};
         out and for the same reason."""
         Cxx("return self.buildPathsWithResults(targets, mode);")
     @cxx_name("ensurePath")
-    def ensure_path(self, path: "StorePath") -> None:
+    def ensure_path(self, path: StorePath) -> None:
         """Make this path valid, by substituting it if it is not.
 
         The narrow half of `build_paths`. That one takes a target
@@ -645,7 +645,7 @@ return nix::Realisation{*found, id};
         Already valid is a no-op. Nothing to substitute from raises,
         in libstore's own words."""
     @cxx_name("addTempRoot")
-    def add_temp_root(self, path: "StorePath") -> None:
+    def add_temp_root(self, path: StorePath) -> None:
         """Keep this path from the collector while the store is open.
 
         A temporary root, held by THIS process: `collect_garbage`
@@ -667,7 +667,7 @@ return nix::Realisation{*found, id};
         store was asked. A binary cache has nothing to root."""
     @cxx_name("querySubstitutablePaths")
     def query_substitutable_paths(
-            self, paths: "list[StorePath]") -> "list[StorePath]":
+            self, paths: list[StorePath]) -> list[StorePath]:
         """Which of these this store could FETCH rather than build.
 
         Asked of the substituters, not of this store: a path already
@@ -679,7 +679,7 @@ return nix::Realisation{*found, id};
         Shorter than what went in, and sorted, because upstream keeps
         them in a set."""
     @cxx_name("topoSortPaths")
-    def topo_sort_paths(self, paths: "list[StorePath]") -> "list[StorePath]":
+    def topo_sort_paths(self, paths: list[StorePath]) -> list[StorePath]:
         """These paths in reference order: a path before what it needs.
 
         If p refers to q then p comes before q. That is the order to
@@ -694,7 +694,7 @@ return nix::Realisation{*found, id};
         Raises on a cycle. A store path graph cannot have one, so
         that is a corrupt store rather than a bad ask."""
     @needs("nix/store/log-store.hh", "nix/store/store-cast.hh")
-    def get_build_log(self, path: "StorePath") -> "Str | None":
+    def get_build_log(self, path: StorePath) -> Str | None:
         """The log of the build that made this path, or None.
 
         `path` may be the derivation or one of its outputs; libstore
@@ -710,8 +710,8 @@ return nix::Realisation{*found, id};
         Cxx("return nix::require<nix::LogStore>(self).getBuildLog(path);")
     def copy_closure(
         self,
-        destination: "Store",
-        paths: "list[StorePath]",
+        destination: Store,
+        paths: list[StorePath],
         repair: Bint = False,
         check_sigs: Bint = True,
         substitute: Bint = False,
@@ -733,7 +733,7 @@ nix::copyClosure(
     substitute ? nix::Substitute : nix::NoSubstitute);
         """)
     @cxx_name("queryPathFromHashPart")
-    def query_path_from_hash_part(self, hash_part: Str) -> "StorePath | None":
+    def query_path_from_hash_part(self, hash_part: Str) -> StorePath | None:
         """Which store path has this hash part, or None.
 
         A store path's name begins with a 32-character base-32 hash,
@@ -749,7 +749,7 @@ nix::copyClosure(
         here the caller asked whether one exists."""
 
     @cxx_name("isTrustedClient")
-    def is_trusted_client(self) -> "TrustedFlag | None":
+    def is_trusted_client(self) -> TrustedFlag | None:
         """Whether this store trusts US, or None if it cannot say.
 
         Not a bool, because the answer has three values and upstream
@@ -775,7 +775,7 @@ return huggorm::as_word(*flag);
 
     @needs("nix/store/gc-store.hh")
     @cxx_name("collectGarbage")
-    def collect_garbage(self, options: "GCOptions") -> "GCResults":
+    def collect_garbage(self, options: GCOptions) -> GCResults:
         """Run a garbage collection, and say what it found or removed.
 
         What `nix-store --gc` does. `options.action` decides whether
@@ -837,7 +837,7 @@ return results;
         Raises BadStorePath when the links run out somewhere else."""
         Cxx("return self.followLinksToStore(path).string();")
     @cxx_name("followLinksToStorePath")
-    def follow_links_to_store_path(self, path: StrView) -> "StorePath":
+    def follow_links_to_store_path(self, path: StrView) -> StorePath:
         """Follow symlinks until the path lands in the store, and say
         which store path it landed in.
 
@@ -861,7 +861,7 @@ return results;
     # save nothing, and these are the calls a caller makes most.
     @instant
     @cxx_name("printStorePath")
-    def print_store_path(self, path: "StorePath") -> Str:
+    def print_store_path(self, path: StorePath) -> Str:
         """This path as the store spells it: its directory, then the
         base name.
 
@@ -880,7 +880,7 @@ return results;
     # a StoreDirConfig by upstream's own signature - so rendering is a
     # store's act, exactly as it is for a StorePath.
     @instant
-    def print_derived_path(self, target: "DerivedPath") -> Str:
+    def print_derived_path(self, target: DerivedPath) -> Str:
         """This target as the store spells it.
 
         `<drv>^out,dev` for outputs of a derivation, `^*` for all of
@@ -890,7 +890,7 @@ return results;
         Cxx("return target.to_string(self.config);")
     # Pure string work: no daemon, no lock, no file.
     @instant
-    def parse_derived_path(self, target: StrView) -> "DerivedPath":
+    def parse_derived_path(self, target: StrView) -> DerivedPath:
         """Read back what `print_derived_path` wrote.
 
         Raises when the string is not one, in libstore's own words.
@@ -900,7 +900,7 @@ return results;
         Cxx("return nix::DerivedPath::parse(self.config, target);")
     @instant
     @cxx_name("parseStorePath")
-    def parse_store_path(self, path: StrView) -> "StorePath":
+    def parse_store_path(self, path: StrView) -> StorePath:
         """This string as a store path of THIS store.
 
         A store path is a base name, and which directory it belongs
@@ -919,7 +919,7 @@ return results;
 # on Store above names this function as the way in.
 @needs("nix/store/store-open.hh")
 @blocks
-def open_store(uri: Str = "auto") -> "Store":
+def open_store(uri: Str = "auto") -> Store:
     """Open the store this URI names.
 
     The URI picks the implementation. "auto" is what the `nix` command

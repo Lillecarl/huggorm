@@ -56,8 +56,8 @@ class GCOptions:
 
     def __init__(self, action: GCAction = GCAction.DELETE_DEAD,
                  ignore_liveness: Bint = False,
-                 paths_to_delete: "list[StorePath]" = None,  # noqa: RUF013
-                 max_freed: "U64 | None" = None) -> None:
+                 paths_to_delete: list[StorePath] = None,  # noqa: RUF013
+                 max_freed: U64 | None = None) -> None:
         """Say what to collect. Every answer has an upstream default.
 
         `max_freed` is None rather than a number, and that is not a
@@ -89,13 +89,13 @@ if (max_freed)
         half of the check and keeps the reference half."""
 
     @reads("pathsToDelete")
-    def paths_to_delete(self) -> "list[StorePath]":
+    def paths_to_delete(self) -> list[StorePath]:
         """The paths `DELETE_SPECIFIC` should try to delete.
 
         Read by no other action. Sorted, because Nix keeps them in a
         set and the order is that set's."""
 
-    def max_freed(self) -> "U64 | None":
+    def max_freed(self) -> U64 | None:
         """Stop once this many bytes have been freed, or None for no
         limit.
 
@@ -139,7 +139,7 @@ class GCResults:
     """
 
     @reads("paths", collection="nix::StringSet")
-    def paths(self) -> "list[Str]":
+    def paths(self) -> list[Str]:
         """The roots, or the paths that were or would be deleted.
 
         Strings, not store paths, and that is upstream's own choice:

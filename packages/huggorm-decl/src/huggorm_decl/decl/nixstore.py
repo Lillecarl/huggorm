@@ -52,11 +52,11 @@ class Store:
     which is what makes it testable in a build sandbox."""
 
     @cxx_name("isValidPath")
-    def is_valid_path(self, path: "StorePath") -> Bint:
+    def is_valid_path(self, path: StorePath) -> Bint:
         """Whether the store holds this path."""
 
     @cxx_name("queryPathFromHashPart")
-    def query_path_from_hash_part(self, hash: Str) -> "StorePath | None":
+    def query_path_from_hash_part(self, hash: Str) -> StorePath | None:
         """The path with this 32-character hash part, or None."""
 
     # `followLinksToStorePath` resolves symlinks, which is filesystem
@@ -64,14 +64,14 @@ class Store:
     # whose other calls do not, so it would carry @blocks on its own.
     @blocks
     @cxx_name("followLinksToStorePath")
-    def follow_links_to_store_path(self, path: Str) -> "StorePath":
+    def follow_links_to_store_path(self, path: Str) -> StorePath:
         """Resolve a path through symlinks to the store path holding
         it."""
 
     # A guard C++ owes Python and the declaration cannot state: the
     # empty string is not a bad store path to parseStorePath, it
     # ABORTS the process. So the check lives with the call.
-    def parse_store_path(self, path: Str) -> "StorePath":
+    def parse_store_path(self, path: Str) -> StorePath:
         """Parse a full store path into a StorePath.
 
         Raises rather than aborting when given an empty string, which

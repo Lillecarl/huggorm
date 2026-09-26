@@ -66,7 +66,7 @@ class OutputsSpec:
     """
 
     def __init__(self, all: Bint = False,
-                 names: "list[Str]" = None) -> None:  # noqa: RUF013
+                 names: list[Str] = None) -> None:  # noqa: RUF013
         """`OutputsSpec(names=["out", "dev"])` names them.
         `OutputsSpec(all=True)` is every output.
 
@@ -99,7 +99,7 @@ if (all) {
         """Whether every output is wanted, however many there are."""
         Cxx("return std::holds_alternative<nix::OutputsSpec::All>(self.raw);")
 
-    def names(self) -> "list[Str]":
+    def names(self) -> list[Str]:
         """The outputs named, or empty when `all` is true.
 
         Sorted, because upstream keeps them in a set and the order is
@@ -127,14 +127,14 @@ class SingleDerivedPathBuilt:
     needs a message that nests inside itself rather than a string.
     """
 
-    def __init__(self, drv_path: "SingleDerivedPath", output: Str) -> None:
+    def __init__(self, drv_path: SingleDerivedPath, output: Str) -> None:
         """Name one output of one derivation."""
         Cxx("""
 new (self) nix::SingleDerivedPathBuilt{
     nix::make_ref<nix::SingleDerivedPath>(drv_path), output};
         """)
 
-    def drv_path(self) -> "SingleDerivedPath":
+    def drv_path(self) -> SingleDerivedPath:
         """The derivation, which may itself be an output."""
         Cxx("return *self.drvPath;")
 
@@ -189,7 +189,7 @@ class DerivedPathBuilt:
     - and keeps it because building is what wants it.
     """
 
-    def __init__(self, drv_path: "SingleDerivedPath",
+    def __init__(self, drv_path: SingleDerivedPath,
                  outputs: OutputsSpec) -> None:
         """Ask for some outputs of one derivation."""
         Cxx("""
@@ -197,7 +197,7 @@ new (self) nix::DerivedPathBuilt{
     nix::make_ref<nix::SingleDerivedPath>(drv_path), outputs};
         """)
 
-    def drv_path(self) -> "SingleDerivedPath":
+    def drv_path(self) -> SingleDerivedPath:
         """The derivation, which may itself be an output."""
         Cxx("return *self.drvPath;")
 

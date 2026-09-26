@@ -32,7 +32,7 @@ from huggorm_dsl.declare import Str, binds, blocks
 @blocks
 @binds("open_store_uri")
 @overload
-def open_store(uri: Str) -> "Store":
+def open_store(uri: Str) -> Store:
     """Open the store at this URI.
 
     `dummy://` is in-memory and needs nothing on disk, which is what
@@ -42,6 +42,6 @@ def open_store(uri: Str) -> "Store":
 @blocks
 @binds("open_store_default")
 @overload
-def open_store() -> "Store":
+def open_store() -> Store:
     """Open whatever the ambient configuration says, which usually
     means the daemon."""

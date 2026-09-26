@@ -72,7 +72,7 @@ class PathInfo:
     # separate act with an answer already: `store.print_store_path(p)`
     # (tasks/040, tasks/042).
     @reads("path")
-    def path(self) -> "StorePath":
+    def path(self) -> StorePath:
         """The path this describes."""
 
     @reads("storeDir")
@@ -89,7 +89,7 @@ class PathInfo:
         different objects may carry different directories."""
 
     @reads("narHash")
-    def nar_hash(self) -> "Hash":
+    def nar_hash(self) -> Hash:
         """The hash of the path's NAR serialisation.
 
         A `Hash`, so the algorithm is a field rather than a prefix:
@@ -102,13 +102,13 @@ class PathInfo:
         """The size of that NAR in bytes. Not the size on disk."""
 
     @reads("deriver")
-    def deriver(self) -> "StorePath | None":
+    def deriver(self) -> StorePath | None:
         """The .drv that built this, or None.
 
         None is a real answer, not a gap: a path added straight to the
         store was not built by anything."""
 
-    def registration_time(self) -> "I64 | None":
+    def registration_time(self) -> I64 | None:
         """When the store learnt about this path, as a Unix time, or
         None when it does not know.
 
@@ -126,7 +126,7 @@ return static_cast<std::int64_t>(self.registrationTime);
         it from a substituter or an import."""
 
     @reads("ca")
-    def ca(self) -> "ContentAddress | None":
+    def ca(self) -> ContentAddress | None:
         """How this path's content addresses itself, or None.
 
         Present for a path ADDED to the store. None for one that was
@@ -138,7 +138,7 @@ return static_cast<std::int64_t>(self.registrationTime);
         and the wire carries them both across (tasks/048)."""
 
     @reads("references")
-    def references(self) -> "list[StorePath]":
+    def references(self) -> list[StorePath]:
         """The store paths this one points at, its own included when
         it does.
 
@@ -151,7 +151,7 @@ return static_cast<std::int64_t>(self.registrationTime);
         set's."""
 
     @reads("sigs")
-    def sigs(self) -> "list[Signature]":
+    def sigs(self) -> list[Signature]:
         """Who vouched for this path.
 
         Empty for a path this store added itself: a signature says a
@@ -167,7 +167,7 @@ return static_cast<std::int64_t>(self.registrationTime);
     # through signer.hh today, and a body that leans on somebody
     # else's include is a body that breaks on an upstream tidy-up.
     @needs("nix/util/signature/local-keys.hh")
-    def _from_parts() -> "PathInfo":
+    def _from_parts() -> PathInfo:
         """Rebuild one from the parts that crossed.
 
         The emitter writes the signature - one parameter per accessor

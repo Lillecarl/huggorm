@@ -141,7 +141,7 @@ class Realisation:
         remembers."""
 
     @reads("signatures")
-    def signatures(self) -> "list[Signature]":
+    def signatures(self) -> list[Signature]:
         """Who vouched for this realisation.
 
         A realisation is a claim that building a derivation produced a
@@ -152,7 +152,7 @@ class Realisation:
         Sorted, because Nix keeps them in a set and the order is that
         set's."""
 
-    def _from_parts() -> "Realisation":
+    def _from_parts() -> Realisation:
         """Rebuild one from the parts that crossed.
 
         An aggregate, unlike PathInfo's: `nix::Realisation` derives

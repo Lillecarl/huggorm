@@ -62,12 +62,12 @@ class BuildSuccess:
     there is nothing a caller could correctly build one from.
     """
 
-    def status(self) -> "BuildSuccessStatus":
+    def status(self) -> BuildSuccessStatus:
         """How it came to be valid - built, substituted, or already."""
         Cxx("return huggorm::as_word(self.status);")
 
     @reads("builtOutputs")
-    def built_outputs(self) -> "dict[str, Realisation]":
+    def built_outputs(self) -> dict[str, Realisation]:
         """Each wanted output's name, and what it turned out to be.
 
         Empty unless the target was a derivation whose outputs are
@@ -75,7 +75,7 @@ class BuildSuccess:
         and an input-addressed output's path is known before the
         build so nothing has to report it."""
 
-    def _from_parts() -> "BuildSuccess":
+    def _from_parts() -> BuildSuccess:
         """Rebuild one from the parts that crossed.
 
         An aggregate: upstream declares no constructor, so the braces
@@ -117,13 +117,13 @@ class KeyedBuildResult:
     # that hold whichever arm it is.
 
     @reads("path")
-    def path(self) -> "DerivedPath":
+    def path(self) -> DerivedPath:
         """The target this is the result of.
 
         The same union `build_paths` takes, so a caller can match a
         result against what they asked for."""
 
-    def success(self) -> "BuildSuccess | None":
+    def success(self) -> BuildSuccess | None:
         """The success arm, or None when the build failed.
 
         `error` is the other half and exactly one of the two is
@@ -135,7 +135,7 @@ return std::nullopt;
         """)
 
     @needs("huggorm_decl/cpp/errors.hpp")
-    def error(self) -> "BuildError | None":
+    def error(self) -> BuildError | None:
         """The failure arm, or None when the build succeeded.
 
         A `huggorm_bindings.errors.BuildError` INSTANCE - the typed
@@ -173,7 +173,7 @@ return huggorm::as_error(huggorm::errors_module, "BuildError", *arm,
         """When the build stopped, as a Unix time. 0 when none ran."""
 
     @reads("cpuUser")
-    def cpu_user(self) -> "Duration | None":
+    def cpu_user(self) -> Duration | None:
         """CPU time the builder spent in user code, or None.
 
         A datetime.timedelta, which is Python's own duration - so a
@@ -186,13 +186,13 @@ return huggorm::as_error(huggorm::errors_module, "BuildError", *arm,
         already valid never ran at all."""
 
     @reads("cpuSystem")
-    def cpu_system(self) -> "Duration | None":
+    def cpu_system(self) -> Duration | None:
         """CPU time the builder spent in the kernel, or None.
 
         The other half of `cpu_user`, under the same rule."""
 
     @spells("BuildFailureStatus")
-    def _from_parts() -> "KeyedBuildResult":
+    def _from_parts() -> KeyedBuildResult:
         """Rebuild one from the parts that crossed.
 
         Not an aggregate, and neither half of it is. `BuildResult`
