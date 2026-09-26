@@ -229,3 +229,24 @@ Ported: `build_info`, `current_system`, the settings functions and
 verbosity group (`install_logger`, `set_verbosity`,
 `set_logger_request_id`) is the first that needs a design, because
 huggorm's logger is a pull model. `get-env.sh` still fails loudly.
+
+Then `parse_nix_path`, `is_pseudo_url`, `render_store_reference` and
+`filter_ansi_escapes` (the last in `terminal.py`, the first
+declaration made of functions alone, which needed an emitter fix).
+The lane: 1897 passed, 616 failed, 284 errors. The largest groups:
+the rpc worker dies on `util.get_default_verbosity` (about 384
+tests, reported as `Connection lost`), `get_default_verbosity`
+in-process (361), `store.parse_store_reference` (49),
+`signals.InterruptToken` (15).
+
+## The logger: nanopynix pulls
+
+Carl's call, 2026-09-26: nanopynix moves onto huggorm's queue, not
+the other way round. An engine-neutral log source goes behind
+`nanopynix._engine`, and the in-process engine and the rpc worker
+drain it. huggorm gains, as declarations, what nanopynix's callback
+logger does today: the activity filter (build and copy activities
+and their results, at any verbosity, never dropped), a default
+verbosity for new Nix threads, and per-thread verbosity. The request
+id maps onto `begin_request`/`end_request`. pynix's `--nom` rides on
+the activity path, so its tests are the gate for this step.
