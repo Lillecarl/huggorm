@@ -34,6 +34,7 @@ describes is generated, so there is nowhere in that file to keep it.
 import ast
 
 from huggorm_dsl.corpus import Corpus
+from huggorm_gen.cppgen import nbemit
 
 # What `huggorm_bindings/__init__.py` says about itself. Prose only:
 # every name and every import below it is derived.
@@ -107,23 +108,23 @@ def exports(have: Corpus) -> dict[str, list[str]]:
     a binding compiles, so they are read from the vocabulary group
     rather than found among the rest.
 
-    Then a PRODUCER is dropped, and it has to be. `nbemit` binds one
-    as the class's `_ctor_from` and as no module-level function, so a
+    Then a FACTORY is dropped, and it has to be. `nbemit` binds one as
+    its class's constructor and as no module-level function, so a
     front door naming it does not merely offer a second spelling -
-    it fails to import. Measured: dropping this line makes the
-    emitted package raise `cannot import name 'open_store'`.
+    it fails to import. Measured: keeping it makes the emitted package
+    raise `cannot import name 'open_store'`.
 
-    Only a free function. `EvalState` is named as a producer too and
-    is a class, which is the thing being offered rather than a second
-    way to it.
+    `nbemit.public` decides which functions those are, and this reads
+    it rather than restating it. The rule has an edge a copy misses:
+    only a factory whose class declares a constructor is dropped.
+    `parse_store_reference` makes a `StoreReference`, which has none,
+    so it stays a module function, and the stub and `__all__` must
+    both say so.
     """
-    produced = {c.decl.built_by
-                for mod in have.modules for c in mod.classes
-                if c.decl.built_by}
     out: dict[str, list[str]] = {}
     for mod in have.modules:
         names = [c.name for c in mod.classes]
-        names += [f.name for f in mod.exported if f.name not in produced]
+        names += [f.name for f in nbemit.public(mod.exported, mod.classes)]
         if names:
             out[mod.name] = sorted(names)
     for name in have.vocabularies:
