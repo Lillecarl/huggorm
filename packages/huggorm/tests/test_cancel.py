@@ -130,6 +130,55 @@ def test_an_interrupted_value_evaluates_again(
     assert again.string_value().startswith("[0,1,2")
 
 
+@pytest.fixture
+def scope_id() -> Iterator[int]:
+    """This thread inside one interrupt scope, and the scope left clean."""
+    from huggorm_bindings import begin_interrupt_scope, end_interrupt_scope, forget_interrupt_scope
+
+    scope = 515151
+    previous = begin_interrupt_scope(scope)
+    try:
+        yield scope
+    finally:
+        end_interrupt_scope(previous)
+        forget_interrupt_scope(scope)
+
+
+def test_a_cancelled_scope_stops_a_request_inside_it(
+        state: Any, scope_id: int, request_id: int) -> None:
+    """The scope is armed first and a request is named inside it, the
+    order nanopynix uses. The request must not replace the scope.
+
+    Perturbation: drop the `scope_cancellations()` term from the hook
+    in `install_interrupt_check` and this runs the whole 10s."""
+    from huggorm_bindings import cancel_interrupt_scope
+    from huggorm_bindings.errors import Interrupted
+
+    spin = Spin(state)
+    threading.Timer(CANCEL_AFTER, cancel_interrupt_scope, (scope_id,)).start()
+    started = time.monotonic()
+    with pytest.raises(Interrupted, match="interrupted"):
+        state.eval_expr(SLOW)
+    assert time.monotonic() - started < STOPPED_WITHIN
+    assert spin.calls < ELEMENTS, "the work ran to its end"
+
+
+def test_a_scope_and_a_request_with_one_number_are_two_things(
+        state: Any, request_id: int) -> None:
+    """Two tables: cancelling scope N does not stop request N."""
+    from huggorm_bindings import cancel_interrupt_scope, forget_interrupt_scope
+
+    spin = Spin(state)
+    spin.delay = 0
+    cancel_interrupt_scope(request_id)
+    try:
+        got = state.eval_expr(SLOW)
+    finally:
+        forget_interrupt_scope(request_id)
+    assert spin.calls == ELEMENTS
+    assert got.string_value().startswith("[0,1,2")
+
+
 async def test_a_cancelled_await_stops_the_thread() -> None:
     """The await returning is not enough. The evaluator's thread has to
     stop too, or the next call queues behind the abandoned work."""

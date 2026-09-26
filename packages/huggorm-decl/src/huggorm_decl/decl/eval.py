@@ -1613,6 +1613,61 @@ huggorm::cancellations().forget(static_cast<std::uint64_t>(request));
     """)
 
 
+@needs("huggorm_decl/cpp/interrupt.hpp")
+def begin_interrupt_scope(scope: I64) -> I64:
+    """Arm an interrupt scope on this thread. Answers the one before.
+
+    `begin_request` for a caller whose unit of cancellation is not its
+    unit of logging: one scope can hold several requests, and
+    `cancel_interrupt_scope` stops whichever of them runs. Scopes and
+    requests are two tables, so equal numbers do not collide.
+
+    No `@threading`, for `begin_request`'s reason."""
+    Cxx("""
+if (scope < 0)
+    throw std::invalid_argument("scope id must not be negative");
+huggorm::install_interrupt_check();
+auto & slot = huggorm::thread_interrupt_scope();
+auto previous = slot;
+slot = static_cast<std::uint64_t>(scope);
+return static_cast<std::int64_t>(previous);
+    """)
+
+
+@needs("huggorm_decl/cpp/interrupt.hpp")
+def end_interrupt_scope(previous: I64) -> None:
+    """Disarm this thread's scope, and restore the one before."""
+    Cxx("""
+if (previous < 0)
+    throw std::invalid_argument("scope id must not be negative");
+huggorm::thread_interrupt_scope() = static_cast<std::uint64_t>(previous);
+    """)
+
+
+@needs("huggorm_decl/cpp/interrupt.hpp")
+def cancel_interrupt_scope(scope: I64) -> None:
+    """Stop the work inside `scope`, from any thread.
+
+    The same rules as `cancel_request`: work stops at Nix's next
+    `checkInterrupt`, and the scope stays cancelled until
+    `forget_interrupt_scope`."""
+    Cxx("""
+if (scope <= 0)
+    throw std::invalid_argument("scope id must be positive");
+huggorm::scope_cancellations().cancel(static_cast<std::uint64_t>(scope));
+    """)
+
+
+@needs("huggorm_decl/cpp/interrupt.hpp")
+def forget_interrupt_scope(scope: I64) -> None:
+    """Drop a scope's cancellation once nothing runs inside it."""
+    Cxx("""
+if (scope <= 0)
+    throw std::invalid_argument("scope id must be positive");
+huggorm::scope_cancellations().forget(static_cast<std::uint64_t>(scope));
+    """)
+
+
 # --- nix.conf, and what a caller changes after it ------------------
 #
 # Here and not in a module of their own, because the eval and fetcher

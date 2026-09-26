@@ -73,6 +73,30 @@ inline Cancellations & cancellations()
 }
 
 /**
+ * The interrupt scope this thread is inside, or 0.
+ *
+ * A second key beside `thread_request`, for a caller whose unit of
+ * cancellation is not its unit of logging. nanopynix arms one token
+ * around several calls, and each call names its own request for the
+ * records it raises. One slot for both would let the request replace
+ * the token, and the cancel would then match nothing.
+ *
+ * Its own table, so a scope and a request with the same number stay
+ * two different things.
+ */
+inline std::uint64_t & thread_interrupt_scope()
+{
+    static thread_local std::uint64_t scope = 0;
+    return scope;
+}
+
+inline Cancellations & scope_cancellations()
+{
+    static Cancellations table;
+    return table;
+}
+
+/**
  * Put the hook on the calling thread, once.
  *
  * A hook already there is kept and asked too, so an embedder's own
@@ -86,7 +110,9 @@ inline void install_interrupt_check()
     installed = true;
     auto previous = std::move(nix::unix::interruptCheck);
     nix::unix::interruptCheck = [previous = std::move(previous)] {
-        return cancellations().cancelled(thread_request()) || (previous && previous());
+        return cancellations().cancelled(thread_request())
+            || scope_cancellations().cancelled(thread_interrupt_scope())
+            || (previous && previous());
     };
 }
 
