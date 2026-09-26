@@ -89,6 +89,33 @@ def test_parsing_checks_the_store_directory(store: Store) -> None:
         store.parse_store_path("/somewhere/else/x")
 
 
+def test_an_empty_string_is_refused_and_does_not_end_the_process(
+        store: Store) -> None:
+    """Nix's `parseStorePath("")` asserts in `canonPath`, and the
+    assertion ends the process - this test ended pytest before the
+    guard. `parse_derived_path` reaches the same assertion."""
+    with pytest.raises(BadStorePath, match="must not be empty"):
+        store.parse_store_path("")
+    with pytest.raises(BadStorePath, match="must not be empty"):
+        store.parse_derived_path("")
+
+
+def test_a_store_names_its_directory_and_its_reference(
+        tmp_path: pathlib.Path) -> None:
+    """A chroot store keeps the LOGICAL directory; its files are under
+    the root, and `real_path` is the question for those."""
+    store = Store(f"local?root={tmp_path}")
+    assert store.store_dir() == "/nix/store"
+    assert store.reference() == f"local://?root={tmp_path}"
+    assert Store(store.reference()).reference() == store.reference()
+
+
+def test_closing_a_store_with_no_connections_changes_nothing(
+        store: Store) -> None:
+    store.close()
+    assert store.is_valid_path(StorePath(HELLO)) is False
+
+
 def test_an_empty_store_holds_nothing(store: Store) -> None:
     assert store.is_valid_path(StorePath(HELLO)) is False
 

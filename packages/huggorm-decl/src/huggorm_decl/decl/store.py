@@ -940,10 +940,16 @@ return results;
         Raises when the string is not one, in libstore's own words.
         The nested arm is behind the `dynamic-derivations`
         experimental feature, so a `^` inside a `^` says so rather
-        than being read as something else."""
-        Cxx("return nix::DerivedPath::parse(self.config, target);")
+        than being read as something else.
+
+        The empty string raises `BadStorePath` here, for the reason
+        `parse_store_path` gives."""
+        Cxx("""
+if (target.empty())
+    throw nix::BadStorePath("a derived path must not be empty");
+return nix::DerivedPath::parse(self.config, target);
+        """)
     @instant
-    @cxx_name("parseStorePath")
     def parse_store_path(self, path: StrView) -> StorePath:
         """This string as a store path of THIS store.
 
@@ -955,7 +961,17 @@ return results;
 
         Raises when it is not in this store's directory - which is a
         different question from whether the name is well formed, and
-        the reason this lives on the store rather than on StorePath."""
+        the reason this lives on the store rather than on StorePath.
+
+        The empty string raises `BadStorePath` in this body, because
+        Nix does not: `parseStorePath` reaches `canonPath`, which
+        ASSERTS a non-empty path (`file-system.cc:99`), and the
+        assertion ends the process."""
+        Cxx("""
+if (path.empty())
+    throw nix::BadStorePath("a store path must not be empty");
+return self.parseStorePath(path);
+        """)
 
 # A FREE binding: it belongs to no class, because it is what makes a
 # class. `nix::openStore` picks an implementation from a URI, so
