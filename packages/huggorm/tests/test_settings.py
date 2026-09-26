@@ -249,3 +249,14 @@ def test_this_build_has_the_collector() -> None:
     from huggorm_bindings import boehm_gc
 
     assert boehm_gc() is True
+
+
+def test_reset_forgets_the_mark_and_keeps_the_value(
+        setting: Callable[[str, str], None]) -> None:
+    from huggorm_bindings import get_setting, list_settings, reset_overridden
+
+    setting("warn-dirty", "false")
+    assert "warn-dirty" in list_settings(overridden_only=True)
+    reset_overridden()
+    assert "warn-dirty" not in list_settings(overridden_only=True)
+    assert get_setting("warn-dirty") == "false"

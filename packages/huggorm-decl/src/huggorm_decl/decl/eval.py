@@ -1608,6 +1608,18 @@ return out;
 
 
 @needs("huggorm_decl/cpp/settings.hpp")
+def reset_overridden() -> None:
+    """Forget which settings something set, and keep every value.
+
+    `list_settings(overridden_only=True)` answers from those marks, so
+    a caller that applies its own settings resets first, and then
+    reads back exactly what it applied."""
+    Cxx("""
+nix::globalConfig.resetOverridden();
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
 def settings_json() -> Str:
     """Every registered setting as Nix describes it, in JSON.
 
