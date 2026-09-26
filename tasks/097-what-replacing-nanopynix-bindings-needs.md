@@ -159,3 +159,22 @@ bare `RuntimeError`.
 5. Flakes and fetchers.
 6. REPL, Python store implementations, the daemon protocol.
 7. The Nix version matrix (055).
+
+## How the port must not break the consumers
+
+Proposed 2026-09-26, waiting for Carl's go-ahead. pynix and
+easykubenix reach Nix only through nanopynix's public API; inside
+nanopynix only `_core/` and a few process globals touch the bindings.
+
+1. A build-time engine choice: a nanopynix variant built against
+   huggorm beside the current one. Two libnix copies cannot share a
+   process, so it cannot be a runtime switch.
+2. The seam is `_core`: a huggorm `_core` behind the same internal
+   interface. Models, protocols and exceptions do not change; any
+   shape difference is translated there.
+3. A non-blocking CI lane runs nanopynix's suite, pynix and
+   easykubenix against the variant. Its pass count is the progress
+   measure; each failure is a huggorm task, never a consumer edit.
+4. Flip the default only when that lane is green; keep the bindings
+   variant a while. The nixidae lock is the rollback.
+5. Possibly the rpc worker first, since it is its own process.
