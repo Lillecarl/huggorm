@@ -1608,6 +1608,37 @@ return nix::globalConfig.toJSON().dump();
 
 
 @needs("huggorm_decl/cpp/settings.hpp")
+def current_system() -> Str:
+    """The system `builtins.currentSystem` answers, process-wide.
+
+    `eval-system`, or the machine's `system` when that is empty. An
+    `EvalState` built with its own `eval-system` answers its own."""
+    Cxx("""
+return huggorm::configured_settings().eval.getCurrentSystem();
+    """)
+
+
+@needs("nix/store/globals.hh")
+def nix_version() -> Str:
+    """The version of the Nix these bindings link, as `nix --version`
+    prints it."""
+    Cxx("""
+return nix::nixVersion;
+    """)
+
+
+@needs("nix/expr/config.hh")
+def boehm_gc() -> Bint:
+    """Whether the linked libexpr allocates through the Boehm collector.
+
+    A build without it never frees a value, which is tolerable only
+    in a process that ends soon."""
+    Cxx("""
+return static_cast<bool>(NIX_USE_BOEHMGC);
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
 @binds("huggorm::register_configured_settings")
 @startup
 def _settings_init() -> None:

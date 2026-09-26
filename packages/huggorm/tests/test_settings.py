@@ -210,3 +210,32 @@ def test_a_name_the_state_does_not_hold_refuses(name: str) -> None:
 
     with pytest.raises(UsageError, match=name):
         EvalState("dummy://", {name: "false"})
+
+
+def test_the_current_system_is_what_the_evaluator_answers() -> None:
+    from huggorm_bindings import EvalState, current_system
+
+    answered = EvalState("dummy://").eval_expr("builtins.currentSystem")
+    assert current_system() == answered.string_value()
+
+
+def test_eval_system_moves_the_current_system(
+        setting: Callable[[str, str], None]) -> None:
+    from huggorm_bindings import current_system
+
+    setting("eval-system", "riscv64-linux")
+    assert current_system() == "riscv64-linux"
+
+
+def test_the_version_is_the_evaluator_s_own() -> None:
+    from huggorm_bindings import EvalState, nix_version
+
+    answered = EvalState("dummy://").eval_expr("builtins.nixVersion")
+    assert nix_version() == answered.string_value()
+
+
+def test_this_build_has_the_collector() -> None:
+    """`default.nix` builds libexpr with Boehm, as nixpkgs does."""
+    from huggorm_bindings import boehm_gc
+
+    assert boehm_gc() is True
