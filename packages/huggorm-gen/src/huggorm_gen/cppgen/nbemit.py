@@ -488,17 +488,16 @@ def includes(classes: Sequence[Class],
             return
         if caster:
             casters.add(caster)
-        # A container or an optional needs its ELEMENT's caster too:
+        # A container or an optional needs what it HOLDS cast too:
         # `list[StorePath]` needs <vector>, and a `list[str]` needs
-        # <string> beneath it.
-        inner = t.required
-        if inner.origin == "list":
-            note(inner.element)
-        elif t.optional:
-            note(inner)
+        # <string> beneath it. Every argument, so no container kind is
+        # left out: a union held in a map needs <variant> as surely as
+        # a bare one.
+        for arg in t.args:
+            note(arg)
         # ...and a UNION's arms, for the same reason: the variant
         # caster casts each arm with that arm's own.
-        held = None if inner.origin else (known or {}).get(inner.python)
+        held = None if t.origin else (known or {}).get(t.python)
         if held is not None and held.is_union:
             for arm in held.decl.arms:
                 note(Type(python=arm, bound=True))
@@ -767,7 +766,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # A `list[T]` return needs a body too: the conversion below is
     # what makes a C++ set answer the list the declaration promised,
     # and a pointer binding has nowhere to put it.
-    wants_list = m.ret is not None and m.ret.origin == "list"
+    wants_list = m.ret is not None and m.ret.origin in ("list", "dict")
     if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
             or m.produces or wants_list or any(h for _, h in args)):
         return None
@@ -839,6 +838,10 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # right whether the call answered a set or a vector.
     if m.ret is not None and m.ret.origin == "list":
         return [*head, f"{INDENT * 4}return as_list({call});"]
+    # The same for a `dict[str, V]`: libstore keys many maps with a
+    # transparent `std::less<>`, and nanobind casts only the plain one.
+    if m.ret is not None and m.ret.origin == "dict":
+        return [*head, f"{INDENT * 4}return as_map({call});"]
     # A declared VOCABULARY return. The enumerator libstore answers
     # with is not the word Python has, and `as_word` is the switch
     # that says which - emitted beside this, not written by hand.
@@ -1361,6 +1364,15 @@ def _lists(cls: Class) -> list[str]:
     return [f.name for f, _ in cls.parts if f.type.startswith("list[")]
 
 
+def _nodes(t: Type | None) -> Iterator[Type]:
+    """A declared type and every type it holds, at any depth."""
+    if t is None:
+        return
+    yield t
+    for arg in t.args:
+        yield from _nodes(arg)
+
+
 def _unions_used(classes: Sequence[Class],
                  functions: Sequence[Method],
                  known: dict[str, Class] | None) -> list[Class]:
@@ -1371,14 +1383,10 @@ def _unions_used(classes: Sequence[Class],
     order for a translation unit."""
     out: dict[str, Class] = {}
     for _, t in _sites(classes, functions):
-        if t is None:
-            continue
-        inner = t.required
-        if inner.origin == "list":
-            inner = inner.element
-        cls = None if inner.origin else (known or {}).get(inner.python)
-        if cls is not None and cls.is_union and cls.decl.variant is not None:
-            out[cls.name] = cls
+        for node in _nodes(t):
+            cls = None if node.origin else (known or {}).get(node.python)
+            if cls is not None and cls.is_union and cls.decl.variant is not None:
+                out[cls.name] = cls
     return [out[name] for name in sorted(out)]
 
 
@@ -1400,8 +1408,8 @@ def _vocabularies_used(classes: Sequence[Class],
     methods happen to be declared in is not an order for a
     translation unit."""
     out: dict[str, Class] = {}
-    spelled = [t.required.python
-               for _, t in _sites(classes, functions) if t is not None]
+    spelled = [node.python for _, t in _sites(classes, functions)
+               for node in _nodes(t) if not node.origin]
     # ...and what a BODY spells, from `@spells`. A signature does not
     # reach everything: `KeyedBuildResult.error` builds an exception
     # carrying a failure word, and `-> BuildError | None` says
@@ -2268,6 +2276,17 @@ inline std::vector<typename T::value_type> as_list(const T & items)
     return {items.begin(), items.end()};
 }
 
+/**
+ * A libstore map as the `std::map<std::string, V>` a caller reads.
+ * libstore keys many maps with a transparent `std::less<>`, such as
+ * `StringPairs`, and nanobind casts only the plain comparator.
+ */
+template <typename T>
+inline std::map<std::string, typename T::mapped_type> as_map(const T & items)
+{
+    return {items.begin(), items.end()};
+}
+
 /** The mirror: a list as the set libstore takes. */
 template <typename T, typename I>
 inline T as_set(const I & items)
@@ -2296,9 +2315,12 @@ def _crosses_container(classes: Sequence[Class]) -> bool:
             if m.ret is not None:
                 declared.append(m.ret)
             for one in declared:
-                inner = one.required
-                if inner.origin == "list" and inner.element.bound:
-                    return True
+                for node in _nodes(one):
+                    if node.origin == "list" and node.element.bound:
+                        return True
+                    # Every `dict` return goes through `as_map`.
+                    if node.origin == "dict":
+                        return True
     return False
 
 
