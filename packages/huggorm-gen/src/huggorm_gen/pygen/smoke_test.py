@@ -15,6 +15,7 @@ entry point; runs after codegen-generate, stdlib only:
 
 import argparse
 import ast
+import builtins
 import gc
 import importlib
 import inspect
@@ -1255,6 +1256,32 @@ def test_stubs(out: pathlib.Path) -> None:
             failures.append(
                 f"{pyi.name}: declares {sorted(declared - live)} that do not "
                 f"exist, and omits {sorted(live - declared)}")
+
+        # Every name an annotation uses must be one the stub binds. A
+        # stub that names a union alias the module never defines -
+        # which every union return did - reads to a typechecker as an
+        # unknown type, and nothing else here notices.
+        bound = set(declared) | set(dir(builtins))
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                bound |= {(a.asname or a.name).split(".")[0] for a in node.names}
+        used = set()
+        for node in ast.walk(tree):
+            annotations = []
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                annotations += [a.annotation for a in (
+                    *node.args.posonlyargs, *node.args.args,
+                    *node.args.kwonlyargs) if a.annotation is not None]
+                if node.returns is not None:
+                    annotations.append(node.returns)
+            elif isinstance(node, ast.AnnAssign):
+                annotations.append(node.annotation)
+            for ann in annotations:
+                used |= {n.id for n in ast.walk(ann) if isinstance(n, ast.Name)}
+        if used - bound:
+            failures.append(
+                f"{pyi.name}: annotations name {sorted(used - bound)}, which "
+                f"the stub neither defines nor imports")
 
         # Everything the stub says a class has, including what it
         # inherits through a base the stub also declares. Defined once

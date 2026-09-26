@@ -171,16 +171,69 @@ def _foreign_imports(annotations: list[str]) -> list[ast.Import]:
 # DerivedPathBuilt` is the declaration and everything else derives.
 UNIONS_MODULE = "._unions"
 _UNION_NAMES: set[str] = set()
+_UNION_ARMS: dict[str, list[str]] = {}
 
 
-def emitter_union_names(names: set[str]) -> None:
-    """Which annotation names are ALIASES rather than bound classes.
+def emitter_union_names(unions: dict[str, list[str]]) -> None:
+    """Which annotation names are ALIASES rather than bound classes,
+    and the arms of each.
 
     Told once, before anything is written. There is no way to tell the
     two apart from a name, and the difference decides which import an
     emitted module gets."""
     _UNION_NAMES.clear()
-    _UNION_NAMES.update(names)
+    _UNION_NAMES.update(unions)
+    _UNION_ARMS.clear()
+    _UNION_ARMS.update(unions)
+
+
+def _written_out(name: str) -> ast.expr:
+    """`name`, or the arms of the union it names, each written out too."""
+    arms = _UNION_ARMS.get(name)
+    if arms is None:
+        return ast.Name(id=name)
+    expanded = _written_out(arms[0])
+    for arm in arms[1:]:
+        expanded = ast.BinOp(left=expanded, op=ast.BitOr(),
+                             right=_written_out(arm))
+    return expanded
+
+
+class _ExpandUnions(ast.NodeTransformer):
+    def visit_Name(self, node: ast.Name) -> ast.expr:
+        return _written_out(node.id)
+
+
+def expand_unions(type_str: str) -> str:
+    """`type_str` with every union alias written out as its arms.
+
+    For the binding stubs. The alias is Python in the generated
+    `_unions` module, and a compiled binding module holds no such
+    name, so a stub that NAMED it would name nothing: a typechecker
+    reads the type as unknown. Written out, it is the arms, which the
+    binding modules do hold."""
+    tree = _ExpandUnions().visit(_ann(type_str, "a stub type"))
+    return ast.unparse(tree)
+
+
+def stub_proto(proto: Proto) -> Proto:
+    """A copy of a class or function proto with its unions written out."""
+    out = dict(proto)
+    if "methods" in out:
+        out["methods"] = [
+            {**m, "return_type": expand_unions(m["return_type"]),
+             "params": [{**p, "type": expand_unions(p["type"])}
+                        for p in m["params"]]}
+            for m in out["methods"]]
+    if "ctor" in out:
+        out["ctor"] = [{**p, "type": expand_unions(p["type"])}
+                       for p in out["ctor"]]
+    if "params" in out:
+        out["params"] = [{**p, "type": expand_unions(p["type"])}
+                         for p in out["params"]]
+    if "return_type" in out:
+        out["return_type"] = expand_unions(out["return_type"])
+    return out
 
 
 def _huggorm_bindings_import(names: set[str]) -> list[ast.ImportFrom]:

@@ -38,6 +38,7 @@ from huggorm_gen.pygen.emitter import (
     rpc_module,
     stub_init_module,
     stub_module,
+    stub_proto,
     unions_module,
     wrapper_module,
 )
@@ -192,7 +193,7 @@ def build_manifest() -> Proto:
     # the other from the generated `_unions` - and there is no way to
     # tell them apart from a name alone. Set here rather than beside
     # the manifest, because the wrapper modules are written first.
-    emitter_union_names(set(declared_unions()))
+    emitter_union_names(declared_unions())
 
     # Every declared class, by name. The reflected version asked the
     # compiled package for classes carrying a threading policy; every
@@ -578,12 +579,18 @@ def main(argv: list[str] | None = None) -> None:
     # returned-type modules until now.
     home.update({name: proto["module"]
                  for name, proto in manifest["enums"].items()})
+    # An error class too: a wire value may carry one, as a build
+    # result carries its BuildError.
+    if manifest["errors"]["module"]:
+        home.update({name: manifest["errors"]["module"]
+                     for name in manifest["errors"]["classes"]})
     modules = sorted({p["module"] for p in all_protos}
                      | {p["module"] for p in free_protos})
     exported: dict[str, list[str]] = {}
     for module in modules:
-        mine = [p for p in all_protos if p["module"] == module]
-        mine_free = [p for p in free_protos if p["module"] == module]
+        mine = [stub_proto(p) for p in all_protos if p["module"] == module]
+        mine_free = [stub_proto(p) for p in free_protos
+                     if p["module"] == module]
         # Types this module names but does not define. Read through
         # the subscripts, not off the head: a method returning
         # `list[StorePath]` names StorePath as surely as one returning
