@@ -250,3 +250,60 @@ and their results, at any verbosity, never dropped), a default
 verbosity for new Nix threads, and per-thread verbosity. The request
 id maps onto `begin_request`/`end_request`. pynix's `--nom` rides on
 the activity path, so its tests are the gate for this step.
+
+What landed, and how it differs from that sentence:
+
+- huggorm declares `set_thread_verbosity`, `clear_thread_verbosity`,
+  `thread_verbosity`, `set_default_verbosity`, `default_verbosity` and
+  `current_request`. `subscribe_process_logs` sets the default through
+  the same helper, so a default and its demand on `nix::verbosity` are
+  one fact.
+- nanopynix keeps its callback. The huggorm engine subscribes the
+  process queue, and a thread drains it every 50 ms into the callback,
+  in the arguments the bindings' logger passes. So nothing above
+  `_engine` changed.
+- The finalized marker is nanopynix's, not huggorm's. A queue can hold
+  a call's records after the call returns, so
+  `LogCollector.request_finalized` first calls the engine's
+  `flush_logs`, and the marker cannot overtake its records. The request
+  id uses `begin_request` alone; the pump skips huggorm's marker.
+- No activity filter yet. huggorm sends every activity, and
+  `set_activity_tracking` only records the choice. The filter is the
+  next logger step, for volume and not for correctness.
+
+Gaps, recorded and not fixed:
+
+- huggorm renders `logEI` and `warn` as `"msg"`. nanopynix sends
+  `"error"`, with the error's dict, and `"warn"`, and three readers
+  depend on it: `pynix/_util.py:394`, `pynix/_build_monitor.py:310`
+  and `nanopynix/models.py:364`. `tasks/032` holds the question.
+- pynix's `--nom` tests also need `open_store`, so they cannot gate
+  this step yet. The lane count is the measure until the store lands.
+- huggorm's `Interrupted` is a `BaseException`, and
+  `_run_with_log_context` translates only `Exception`. Only a cancelled
+  call reaches it, and the executor's interrupt path catches it.
+
+Lane after the logger: 1898 passed. The worker deaths and the
+`get_default_verbosity` group were gone, and every call stopped at
+`signals.InterruptToken`: each executor run makes one.
+
+## Interrupt scopes
+
+huggorm cancelled by `thread_request`, and nanopynix arms a token
+around a call and then names the call's request inside it. The request
+replaced the token, so a cancel matched nothing. Carl's call,
+2026-09-26: huggorm gets an interrupt scope, not a token registry in
+nanopynix. `begin_interrupt_scope`, `end_interrupt_scope`,
+`cancel_interrupt_scope` and `forget_interrupt_scope` use a second
+thread-local key and a second table, and the hook asks both. Two
+tables keep scope N and request N apart; a test says so.
+
+The token forgets its scope when the scope ends, because a kept
+cancellation makes every `checkInterrupt` in the process take a lock.
+
+Measured: before the port every rpc `Shutdown` failed on the token
+before it ended the log stream, so each rpc test waited the 2 s log
+drain timeout, and the lane took 17 minutes. After it: 4 minutes,
+1916 passed, 597 failed, 284 errors. Every session now stops at
+`expr.init_libexpr` (about 1170 records across the in-process, rpc
+and wire forms), then `store.parse_store_reference` (49).
