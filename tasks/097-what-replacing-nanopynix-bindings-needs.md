@@ -307,3 +307,51 @@ drain timeout, and the lane took 17 minutes. After it: 4 minutes,
 1916 passed, 597 failed, 284 errors. Every session now stops at
 `expr.init_libexpr` (about 1170 records across the in-process, rpc
 and wire forms), then `store.parse_store_reference` (49).
+
+## The store opens
+
+`init_libexpr` enables `fetch-tree`; huggorm starts the collector at
+import. The evaluator thread hooks: `_enter_evaluator_thread` does
+nothing, because huggorm registers a thread on its first evaluator
+call, and `_exit_evaluator_thread` is `gc_release_thread`.
+
+`nanopynix._core._objects.CoreStore` is the one caller of a raw store,
+so the huggorm engine answers CoreStore's method names with an adapter
+over huggorm's `Store`, converting at that boundary: absolute paths, an
+SRI hash, the rendered content address and signatures. An unported
+method raises `NotPortedError` naming `Store.<method>`.
+
+huggorm gained, for it:
+
+- `Store.reference()`, `store_dir()` and `close()`.
+- `StoreReference`, its four-arm variant and `parse_store_reference`.
+  `daemon?x=y` parses to `Specified("unix")`, not `Daemon`, and a
+  test says so.
+
+Four defects found on the way, each fixed with a gate:
+
+- `parse_store_path("")` and `parse_derived_path("")` ENDED THE
+  PROCESS: Nix's `canonPath` asserts a non-empty path. Both raise
+  `BadStorePath` now.
+- A union whose C++ type is the arms' `std::variant` itself got a
+  caster that specialised the type it delegates to, and did not
+  compile. `Variant(bare=True)` emits only a `static_assert`, which
+  fails when the arms are out of order; checked.
+- `pyinit` restated `nbemit.public`'s rule for factories and got its
+  edge wrong, so `parse_store_reference` was bound and stubbed and
+  missing from `__all__`. It reads `public` now.
+- The binding stubs named every union alias, which no compiled module
+  defines, so a typechecker read each union as unknown. They write the
+  arms out now. A smoke-test gate refuses a stub annotation naming
+  something the stub neither defines nor imports; it found
+  `BuildError` unimported in `build_result.pyi` as well.
+
+And one in nanopynix: pynix-lsp raised out of `did_open` when a
+file's context could not open, so a client waited for diagnostics
+until its deadline - 120 s per lsp test on this lane, hours in all.
+Carl's call: fix pynix-lsp. It publishes the failure as a diagnostic
+now.
+
+Lane: 2044 passed, 575 failed, 181 errors, 4 minutes. The groups:
+`expr.EvalState` (847), `Store.add_to_store` (154),
+`expr.register_primop` (75), the flake registry (40).
