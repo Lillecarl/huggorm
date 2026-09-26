@@ -162,19 +162,48 @@ bare `RuntimeError`.
 
 ## How the port must not break the consumers
 
-Proposed 2026-09-26, waiting for Carl's go-ahead. pynix and
-easykubenix reach Nix only through nanopynix's public API; inside
-nanopynix only `_core/` and a few process globals touch the bindings.
+Carl approved this 2026-09-26. The fallback is the local bookmark
+`pre-huggorm-port` in nanopynix (`ce5ff758`), easykubenix
+(`30079b9d`) and huggorm (`76c434ae`), and the umbrella git branch of
+the same name (`ef00d58`).
 
-1. A build-time engine choice: a nanopynix variant built against
-   huggorm beside the current one. Two libnix copies cannot share a
-   process, so it cannot be a runtime switch.
-2. The seam is `_core`: a huggorm `_core` behind the same internal
-   interface. Models, protocols and exceptions do not change; any
-   shape difference is translated there.
-3. A non-blocking CI lane runs nanopynix's suite, pynix and
-   easykubenix against the variant. Its pass count is the progress
-   measure; each failure is a huggorm task, never a consumer edit.
-4. Flip the default only when that lane is green; keep the bindings
+pynix and easykubenix reach Nix through nanopynix's public API. Their
+non-test code uses the async layer, plus the sync `current_system()`
+and `list_settings()` (pynix `_impl/config.py`, `target.py`,
+`_impl/develop.py`) and `get_env_sh_path`.
+
+**The seam is wider than `_core`.** Measured at `ce5ff758`: 24
+modules of nanopynix import `nanopynix_bindings`, most at module
+level. Public modules do it too: `protocols.py` (`BuildMode`),
+`settings.py`, `libstore.py`, `stores.py`, `store_impl.py`,
+`get_env.py`, and the lazy table in `__init__.py`. Two places tell a
+Nix error by its module name, `startswith("nanopynix_bindings")`
+(`exceptions.py`, `rpc/_status_details.py`). So a variant with only a
+huggorm `_core` cannot import nanopynix, every test errors at
+collection, and the lane has no pass count.
+
+1. One engine module in nanopynix. Every bindings import goes through
+   it, and the two module-name checks become a check that module
+   owns. Only the bindings engine exists at first, and the suite
+   proves no behaviour change. This is the one step that can break
+   pynix, so it lands and locks alone.
+2. A build-time engine choice: a `-huggorm` variant scope beside the
+   current one. Two libnix copies cannot share a process, so it
+   cannot be a runtime switch. The engine module picks by which
+   package the venv installs, and fails if it finds both or neither.
+3. The Nix under both engines is the same. huggorm needs the
+   interrupted-thunk patch, and nanopynix's 2.34 lane lacks it
+   (nanopynix#309), so that lane takes it first. Otherwise a red
+   cancel test measures a Nix difference, not the port.
+4. A non-blocking CI lane runs nanopynix's suite and pynix against
+   the variant. Its pass count is the progress measure; each failure
+   is a huggorm task, never a consumer edit. easykubenix imports
+   `sources.nanopynix` and takes the default scope, so the lane
+   reaches it by handing it a `sources.nanopynix` that selects the
+   variant, not by editing it.
+5. Flip the default only when that lane is green; keep the bindings
    variant a while. The nixidae lock is the rollback.
-5. Possibly the rpc worker first, since it is its own process.
+
+The huggorm engine's first gaps are `current_system` (pynix calls it
+at startup) and `get-env.sh`, which must fail loudly until huggorm
+ships it.
