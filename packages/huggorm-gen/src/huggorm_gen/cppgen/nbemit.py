@@ -50,7 +50,6 @@ A shape it cannot derive stops with a reason. The escape hatch is
 becomes the place the real code lives.
 """
 
-import ast
 import json
 from collections.abc import Iterator, Sequence
 
@@ -120,8 +119,6 @@ CXX_BUILTIN = {
 # is emitted with nb::is_operator(); see the module docstring.
 # A Python default, spelled for C++. Only where the two differ: a
 # number or a string literal already reads the same in both.
-CXX_DEFAULT = {"True": "true", "False": "false", "None": "nullptr"}
-
 COMPARISONS = (("__eq__", "==", "value"), ("__lt__", "<", "order"),
                ("__le__", "<=", "order"), ("__gt__", ">", "order"),
                ("__ge__", ">=", "order"))
@@ -588,20 +585,15 @@ def _default(pr: Param, known: dict[str, Class] | None = None) -> str:
     which is what the declaration's own docstring says - so `nullptr`
     would be a null reference where a value belongs."""
     known = known or {}
-    value = pr.default
-    if value is None:
+    if not pr.has_default:
         return ""
-    head = value.split(".")[0]
-    if head in known and known[head].is_words:
-        member = value.split(".", 1)[1]
-        word = next((w for w in known[head].members if w.name == member), None)
-        if word is None:
-            raise TypeError(
-                f"{head} has no word called {member}.")
-        return f'"{word.value}"'
-    if value == "None" and pr.type.optional:
-        # An optional parameter, absent. `nullptr` is what CXX_DEFAULT
-        # would give and it is a null POINTER, which a std::optional
+    value = pr.default
+    if pr.member:
+        # A vocabulary member IS the string a Nix parser takes.
+        return json.dumps(value)
+    if value is None and pr.type.optional:
+        # An optional parameter, absent. `nullptr`, what a bare None
+        # becomes below, is a null POINTER, which a std::optional
         # parameter cannot take.
         return "nb::none()"
     if absent(pr, known):
@@ -610,13 +602,16 @@ def _default(pr: Param, known: dict[str, Class] | None = None) -> str:
         # container - so a caller who passes nothing and a caller who
         # passes None get the same answer.
         return "nb::none()"
-    if value[:1] in "'\"":
-        # A string literal, RE-SPELLED. Python writes one either way
-        # round and `ast.unparse` normalises to single quotes - which
-        # in C++ is a character literal, so `'auto'` compiles as an
-        # integer rather than failing.
-        return json.dumps(ast.literal_eval(value))
-    return CXX_DEFAULT.get(value, value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "nullptr"
+    if isinstance(value, str):
+        # Double quotes: `'auto'` in C++ is a character literal.
+        return json.dumps(value)
+    if isinstance(value, int):
+        return str(value)
+    raise TypeError(f"{pr.name}: no C++ spelling for the default {value!r}")
 
 
 def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str:
@@ -636,7 +631,7 @@ def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str
         out.append("nb::call_guard<nb::gil_scoped_release>()")
     for pr in m.params:
         arg = f'"{pr.name}"_a'
-        if pr.default is not None:
+        if pr.has_default:
             arg += f" = {_default(pr, known)}"
         out.append(arg)
     return "".join(f", {x}" for x in out)
@@ -1005,7 +1000,7 @@ def absent(pr: Param, known: dict[str, Class] | None = None) -> bool:
     It matters because nanobind's vector caster refuses None: it asks
     for a sequence, and None is not one. So a parameter that reads
     None has to say so in its own type."""
-    if pr.default != "None":
+    if not pr.has_default or pr.default is not None:
         return False
     return pr.type.required.origin == "list"
 
@@ -1131,12 +1126,9 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
     decoration."""
     if cls.ctor is None:
         return []
-    # By attribute, not by unpacking: a `Param` unpacks as (name,
-    # type), so `for n, _ in params` never sees a default. This path
-    # did that, and a constructor default reached no binding.
     names = "".join(
         f', "{pr.name}"_a'
-        + (f" = {_default(pr, known)}" if pr.default is not None else "")
+        + (f" = {_default(pr, known)}" if pr.has_default else "")
         for pr in cls.ctor.params)
     if cls.ctor.cxx_body:
         # Placement new, because `__init__` is handed storage rather
@@ -1157,7 +1149,7 @@ def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
         doc = _doc(cls.ctor.doc)
         return [head, *opening, *body, tail + ",",
                 f'{INDENT * 3}     "{doc}")']
-    types = ", ".join(_param(t, known)[0] for _, t in cls.ctor.params)
+    types = ", ".join(_param(pr.type, known)[0] for pr in cls.ctor.params)
     line = f"{INDENT * 2}.def(nb::init<{types}>(){names}"
     if not cls.ctor.doc:
         return [line + ")"]
@@ -2216,7 +2208,7 @@ def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str
         extras.append("nb::call_guard<nb::gil_scoped_release>()")
     for pr in fn.params:
         arg = f'"{pr.name}"_a'
-        if pr.default is not None:
+        if pr.has_default:
             arg += f" = {_default(pr, known)}"
         extras.append(arg)
     tail = "".join(f", {x}" for x in extras)
@@ -2314,7 +2306,7 @@ def _crosses_container(classes: Sequence[Class]) -> bool:
     """Whether any declared type here is a list of bound values."""
     for cls in classes:
         for m in cls.methods:
-            declared = [t for _, t in m.params]
+            declared = [pr.type for pr in m.params]
             if m.ret is not None:
                 declared.append(m.ret)
             for one in declared:

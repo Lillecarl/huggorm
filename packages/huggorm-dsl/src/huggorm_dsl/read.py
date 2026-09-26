@@ -382,22 +382,25 @@ class Type:
 class Param:
     """One declared parameter: its name, its type, and its default.
 
-    `default` is the Python source of the default expression, or None
-    when there is none. A binding that drops a default silently
-    changes the Python signature, so it is read rather than ignored."""
+    `default` is the VALUE the imported signature holds, and
+    `NO_DEFAULT` when there is none; None is a real default. A
+    vocabulary member arrives as the string it is, because a word
+    class's members are plain strings, so `member` keeps which one the
+    declaration named: `BuildMode.NORMAL` is `"normal"` and `NORMAL`.
+
+    Not unpackable. It unpacked as `(name, type)`, and an emitter that
+    wrote `for n, _ in params` never saw a default: a constructor
+    default reached no binding that way."""
 
     name: str
     type: Type
-    default: str | None = None
+    default: Any = inspect.Parameter.empty
+    member: str = ""
 
-    def __iter__(self):
-        """Unpacks as `(name, type)`.
-
-        Every emitter reads a parameter as that pair, and a default is
-        a fourth thing only two of them care about. Rather than churn
-        each call site into `pr.name, pr.type`, the pair stays the
-        parameter's shape and the default is an attribute beside it."""
-        return iter((self.name, self.type))
+    @property
+    def has_default(self) -> bool:
+        """Whether a caller may leave this parameter out."""
+        return self.default is not inspect.Parameter.empty
 
 
 @dataclass(frozen=True)
@@ -817,6 +820,21 @@ def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
     raise DeclarationError(node, f"'{ann!r}' is not a type.")
 
 
+def _member(ann: object, value: object) -> str:
+    """Which member of a vocabulary a default names, or "".
+
+    A word class holds plain strings, so the import turns
+    `BuildMode.NORMAL` into `"normal"`. The declared type is the class
+    that says which member that is."""
+    if not isinstance(ann, type) or not isinstance(value, str):
+        return ""
+    decl = vars(ann).get("_decl")
+    if decl is None or decl.kind != "words":
+        return ""
+    return next((k for k, v in vars(ann).items()
+                 if not k.startswith("_") and v == value), "")
+
+
 def _spelled(cls: type) -> str:
     """How a caller names a class that no declaration declares:
     bare when it is a builtin, and by its module otherwise, because
@@ -1089,8 +1107,6 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         raise DeclarationError(
             node, f"{node.name}: a bound method takes plain positional "
                   f"parameters. C++ has no *args.")
-    # Defaults bind to the LAST parameters, so line them up from the
-    # right - `f(a, b=1)` has one default and it belongs to b.
     fn = fns.get(_first_line(node))
     if fn is None:
         raise DeclarationError(
@@ -1098,17 +1114,18 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                   f"so its annotations cannot be resolved.")
     anns = annotationlib.get_annotations(
         fn, format=annotationlib.Format.FORWARDREF)
+    signature = inspect.signature(
+        fn, annotation_format=annotationlib.Format.FORWARDREF)
     positional = args.args[1:] if bound else args.args
-    pad = len(positional) - len(args.defaults)
     params = []
-    for i, arg in enumerate(positional):
+    for arg in positional:
         if arg.annotation is None:
             raise DeclarationError(
                 arg, f"{node.name}({arg.arg}): every parameter states its "
                      f"type.")
-        d = args.defaults[i - pad] if i >= pad else None
+        default = signature.parameters[arg.arg].default
         params.append(Param(arg.arg, type_of(anns[arg.arg], arg, fn),
-                            ast.unparse(d) if d is not None else None))
+                            default, _member(anns[arg.arg], default)))
 
     ret: Type | None = None
     if node.returns is not None and anns.get("return") is not None:

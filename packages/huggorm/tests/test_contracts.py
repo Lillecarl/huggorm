@@ -586,7 +586,7 @@ def test_every_declared_constructor_default_reaches_the_binding() -> None:
     for cls in huggorm_decl.corpus().classes:
         if cls.ctor is None:
             continue
-        declared = sum(pr.default is not None for pr in cls.ctor.params)
+        declared = sum(pr.has_default for pr in cls.ctor.params)
         if not declared:
             continue
         init = getattr(huggorm_bindings, cls.name).__init__

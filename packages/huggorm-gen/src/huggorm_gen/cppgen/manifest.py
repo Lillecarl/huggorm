@@ -185,11 +185,21 @@ def _crossable(t: Type | None, where: str) -> None:
 def _param(p: Param) -> dict[str, Any]:
     """One parameter, as the manifest carries it.
 
-    The default is the SOURCE of the expression, which is what
-    reflection reads back too: a StrEnum member is written as the
+    The default is carried as SOURCE, because every surface above
+    writes it into a signature: rendered here from the value the
+    declaration's import holds. A vocabulary member is written as the
     member and not as its value, because `'nar'` in a signature says
     nothing about which vocabulary it came from."""
-    return {"name": p.name, "type": _type(p.type), "default": p.default}
+    return {"name": p.name, "type": _type(p.type), "default": _source(p)}
+
+
+def _source(p: Param) -> str | None:
+    """A parameter's default as the Python source that writes it."""
+    if not p.has_default:
+        return None
+    if p.member:
+        return f"{p.type.python}.{p.member}"
+    return repr(p.default)
 
 
 def _method(m: Method) -> dict[str, Any]:

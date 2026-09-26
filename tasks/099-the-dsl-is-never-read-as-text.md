@@ -31,17 +31,26 @@ declaration wrote, or re-parses one the build wrote.
    "list[")` (two sites). The accessor already carries a `Type`.
 2. **`@produced(by="Store.read_derivation")`.** A dotted string names
    a method. The method object is importable.
-3. **Defaults.** `Param.default` is `ast.unparse` of the default, and
-   `nbemit._default` reads it back with `ast.literal_eval`. The
-   imported function's `__defaults__` hold the values.
+3. **Defaults.** DONE 2026-09-26. `Param.default` is the value
+   `inspect.signature` gives for the imported function, and
+   `Param.member` names the vocabulary member, found through the
+   declared word class, because the import turns `BuildMode.NORMAL`
+   into `"normal"`. The manifest renders source from that and
+   `nbemit` renders C++; nothing parses a default. `Param` no longer
+   unpacks as `(name, type)`, the trap behind the constructor default
+   that reached no binding. Emitted output byte-identical.
 4. **The manifest boundary.** The manifest carries type strings, and
    `pygen` (`wiretypes`, `model`) parses them again. Carl chose to
    leave this for now (reader and cppgen first).
 5. **Decorators replayed on stand-ins.** `_class` and `_method` apply
    the AST's decorators to fresh stand-in objects, although the
    import has already applied them to the real ones.
-6. **Emitted Python quotes types.** Emit `from __future__ import
-   annotations` instead (Carl).
+6. **Emitted Python quotes types.** Checked 2026-09-26, and it does
+   not: no module in `huggorm_generated` or the stubs quotes an
+   annotation. On 3.14 an annotation is already deferred (PEP 649), so
+   no `from __future__ import annotations` is needed, and adding one
+   would turn every annotation back into a string (PEP 563). Nothing
+   to do unless a quoted type appears.
 
 ## Found on the way
 
