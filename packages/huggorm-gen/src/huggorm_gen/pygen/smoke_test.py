@@ -483,7 +483,7 @@ async def test_behavior() -> None:
     assert not_wrapped, "expected at least one unwrapped class in the surface"
 
     # Affine service: everything pinned to one dedicated thread.
-    remote = AsyncEvalState("dummy://")
+    remote = AsyncEvalState(AsyncStore("dummy://"))
     assert await remote.get_store_uri() == "dummy://"
     await remote.make_int(1)
     await remote.eval_expr("2")
@@ -556,7 +556,7 @@ async def test_behavior() -> None:
 
     # Evaluation: EvalState is the affine SERVICE exemplar. Its values
     # attach to its thread, and forcing mutates them in place.
-    state = AsyncEvalState("dummy://")
+    state = AsyncEvalState(AsyncStore("dummy://"))
     assert await state.get_store_uri() == "dummy://"
 
     # Thunk protocol: parse gives an unforced value; accessors throw
@@ -607,7 +607,7 @@ async def test_behavior() -> None:
     # from a state that has by then been called. So the argument side
     # of `materialize` has no producer to exercise it, which is said
     # here rather than left looking covered.
-    untouched = AsyncEvalState("dummy://")
+    untouched = AsyncEvalState(AsyncStore("dummy://"))
     assert untouched._runner._obj is None, "expected an unconstructed wrapper"
     assert await (await untouched.eval_expr("1")).integer() == 1
     born = untouched._runner.born_thread_name
@@ -663,7 +663,7 @@ async def test_behavior() -> None:
     # An attribute set is BUILT, not parsed: the expression language
     # stays a toy, and reimplementing Nix's syntax would buy nothing
     # the wire and lifetime paths do not get from a builder.
-    builder = AsyncEvalState("dummy://")
+    builder = AsyncEvalState(AsyncStore("dummy://"))
     attrs = await builder.make_attrs()
     for name, number in (("zebra", 1), ("apple", 2), ("mango", 3)):
         await builder.attrs_set(attrs, name, await builder.make_int(number))
@@ -854,7 +854,7 @@ async def test_behavior() -> None:
     # Caching of a GENUINE factory failure is covered directly above,
     # via PoolRunner(bad_factory); that guarantee is unchanged.
     try:
-        AsyncEvalState("dummy://", None, None, "unexpected-arg")  # type: ignore[call-arg]
+        AsyncEvalState(AsyncStore("dummy://"), None, None, "unexpected-arg")  # type: ignore[call-arg]
         raise AssertionError("wrong arity must fail at construction")
     except TypeError:
         pass
@@ -863,7 +863,7 @@ async def test_behavior() -> None:
     # one is optional.
     try:
         AsyncEvalState()  # type: ignore[call-arg]
-        raise AssertionError("missing required store_uri must fail")
+        raise AssertionError("missing required store must fail")
     except TypeError:
         pass
     await drv.aclose()

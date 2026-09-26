@@ -86,14 +86,14 @@ async def open_state(surface: str, client: Any,
     the same three surfaces would ask for nine combinations to answer
     a question about three."""
     if surface == "sync":
-        from huggorm_bindings import EvalState
+        from huggorm_bindings import EvalState, Store
 
-        return EvalState(URI, settings)
+        return EvalState(Store(URI), settings)
     if surface == "async":
-        from huggorm_generated import AsyncEvalState
+        from huggorm_generated import AsyncEvalState, AsyncStore
 
-        return AsyncEvalState(URI, settings)
-    return await client.acquire("EvalState", URI, settings)
+        return AsyncEvalState(AsyncStore(URI), settings)
+    return await client.acquire("EvalState", await client.acquire("Store", URI), settings)
 
 
 @pytest.fixture(params=SURFACES)

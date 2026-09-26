@@ -27,6 +27,7 @@ in this binding a declaration could not have written, and
 """
 
 from huggorm_decl.decl.path import StorePath
+from huggorm_decl.decl.store import Store
 from huggorm_dsl.declare import (
     F64,
     I64,
@@ -949,13 +950,17 @@ class EvalState:
     what it binds. Carl decided this; `tasks/085` records it.
     """
 
-    def __init__(self, store_uri: Str,
+    def __init__(self, store: Store,
                  settings: dict[str, Str] | None = None,
-                 build_store_uri: Str | None = None) -> None:
-        """Open a state against a store URI.
+                 build_store: Store | None = None) -> None:
+        """Open a state against a store.
 
         REQUIRED, with no default. A state is bound to a store and a
         thread, and neither is a thing to guess at.
+
+        The state SHARES `store`: it does not open a second one from
+        the store's URI. `dummy://` opened twice is two empty stores,
+        so a path added through `store` would be missing to the state.
 
         `nix::EvalState` takes a `ref<Store>` and two settings objects
         that must outlive it, so `huggorm::Evaluator` owns all four
@@ -967,13 +972,15 @@ class EvalState:
         object holds raises `UsageError`, store settings included:
         the state has no store settings of its own.
 
-        `build_store_uri` names a second store to BUILD in, as `nix
+        `build_store` is a second store to BUILD in, as `nix
         --eval-store A --store B` splits them: evaluation writes
         `.drv` files to the first, and a realise builds in the second
         and copies the outputs back. None builds where it evaluates."""
 
     def get_store_uri(self) -> Str:
-        """The URI this state was opened with."""
+        """How this state's store describes itself, as `Store.get_uri`
+        does. For logging only: it does not round-trip."""
+        Cxx("return self.store().config.getHumanReadableURI();")
 
     def parse_expr(self, expr: Str, base: Str | None = None) -> Value:
         """Parse without evaluating: the result is an unforced thunk.

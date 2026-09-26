@@ -20,10 +20,10 @@ import pytest
 
 PROBE = """
 import sys
-from huggorm_bindings import EvalState, load_config
+from huggorm_bindings import EvalState, Store, load_config
 if sys.argv[1] == "load":
     load_config()
-print(EvalState("dummy://").eval_expr("builtins ? currentTime").boolean())
+print(EvalState(Store("dummy://")).eval_expr("builtins ? currentTime").boolean())
 """
 
 
@@ -52,8 +52,8 @@ def test_nix_path_from_the_environment_reaches_the_state(
     `globalConfig`. So it was lost with pure-eval: before the settings
     were registered, `<probe>` did not resolve."""
     (tmp_path / "default.nix").write_text("42")
-    probe = ("from huggorm_bindings import EvalState;"
-             "print(EvalState('dummy://').eval_expr('import <probe>')"
+    probe = ("from huggorm_bindings import EvalState, Store;"
+             "print(EvalState(Store('dummy://')).eval_expr('import <probe>')"
              ".integer())")
     env = {**os.environ, "NIX_CONFIG": "", "NIX_PATH": f"probe={tmp_path}"}
     out = subprocess.run([sys.executable, "-c", probe], env=env,
@@ -63,10 +63,10 @@ def test_nix_path_from_the_environment_reaches_the_state(
 
 def test_a_state_takes_its_own_search_path(tmp_path: pathlib.Path) -> None:
     """No constructor parameter: `nix-path` is an evaluator setting."""
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
     (tmp_path / "default.nix").write_text("7")
-    state = EvalState("dummy://", {"nix-path": f"probe={tmp_path}"})
+    state = EvalState(Store("dummy://"), {"nix-path": f"probe={tmp_path}"})
     assert state.eval_expr("import <probe>").integer() == 7
 
 
@@ -145,12 +145,12 @@ def test_an_unknown_name_refuses_to_be_set() -> None:
 
 def test_a_set_value_reaches_the_next_state(
         setting: Callable[[str, str], None]) -> None:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
     probe = "builtins ? currentTime"
-    assert EvalState("dummy://").eval_expr(probe).boolean() is True
+    assert EvalState(Store("dummy://")).eval_expr(probe).boolean() is True
     setting("pure-eval", "true")
-    assert EvalState("dummy://").eval_expr(probe).boolean() is False
+    assert EvalState(Store("dummy://")).eval_expr(probe).boolean() is False
 
 
 def test_overridden_only_names_what_was_set(
@@ -188,44 +188,44 @@ def test_the_json_is_nix_s_own_description() -> None:
 
 def test_a_state_takes_its_own_settings() -> None:
     """Over what the process has, and for that state alone."""
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
     probe = "builtins ? currentTime"
-    pure = EvalState("dummy://", {"pure-eval": "true"})
+    pure = EvalState(Store("dummy://"), {"pure-eval": "true"})
     assert pure.eval_expr(probe).boolean() is False
-    assert EvalState("dummy://").eval_expr(probe).boolean() is True
+    assert EvalState(Store("dummy://")).eval_expr(probe).boolean() is True
 
 
 def test_a_state_setting_beats_the_process_one(
         setting: Callable[[str, str], None]) -> None:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
     setting("pure-eval", "true")
-    impure = EvalState("dummy://", settings={"pure-eval": "false"})
+    impure = EvalState(Store("dummy://"), settings={"pure-eval": "false"})
     assert impure.eval_expr("builtins ? currentTime").boolean() is True
 
 
 def test_a_fetcher_setting_is_a_state_setting_too() -> None:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
-    EvalState("dummy://", {"warn-dirty": "false"})
+    EvalState(Store("dummy://"), {"warn-dirty": "false"})
 
 
 @pytest.mark.parametrize("name", ["no-such-setting", "sandbox"])
 def test_a_name_the_state_does_not_hold_refuses(name: str) -> None:
     """`sandbox` is a store setting, and a state has none of its own:
     taking it would change nothing and say nothing."""
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
     from huggorm_bindings.errors import UsageError
 
     with pytest.raises(UsageError, match=name):
-        EvalState("dummy://", {name: "false"})
+        EvalState(Store("dummy://"), {name: "false"})
 
 
 def test_the_current_system_is_what_the_evaluator_answers() -> None:
-    from huggorm_bindings import EvalState, current_system
+    from huggorm_bindings import EvalState, Store, current_system
 
-    answered = EvalState("dummy://").eval_expr("builtins.currentSystem")
+    answered = EvalState(Store("dummy://")).eval_expr("builtins.currentSystem")
     assert current_system() == answered.string_value()
 
 
@@ -238,9 +238,9 @@ def test_eval_system_moves_the_current_system(
 
 
 def test_the_version_is_the_evaluator_s_own() -> None:
-    from huggorm_bindings import EvalState, nix_version
+    from huggorm_bindings import EvalState, Store, nix_version
 
-    answered = EvalState("dummy://").eval_expr("builtins.nixVersion")
+    answered = EvalState(Store("dummy://")).eval_expr("builtins.nixVersion")
     assert nix_version() == answered.string_value()
 
 

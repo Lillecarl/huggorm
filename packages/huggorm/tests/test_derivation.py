@@ -29,10 +29,10 @@ def store(tmp_path: pathlib.Path) -> Any:
 
 
 def instantiate(tmp_path: pathlib.Path, expr: str) -> Any:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
     (tmp_path / "src").write_text("source\n")
-    return EvalState(str(tmp_path)).eval_expr(expr, str(tmp_path)).drv_path()
+    return EvalState(Store(str(tmp_path))).eval_expr(expr, str(tmp_path)).drv_path()
 
 
 def test_the_plain_fields_read_back(

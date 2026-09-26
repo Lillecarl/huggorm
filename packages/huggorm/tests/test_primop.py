@@ -21,9 +21,9 @@ URI = "dummy://"
 
 @pytest.fixture
 def state() -> Any:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
-    return EvalState(URI)
+    return EvalState(Store(URI))
 
 
 def test_a_python_function_answers_as_a_builtin(state: Any) -> None:
@@ -121,12 +121,12 @@ def test_a_primop_belongs_to_one_state(state: Any) -> None:
     evaluator does not see it, which is what makes the call safe to
     offer at all - a global would let one caller change every
     evaluator in the process."""
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
     state.register_primop("mine", 1, lambda v: v)
     assert state.eval_expr("builtins.mine 1").integer() == 1
 
-    other = EvalState(URI)
+    other = EvalState(Store(URI))
     with pytest.raises(Exception) as caught:
         other.eval_expr("builtins.mine 1")
     assert "mine" in str(caught.value)
@@ -259,12 +259,12 @@ def test_a_primop_closing_over_its_state_does_not_leak_it() -> None:
     other participants here are a function object and a cell, and both
     carry their own. So traverse is the load-bearing half and this
     gate drives only that."""
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
     died: list[str] = []
 
     def build() -> None:
-        state = EvalState(URI)
+        state = EvalState(Store(URI))
         canary = _Canary(died)
 
         def keep(v: Any) -> Any:
@@ -292,9 +292,9 @@ def test_the_callable_still_works_while_the_state_is_reachable() -> None:
     index, so a bug there would show as a callable released while
     somebody can still call it. Holding the state and collecting
     twice must change nothing."""
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
-    state = EvalState(URI)
+    state = EvalState(Store(URI))
     state.register_primop("twice2", 1, lambda v: state.make_int(v.integer() * 2))
     gc.collect()
     gc.collect()

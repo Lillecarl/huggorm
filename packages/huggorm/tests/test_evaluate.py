@@ -19,9 +19,9 @@ DRV = ('derivation { name = "joined"; system = "x86_64-linux"; '
 
 @pytest.fixture
 def state(tmp_path: pathlib.Path) -> Any:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
-    return EvalState(str(tmp_path))
+    return EvalState(Store(str(tmp_path)))
 
 
 def test_a_derivation_names_its_drv(state: Any, tmp_path: pathlib.Path) -> None:
@@ -137,27 +137,40 @@ def test_realising_is_not_an_import_from_derivation(
     """With IFD off, the realise still tries the build. It fails
     here, because the builder does not exist, and the failure must be
     the build's own, not the IFD refusal."""
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
     from huggorm_bindings.errors import NixError
 
-    state = EvalState(str(tmp_path),
+    state = EvalState(Store(str(tmp_path)),
                       {"allow-import-from-derivation": "false"})
     with pytest.raises(NixError) as caught:
         state.eval_expr(f'"${{{DRV}}}"').realise_string()
     assert "allow-import-from-derivation" not in str(caught.value)
 
 
-def test_a_build_store_is_opened_with_the_state(
+def test_a_build_store_is_taken_with_the_state(
         tmp_path: pathlib.Path) -> None:
-    """Opened, not only recorded: a URI no store answers fails at
-    construction. No build runs here, because the gate's sandbox
-    cannot run a builder, so this proves the store is used and not
-    what is built in it."""
-    from huggorm_bindings import EvalState
+    """A state accepts a second store to build in. No build runs here,
+    because the gate's sandbox cannot run a builder."""
+    from huggorm_bindings import EvalState, Store
+
+    state = EvalState(Store(str(tmp_path / "evals")), None,
+                      Store(str(tmp_path / "builds")))
+    assert state.eval_expr("1 + 1").integer() == 2
+
+
+def test_the_state_shares_its_store() -> None:
+    """The state evaluates against the store it was given, not a
+    second one opened from the same URI. `dummy://` shows the
+    difference: each one opened is a separate, empty store. It refuses
+    a write unless `read-only=false`."""
+    from huggorm_bindings import EvalState, Store
     from huggorm_bindings.errors import NixError
 
-    builds = str(tmp_path / "builds")
-    state = EvalState(str(tmp_path / "evals"), None, builds)
-    assert state.eval_expr("1 + 1").integer() == 2
-    with pytest.raises(NixError, match="no-such-scheme"):
-        EvalState(str(tmp_path / "evals"), None, "no-such-scheme://")
+    uri = "dummy://?read-only=false"
+    store = Store(uri)
+    path = store.add_to_store("greeting", b"hello\n")
+    full = f"{store.store_dir()}/{path.to_string()}"
+    probe = f'builtins.storePath "{full}"'
+    assert EvalState(store).eval_expr(probe).string_value() == full
+    with pytest.raises(NixError, match="no substituter"):
+        EvalState(Store(uri)).eval_expr(probe)

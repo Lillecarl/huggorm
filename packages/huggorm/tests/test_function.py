@@ -30,9 +30,9 @@ URI = "dummy://"
 
 @pytest.fixture
 def state() -> Any:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
-    return EvalState(URI)
+    return EvalState(Store(URI))
 
 
 def fn(state: Any, expr: str) -> Any:
@@ -452,9 +452,9 @@ def test_a_python_primop_applied_through_a_lambda(state: Any) -> None:
 async def asig(expr: str) -> Any:
     """The signature of a function from an expression, async surface."""
     from huggorm.signature import signature_of
-    from huggorm_generated import AsyncEvalState
+    from huggorm_generated import AsyncEvalState, AsyncStore
 
-    state = AsyncEvalState(URI)
+    state = AsyncEvalState(AsyncStore(URI))
     try:
         v = await state.eval_expr(expr)
         await state.force(v)

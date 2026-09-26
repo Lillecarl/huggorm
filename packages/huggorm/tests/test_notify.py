@@ -39,9 +39,9 @@ DEADLINE = 20.0
 
 @pytest.fixture
 def state() -> Any:
-    from huggorm_generated import AsyncEvalState
+    from huggorm_generated import AsyncEvalState, AsyncStore
 
-    return AsyncEvalState(URI)
+    return AsyncEvalState(AsyncStore(URI))
 
 
 def write(path: Any, text: str) -> str:

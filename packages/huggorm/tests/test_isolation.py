@@ -30,9 +30,9 @@ async def two_states() -> tuple[Any, Any]:
     Both touched once, because an `AffineRunner` builds its target
     lazily on its own thread and a runner with no object yet has no
     thread to compare."""
-    from huggorm_generated import AsyncEvalState
+    from huggorm_generated import AsyncEvalState, AsyncStore
 
-    first, second = AsyncEvalState(URI), AsyncEvalState(URI)
+    first, second = AsyncEvalState(AsyncStore(URI)), AsyncEvalState(AsyncStore(URI))
     await first.eval_expr("1")
     await second.eval_expr("1")
     return first, second

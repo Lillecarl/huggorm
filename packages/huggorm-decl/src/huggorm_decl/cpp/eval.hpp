@@ -248,13 +248,12 @@ inline void forget_file(nix::EvalState & state, const nix::SourcePath & given)
 class EvalCore
 {
 public:
-    EvalCore(const std::string & store_uri, const Settings & settings,
-             const std::optional<std::string> & build_store_uri)
-        : store_uri_(store_uri)
-        , eval_settings_(read_only_)
+    EvalCore(nix::ref<nix::Store> store, const Settings & settings,
+             std::shared_ptr<nix::Store> build_store)
+        : eval_settings_(read_only_)
         , configured_(apply_configured(fetch_settings_, eval_settings_, settings))
-        , store_(nix::openStore(store_uri))
-        , build_store_(build_store_uri ? nix::openStore(*build_store_uri).get_ptr() : nullptr)
+        , store_(std::move(store))
+        , build_store_(std::move(build_store))
         , state_(nix::LookupPath{}, store_, fetch_settings_, eval_settings_, build_store_)
     {
     }
@@ -264,7 +263,7 @@ public:
 
     nix::EvalState & state() { return state_; }
 
-    const std::string & store_uri() const { return store_uri_; }
+    nix::Store & store() const { return *store_; }
 
     // -- the ONE strong reference to each registered callable ------
     //
@@ -354,7 +353,6 @@ public:
     }
 
 private:
-    std::string store_uri_;
     bool read_only_ = false;
     nix::fetchers::Settings fetch_settings_;
     nix::EvalSettings eval_settings_;
@@ -383,10 +381,10 @@ private:
  * during MEMBER destruction whether or not it holds the last share of
  * the core, so the deleter would not always run for it.
  */
-inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri, const Settings & settings,
-                                           const std::optional<std::string> & build_store_uri)
+inline std::shared_ptr<EvalCore> make_core(nix::ref<nix::Store> store, const Settings & settings,
+                                           std::shared_ptr<nix::Store> build_store)
 {
-    return {new EvalCore(store_uri, settings, build_store_uri), [](EvalCore * core) {
+    return {new EvalCore(std::move(store), settings, std::move(build_store)), [](EvalCore * core) {
                 gc_register_thread();
                 delete core;
             }};
@@ -395,16 +393,20 @@ inline std::shared_ptr<EvalCore> make_core(const std::string & store_uri, const 
 class Evaluator
 {
 public:
-    explicit Evaluator(const std::string & store_uri, const std::optional<Settings> & settings = std::nullopt,
-                       const std::optional<std::string> & build_store_uri = std::nullopt)
-        : core_(make_core(store_uri, settings.value_or(Settings{}), build_store_uri))
+    // The Python `Store` holds a `shared_ptr`, so `shared_from_this`
+    // shares that store rather than opening a second one: an in-memory
+    // store opened twice is two empty stores.
+    explicit Evaluator(nix::Store & store, const std::optional<Settings> & settings = std::nullopt,
+                       const std::optional<std::shared_ptr<nix::Store>> & build_store = std::nullopt)
+        : core_(make_core(nix::ref<nix::Store>(store.shared_from_this()), settings.value_or(Settings{}),
+                          build_store.value_or(nullptr)))
     {
         gc_register_thread();
     }
 
     nix::EvalState & state() const { return core_->state(); }
 
-    const std::string & get_store_uri() const { return core_->store_uri(); }
+    nix::Store & store() const { return core_->store(); }
 
     // -- the two primitives every producer stands on ---------------
     //

@@ -153,7 +153,7 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
     pinning at all - so this test is the only exercise the pinning,
     the cascade and the adopt path get."""
     async with remote.connect(HOST, ttl_server.port) as a:
-        state = await a.acquire("EvalState", "dummy://")
+        state = await a.acquire("EvalState", await a.acquire("Store", "dummy://"))
         hid_state = state.handle_id
         v = await state.make_int(42)
         assert await v.integer() == 42
@@ -218,7 +218,7 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
 
         # 1. detached leases, whose owner then dies.
         a = await client()
-        state = await a.acquire("EvalState", "dummy://")
+        state = await a.acquire("EvalState", await a.acquire("Store", "dummy://"))
         thunk = await state.parse_expr("42")
         await state.force(thunk)
         thunk_id = thunk.handle_id
@@ -230,7 +230,7 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
 
         # 2. an evaluation state, with work done, handed to a successor.
         maker = await client()
-        warm = await maker.acquire("EvalState", "dummy://")
+        warm = await maker.acquire("EvalState", await maker.acquire("Store", "dummy://"))
         bag = await warm.make_attrs()
         await warm.attrs_set(bag, "answer", await warm.eval_expr("42"))
         lazy = await warm.parse_expr("7")
@@ -424,7 +424,7 @@ async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
         warm = await same.eval_file(swept.warm_file)
         assert await warm.integer() == 42, "the claimed state still has it"
 
-        cold = await heir.acquire("EvalState", "dummy://")
+        cold = await heir.acquire("EvalState", await heir.acquire("Store", "dummy://"))
         # `SysError`, not the wrapper: a declared Nix error crosses as
         # ITSELF (tasks/066), so `wrapper_error` - which catches only
         # InternalError - does not see this one. Measured by writing it
@@ -444,7 +444,9 @@ async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
 # proxy it was granted stayed alive for the life of the connection.
 
 async def test_dropping_the_last_reference_releases(client: Any) -> None:
-    state = await client.acquire("EvalState", "dummy://")
+    # Held, so the only drops the queue sees are the values below.
+    store = await client.acquire("Store", "dummy://")
+    state = await client.acquire("EvalState", store)
     ids = []
     for i in range(10):
         v = await state.eval_expr(f'"v{i}"')
@@ -462,7 +464,9 @@ async def test_two_objects_one_handle(client: Any) -> None:
     """The first drop must not pull the lease out from under the
     second. Forging a proxy from a raw id is public API, and this file
     does it a dozen times."""
-    state = await client.acquire("EvalState", "dummy://")
+    # Held, so the only drops the queue sees are the values below.
+    store = await client.acquire("Store", "dummy://")
+    state = await client.acquire("EvalState", store)
     v = await state.eval_expr('"shared"')
     shared_id = v.handle_id
     twin = client.proxy("Value", shared_id)
@@ -481,7 +485,9 @@ async def test_two_objects_one_handle(client: Any) -> None:
 async def test_reacquired_before_the_flush_is_not_released(client: Any) -> None:
     """Releasing a queued handle that something started using again
     would take the lease from a live object."""
-    state = await client.acquire("EvalState", "dummy://")
+    # Held, so the only drops the queue sees are the values below.
+    store = await client.acquire("Store", "dummy://")
+    state = await client.acquire("EvalState", store)
     v = await state.eval_expr('"resurrected"')
     res_id = v.handle_id
     del v
@@ -494,7 +500,9 @@ async def test_reacquired_before_the_flush_is_not_released(client: Any) -> None:
 
 
 async def test_explicit_close_does_not_queue_twice(client: Any) -> None:
-    state = await client.acquire("EvalState", "dummy://")
+    # Held, so the only drops the queue sees are the values below.
+    store = await client.acquire("Store", "dummy://")
+    state = await client.acquire("EvalState", store)
     v = await state.eval_expr('"closed"')
     await v.aclose()
     del v

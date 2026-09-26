@@ -19,7 +19,7 @@ async def main() -> None:
 
         root = tempfile.mkdtemp(prefix="huggorm-demo-")
         store = await client.acquire("Store", root)
-        state = await client.acquire("EvalState", "dummy://")
+        state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
 
         print("=== wire-value returns are real local objects ===")
         from huggorm_bindings import ContentAddressMethod as CA

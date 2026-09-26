@@ -45,9 +45,9 @@ class Spin:
 
 @pytest.fixture
 def state() -> Any:
-    from huggorm_bindings import EvalState
+    from huggorm_bindings import EvalState, Store
 
-    return EvalState(URI)
+    return EvalState(Store(URI))
 
 
 @pytest.fixture
@@ -182,13 +182,13 @@ def test_a_scope_and_a_request_with_one_number_are_two_things(
 async def test_a_cancelled_await_stops_the_thread() -> None:
     """The await returning is not enough. The evaluator's thread has to
     stop too, or the next call queues behind the abandoned work."""
-    from huggorm_generated import AsyncEvalState
+    from huggorm_generated import AsyncEvalState, AsyncStore
 
     def spin(x: Any) -> Any:
         time.sleep(STEP)
         return x
 
-    state = AsyncEvalState(URI)
+    state = AsyncEvalState(AsyncStore(URI))
     # The primop, not a big pure list: 12M elements finished inside the
     # bound in the sandbox, so this passed with a hook that ignored
     # every cancel.
