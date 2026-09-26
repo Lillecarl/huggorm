@@ -54,6 +54,7 @@ NANOBIND = (
     "build_result.py",
     "derivation.py",
     "gc.py",
+    "store_reference.py",
     "store.py",
     "eval.py",
     "terminal.py",

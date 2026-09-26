@@ -44,6 +44,10 @@ from huggorm_bindings import (
     Store,
     StoreLocation,
     StorePath,
+    StoreReferenceAuto,
+    StoreReferenceDaemon,
+    StoreReferenceLocal,
+    StoreReferenceSpecified,
     TrustedFlag,
 )
 from huggorm_bindings import ContentAddressMethod as CA
@@ -1751,6 +1755,14 @@ def test_every_wire_value_survives_its_own_round_trip(
             DerivationOutputImpure(CA.NAR, HashAlgorithm.SHA256),
             [(CA.TEXT, HashAlgorithm.SHA512)]),
         "DerivationOutputDeferred": (DerivationOutputDeferred(), []),
+        # The arms of a store reference. Three have no parts; the
+        # fourth's second case differs in both.
+        "StoreReferenceAuto": (StoreReferenceAuto(), []),
+        "StoreReferenceDaemon": (StoreReferenceDaemon(), []),
+        "StoreReferenceLocal": (StoreReferenceLocal(), []),
+        "StoreReferenceSpecified": (
+            StoreReferenceSpecified("ssh-ng", "user@host"),
+            [("file", "/var/cache")]),
         # A log field is upstream's hand-rolled variant: a flag and
         # the two values it chooses between. Both cases are
         # constructed, because a producer here raises only messages
