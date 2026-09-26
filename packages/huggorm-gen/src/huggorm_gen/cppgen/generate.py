@@ -392,14 +392,14 @@ def emit_module(mod: Module, dotted: str, out: str,
     the sibling whose types it names."""
     decl = f"{mod.name}.py"
     bound = bindable(mod)
-    if not bound:
+    if not bound and not mod.functions:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
     written = extension(mod, dotted, chain=chain, errors=errors_module(),
                         error_headers=headers or ())
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(written)
-    names = ", ".join(c.name for c in bound)
+    names = ", ".join([c.name for c in bound] + [f.name for f in mod.functions])
     print(f"{decl} -> {out} (module {dotted}): {names}")
     # How much of each class the declaration derived, and how much a
     # person wrote. Printed on every build, because a hatch nobody
