@@ -1563,6 +1563,18 @@ return std::nullopt;
 
 
 @needs("huggorm_decl/cpp/settings.hpp")
+def load_config() -> None:
+    """Read nix.conf and NIX_CONFIG into the process's settings.
+
+    What `nix` does at startup. Import does not do it, so the host's
+    configuration reaches a process only when the caller asks. A
+    state built before the call keeps what it read."""
+    Cxx("""
+nix::loadConfFile(nix::globalConfig);
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
 def set_setting(name: Str, value: Str) -> None:
     """Set one setting for the process, as a line of nix.conf would.
 

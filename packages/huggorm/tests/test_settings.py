@@ -1,4 +1,4 @@
-"""nix.conf reaches an evaluator.
+"""nix.conf reaches an evaluator, once the caller loads it.
 
 `EvalSettings` is not a libstore object, so nothing registers it on
 `globalConfig` unless this repo does - `nix` does it from libcmd,
@@ -19,21 +19,31 @@ from collections.abc import Callable, Iterator
 import pytest
 
 PROBE = """
-from huggorm_bindings import EvalState
+import sys
+from huggorm_bindings import EvalState, load_config
+if sys.argv[1] == "load":
+    load_config()
 print(EvalState("dummy://").eval_expr("builtins ? currentTime").boolean())
 """
 
 
-def has_current_time(nix_config: str) -> bool:
+def has_current_time(nix_config: str, *, load: bool) -> bool:
     env = {**os.environ, "NIX_CONFIG": nix_config}
-    out = subprocess.run([sys.executable, "-c", PROBE], env=env,
-                         capture_output=True, text=True, check=True)
+    argv = [sys.executable, "-c", PROBE, "load" if load else "skip"]
+    out = subprocess.run(argv, env=env, capture_output=True, text=True,
+                         check=True)
     return {"True": True, "False": False}[out.stdout.strip()]
 
 
 def test_pure_eval_from_the_config_reaches_the_state() -> None:
     """`nix eval` answers false here, and so must a state."""
-    assert has_current_time("pure-eval = true") is False
+    assert has_current_time("pure-eval = true", load=True) is False
+
+
+def test_import_alone_reads_no_config() -> None:
+    """A library does not take the host's configuration because it was
+    imported. `load_config` is the caller's choice."""
+    assert has_current_time("pure-eval = true", load=False) is True
 
 
 def test_nix_path_from_the_environment_reaches_the_state(
@@ -62,14 +72,14 @@ def test_a_state_takes_its_own_search_path(tmp_path: pathlib.Path) -> None:
 
 def test_the_control_has_current_time() -> None:
     """Without it the builtin exists, so the case above can fail."""
-    assert has_current_time("") is True
+    assert has_current_time("", load=True) is True
 
 
 @pytest.mark.parametrize("value", ["true", "false"])
 def test_an_explicit_value_is_the_one_used(value: str) -> None:
     """A registration that only turned purity ON would pass the first
     case. Both values have to come through as written."""
-    assert has_current_time(f"pure-eval = {value}") is (value == "false")
+    assert has_current_time(f"pure-eval = {value}", load=True) is (value == "false")
 
 
 @pytest.fixture

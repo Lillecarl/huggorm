@@ -35,11 +35,15 @@ namespace huggorm {
  *
  * Idempotent, and called from the module's own initialisation, so
  * every path into libstore is behind it.
+ *
+ * `false`: nix.conf and NIX_CONFIG are not read here. A library does
+ * not take the host's configuration because it was imported; a
+ * caller that wants it calls `load_config` (decl/eval.py).
  */
 inline void init_libstore()
 {
     static bool done = [] {
-        nix::initLibStore();
+        nix::initLibStore(false);
         return true;
     }();
     (void) done;
