@@ -325,6 +325,8 @@ class Decl:
     text: str = ""
     shown: str = ""
     order: bool = False
+    # A value with no parts. See `wire_value`.
+    unit: bool = False
     custom: dict[str, str] = field(default_factory=dict)
     # A `PyType_Slot[]` this class's binding installs, by C++ name.
     # Empty for everything that holds no Python object. See `gc_slots`.
@@ -659,8 +661,14 @@ def binding(cxx: str = "", threading: str = "pool", holder: str = "",
 
 def wire_value(fields: tuple[Field | str, ...] = (), compare: str = "parts",
                text: str = "", order: bool = False,
-               shown: str = "") -> Callable[[type], type]:
+               shown: str = "", unit: bool = False,
+               ) -> Callable[[type], type]:
     """This class serializes, and here is what it is made of.
+
+    `unit` says the value has NO parts, and that is the whole fact:
+    `DerivationOutput::Deferred` is an arm of a union that carries
+    nothing. The build refuses a value with no parts unless it says
+    this, because the usual reason for none is a forgotten field.
 
     `fields` says SELECTION and ORDER: which accessors are parts, and
     which position each takes in the message. A plain NAME is the
@@ -701,6 +709,7 @@ def wire_value(fields: tuple[Field | str, ...] = (), compare: str = "parts",
         d.wire, d.fields, d.compare = "value", fields, compare
         d.text, d.order = text, order
         d.shown = shown or text
+        d.unit = unit
         return cls
     return apply
 

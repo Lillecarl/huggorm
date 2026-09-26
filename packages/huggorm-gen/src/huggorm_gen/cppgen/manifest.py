@@ -400,6 +400,7 @@ def entry(cls: Class, package: str, module: str,
         # declaration proves otherwise.
         "wire": wire,
         "wire_fields": _wire_fields(cls),
+        **({"unit": True} if decl.unit else {}),
         # How to walk this type as a TREE, when it is one. A value that
         # holds values cannot be described by wire_fields: the shape is
         # recursive and its arms are the wire kinds themselves. The RPC

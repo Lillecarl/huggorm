@@ -250,8 +250,11 @@ def check_wire_contract(protos: list[Proto],
         if proto["wire"] != "value":
             bad.append(f"{name}: unknown _wire {proto['wire']!r} (value|proxy)")
             continue
-        if not fields:
-            bad.append(f"{name}: wire-value needs _wire_fields describing its message")
+        if not fields and not proto.get("unit"):
+            bad.append(f"{name}: wire-value needs _wire_fields describing its "
+                       f"message, or @wire_value(unit=True) if it has none")
+        if fields and proto.get("unit"):
+            bad.append(f"{name}: a unit value has no parts, drop unit=True")
         if proto["threading"] != "pool":
             # A value that may not leave its thread cannot be serialised
             # off it; the two policies contradict each other.

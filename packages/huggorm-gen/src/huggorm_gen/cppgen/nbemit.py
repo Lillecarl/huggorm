@@ -1081,7 +1081,10 @@ def _identity_semantics(cls: Class,
                 f'{INDENT * 3}return nb::str("{cls.name}({{!r}})").format(',
                 f'{INDENT * 4}h.attr("{cls.decl.shown}")());',
                 f"{INDENT * 2}}})"]
-    if not fields:
+    # A UNIT value has no parts and still compares, hashes and prints:
+    # every one is equal, `Deferred()` names it, and the empty tuple
+    # hashes.
+    if not fields and not cls.decl.unit:
         return []
     spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
     reads = ", ".join(read for _, _, read in fields)
@@ -1914,7 +1917,7 @@ def _from_parts(cls: Class, known: dict[str, Class] | None = None
     disagree with `_parts` about what crosses or in which order - it
     can only consume what it is handed."""
     fields = wire_fields(cls)
-    if not fields:
+    if not fields and not cls.decl.unit:
         return []
     types = part_types(cls, known)
     args = ", ".join(f"{t} {n}" for (n, _, _), t in zip(fields, types,
@@ -1956,7 +1959,7 @@ def _round_trip(cls: Class) -> list[str]:
     IS - which is what lets one line cover a str, a StorePath and a
     list of them."""
     fields = wire_fields(cls)
-    if not fields:
+    if not fields and not cls.decl.unit:
         return []
     reads = ", ".join(read for _, _, read in fields)
     return [f'{INDENT * 2}.def("_parts", [](nb::handle h) {{',
@@ -2018,7 +2021,7 @@ def markers(cls: Class) -> list[str]:
         out.append(f'{INDENT}cls.attr("_tree") = nb::module_::import_("ast")')
         out.append(f'{INDENT * 2}.attr("literal_eval")({json.dumps(decl.tree)});')
     fields = wire_fields(cls)
-    if fields:
+    if fields or cls.decl.unit:
         pairs = ", ".join(f'nb::make_tuple("{n}", "{t}")'
                           for n, t, _ in fields)
         out.append(f'{INDENT}cls.attr("_wire_fields") = '
