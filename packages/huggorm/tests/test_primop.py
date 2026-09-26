@@ -39,6 +39,14 @@ def test_a_python_function_answers_as_a_builtin(state: Any) -> None:
     assert got.integer() == 42
 
 
+def test_a_primop_can_answer_null(state: Any) -> None:
+    """`make_null` is the one producer with no argument."""
+    state.register_primop("nothing", 1, lambda _v: state.make_null())
+
+    assert state.eval_expr("builtins.nothing 1 == null").boolean() is True
+    assert state.make_null().type_name() == "null"
+
+
 def test_the_arguments_arrive_forced(state: Any) -> None:
     """A primop receives THUNKS, and this one never sees one.
 

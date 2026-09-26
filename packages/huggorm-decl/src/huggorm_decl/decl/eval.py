@@ -1331,6 +1331,10 @@ return self.wrap(made);
     def make_bool(self, value: Bint) -> Value:
         """A forced boolean value."""
 
+    @produces("mkNull")
+    def make_null(self) -> Value:
+        """The null value."""
+
     def make_list(self) -> Value:
         """An empty list. Fill it with `list_append`."""
         Cxx("""
