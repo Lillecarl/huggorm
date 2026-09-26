@@ -26,9 +26,11 @@
 Each is a place the reader or an emitter parses a string the
 declaration wrote, or re-parses one the build wrote.
 
-1. **`Field` types.** `Field("base_name", "str", read="to_string")`
-   names a type as a string, and `nbemit` tests `f.type.startswith(
-   "list[")` (two sites). The accessor already carries a `Type`.
+1. **`Field` types.** DONE 2026-09-26. `Field` is `(name, read)`,
+   every part carries its accessor, and emitters ask the accessor's
+   `Type`. `FIELD_CXX`, which turned a wire string back into C++, is
+   gone. `@tree` also keeps its dict instead of `repr` text that the
+   manifest parsed back.
 2. **`@produced(by="Store.read_derivation")`.** A dotted string names
    a method. The method object is importable.
 3. **Defaults.** DONE 2026-09-26. `Param.default` is the value
