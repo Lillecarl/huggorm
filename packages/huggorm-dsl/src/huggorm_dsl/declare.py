@@ -358,7 +358,7 @@ class Decl:
     # How a value TREE is walked, for a type that holds others. Read
     # by the RPC layer, so no layer above the declaration knows what
     # the type is or which of its methods do what.
-    tree: str = ""
+    tree: dict[str, Any] = field(default_factory=dict)
     # What Python holds one of these THROUGH. Empty for the usual
     # case, where Python owns the object outright. "shared_ptr" for a
     # class whose factory hands back a reference-counted handle -
@@ -503,7 +503,7 @@ def tree(**shape: object) -> Callable[[type], type]:
     than a shape this vocabulary should learn to describe. The
     emitter builds the same structure in the binding."""
     def apply(cls: type) -> type:
-        _decl(cls).tree = repr(shape)
+        _decl(cls).tree = shape
         return cls
     return apply
 

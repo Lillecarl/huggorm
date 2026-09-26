@@ -40,7 +40,7 @@ is: reflection has nothing to read in a nanobind class, and the
 generator asks this module instead.
 """
 
-import ast
+import copy
 import inspect
 from collections.abc import Sequence
 from typing import Any
@@ -416,7 +416,7 @@ def entry(cls: Class, package: str, module: str,
         # recursive and its arms are the wire kinds themselves. The RPC
         # layer reads this instead of naming the class or its
         # accessors. Absent for everything that is not a tree.
-        **({"tree": ast.literal_eval(decl.tree)} if decl.tree else {}),
+        **({"tree": copy.deepcopy(decl.tree)} if decl.tree else {}),
         "blocking": decl.blocking,
         # Two things a wrapper buys: a hop onto a home thread, and
         # releasing the GIL around a call that waits. A pool class

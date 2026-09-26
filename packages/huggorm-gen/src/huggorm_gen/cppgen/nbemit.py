@@ -2005,13 +2005,11 @@ def markers(cls: Class) -> list[str]:
         # temporaries and would render as something a reader has to
         # reassemble in their head.
         #
-        # The declaration wrote a Python literal. This carries it
-        # across as one and lets Python parse it, which is exact by
-        # construction: `ast.literal_eval` is the inverse of the
-        # `repr` that produced the text, and it evaluates nothing
-        # else.
+        # The declaration's dict, emitted as a Python literal that the
+        # binding parses once at import: `ast.literal_eval` is the
+        # inverse of `repr`, and it evaluates nothing else.
         out.append(f'{INDENT}cls.attr("_tree") = nb::module_::import_("ast")')
-        out.append(f'{INDENT * 2}.attr("literal_eval")({json.dumps(decl.tree)});')
+        out.append(f'{INDENT * 2}.attr("literal_eval")({json.dumps(repr(decl.tree))});')
     fields = wire_fields(cls)
     if fields or cls.decl.unit:
         pairs = ", ".join(f'nb::make_tuple("{n}", "{t}")'
