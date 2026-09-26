@@ -96,16 +96,28 @@ def test_returning_something_that_is_not_a_value_is_an_error(
     assert "did not return a Value" in str(caught.value)
 
 
-def test_zero_arity_is_refused(state: Any) -> None:
-    """Upstream would turn it into something else.
+def test_zero_arity_is_a_lazy_constant(state: Any) -> None:
+    """Arity 0 is what Nix makes it: a name bound to a value that is
+    computed when an evaluation first reads it.
 
-    `addPrimOp` rewrites a zero-arity primop into a lazy constant: it
-    sets the arity to 1 and registers an application of the primop to
-    itself. A caller asking for 0 would silently get a constant, so
-    the declaration refuses instead."""
-    with pytest.raises(ValueError) as caught:
-        state.register_primop("nothing", 0, lambda: None)
-    assert "lazy constant" in str(caught.value)
+    The callable takes no arguments. It does not run at registration,
+    nor for an evaluation that does not read the name."""
+    calls: list[int] = []
+
+    def answer() -> Any:
+        calls.append(1)
+        return state.make_int(42)
+
+    state.register_primop("answer", 0, answer)
+    assert state.eval_expr("1 + 1").integer() == 2
+    assert calls == [], "the constant ran before anything read it"
+    assert state.eval_expr("builtins.answer + 1").integer() == 43
+    assert calls == [1]
+
+
+def test_a_negative_arity_is_refused(state: Any) -> None:
+    with pytest.raises(ValueError, match="negative"):
+        state.register_primop("nothing", -1, lambda: None)
 
 
 def test_an_empty_name_is_refused(state: Any) -> None:

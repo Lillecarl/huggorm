@@ -1147,6 +1147,12 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         function given an unforced one could do nothing with it and
         had no way to say so.
 
+        ARITY 0 IS A LAZY CONSTANT, as Nix makes it. `addPrimOp`
+        registers the primop with arity 1 and binds the name to its
+        application to itself (eval.cc:523). So `fn` takes no
+        arguments, and runs when an evaluation first reads the name,
+        not when this call registers it.
+
         SYNCHRONOUS, and there is no way to make it otherwise. It runs
         inside evaluation, so it must not await and must not hop
         threads. That is the exact inverse of every wrapper this repo
@@ -1199,14 +1205,8 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         Cxx("""
 if (name.empty())
     throw std::invalid_argument("empty name");
-if (arity < 1)
-    // Upstream turns a ZERO-arity primop into a lazy constant: it
-    // sets arity to 1 and registers an application of the primop to
-    // itself (eval.cc:523). A caller asking for 0 would get something
-    // other than what they asked for, and nothing would say so.
-    throw std::invalid_argument(
-        "arity must be at least 1: nix turns a zero-arity primop into "
-        "a lazy constant");
+if (arity < 0)
+    throw std::invalid_argument("arity must not be negative");
 self.register_primop(name, static_cast<std::size_t>(arity), fn);
         """)
 
