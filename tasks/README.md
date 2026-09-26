@@ -1130,6 +1130,9 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 099 (the DSL is never read as text) is OPEN. Annotations are
+  resolved from the imported objects now; six other text surfaces
+  remain, listed in the file, and `nbcheck` has been skipped here.
 - 098 (what a dropped rpc stream cancels) is OPEN and undecided. A
   cancelled server handler now cancels its Nix work too; nobody chose
   that as the rule.
