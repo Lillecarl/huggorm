@@ -94,7 +94,6 @@ VOCABULARY = "huggorm_dsl.declare"
 # `typing.Annotated`, which is where a fact about a TYPE goes. Named
 # because the reader matches on the spelling in the source: the alias
 # is never evaluated here, so `Annotated` is a bare name in a tree.
-ANNOTATED = "Annotated"
 
 # Where the declarations live. A declaration that names a type
 # another declaration owns imports it from here, and the reader
@@ -727,16 +726,6 @@ def _vocabulary(tree: ast.Module) -> dict[str, str]:
     return out
 
 
-def _from_vocabulary(name: str, vocab: dict[str, str], node: ast.AST) -> Any:
-    if name not in vocab:
-        raise DeclarationError(
-            node, f"'{name}' is not from declare. A declaration may only use "
-                  f"the vocabulary it imported.")
-    obj = getattr(declare, vocab[name], None)
-    if obj is None:
-        raise DeclarationError(
-            node, f"declare has no '{vocab[name]}'. The import is stale.")
-    return obj
 
 
 def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
@@ -866,36 +855,6 @@ def _declared(cls: type, fn: Callable[..., Any]) -> bool:
 
 # -- literals -------------------------------------------------------------
 
-def _value(node: ast.expr, vocab: dict[str, str]) -> Any:
-    """A decorator argument, as the object it denotes.
-
-    Literals go through ast.literal_eval, which evaluates no code. A
-    call is allowed only when it names something in the vocabulary -
-    `Field("base_name", "str", read="to_string")` - and then the real
-    Field is built, so its own defaults and validation apply."""
-    if isinstance(node, ast.Call):
-        if not isinstance(node.func, ast.Name):
-            raise DeclarationError(node, f"cannot read {ast.unparse(node)}")
-        target = _from_vocabulary(node.func.id, vocab, node)
-        args = [_value(a, vocab) for a in node.args]
-        kwargs = {k.arg: _value(k.value, vocab)
-                  for k in node.keywords if k.arg is not None}
-        return target(*args, **kwargs)
-    if isinstance(node, ast.Tuple):
-        return tuple(_value(e, vocab) for e in node.elts)
-    if isinstance(node, ast.Dict):
-        # Recursed rather than literal_eval'd, because a value may be
-        # a vocabulary call: `wraps={"StorePath": Wrap(...)}` is a
-        # dict whose values are not constants.
-        return {_value(k, vocab): _value(v, vocab)
-                for k, v in zip(node.keys, node.values, strict=True)
-                if k is not None}
-    try:
-        return ast.literal_eval(node)
-    except ValueError as exc:
-        raise DeclarationError(
-            node, f"'{ast.unparse(node)}' is not a constant. A declaration "
-                  f"holds facts, not expressions.") from exc
 
 
 # -- decorators -----------------------------------------------------------
@@ -949,56 +908,6 @@ def _check_markers(decorators: list[ast.expr], kind: str) -> None:
             raise DeclarationError(node, f"@{name} needs @{other}")
 
 
-def _apply(decorators: list[ast.expr], vocab: dict[str, str],
-           target: Any, kind: str) -> Any:
-    """Run the file's decorators against a stand-in.
-
-    The declaration's own class is never built. What gets decorated is
-    a throwaway that carries nothing, so the only thing that happens
-    is declare.py writing fields onto it - which is the mapping this
-    reader would otherwise have to restate and keep in step.
-
-    Bottom-up, like Python: `@header` above `@binding` means binding
-    applies first, and a decorator that overwrote a field would win in
-    the same order a reader expects.
-
-    `kind` is what is being decorated, so the table can say where a
-    marker is legal. Every marker on every target goes through here,
-    which is why the check belongs here and not at each call site."""
-    _check_markers(decorators, kind)
-    for node in reversed(decorators):
-        if isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name):
-                raise DeclarationError(node, f"cannot read @{ast.unparse(node)}")
-            fn = _from_vocabulary(node.func.id, vocab, node)
-            args = [_value(a, vocab) for a in node.args]
-            kwargs = {k.arg: _value(k.value, vocab)
-                      for k in node.keywords if k.arg is not None}
-            # The marker's OWN signature, enforced by calling it. The
-            # table says where a marker is legal and how often; how
-            # many arguments it takes is written once, in `declare.py`,
-            # as the decorator's parameter list - so restating it as
-            # data would be the same fact twice.
-            #
-            # Wrapped, because Python's own message has no position on
-            # it: `@reads("a", "b")` said "reads() takes 1 positional
-            # argument but 2 were given" and named neither the file nor
-            # the line.
-            try:
-                target = fn(*args, **kwargs)(target)
-            except TypeError as exc:
-                raise DeclarationError(
-                    node, f"@{node.func.id}: {exc}") from exc
-        elif isinstance(node, ast.Name):
-            if node.id in BUILTIN_DECORATORS:
-                # Python's own words, and they mean here what they
-                # mean everywhere. @property says an accessor is an
-                # attribute rather than a call.
-                continue
-            target = _from_vocabulary(node.id, vocab, node)(target)
-        else:
-            raise DeclarationError(node, f"cannot read @{ast.unparse(node)}")
-    return target
 
 
 # -- methods --------------------------------------------------------------
@@ -1066,7 +975,7 @@ DESCRIPTORS = ("staticmethod", "classmethod")
 
 
 def _method(node: ast.FunctionDef, vocab: dict[str, str],
-            fns: dict[int, Callable[..., Any]],
+            fns: dict[int, Any],
             bound: bool = True, bound_kind: bool = True) -> Method:
     """One declared function.
 
@@ -1131,11 +1040,10 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
     if node.returns is not None and anns.get("return") is not None:
         ret = type_of(anns["return"], node.returns, fn)
 
-    # A method decorator writes an attribute on a function, so the
-    # same trick works: decorate a stand-in and read what was written.
-    def probe() -> None: ...
-    marked = _apply(node.decorator_list, vocab, probe,
-                    "method" if bound_kind else "free")
+    # A method decorator writes an attribute on the function, and the
+    # import already ran it, so the markers are read off `fn`.
+    _check_markers(node.decorator_list, "method" if bound_kind else "free")
+    marked = fn
     if getattr(marked, "_reads", "") and params:
         # A data member is READ, not called, so there is nowhere for
         # an argument to go. The emitter drops them silently, which
@@ -1208,9 +1116,15 @@ def targets_name(item: ast.Assign) -> str:
 
 def _class(node: ast.ClassDef, vocab: dict[str, str],
            where: str, live: set[int],
-           fns: dict[int, Callable[..., Any]]) -> Class:
-    holder = _apply(node.decorator_list, vocab, type(node.name, (), {}),
-                    "class")
+           fns: dict[int, Any]) -> Class:
+    # The import already ran this class's decorators, on the class
+    # itself, so what they wrote is read off it rather than written
+    # again onto a stand-in.
+    _check_markers(node.decorator_list, "class")
+    holder = fns.get(_first_line(node))
+    if not isinstance(holder, type):
+        raise DeclarationError(
+            node, f"{node.name}: the import has no class at this line.")
     decl: Decl = holder.__dict__.get("_decl", Decl())
     decl.name = node.name
     # The base, said the way Python says it.
@@ -1506,11 +1420,9 @@ def _descriptor_hint(exc: BaseException) -> str:
         def base16(self): ...
 
     So `@property` OUTERMOST is the answer, and it costs the reader
-    nothing: `_apply` runs the file's decorators against a throwaway
-    and SKIPS the builtin ones, so the marker reaches the probe from
-    either position and `prop` is read from the tree. Only Python's
-    own execution cares, and only about which object gets the
-    attribute.
+    nothing: the reader takes the function out of the property
+    (`fget`) and reads the marker off it, and `prop` is read from the
+    tree.
 
     The MARKER is derived rather than listed. Every marker in
     `declare.py` writes `_<name>` onto what it is handed, so the
@@ -1600,8 +1512,8 @@ def _live(path: str) -> set[int]:
     return lines
 
 
-def _functions(path: str) -> dict[int, Callable[..., Any]]:
-    """Every function the import kept, by its first line.
+def _definitions(path: str) -> dict[int, Any]:
+    """Every class and function the import kept, by its first line.
 
     The same walk `_live` makes, and the same key: `co_firstlineno` is
     the first decorator's line, so a tree node finds its function by
@@ -1613,7 +1525,7 @@ def _functions(path: str) -> dict[int, Callable[..., Any]]:
     walked too."""
     mod = load(path)
     here = str(pathlib.Path(path).resolve())
-    out: dict[int, Callable[..., Any]] = {}
+    out: dict[int, Any] = {}
 
     def note(obj: object) -> None:
         obj = getattr(obj, "fget", None) or getattr(obj, "__func__", obj)
@@ -1626,12 +1538,16 @@ def _functions(path: str) -> dict[int, Callable[..., Any]]:
     for obj in vars(mod).values():
         note(obj)
         if isinstance(obj, type) and obj.__module__ == mod.__name__:
+            # `__firstlineno__` is the first decorator's line, as
+            # `co_firstlineno` is for a function.
+            out[obj.__firstlineno__] = obj
             for member in vars(obj).values():
                 note(member)
     return out
 
 
-def _first_line(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+def _first_line(node: ast.FunctionDef | ast.AsyncFunctionDef
+                | ast.ClassDef) -> int:
     """The line `co_firstlineno` names for this definition."""
     return node.decorator_list[0].lineno if node.decorator_list else node.lineno
 
@@ -1763,7 +1679,7 @@ def _read(path: str) -> Module:
     tree, live = _chosen(path)
     body = tree.body
     vocab = _vocabulary(tree)
-    fns = _functions(path)
+    fns = _definitions(path)
     stem = pathlib.Path(path).stem
     # SIBLINGS, so one bad class does not hide the next. A class is
     # read in full or not at all - the failure is recorded, its name
@@ -1800,7 +1716,7 @@ def _read(path: str) -> Module:
                 _method(n, vocab, fns, bound=False, bound_kind=False))
         except DeclarationError as e:
             _survive(e)
-    unions = _unions(body, stem, vocab)
+    unions = _unions(body, stem, vars(load(path)))
     uses = _uses(tree, pathlib.Path(path).parent)
     # ...checked once the arms can be resolved, which needs the
     # imports this file made and the classes it declares itself.
@@ -1833,42 +1749,12 @@ def _read(path: str) -> Module:
     )
 
 
-def _arms(node: ast.expr) -> tuple[str, ...] | None:
-    """`A | B` as ("A", "B"), or None when this is not a union at all.
-
-    Only a chain of `|` over NAMES. `str | None` is presence and is
-    read by `type_of`, not here; a lowercase name is a scalar, which
-    has no distinguishable arms and is refused where the arms are
-    checked."""
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        left, right = _arms(node.left), _arms(node.right)
-        if left is None or right is None:
-            return None
-        return left + right
-    if isinstance(node, ast.Name):
-        return (node.id,)
-    return None
 
 
-def _annotated(node: ast.expr) -> tuple[ast.expr, list[ast.expr]]:
-    """An `Annotated[X, ...]` as X and its metadata, or the node bare.
-
-    The alias STAYS a type alias. `Annotated[A | B, Variant(...)]` is
-    `A | B` to a type checker and to anyone reading the file, so the
-    union keeps the one property that made it an alias rather than a
-    class - and the C++ facts ride where this DSL already puts facts
-    about a type."""
-    if not (isinstance(node, ast.Subscript)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == ANNOTATED):
-        return node, []
-    if not isinstance(node.slice, ast.Tuple) or not node.slice.elts:
-        return node, []
-    return node.slice.elts[0], list(node.slice.elts[1:])
 
 
 def _unions(body: list[ast.stmt], where: str,
-            vocab: dict[str, str]) -> tuple[Class, ...]:
+            glb: dict[str, Any]) -> tuple[Class, ...]:
     """Every module-level union alias, as a Class the emitters can name.
 
     A union is written as the alias it is:
@@ -1888,12 +1774,16 @@ def _unions(body: list[ast.stmt], where: str,
             continue
         if len(item.targets) != 1 or not isinstance(item.targets[0], ast.Name):
             continue
-        held, meta = _annotated(item.value)
-        arms = _arms(held)
-        if arms is None or len(arms) < 2:
-            continue
         name = item.targets[0].id
-        variant = _variant(name, meta, arms, vocab, item)
+        alias = glb.get(name)
+        held, meta = alias, ()
+        if get_origin(alias) is Annotated:
+            held, *meta = get_args(alias)
+        if get_origin(held) not in (types.UnionType, typing.Union):
+            continue
+        arms = tuple("None" if a is type(None) else getattr(a, "__name__", repr(a))
+                     for a in get_args(held))
+        variant = _variant(name, tuple(meta), arms, item)
         doc = ""
         nxt = body[i + 1] if i + 1 < len(body) else None
         if (isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant)
@@ -1907,8 +1797,8 @@ def _unions(body: list[ast.stmt], where: str,
     return tuple(out)
 
 
-def _variant(name: str, meta: list[ast.expr], arms: tuple[str, ...],
-             vocab: dict[str, str], node: ast.AST) -> declare.Variant | None:
+def _variant(name: str, meta: tuple[object, ...], arms: tuple[str, ...],
+             node: ast.AST) -> declare.Variant | None:
     """The `Variant(...)` on a union's alias, checked against its arms.
 
     None when the alias carries none, which stays legal: a union
@@ -1919,8 +1809,7 @@ def _variant(name: str, meta: list[ast.expr], arms: tuple[str, ...],
     mistake a rename makes - the arm moves, the wrap does not - and
     it would otherwise emit a conversion for a type the variant does
     not hold."""
-    found = [_value(m, vocab) for m in meta]
-    variants = [v for v in found if isinstance(v, declare.Variant)]
+    variants = [m for m in meta if isinstance(m, declare.Variant)]
     if len(variants) > 1:
         raise DeclarationError(
             node, f"{name}: one Variant(...) on an alias. Two would be two "

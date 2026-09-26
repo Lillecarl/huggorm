@@ -42,9 +42,15 @@ declaration wrote, or re-parses one the build wrote.
 4. **The manifest boundary.** The manifest carries type strings, and
    `pygen` (`wiretypes`, `model`) parses them again. Carl chose to
    leave this for now (reader and cppgen first).
-5. **Decorators replayed on stand-ins.** `_class` and `_method` apply
-   the AST's decorators to fresh stand-in objects, although the
-   import has already applied them to the real ones.
+5. **Decorators replayed on stand-ins.** DONE 2026-09-26. `_class`
+   reads `_decl` off the live class and `_method` reads the markers
+   off the live function, found by first line like the annotations.
+   A union alias is read from its live `Annotated` object, so
+   `Variant(...)` is the object and not an AST call evaluated by
+   hand. `_apply`, `_value`, `_from_vocabulary`, `_arms`, `_annotated`
+   and the `"Annotated"` name check are gone. The AST is still read
+   for what an import discards: docstrings, bodies, positions, and
+   which markers are legal where. Emitted output byte-identical.
 6. **Emitted Python quotes types.** Checked 2026-09-26, and it does
    not: no module in `huggorm_generated` or the stubs quotes an
    annotation. On 3.14 an annotation is already deferred (PEP 649), so
