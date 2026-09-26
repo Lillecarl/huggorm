@@ -268,6 +268,21 @@ def test_a_store_takes_a_path_and_reads_it(
     assert (real / "sub" / "b.txt").read_text() == "world\n"
 
 
+def test_a_computed_path_is_the_added_one_and_writes_nothing(
+        chroot: Store, source: pathlib.Path) -> None:
+    """compute_store_path answers what add_path_to_store will give.
+
+    Before the add, the store does not hold the path, so the answer
+    did not come from a write. Both methods, because the method
+    changes the hash."""
+    for method in (CA.FLAT, CA.NAR):
+        target = str(source / "a.txt")
+        computed = chroot.compute_store_path("probe", target, method)
+        assert not chroot.is_valid_path(computed), method
+        added = chroot.add_path_to_store("probe", target, method)
+        assert computed.to_string() == added.to_string(), method
+
+
 def test_the_two_overloads_agree_about_one_file(
         chroot: Store, source: pathlib.Path) -> None:
     """A regular file added either way lands on the same path.

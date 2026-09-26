@@ -326,6 +326,31 @@ return self.addToStore(
     hash_algo,
     as_set<nix::StorePathSet>(references));
         """)
+
+    @needs("nix/util/posix-source-accessor.hh")
+    def compute_store_path(
+        self,
+        name: Str,
+        path: Str,
+        method: ContentAddressMethod = ContentAddressMethod.NAR,
+        hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
+        references: list[StorePath] = None,  # noqa: RUF013 -- as add_path_to_store
+    ) -> StorePath:
+        """The path `add_path_to_store` would give, without adding.
+
+        Same arguments, same defaults, same reading of `path`: the
+        file is hashed where the store is, and the store is not
+        written. What `nix store add --dry-run` answers."""
+        Cxx("""
+auto source = nix::PosixSourceAccessor::createAtRoot(
+    std::filesystem::weakly_canonical(std::filesystem::path{path}));
+return self.computeStorePath(
+    name,
+    source,
+    method,
+    hash_algo,
+    as_set<nix::StorePathSet>(references)).first;
+        """)
     @cxx_name("queryAllValidPaths")
     def query_all_valid_paths(self) -> list[StorePath]:
         """Every path this store holds.
