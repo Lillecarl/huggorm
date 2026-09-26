@@ -11,6 +11,7 @@ what makes this testable in a build sandbox.
 # declaration's type by importing it, and the reader follows the
 # import - nothing here runs, so this costs a parse.
 from huggorm_decl.decl.build_result import KeyedBuildResult
+from huggorm_decl.decl.derivation import Derivation
 from huggorm_decl.decl.derived_path import DerivedPath
 from huggorm_decl.decl.gc import GCOptions, GCResults
 from huggorm_decl.decl.path import StorePath
@@ -693,6 +694,25 @@ return nix::Realisation{*found, id};
 
         Raises on a cycle. A store path graph cannot have one, so
         that is a corrupt store rather than a bad ask."""
+    @cxx_name("readDerivation")
+    def read_derivation(self, path: StorePath) -> Derivation:
+        """Parse the `.drv` at this path. `nix derivation show`.
+
+        Raises when the path is not a valid derivation in this
+        store."""
+    @needs("nlohmann/json.hpp")
+    def add_derivation(self, json: Str) -> StorePath:
+        """Write a derivation from Nix's JSON, and answer its path.
+
+        `nix derivation add`: upstream's `parseJsonAndValidate` fills
+        in the output paths a deferred output leaves open, checks the
+        invariants, and `writeDerivation` stores it. So a caller can
+        take `Derivation.to_json()`, change it, and write the result
+        without computing a hash itself."""
+        Cxx("""
+auto drv = nix::Derivation::parseJsonAndValidate(self, nlohmann::json::parse(json));
+return self.writeDerivation(drv);
+        """)
     @needs("nix/store/log-store.hh", "nix/store/store-cast.hh")
     def get_build_log(self, path: StorePath) -> Str | None:
         """The log of the build that made this path, or None.

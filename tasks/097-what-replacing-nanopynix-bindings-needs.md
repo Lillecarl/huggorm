@@ -131,8 +131,15 @@ bare `RuntimeError`.
    it answers the `.drv` of a derivation value, through libexpr's
    `getDerivation`, and `DerivedPathBuilt` takes it. `pynix build`
    needs that join more than it needs `Derivation`, which is for
-   `pynix develop`. Still missing: `Derivation`, and `eval_store` on
-   `build_paths`.
+   `pynix develop`. `Store.read_derivation` answers a `Derivation`
+   with typed accessors, whose outputs are a five-arm union, and
+   `to_json()` is Nix's own document; `Store.add_derivation(json)` is
+   `nix derivation add`. `nix develop`'s shell derivation is NOT a
+   binding: `tests/test_derivation.py` builds one in Python from those
+   generated operations alone (Carl: every Nix operation from the
+   DSL, `nix develop` itself may differ). What nanopynix ships as
+   `get-env.sh` still has to reach the consumer. Still missing:
+   `eval_store` on `build_paths`.
 4. Eval constructor arguments, `eval_string(path)` and the `Value`
    conversions. `pynix eval` needs these. Floats are done: the DSL
    has `F64` (a C++ double, a proto double), and a float crosses a

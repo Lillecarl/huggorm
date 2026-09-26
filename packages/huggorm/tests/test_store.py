@@ -20,6 +20,11 @@ from huggorm_bindings import (
     BuildSuccess,
     BuildSuccessStatus,
     ContentAddress,
+    DerivationOutputCAFixed,
+    DerivationOutputCAFloating,
+    DerivationOutputDeferred,
+    DerivationOutputImpure,
+    DerivationOutputInputAddressed,
     DerivedPathBuilt,
     DrvOutput,
     GCAction,
@@ -1701,6 +1706,24 @@ def test_every_wire_value_survives_its_own_round_trip(
         "GCResults": (
             _rebuild(GCResults, sorted(["/nix/store/a", "/nix/store/b"]), 8192),
             [(["/other/root"], 1)]),
+        # The five arms of a derivation output, each constructed: the
+        # round trip is about the parts, and a hermetic store cannot
+        # produce a floating or an impure one. `Deferred` has no parts,
+        # so its one case is the whole test.
+        "DerivationOutputInputAddressed": (
+            DerivationOutputInputAddressed(held), [(other,)]),
+        "DerivationOutputCAFixed": (
+            DerivationOutputCAFixed(ContentAddress(
+                CA.NAR, Hash(HashAlgorithm.SHA256, bytes(range(32))))),
+            [(ContentAddress(CA.FLAT, Hash(HashAlgorithm.SHA1,
+                                           bytes(range(20)))),)]),
+        "DerivationOutputCAFloating": (
+            DerivationOutputCAFloating(CA.NAR, HashAlgorithm.SHA256),
+            [(CA.FLAT, HashAlgorithm.SHA1)]),
+        "DerivationOutputImpure": (
+            DerivationOutputImpure(CA.NAR, HashAlgorithm.SHA256),
+            [(CA.TEXT, HashAlgorithm.SHA512)]),
+        "DerivationOutputDeferred": (DerivationOutputDeferred(), []),
         # A log field is upstream's hand-rolled variant: a flag and
         # the two values it chooses between. Both cases are
         # constructed, because a producer here raises only messages
