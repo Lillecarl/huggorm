@@ -204,6 +204,28 @@ collection, and the lane has no pass count.
 5. Flip the default only when that lane is green; keep the bindings
    variant a while. The nixidae lock is the rollback.
 
-The huggorm engine's first gaps are `current_system` (pynix calls it
-at startup) and `get-env.sh`, which must fail loudly until huggorm
-ships it.
+## Where the port stands
+
+Steps 1 to 4 landed 2026-09-26: `nanopynix._engine`, the #309 patch on
+the 2.34 lane, `nanopynixForHuggorm` and the non-blocking
+`test-huggorm-nix_2_34` job. `nanopynix/_engine_huggorm.py` answers
+each engine name, and a name not ported is a placeholder that raises
+`NotPortedError` naming it. The job's failures group by that name, so
+the most common one is the next thing to port.
+
+Carl's calls on the way:
+
+- pynix's test harness reached the bindings for activity tracking.
+  nanopynix got a public `Session.tracking_activities()` instead, and
+  pynix's tests use it. pynix's source is untouched.
+- Import does not read nix.conf. `load_config()` does, when the
+  caller asks, as nanopynix's `init_libstore(load_config)` does.
+
+Ported: `build_info`, `current_system`, the settings functions and
+`init_libstore`. The lane then measured 1796 passed, 715 failed and
+286 errors. The largest groups, in order: `expr.parse_nix_path` (727),
+`store.render_store_reference` (67), `filter_ansi_escapes` (54),
+`is_pseudo_url` (35), `signals.InterruptToken` (15). The logger and
+verbosity group (`install_logger`, `set_verbosity`,
+`set_logger_request_id`) is the first that needs a design, because
+huggorm's logger is a pull model. `get-env.sh` still fails loudly.
