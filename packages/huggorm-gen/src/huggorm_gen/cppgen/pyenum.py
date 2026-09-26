@@ -1,8 +1,7 @@
 """Declaration -> a plain Python module, by transforming the tree.
 
-The second emitter that TRANSFORMS rather than prints, and for the
-same reason `pyi.py` does: the output is Python and the declaration is
-already Python. A vocabulary declaration is a class of `NAME = "value"`
+An emitter that TRANSFORMS rather than prints: the output is Python
+and the declaration is already Python. A vocabulary declaration is a class of `NAME = "value"`
 assignments with a docstring under each, which is a StrEnum body line
 for line. So this moves the declaration's own nodes and unparses them.
 

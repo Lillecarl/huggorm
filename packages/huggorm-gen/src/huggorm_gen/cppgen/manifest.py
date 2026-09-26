@@ -124,17 +124,18 @@ def _type(t: Type | None) -> str:
     file."""
     if t is None:
         return "None"
-    if t.cxx is None:
+    leaf = t.leaf
+    if leaf.cxx is None:
         return t.python
-    if t.cxx.spelling not in PYTHON:
+    if leaf.cxx.spelling not in PYTHON:
         raise TypeError(
-            f"'{t.cxx.spelling}' has no Python spelling. Add it to "
+            f"'{leaf.cxx.spelling}' has no Python spelling. Add it to "
             f"manifest.PYTHON once the boundary knows how to marshal it.")
     # The DECLARATION's spelling wins where the two disagree. A
     # std::string is a `str` most of the time, and is `bytes` or a
     # `pathlib.Path` where the alias says so - the table gives the
     # usual reading, and only the alias knows when it is not the one.
-    return t.python if t.python != "bool" else PYTHON[t.cxx.spelling]
+    return t.python if t.python != "bool" else PYTHON[leaf.cxx.spelling]
 
 
 # The C++ spellings the manifest cannot carry across a SERVICE.
@@ -174,10 +175,11 @@ def _crossable(t: Type | None, where: str) -> None:
     Called for what a SERVICE carries - a proxy's methods and the
     parameters that acquire one - and not for a value's accessors. A
     value crosses as its fields, and a field says its width."""
-    if t is not None and t.cxx is not None and t.cxx.spelling in UNCROSSABLE:
+    leaf = t.leaf if t is not None else None
+    if leaf is not None and leaf.cxx is not None and leaf.cxx.spelling in UNCROSSABLE:
         raise TypeError(
-            f"{where} is a {t.cxx.spelling}, and "
-            f"{UNCROSSABLE[t.cxx.spelling]}")
+            f"{where} is a {leaf.cxx.spelling}, and "
+            f"{UNCROSSABLE[leaf.cxx.spelling]}")
 
 
 def _param(p: Param) -> dict[str, Any]:

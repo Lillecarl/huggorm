@@ -168,10 +168,11 @@ def declared_returned() -> list[str]:
             for m in cls.methods:
                 if m.ret is None:
                     continue
-                spelled = m.ret.python.removesuffix("| None").strip()
-                if spelled.startswith("list["):
-                    spelled = spelled[len("list["):-1]
-                if spelled not in known or known[spelled].is_words:
+                ret = m.ret.required
+                if ret.origin == "list":
+                    ret = ret.element
+                spelled = ret.python
+                if ret.origin or spelled not in known or known[spelled].is_words:
                     continue
                 held = known[spelled]
                 if held.decl.built_by and held.ctor is None:

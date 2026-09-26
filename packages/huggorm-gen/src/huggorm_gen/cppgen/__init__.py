@@ -6,9 +6,8 @@ others:
 - `nbemit.py` writes nanobind C++ - the binding itself.
 - `manifest.py` writes the manifest entry every generated Python
   surface above the bindings is built from.
-- `pyi.py` writes the type stub, by transforming the declaration's
-  own tree.
-- `pyenum.py` writes a vocabulary as a StrEnum module, the same way.
+- `pyenum.py` writes a vocabulary as a StrEnum module, by
+  transforming the declaration's own tree.
 - `pyerrors.py` writes the exception module and the C++ catch chain
   that raises it.
 

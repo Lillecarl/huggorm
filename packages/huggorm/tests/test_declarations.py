@@ -441,9 +441,9 @@ class Sizes:
         Cxx("return self.when;")
 '''
 
-# The same width inside a CONTAINER. `type_of` attaches the alias's
-# C++ spelling to the whole `dict[str, U64]`, so a reader that took
-# it at face value would call the dict a uint.
+# The same width inside a CONTAINER. The uint64_t is the map VALUE's,
+# so a reader that took the leaf's width for the whole type would call
+# the dict a uint.
 HELD = '''"""One value whose field is a container of a width."""
 
 from huggorm_dsl.declare import U64, Cxx, binding, header, wire_value
@@ -455,7 +455,7 @@ from huggorm_dsl.declare import U64, Cxx, binding, header, wire_value
 class Sizes:
     """One number per name."""
 
-    def by_name(self) -> "dict[str, U64]":
+    def by_name(self) -> dict[str, U64]:
         """How many bytes each one holds."""
         Cxx("return self.by_name;")
 '''
@@ -517,9 +517,8 @@ def test_a_container_of_a_width_is_refused_rather_than_guessed(
         tmp_path: pathlib.Path) -> None:
     """`dict[str, U64]` has no wire spelling, and says so.
 
-    The reader attaches an alias's C++ spelling to the whole
-    annotation, so the uint64_t on this field describes what the dict
-    HOLDS. Naming the dict `uint` would be wrong and calling it a
+    The uint64_t on this field is what the dict HOLDS. Naming the
+    dict `uint` would be wrong and calling it a
     plain `dict[str, int]` would lose the top half of every value in
     it - so it refuses, which is the only one of the three that
     cannot be silently wrong.
@@ -1285,3 +1284,69 @@ def test_a_body_brings_its_own_standard_header() -> None:
     assert "#include <cstdint>" in other
     assert "#include <stdexcept>" not in other, \
         "nothing in pathinfo throws, so nothing asks for it"
+
+
+NESTED = '''"""An alias two containers down."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header
+
+
+@header("nix/store/derivations.hh")
+@binding(cxx="nix::Thing", threading="pool", blocking=False)
+class Thing:
+    """Holds a map of lists."""
+
+    def groups(self) -> dict[str, list[Str]] | None:
+        """Each name, and what it holds."""
+        Cxx("return self.groups;")
+'''
+
+
+def test_an_alias_is_resolved_at_any_depth(tmp_path: pathlib.Path) -> None:
+    """The structure comes from the imported annotation, not its text.
+
+    The reader used to peel ONE container off a spelling with
+    `removeprefix`, so `dict[str, list[Str]]` reached the emitter with
+    a bare `Str` it could not resolve."""
+    from huggorm_dsl.read import read
+
+    t = read(_declaration(tmp_path, NESTED)).classes[0].methods[0].ret
+    assert t is not None
+    assert (t.origin, t.required.origin, t.required.element.origin) == \
+        ("optional", "dict", "list")
+    leaf = t.leaf
+    assert leaf.python == "str"
+    assert leaf.cxx is not None and leaf.cxx.spelling == "string"
+    assert t.python == "dict[str, list[str]] | None"
+
+
+QUOTED = '''"""A quoted annotation."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header
+
+
+@header("nix/store/derivations.hh")
+@binding(cxx="nix::Thing", threading="pool", blocking=False)
+class Thing:
+    """Says its type as text."""
+
+    def name(self) -> "Str":
+        """Its name."""
+        Cxx("return self.name;")
+'''
+
+UNIMPORTED = QUOTED.replace('-> "Str"', "-> Elsewhere")
+
+
+@pytest.mark.parametrize(("source", "said"), [
+    (QUOTED, "unquoted"),
+    (UNIMPORTED, "Elsewhere"),
+])
+def test_an_annotation_the_import_cannot_resolve_is_refused(
+        tmp_path: pathlib.Path, source: str, said: str) -> None:
+    """A quote is text, and a name the file never imported arrives as
+    a `ForwardRef`. The reader takes neither as a type."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    with pytest.raises(DeclarationError, match=said):
+        read(_declaration(tmp_path, source))

@@ -239,8 +239,8 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
     value - so this is the shape everything else is built from and
     `_param` adds the reference where a parameter wants one."""
     known = known or {}
-    inner = t.python.removesuffix("| None").strip()
-    other = (known or {}).get(inner)
+    held_type = t.required
+    other = None if held_type.origin else known.get(held_type.python)
     if other is not None and other.decl.kind == "error":
         # A live Python EXCEPTION, handed over rather than raised. A
         # BuildResult's failure arm is a nix::BuildError, and reading
@@ -253,28 +253,18 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
         # give a Python caller one spelling for absent and the emitter
         # two.
         return "nb::object", None
-    if t.python.endswith("| None"):
-        held, _ = _cxx(Type(python=inner, cxx=t.cxx, bound=t.bound), known)
+    if t.optional:
+        held, _ = _cxx(t.required, known)
         return f"std::optional<{held}>", "optional"
-    if inner.startswith("list["):
-        item = inner[len("list["):-1]
-        # `cxx=t.cxx`, like the optional branch above. An alias inside
-        # a container is the alias of the ELEMENT - `list[I64]` reads
-        # as a list of int64_t - and the reader already rewrote the
-        # python spelling to `list[int]` while keeping the Cxx. Drop it
-        # here and a width the declaration stated becomes a bare `int`
-        # with no C++ spelling at all.
-        held, _ = _cxx(Type(python=item, cxx=t.cxx,
-                            bound=item[:1].isupper()), known)
+    if t.origin == "list":
+        held, _ = _cxx(t.element, known)
         # A vector, not the std::set libstore keeps them in. A set
         # casts to a Python set, which has no order - and every one
         # of these answers is sorted, which is information a caller
         # can use.
         return f"std::vector<{held}>", "vector"
-    if inner.startswith("dict[str, "):
-        value = inner[len("dict[str, "):-1].strip()
-        held, _ = _cxx(Type(python=value, cxx=t.cxx,
-                            bound=value[:1].isupper()), known)
+    if t.origin == "dict":
+        held, _ = _cxx(t.element, known)
         # `std::map`, which is what libstore keeps every one of these
         # in - `OutputPathMap` and `SingleDrvOutputs` are both one -
         # and what nanobind's <nanobind/stl/map.h> casts.
@@ -289,6 +279,7 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
         # nb::dict by hand IS the mapping this exists to derive, so
         # the entry went and `gc_stats` returns the map.
         return f"std::map<std::string, {held}>", "map"
+    inner = t.python
     if t.bound or inner in known:
         if inner not in known:
             raise TypeError(
@@ -340,9 +331,7 @@ def _param(t: Type, known: dict[str, Class] | None = None
     through `known`, which maps a declared name to its C++ spelling.
     So `is_valid_path(path: StorePath)` becomes `const nix::StorePath
     &`, and neither declaration repeats the other's C++ name."""
-    inner = t.python.removesuffix("| None").strip()
-    if (t.python.endswith("| None") or inner in CXX_PYTHON
-            or inner.startswith(("list[", "dict[str, "))):
+    if t.optional or t.origin or t.python in CXX_PYTHON:
         spelled, caster = _cxx(t, known)
         # By const reference, because these are the types worth not
         # copying - and, for `nb::bytes`, because a copy would be
@@ -502,15 +491,14 @@ def includes(classes: Sequence[Class],
         # A container or an optional needs its ELEMENT's caster too:
         # `list[StorePath]` needs <vector>, and a `list[str]` needs
         # <string> beneath it.
-        inner = t.python.removesuffix("| None").strip()
-        if inner.startswith("list["):
-            note(Type(python=inner[len("list["):-1],
-                      bound=inner[len("list["):-1][:1].isupper()))
-        elif inner != t.python:
-            note(Type(python=inner, cxx=t.cxx, bound=t.bound))
+        inner = t.required
+        if inner.origin == "list":
+            note(inner.element)
+        elif t.optional:
+            note(inner)
         # ...and a UNION's arms, for the same reason: the variant
         # caster casts each arm with that arm's own.
-        held = (known or {}).get(inner)
+        held = None if inner.origin else (known or {}).get(inner.python)
         if held is not None and held.is_union:
             for arm in held.decl.arms:
                 note(Type(python=arm, bound=True))
@@ -612,7 +600,7 @@ def _default(pr: Param, known: dict[str, Class] | None = None) -> str:
             raise TypeError(
                 f"{head} has no word called {member}.")
         return f'"{word.value}"'
-    if value == "None" and pr.type.python.endswith("| None"):
+    if value == "None" and pr.type.optional:
         # An optional parameter, absent. `nullptr` is what CXX_DEFAULT
         # would give and it is a null POINTER, which a std::optional
         # parameter cannot take.
@@ -710,7 +698,8 @@ def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
     and is parsed by whatever it is handed to."""
     if t is None or not known:
         return ""
-    other = known.get(t.python.removesuffix("| None").strip())
+    held = t.required
+    other = None if held.origin else known.get(held.python)
     if other is None or not other.is_words:
         return ""
     if not other.decl.parsed_by and other.decl.enumerated:
@@ -730,10 +719,9 @@ def _collection(t: Type | None, known: dict[str, Class] | None) -> str:
     is a primitive or whose class is happy with a vector."""
     if t is None or known is None:
         return ""
-    spelled = t.python.strip('"')
-    if not (spelled.startswith("list[") and spelled.endswith("]")):
+    if t.origin != "list":
         return ""
-    element = known.get(spelled[len("list["):-1].strip())
+    element = known.get(t.element.python)
     return element.decl.collection if element else ""
 
 
@@ -745,9 +733,9 @@ def _handle(t: Type | None, known: dict[str, Class] | None) -> Class | None:
     further in. `None` for everything else, which is almost every
     type - a bound class that binds its own methods is not a handle,
     and neither is a str."""
-    if t is None or not t.bound or not known:
+    if t is None or not t.required.bound or not known:
         return None
-    other = known.get(t.python.removesuffix("| None").strip())
+    other = known.get(t.required.python)
     return other if other is not None and other.decl.via else None
 
 
@@ -779,7 +767,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # A `list[T]` return needs a body too: the conversion below is
     # what makes a C++ set answer the list the declaration promised,
     # and a pointer binding has nowhere to put it.
-    wants_list = m.ret is not None and m.ret.python.strip('"').startswith("list[")
+    wants_list = m.ret is not None and m.ret.origin == "list"
     if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
             or m.produces or wants_list or any(h for _, h in args)):
         return None
@@ -849,14 +837,15 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # declaration already said `list` - so nothing needs to say it
     # twice. `as_list` is a template over any range, so wrapping is
     # right whether the call answered a set or a vector.
-    if m.ret is not None and m.ret.python.strip('"').startswith("list["):
+    if m.ret is not None and m.ret.origin == "list":
         return [*head, f"{INDENT * 4}return as_list({call});"]
     # A declared VOCABULARY return. The enumerator libstore answers
     # with is not the word Python has, and `as_word` is the switch
     # that says which - emitted beside this, not written by hand.
     # Before this, `Hash.algorithm` carried the conversion as a `Cxx`
     # body, which is a MAPPING written into a declaration.
-    voc = (known or {}).get(m.ret.python.removesuffix("| None").strip())
+    voc = (None if m.ret.required.origin
+           else (known or {}).get(m.ret.required.python))
     if voc is not None and voc.is_words and voc.decl.enumerated:
         return [*head, f"{INDENT * 4}return {NAMESPACE}::as_word({call});"]
     # A width the DECLARATION spells. `size()` answers a size_t and
@@ -888,7 +877,7 @@ def _guard_head(cls: Class, m: Method,
         target = m.params[0].name
         # The TARGET's class holds the arm table, not this one:
         # `list_append` is declared on the evaluator and fills a Value.
-        held = (known or {}).get(m.params[0].type.python.strip('"'))
+        held = (known or {}).get(m.params[0].type.python)
         if held is None or held.decl.tagged is None:
             raise ValueError(
                 f"{cls.name}.{m.name}: @fills needs its target's class to "
@@ -1015,8 +1004,7 @@ def absent(pr: Param, known: dict[str, Class] | None = None) -> bool:
     None has to say so in its own type."""
     if pr.default != "None":
         return False
-    inner = pr.type.python.removesuffix("| None").strip()
-    return inner.startswith("list[")
+    return pr.type.required.origin == "list"
 
 
 def _signature(cls: Class, m: Method,
@@ -1385,10 +1373,10 @@ def _unions_used(classes: Sequence[Class],
     for _, t in _sites(classes, functions):
         if t is None:
             continue
-        inner = t.python.removesuffix("| None").strip()
-        if inner.startswith("list["):
-            inner = inner[len("list["):-1]
-        cls = (known or {}).get(inner)
+        inner = t.required
+        if inner.origin == "list":
+            inner = inner.element
+        cls = None if inner.origin else (known or {}).get(inner.python)
         if cls is not None and cls.is_union and cls.decl.variant is not None:
             out[cls.name] = cls
     return [out[name] for name in sorted(out)]
@@ -1412,7 +1400,7 @@ def _vocabularies_used(classes: Sequence[Class],
     methods happen to be declared in is not an order for a
     translation unit."""
     out: dict[str, Class] = {}
-    spelled = [t.python.removesuffix("| None").strip()
+    spelled = [t.required.python
                for _, t in _sites(classes, functions) if t is not None]
     # ...and what a BODY spells, from `@spells`. A signature does not
     # reach everything: `KeyedBuildResult.error` builds an exception
@@ -2304,12 +2292,12 @@ def _crosses_container(classes: Sequence[Class]) -> bool:
     """Whether any declared type here is a list of bound values."""
     for cls in classes:
         for m in cls.methods:
-            spelled = [t.python for _, t in m.params]
+            declared = [t for _, t in m.params]
             if m.ret is not None:
-                spelled.append(m.ret.python)
-            for one in spelled:
-                inner = one.removesuffix("| None").strip()
-                if inner.startswith("list[") and inner[5:-1][:1].isupper():
+                declared.append(m.ret)
+            for one in declared:
+                inner = one.required
+                if inner.origin == "list" and inner.element.bound:
                     return True
     return False
 
@@ -2344,7 +2332,8 @@ def _errors_used(classes: Sequence[Class],
     for _, t in _sites(classes, functions):
         if t is None:
             continue
-        cls = (known or {}).get(t.python.removesuffix("| None").strip())
+        cls = (None if t.required.origin
+               else (known or {}).get(t.required.python))
         if cls is not None and cls.decl.kind == "error":
             return True
     return False

@@ -52,17 +52,21 @@ number and the text that caused it. Guessing here would produce a
 binding that compiles and is wrong.
 """
 
+import annotationlib
 import ast
 import contextlib
 import difflib
 import functools
+import inspect
 import os
 import pathlib
 import re
-from collections.abc import Iterator
+import types
+import typing
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from types import ModuleType
-from typing import Any, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin, get_overloads
 
 from huggorm_dsl import declare
 from huggorm_dsl.declare import Cxx, Decl, Field
@@ -300,6 +304,37 @@ class Type:
     # The emitter resolves the C++ spelling through the other
     # declaration, so neither file repeats it.
     bound: bool = False
+    # The STRUCTURE, which `python` only renders. "" for a leaf;
+    # "list", "dict" or "optional" for a node whose one argument is
+    # the element, the map's value, or the type that may be absent. An
+    # emitter walks these and never reads `python` to find them.
+    origin: str = ""
+    args: tuple[Type, ...] = ()
+
+    @property
+    def optional(self) -> bool:
+        """Whether None is a legal value."""
+        return self.origin == "optional"
+
+    @property
+    def required(self) -> Type:
+        """This type without the None, or itself."""
+        return self.args[0] if self.optional else self
+
+    @property
+    def element(self) -> Type:
+        """What a list holds, or a map's value."""
+        if self.origin not in ("list", "dict"):
+            raise TypeError(f"'{self.python}' is not a container")
+        return self.args[0]
+
+    @property
+    def leaf(self) -> Type:
+        """The type at the bottom of every container and optional."""
+        t = self
+        while t.args:
+            t = t.args[0]
+        return t
 
     @property
     def wire(self) -> str:
@@ -323,11 +358,11 @@ class Type:
         nothing of ours. A disagreement is not silent: `model.py`
         checks every emitted field against `scalar_spelling` and
         refuses one it does not know."""
-        inner, optional = self.python, False
-        if inner.endswith("| None"):
-            inner, optional = inner[:-len("| None")].strip(), True
-        if self.cxx is not None and self.cxx.spelling in WIDTHS:
-            if inner != "int":
+        held = self.required
+        inner = held.python
+        leaf = held.leaf
+        if leaf.cxx is not None and leaf.cxx.spelling in WIDTHS:
+            if held.origin:
                 # A CONTAINER of the width, such as `dict[str, U64]`.
                 # The alias's C++ spelling reaches here attached to
                 # the whole container - `type_of` puts it there - so
@@ -336,11 +371,11 @@ class Type:
                 # which is what it did before and would lose the top
                 # half of every value in it.
                 raise TypeError(
-                    f"'{inner}' holds a {self.cxx.spelling}, and a "
+                    f"'{inner}' holds a {leaf.cxx.spelling}, and a "
                     f"container of a width has no wire spelling yet. "
                     f"See tasks/079.")
-            inner = WIDTHS[self.cxx.spelling]
-        return f"{inner}?" if optional else inner
+            inner = WIDTHS[leaf.cxx.spelling]
+        return f"{inner}?" if self.optional else inner
 
 
 @dataclass(frozen=True)
@@ -701,84 +736,114 @@ def _from_vocabulary(name: str, vocab: dict[str, str], node: ast.AST) -> Any:
     return obj
 
 
-def type_of(node: ast.expr, vocab: dict[str, str]) -> Type:
-    """One annotation, resolved.
+def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
+    """One annotation, as the object the import resolved it to.
 
-    Three answers, and the reader gives whichever the annotation
-    supports rather than deciding per class. An earlier version had a
-    per-class flag for this and it was wrong twice: first it keyed off
-    `@produced`, which made nix::Store's C++ parameters Python; then
-    off `wire`, which did the same to nix::StorePath. The fact was
-    never a property of the class.
+    Nothing here reads text. Python 3.14 defers annotations, and
+    `annotationlib` evaluates them once the declaration has run, so an
+    alias such as `Str` arrives as `Annotated[str, Cxx("string")]`, a
+    declared class as the class, and `list[...]`, `dict[str, ...]` and
+    `T | None` as the generics they are. `get_origin` and `get_args`
+    say the structure; the reader never parses a spelling to find it.
 
-    A name in the vocabulary carries a C++ spelling. A capitalised
-    name that is not vocabulary refers to another declared class.
-    Anything else is a plain Python type, which is the whole truth
-    about a field the C++ side already flattened.
+    `fn` is the function the annotation belongs to. Its globals are
+    where a UNION alias gets its name: a union is an `Annotated` object
+    and does not know what it is called, so the name is whichever
+    global of the declaring file IS that object.
 
-    What this does NOT do is guess. A bare `str` where C++ is needed
-    reaches an emitter with `cxx=None`, and the emitter refuses it
-    there - which is the right place, because only the emitter knows
-    whether it needed one."""
-    # A string annotation is the forward reference a declaration needs
-    # to name a type declared in another file. Unwrapped here so the
-    # rest of the reader sees one spelling.
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        spelled = node.value
-    else:
-        spelled = ast.unparse(node)
-    if isinstance(node, ast.Name) and node.id in vocab:
-        alias = _from_vocabulary(node.id, vocab, node)
-        if get_origin(alias) is not None:
-            for meta in get_args(alias)[1:]:
-                if isinstance(meta, Cxx):
-                    # The PYTHON spelling of an alias is its first
-                    # arg: `Annotated[str, Cxx("string_view")]` is a
-                    # str. QUALIFIED when it is not a builtin, because
-                    # `Path` alone is ambiguous and `pathlib.Path` is
-                    # what an annotation has to say to typecheck.
-                    inner = get_args(alias)[0]
-                    name = inner.__name__
-                    if inner.__module__ != "builtins":
-                        name = f"{inner.__module__}.{name}"
-                    return Type(python=name, cxx=meta)
+    Refused, each for its own reason: a string (the quote is what made
+    this reader parse text, and 3.14 needs none), a name the file never
+    imported (it arrives as a `ForwardRef`), an inline union of
+    anything but None, and a generic this binding has no container
+    for."""
+    if isinstance(ann, str):
         raise DeclarationError(
-            node, f"'{node.id}' is vocabulary but carries no C++ spelling. "
-                  f"Annotate the alias with Cxx(...) in declare.py.")
-    bare = (spelled.replace(" | None", "")
-            .removeprefix("list[").removeprefix("dict[str, ").rstrip("]"))
-    if bare in vocab:
-        # A QUOTED annotation means what the same annotation means
-        # unquoted. `-> I64` and `-> "I64 | None"` name one width, and
-        # a declaration has to quote the second: `I64 | None` is a
-        # union of an Annotated alias, which Python builds eagerly and
-        # a reader of the source cannot see the C++ through.
-        #
-        # Without this the alias fell through to the branch below,
-        # which reads a capital letter as another declared class - so
-        # `"I64 | None"` asked the emitter for a class called I64.
-        held = type_of(ast.Name(id=bare), vocab)
-        return Type(python=spelled.replace(bare, held.python),
-                    cxx=held.cxx)
-    if hasattr(declare, bare):
-        # Vocabulary this file did NOT import. It resolves for a
-        # reader of the source, because Python finds it in declare.py,
-        # and it resolves for nothing here - `vocab` is only what this
-        # file imported, which is what keeps a declaration from
-        # gaining phantom vocabulary by convenience.
-        #
-        # Refused HERE rather than in the emitter, which sees only a
-        # capitalised name and says "names a class this run has not
-        # read" - true, unhelpful, and pointing at the wrong fix.
+            node, f"'{ann}' is quoted. Write the annotation unquoted: "
+                  f"Python 3.14 defers it, so a forward reference needs "
+                  f"no quotes, and the reader takes the object, not text.")
+    if isinstance(ann, annotationlib.ForwardRef):
         raise DeclarationError(
-            node, f"'{bare}' is vocabulary, and this file does not import "
-                  f"it. Add it to the `from {VOCABULARY} import` above, or "
-                  f"name a class some declaration declares.")
-    # The reader records a reference to another declared class;
-    # resolving it needs that declaration, which only the emitter has.
-    if bare[:1].isupper():
-        return Type(python=spelled, bound=True)
-    return Type(python=spelled)
+            node, f"'{ann.__forward_arg__}' is not a name this file defines "
+                  f"or imports. Import the declaration that declares it.")
+    origin = get_origin(ann)
+    if origin is Annotated:
+        held, *meta = get_args(ann)
+        if any(isinstance(m, declare.Variant) for m in meta):
+            name = next((k for k, v in fn.__globals__.items() if v is ann),
+                        None)
+            if name is None:
+                raise DeclarationError(
+                    node, "a union is named by the alias it is assigned "
+                          "to, and this one is not a global of the file.")
+            return Type(python=name, bound=True)
+        for m in meta:
+            if isinstance(m, Cxx):
+                return Type(python=_spelled(held), cxx=m)
+        raise DeclarationError(
+            node, f"'{ann}' carries no C++ spelling. Annotate the alias "
+                  f"with Cxx(...) in declare.py.")
+    if origin in (types.UnionType, typing.Union):
+        arms = get_args(ann)
+        present = [a for a in arms if a is not type(None)]
+        if len(arms) != 2 or len(present) != 1:
+            raise DeclarationError(
+                node, f"'{ann}': an annotation holds `T | None` and no other "
+                      f"union. A sum type is a named alias with Variant(...).")
+        inner = type_of(present[0], node, fn)
+        return Type(python=f"{inner.python} | None", origin="optional",
+                    args=(inner,))
+    if origin is list:
+        (item,) = get_args(ann)
+        inner = type_of(item, node, fn)
+        return Type(python=f"list[{inner.python}]", origin="list",
+                    args=(inner,))
+    if origin is dict:
+        key, value = get_args(ann)
+        if key is not str:
+            raise DeclarationError(
+                node, f"'{ann}': a map is keyed by str. The wire has no "
+                      f"other key, and a Nix attribute name is one.")
+        inner = type_of(value, node, fn)
+        return Type(python=f"dict[str, {inner.python}]", origin="dict",
+                    args=(inner,))
+    if origin is not None:
+        raise DeclarationError(
+            node, f"'{ann}': no binding carries a {origin.__name__}. A "
+                  f"declaration holds list, dict[str, ...] and T | None.")
+    if isinstance(ann, type):
+        if _declared(ann, fn):
+            return Type(python=ann.__name__, bound=True)
+        return Type(python=_spelled(ann))
+    raise DeclarationError(node, f"'{ann!r}' is not a type.")
+
+
+def _spelled(cls: type) -> str:
+    """How a caller names a class that no declaration declares:
+    bare when it is a builtin, and by its module otherwise, because
+    `Path` alone is ambiguous and `pathlib.Path` is what an annotation
+    has to say to typecheck."""
+    if cls.__module__ == "builtins":
+        return cls.__name__
+    return f"{cls.__module__}.{cls.__name__}"
+
+
+def _declared(cls: type, fn: Callable[..., Any]) -> bool:
+    """Whether a class comes from a declaration, and so is BOUND.
+
+    By where it was written, not by its name: a class defined in a file
+    beside the one being read is declared, whatever it is called. The
+    exceptions in `errors.py` are declared this way too, and carry no
+    marker of their own.
+
+    The function's own module first: `load` runs a declaration under a
+    name `sys.modules` does not hold, so `inspect.getfile` cannot find
+    a class the file being read defines."""
+    if cls.__module__ == fn.__module__:
+        return True
+    with contextlib.suppress(TypeError):
+        here = pathlib.Path(inspect.getfile(fn)).resolve().parent
+        return pathlib.Path(inspect.getfile(cls)).resolve().parent == here
+    return False
 
 
 # -- literals -------------------------------------------------------------
@@ -983,6 +1048,7 @@ DESCRIPTORS = ("staticmethod", "classmethod")
 
 
 def _method(node: ast.FunctionDef, vocab: dict[str, str],
+            fns: dict[int, Callable[..., Any]],
             bound: bool = True, bound_kind: bool = True) -> Method:
     """One declared function.
 
@@ -1025,6 +1091,13 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                   f"parameters. C++ has no *args.")
     # Defaults bind to the LAST parameters, so line them up from the
     # right - `f(a, b=1)` has one default and it belongs to b.
+    fn = fns.get(_first_line(node))
+    if fn is None:
+        raise DeclarationError(
+            node, f"{node.name}: the import has no function at this line, "
+                  f"so its annotations cannot be resolved.")
+    anns = annotationlib.get_annotations(
+        fn, format=annotationlib.Format.FORWARDREF)
     positional = args.args[1:] if bound else args.args
     pad = len(positional) - len(args.defaults)
     params = []
@@ -1034,14 +1107,12 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                 arg, f"{node.name}({arg.arg}): every parameter states its "
                      f"type.")
         d = args.defaults[i - pad] if i >= pad else None
-        params.append(Param(arg.arg, type_of(arg.annotation, vocab),
+        params.append(Param(arg.arg, type_of(anns[arg.arg], arg, fn),
                             ast.unparse(d) if d is not None else None))
 
     ret: Type | None = None
-    returns = node.returns
-    if returns is not None and not (isinstance(returns, ast.Constant)
-                                    and returns.value is None):
-        ret = type_of(returns, vocab)
+    if node.returns is not None and anns.get("return") is not None:
+        ret = type_of(anns["return"], node.returns, fn)
 
     # A method decorator writes an attribute on a function, so the
     # same trick works: decorate a stand-in and read what was written.
@@ -1119,7 +1190,8 @@ def targets_name(item: ast.Assign) -> str:
 
 
 def _class(node: ast.ClassDef, vocab: dict[str, str],
-           where: str, live: set[int]) -> Class:
+           where: str, live: set[int],
+           fns: dict[int, Callable[..., Any]]) -> Class:
     holder = _apply(node.decorator_list, vocab, type(node.name, (), {}),
                     "class")
     decl: Decl = holder.__dict__.get("_decl", Decl())
@@ -1196,7 +1268,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             # the emitter writes that signature from the field list -
             # so the declaration writes the BODY and nothing else. A
             # `self` here would be the object it exists to build.
-            from_parts = _method(item, vocab, bound=False)
+            from_parts = _method(item, vocab, fns, bound=False)
             if from_parts.params:
                 raise DeclarationError(
                     item,
@@ -1206,7 +1278,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                     f"disagree. The body reads them by name.")
             continue
         if item.name == "__init__":
-            ctor = _method(item, vocab)
+            ctor = _method(item, vocab, fns)
             if decl.built_by and ctor.params:
                 # A `@produced(by=X)` class is built by X, so X owns
                 # the signature. Declaring it twice is how the
@@ -1270,7 +1342,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             # one method produces no bogus diagnostic - the collector
             # refuses the whole read before any emitter sees it.
             try:
-                methods.append(_method(item, vocab))
+                methods.append(_method(item, vocab, fns))
             except DeclarationError as e:
                 _survive(e)
     out = Class(
@@ -1511,6 +1583,42 @@ def _live(path: str) -> set[int]:
     return lines
 
 
+def _functions(path: str) -> dict[int, Callable[..., Any]]:
+    """Every function the import kept, by its first line.
+
+    The same walk `_live` makes, and the same key: `co_firstlineno` is
+    the first decorator's line, so a tree node finds its function by
+    `_first_line(node)`. The import is where an annotation becomes an
+    object, so this is how the reader reaches one.
+
+    `@overload` replaces a name with its last definition, and the
+    earlier ones are only in `typing.get_overloads`, so those are
+    walked too."""
+    mod = load(path)
+    here = str(pathlib.Path(path).resolve())
+    out: dict[int, Callable[..., Any]] = {}
+
+    def note(obj: object) -> None:
+        obj = getattr(obj, "fget", None) or getattr(obj, "__func__", obj)
+        code = getattr(obj, "__code__", None)
+        if code is None or code.co_filename != here:
+            return
+        for one in (obj, *get_overloads(obj)):  # type: ignore[arg-type]
+            out[one.__code__.co_firstlineno] = one
+
+    for obj in vars(mod).values():
+        note(obj)
+        if isinstance(obj, type) and obj.__module__ == mod.__name__:
+            for member in vars(obj).values():
+                note(member)
+    return out
+
+
+def _first_line(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    """The line `co_firstlineno` names for this definition."""
+    return node.decorator_list[0].lineno if node.decorator_list else node.lineno
+
+
 def _reconcile(tree: ast.Module, live: set[int], path: str) -> None:
     """Every definition the import kept must exist in the tree.
 
@@ -1638,6 +1746,7 @@ def _read(path: str) -> Module:
     tree, live = _chosen(path)
     body = tree.body
     vocab = _vocabulary(tree)
+    fns = _functions(path)
     stem = pathlib.Path(path).stem
     # SIBLINGS, so one bad class does not hide the next. A class is
     # read in full or not at all - the failure is recorded, its name
@@ -1647,7 +1756,7 @@ def _read(path: str) -> Module:
         if not (isinstance(n, ast.ClassDef) and n.decorator_list):
             continue
         try:
-            classes.append(_class(n, vocab, stem, live))
+            classes.append(_class(n, vocab, stem, live, fns))
         except DeclarationError as e:
             _survive(e, unsound=n.name)
     # Module-level functions are FREE bindings - nanopynix has 72 of
@@ -1671,7 +1780,7 @@ def _read(path: str) -> Module:
             continue
         try:
             functions.append(
-                _method(n, vocab, bound=False, bound_kind=False))
+                _method(n, vocab, fns, bound=False, bound_kind=False))
         except DeclarationError as e:
             _survive(e)
     unions = _unions(body, stem, vocab)
