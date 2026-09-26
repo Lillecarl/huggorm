@@ -1545,6 +1545,25 @@ def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
     return out
 
 
+def _is_bare(cls: Class) -> bool:
+    return cls.decl.variant is not None and cls.decl.variant.bare
+
+
+def bare_check(cls: Class, known: dict[str, Class]) -> list[str]:
+    """What a `bare` union gets instead of a conversion and a caster.
+
+    The claim that the C++ type IS the arms' `std::variant`, checked by
+    the compiler. A declaration that lists the arms out of order, or
+    names a union that only derives from a variant, fails here rather
+    than casting through the wrong alternative."""
+    variant = cls.decl.variant
+    assert variant is not None
+    return [f"static_assert(std::is_same_v<{variant.cxx}, "
+            f"{_arms_type(cls, known)}>,",
+            f'{INDENT}"{cls.name} is declared bare, so its C++ type must '
+            f'be the std::variant of its arms, in order");', ""]
+
+
 def caster(cls: Class, known: dict[str, Class]) -> list[str]:
     """One union as a nanobind type_caster, so no body converts.
 
@@ -2381,14 +2400,16 @@ def module(classes: Sequence[Class],
             if not v.decl.parsed_by:
                 head += words_from_word(v)
         for u in unions:
-            head += conversions(u, known or {})
+            head += (bare_check(u, known or {}) if _is_bare(u)
+                     else conversions(u, known or {}))
         head += [f"}}  // namespace {NAMESPACE}", ""]
     # The casters come AFTER the conversions and outside the
     # namespace: each one calls a conversion by name, and a
     # specialisation has to live in nanobind's own namespace.
-    if unions:
+    wrapped = [u for u in unions if not _is_bare(u)]
+    if wrapped:
         head += ["namespace nanobind::detail {", ""]
-        for u in unions:
+        for u in wrapped:
             head += caster(u, known or {})
         head += ["}  // namespace nanobind::detail", ""]
     # The structs first: a bind function returns one, so the type has

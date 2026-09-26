@@ -272,12 +272,19 @@ class Variant:
     no `@header` decorator to carry it, and the translation unit that
     only PASSES one - `store.cpp` takes a DerivedPath and declares
     none of its arms - would otherwise name a type it never included.
+
+    `bare` says the union's C++ type IS `std::variant` of the arms, in
+    the declared order, as `nix::StoreReference::Variant` is. nanobind's
+    own caster then casts it, and a caster of ours would specialise the
+    type it delegates to. So nothing is emitted for it but a
+    `static_assert` that holds the claim.
     """
 
     cxx: str
     raw: str = ""
     header: str = ""
     wraps: dict[str, Wrap] = field(default_factory=dict)
+    bare: bool = False
 
 
 @dataclass(frozen=True)
