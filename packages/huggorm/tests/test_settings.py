@@ -260,3 +260,18 @@ def test_reset_forgets_the_mark_and_keeps_the_value(
     reset_overridden()
     assert "warn-dirty" not in list_settings(overridden_only=True)
     assert get_setting("warn-dirty") == "false"
+
+
+def test_a_url_in_the_search_path_is_one_entry() -> None:
+    from huggorm_bindings import parse_nix_path
+
+    assert parse_nix_path("a=/x:nixpkgs=https://example.org/n.tar.gz:/y") \
+        == ["a=/x", "nixpkgs=https://example.org/n.tar.gz", "/y"]
+    assert parse_nix_path("") == []
+
+
+def test_a_url_is_a_pseudo_url_and_a_path_is_not() -> None:
+    from huggorm_bindings import is_pseudo_url
+
+    assert is_pseudo_url("https://example.org/n.tar.gz") is True
+    assert is_pseudo_url("/nix/store") is False

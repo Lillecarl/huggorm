@@ -1631,6 +1631,27 @@ return nix::globalConfig.toJSON().dump();
     """)
 
 
+@needs("nix/expr/eval-settings.hh")
+def parse_nix_path(value: Str) -> list[Str]:
+    """Split a `NIX_PATH`-style string into its entries, as `nix` does.
+
+    A `:` inside a URL does not split it, so `nixpkgs=https://...`
+    stays one entry. The environment is not read here; the caller
+    passes the value it means."""
+    Cxx("""
+auto entries = nix::EvalSettings::parseNixPath(value);
+return std::vector<std::string>(entries.begin(), entries.end());
+    """)
+
+
+@needs("nix/expr/eval-settings.hh")
+def is_pseudo_url(value: Str) -> Bint:
+    """Whether a search path entry is a URL Nix fetches, not a path."""
+    Cxx("""
+return nix::EvalSettings::isPseudoUrl(value);
+    """)
+
+
 @needs("huggorm_decl/cpp/settings.hpp")
 def current_system() -> Str:
     """The system `builtins.currentSystem` answers, process-wide.
