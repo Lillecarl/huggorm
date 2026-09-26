@@ -110,7 +110,13 @@ rec {
   # the sources exist.
   huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
     inherit huggorm-gen huggorm-decl huggorm-dsl;
-    inherit nix;
+    inherit (nix.libs)
+      nix-util
+      nix-store
+      nix-expr
+      nix-fetchers
+      nix-flake
+      ;
   };
   # this is a Python library that uses huggorm-bindings
   huggorm = pkgs.callPackage ./packages/huggorm {

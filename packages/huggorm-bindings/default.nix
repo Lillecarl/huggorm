@@ -5,17 +5,23 @@
   huggorm-decl,
   huggorm-dsl,
   boehmgc,
-  nix,
-  pkg-config,
-  ...
-}:
-let
   # The Nix libraries this binds, as components rather than the nix
   # package. `nix` is the CLI and drags its whole closure; a binding
   # needs libnixstore and libnixexpr and the two they rest on. Each
   # ships its own pkg-config file, which is what setup.py reads
-  # (tasks/015).
-  nixLibs = with nix.libs; [
+  # (tasks/015). Separate arguments, so a caller with a component
+  # scope of its own (nanopynix builds one per Nix version) passes
+  # that scope's libraries.
+  nix-util,
+  nix-store,
+  nix-expr,
+  nix-fetchers,
+  nix-flake,
+  pkg-config,
+  ...
+}:
+let
+  nixLibs = [
     nix-util
     nix-store
     nix-expr
