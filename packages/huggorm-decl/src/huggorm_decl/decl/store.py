@@ -181,6 +181,30 @@ class Store:
         reference - so this reads through the member rather than
         declaring the whole config type for one string."""
         Cxx("return self.config.getHumanReadableURI();")
+    @instant
+    def reference(self) -> Str:
+        """The store reference, with its parameters, as a URI.
+
+        Unlike `get_uri`, this round-trips: `Store(s.reference())`
+        opens a store configured the same way."""
+        Cxx("return self.config.getReference().render();")
+    @instant
+    def store_dir(self) -> Str:
+        """The directory this store's paths live under, such as
+        `/nix/store`. A chroot store keeps the logical one here."""
+        Cxx("return self.config.storeDir_;")
+    @needs("nix/store/remote-store.hh")
+    def close(self) -> None:
+        """Shut down this store's daemon connections now.
+
+        Nothing else here closes a store: it ends when the last
+        reference goes. A remote store keeps a pool of connections
+        until then, and a caller that is done with it releases them
+        here. Any other store has nothing to close."""
+        Cxx("""
+if (auto * remote = dynamic_cast<nix::RemoteStore *>(&self))
+    remote->shutdownConnections();
+        """)
     @cxx_name("isValidPath")
     def is_valid_path(self, path: StorePath) -> Bint:
         """Whether the store has that path."""
