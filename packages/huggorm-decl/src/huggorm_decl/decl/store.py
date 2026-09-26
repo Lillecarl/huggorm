@@ -974,6 +974,18 @@ def open_store(uri: Str = "auto") -> Store:
 # libstore needs neither - which is what the emitter used to assume
 # and get wrong.
 
+@needs("nix/store/store-reference.hh")
+def render_store_reference(uri: Str, with_params: Bint = True) -> Str:
+    """Parse a store URI and render it back, as Nix normalises it.
+
+    String in, string out. `with_params` false drops the query
+    parameters. It never collapses to `daemon` the way an opened
+    store's own URI can."""
+    Cxx("""
+return nix::StoreReference::parse(uri).render(with_params);
+    """)
+
+
 @needs("huggorm_decl/cpp/libstore.hpp")
 @binds("huggorm::init_libstore")
 @startup

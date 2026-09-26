@@ -275,3 +275,11 @@ def test_a_url_is_a_pseudo_url_and_a_path_is_not() -> None:
 
     assert is_pseudo_url("https://example.org/n.tar.gz") is True
     assert is_pseudo_url("/nix/store") is False
+
+
+def test_a_store_uri_renders_as_nix_normalises_it() -> None:
+    from huggorm_bindings import render_store_reference
+
+    uri = "local?root=/tmp/x"
+    assert render_store_reference(uri) == "local://?root=/tmp/x"
+    assert render_store_reference(uri, with_params=False) == "local://"

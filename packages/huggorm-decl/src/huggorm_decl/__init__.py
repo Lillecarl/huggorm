@@ -56,6 +56,7 @@ NANOBIND = (
     "gc.py",
     "store.py",
     "eval.py",
+    "terminal.py",
 )
 
 # Vocabularies. A StrEnum whose members ARE the strings a Nix parser
