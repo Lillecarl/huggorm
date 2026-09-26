@@ -62,7 +62,7 @@ declaration wrote, or re-parses one the build wrote.
 
 ## Found on the way
 
-`nix run --file . check` prints `declaration -> nanobind: SKIPPED, no
-~/Code/nanopynix`. nanopynix lives in the nixidae umbrella now, so
-`gates/nbcheck.py` has not run on this machine. It should find
-nanopynix through the umbrella, not a fixed path.
+`nix run --file . check` printed `declaration -> nanobind: SKIPPED, no
+~/Code/nanopynix`, because nanopynix lives in the nixidae umbrella
+now. FIXED 2026-09-26: `spike` finds it beside this checkout first
+and passes the path as `HUGGORM_NANOPYNIX`; the gate ran and passed.

@@ -228,7 +228,8 @@ rec {
   # import, and 158 tests drive them.
   #
   # This one is left because what it reads is not in this repo.
-  # ~/Code/nanopynix is hand-written, tested nanobind over the same
+  # nanopynix, beside this checkout in the nixidae umbrella or at
+  # ~/Code/nanopynix, is hand-written, tested nanobind over the same
   # library, so emitting against it says something the build cannot.
   #
   # A corpus, not a reference. It is hand-written and therefore
@@ -240,12 +241,21 @@ rec {
     name = "spike";
     runtimeInputs = [ ourPython ];
     text = ''
-      cd "''${1:-.}/packages/huggorm-gen/gates"
-      if [ -d "$HOME/Code/nanopynix" ]; then
-        echo "--- declaration -> nanobind ---"
+      root=$(cd "''${1:-.}" && pwd)
+      # The nixidae umbrella puts nanopynix beside this checkout.
+      for candidate in "$root/../nanopynix" "$HOME/Code/nanopynix"; do
+        if [ -d "$candidate/nanopynix-bindings/src" ]; then
+          HUGGORM_NANOPYNIX=$(cd "$candidate" && pwd)
+          export HUGGORM_NANOPYNIX
+          break
+        fi
+      done
+      cd "$root/packages/huggorm-gen/gates"
+      if [ -n "''${HUGGORM_NANOPYNIX:-}" ]; then
+        echo "--- declaration -> nanobind, against $HUGGORM_NANOPYNIX ---"
         python3 nbcheck.py
       else
-        echo "--- declaration -> nanobind: SKIPPED, no ~/Code/nanopynix ---"
+        echo "--- declaration -> nanobind: SKIPPED, no nanopynix beside this checkout or at ~/Code/nanopynix ---"
       fi
     '';
   };

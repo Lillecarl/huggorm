@@ -42,6 +42,7 @@ which case the fix belongs in the emitter and the difference should
 disappear rather than be excused.
 """
 
+import os
 import pathlib
 import re
 import sys
@@ -50,7 +51,9 @@ import huggorm_decl
 from huggorm_dsl.read import read
 from huggorm_gen.cppgen import nbemit
 
-NANOPYNIX = pathlib.Path.home() / "Code/nanopynix/nanopynix-bindings/src"
+# `spike` names the checkout it found: the nixidae umbrella's sibling
+# first, then ~/Code/nanopynix.
+NANOPYNIX = pathlib.Path(os.environ["HUGGORM_NANOPYNIX"]) / "nanopynix-bindings/src"
 
 # A lambda parameter or local, named differently. Invisible to Python.
 #
