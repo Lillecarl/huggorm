@@ -504,8 +504,8 @@ def test_a_field_says_which_64_bit_integer_it_is(
     from huggorm_gen.cppgen import manifest
 
     cls = read(_declaration(tmp_path, WIDTHS)).classes[0]
-    assert [(f.name, f.type) for f, _ in cls.parts] == [
-        ("total", "uint"), ("when", "int")]
+    assert [(f.name, m.ret.wire) for f, m in cls.parts
+            if m.ret is not None] == [("total", "uint"), ("when", "int")]
 
     entry = manifest.entry(cls, "pkg", "mod")
     assert entry["wire_fields"] == [["total", "uint"], ["when", "int"]]
@@ -526,10 +526,12 @@ def test_a_container_of_a_width_is_refused_rather_than_guessed(
     No declaration writes one today. That is why it is written here:
     the branch would otherwise be unread."""
     from huggorm_dsl.read import read
+    from huggorm_gen.cppgen import manifest
 
     cls = read(_declaration(tmp_path, HELD)).classes[0]
+    # Refused where the wire spelling is rendered, which is the manifest.
     with pytest.raises(TypeError, match="tasks/079"):
-        _ = cls.parts
+        manifest.entry(cls, "pkg", "mod")
 
 
 def test_a_service_refuses_a_parameter_whose_width_it_cannot_spell(

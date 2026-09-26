@@ -1084,8 +1084,9 @@ def _identity_semantics(cls: Class,
     spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
     reads = ", ".join(read for _, _, read in fields)
     hashed = ", ".join(
-        f"{NAMESPACE}::as_tuple({read})" if wire.startswith("list[") else read
-        for _, wire, read in fields)
+        f"{NAMESPACE}::as_tuple({read})" if t.required.origin == "list"
+        else read
+        for _, t, read in fields)
     out = []
     if equality and cls.decl.compare != "cxx":
         # Equal when the SAME CLASS carries the same declared parts.
@@ -1189,13 +1190,15 @@ def _repr_parts(cls: Class) -> str:
     inventing either here would put a wrong answer in an emitted file
     instead of a message in this one."""
     decl = cls.decl
-    fields = [f for f, _ in cls.parts] or [
-        Field(decl.shown, "str", read=decl.shown)]
+    shown = {m.name: m for m in cls.methods}.get(decl.shown)
+    fields = cls.parts or (
+        [(Field(decl.shown, read=decl.shown), shown)] if shown else [])
     parts = []
-    for i, f in enumerate(fields):
-        if f.type != "str":
+    for i, (f, m) in enumerate(fields):
+        if m.ret is None or m.ret.origin or m.ret.python != "str":
+            spelled = m.ret.python if m.ret is not None else "None"
             raise TypeError(
-                f"{cls.name}.{f.name}: a repr of a {f.type} is not derived "
+                f"{cls.name}.{f.name}: a repr of a {spelled} is not derived "
                 f"yet. Only str fields render without a second decision.")
         lead = ", " if i else ""
         parts.append(f'+ "{lead}{f.name}=\'" + {_render(cls, f.read)} '
@@ -1356,7 +1359,8 @@ def _lists(cls: Class) -> list[str]:
     The PARTS, not the accessors. A value's hash is over what it sends,
     and a list is hashed as a tuple because a list is unhashable -
     which is the one thing `as_tuple` exists for."""
-    return [f.name for f, _ in cls.parts if f.type.startswith("list[")]
+    return [f.name for f, m in cls.parts
+            if m.ret is not None and m.ret.required.origin == "list"]
 
 
 def _nodes(t: Type | None) -> Iterator[Type]:
@@ -1791,15 +1795,15 @@ def _lambda_head(fn: Method, known: dict[str, Class] | None) -> str:
     return f"[]({args}){ret} {{"
 
 
-def wire_fields(cls: Class) -> list[tuple[str, str, str]]:
-    """What this value is made of, as (name, wire type, how to read).
+def wire_fields(cls: Class) -> list[tuple[str, Type, str]]:
+    """What this value is made of, as (name, type, how to read).
 
     The third element is a Python expression on a handle called `h`,
     which is how one line covers a str, a store path and a list of
     them: the part comes back as whatever its own binding hands over,
     so nothing here knows what a part IS."""
-    return [(f.name, f.type, f'h.attr("{f.read}")()')
-            for f, _ in cls.parts]
+    return [(f.name, m.ret, f'h.attr("{f.read}")()')
+            for f, m in cls.parts if m.ret is not None]
 
 
 def part_types(cls: Class, known: dict[str, Class] | None = None
@@ -1812,13 +1816,9 @@ def part_types(cls: Class, known: dict[str, Class] | None = None
     uint64_t and an optional int64_t. `list[StorePath]` has no wire
     spelling at all.
 
-    `_field_cxx` is the fallback, for a part no accessor of this class
-    answers."""
-    out = []
-    for f, m in cls.parts:
-        out.append(_cxx(m.ret, known)[0] if m is not None and m.ret is not None
-                   else _field_cxx(f.type, known))
-    return out
+    Every part has an accessor: `Class.parts` refuses one that does
+    not."""
+    return [_cxx(m.ret, known)[0] for _, m in cls.parts if m.ret is not None]
 
 
 # What `_parts` is for, in one sentence a caller can read.
@@ -1830,21 +1830,8 @@ PARTS_DOC = ("Wire-serialization helper (private): one value per "
 # spells types the way the manifest does - `str`, `int`, `str?`, or
 # another declared class - because that is the vocabulary the message
 # shape is written in, not C++'s.
-FIELD_CXX = {"str": "std::string", "int": "std::int64_t", "bool": "bool"}
 
 
-def _field_cxx(wire: str, known: dict[str, Class] | None = None) -> str:
-    """One declared field's type, as C++ holds it."""
-    known = known or {}
-    if wire.endswith("?"):
-        return f"std::optional<{_field_cxx(wire[:-1], known)}>"
-    if wire in FIELD_CXX:
-        return FIELD_CXX[wire]
-    if wire in known:
-        return _bare(known[wire], known)
-    raise TypeError(
-        f"'{wire}' has no C++ spelling as a field. Add it to "
-        f"nbemit.FIELD_CXX, or declare the class it names.")
 
 
 def _rebuilt(m: Method | None, known: dict[str, Class] | None) -> str:
@@ -2012,7 +1999,7 @@ def markers(cls: Class) -> list[str]:
         out.append(f'{INDENT * 2}.attr("literal_eval")({json.dumps(repr(decl.tree))});')
     fields = wire_fields(cls)
     if fields or cls.decl.unit:
-        pairs = ", ".join(f'nb::make_tuple("{n}", "{t}")'
+        pairs = ", ".join(f'nb::make_tuple("{n}", "{t.wire}")'
                           for n, t, _ in fields)
         out.append(f'{INDENT}cls.attr("_wire_fields") = '
                    f"nb::make_tuple({pairs});")

@@ -597,7 +597,7 @@ class Class:
         return bool(self.decl.built_by) or not self.decl.abstract
 
     @property
-    def parts(self) -> list[tuple[Field, Method | None]]:
+    def parts(self) -> list[tuple[Field, Method]]:
         """Every declared part of a wire value, with the accessor it reads.
 
         Two sources, and which one applies is a real difference. A value
@@ -628,18 +628,18 @@ class Class:
             out = []
             for f in self.decl.fields:
                 if isinstance(f, str):
-                    m = by_name.get(f)
-                    if m is None or m.ret is None:
-                        raise TypeError(
-                            f"{self.name}: '{f}' is declared a wire field and "
-                            f"names no accessor of this class that answers "
-                            f"anything.")
-                    f = Field(f, m.ret.wire, read=f)
-                out.append((f, by_name.get(f.read)))
+                    f = Field(f, read=f)
+                m = by_name.get(f.read)
+                if m is None or m.ret is None:
+                    raise TypeError(
+                        f"{self.name}: '{f.name}' is declared a wire field "
+                        f"and '{f.read}' names no accessor of this class "
+                        f"that answers anything.")
+                out.append((f, m))
             return out
         if self.decl.wire != "value":
             return []
-        return [(Field(m.name, m.ret.wire, read=m.name), m)
+        return [(Field(m.name, read=m.name), m)
                 for m in self.methods if m.ret is not None and not m.local]
 
 

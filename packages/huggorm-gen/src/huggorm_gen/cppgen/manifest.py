@@ -240,7 +240,7 @@ def _wire_fields(cls: Class) -> list[list[str]]:
     manifest and the emitted `_wire_fields` say the same thing because
     they ask the same question, not because two lists agree.
     `Class.parts` is where that question is answered."""
-    return [[f.name, f.type] for f, _ in cls.parts]
+    return [[f.name, m.ret.wire] for f, m in cls.parts if m.ret is not None]
 
 
 def function_entry(fn: Method, package: str, module: str) -> dict[str, Any]:

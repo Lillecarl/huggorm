@@ -286,10 +286,10 @@ class Field:
 
     `read` names the accessor that produces it, because the field name
     and the accessor need not agree: a StorePath's part is called
-    `base_name` and is read by `to_string`."""
+    `base_name` and is read by `to_string`. The type is that
+    accessor's annotation, so a field does not state one."""
 
     name: str
-    type: str
     read: str
 
 

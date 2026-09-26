@@ -49,7 +49,7 @@ from huggorm_dsl.declare import (
 @wire_value(
     # The base name IS the value, so the one field is read by the one
     # accessor that renders it whole.
-    fields=(Field("base_name", "str", read="to_string"),),
+    fields=(Field("base_name", read="to_string"),),
     # nix::StorePath defaults operator== and operator<=>, so the
     # binding declares them rather than comparing base names in
     # Python: if upstream ever gives a store path a second field, this
