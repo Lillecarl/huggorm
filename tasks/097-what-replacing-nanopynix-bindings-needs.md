@@ -476,8 +476,13 @@ Decisions:
 
 Not done, and Nix does it: `flake::Settings::configureEvalSettings`
 adds `builtins.getFlake`, `parseFlakeRef` and `flakeRefToString` to a
-state. libcmd calls it; neither engine does, so both lack the three
-builtins.
+state. `nix`'s `main.cc` calls it.
+
+Wrong: this said neither engine calls it. The other engine does, in
+`nix_flake.cpp`, through `evalSettingsConfigurators`. The build port's
+lane found the gap: pynix's nixpkgs import reads `parseFlakeRef`.
+`apply_configured` now calls it with libcmd's `flakeSettings`, and two
+tests fail with the call removed.
 
 Wrong on the way: `FlakeRef(url)` as a constructor. A constructed
 value's constructor must take its wire parts, and the build refused a

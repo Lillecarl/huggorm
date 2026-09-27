@@ -67,6 +67,9 @@ inline bool apply_configured(nix::fetchers::Settings & fetch, nix::EvalSettings 
 {
     replay_overridden(fetch, nix::fetchSettings);
     replay_overridden(eval, nix::evalSettings);
+    // `builtins.getFlake`, `parseFlakeRef` and `flakeRefToString`, as
+    // `nix`'s main.cc adds them. The `flakes` feature still gates each.
+    nix::flakeSettings.configureEvalSettings(eval);
     for (auto & [name, value] : own)
         if (!eval.set(name, value) && !fetch.set(name, value))
             throw nix::UsageError("'%s' is not an evaluator or fetcher setting", name);

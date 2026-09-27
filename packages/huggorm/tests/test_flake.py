@@ -107,3 +107,18 @@ def test_a_flake_setting_that_is_not_one_is_refused(
     with pytest.raises(UsageError, match="not a setting this call takes"):
         state.lock_flake(parse_flake_ref(f"path:{probe}"),
                          settings={"pure-eval": "true"})
+
+
+def test_the_flake_builtins_are_there(state: EvalState) -> None:
+    """`getFlake`, `parseFlakeRef` and `flakeRefToString`, which
+    libflake adds to a state's settings rather than to every state."""
+    ref = state.eval_expr(
+        'builtins.flakeRefToString (builtins.parseFlakeRef '
+        '"github:NixOS/nixpkgs/nixos-unstable")', "/")
+    assert ref.string_value() == "github:NixOS/nixpkgs/nixos-unstable"
+    assert state.eval_expr("builtins ? getFlake", "/").boolean()
+
+
+def test_a_probe_flake_is_got(state: EvalState, probe: pathlib.Path) -> None:
+    got = state.eval_expr(f'(builtins.getFlake "path:{probe}").x', "/")
+    assert got.integer() == 7
