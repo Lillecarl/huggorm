@@ -41,6 +41,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <set>
 #include <string>
 #include <utility>
@@ -157,6 +158,27 @@ struct AddPrimOp
 auto get(AddPrimOp);
 
 template struct Reach<AddPrimOp, &nix::EvalState::addPrimOp>;
+
+/**
+ * The file a position is in: the physical path where it has one, so
+ * an editor can open it.
+ *
+ * Otherwise Nix's own name for the origin, `«string»`, `«stdin»` or
+ * `«none»`. `Pos::print` is the one place that names them, and it
+ * writes the name before the first ':', which none of them holds.
+ */
+inline std::string position_file(const nix::Pos & pos)
+{
+    if (auto source = pos.getSourcePath()) {
+        if (auto physical = source->getPhysicalPath())
+            return physical->string();
+        return source->to_string();
+    }
+    std::ostringstream out;
+    pos.print(out, true);
+    auto text = out.str();
+    return text.substr(0, text.find(':'));
+}
 
 /**
  * Every file whose evaluation this state has cached, resolved.

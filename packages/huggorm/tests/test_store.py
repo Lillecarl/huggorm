@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 
 from huggorm_bindings import (
+    AttrDoc,
     BuildFailureStatus,
     BuildMode,
     BuildSuccess,
@@ -26,6 +27,7 @@ from huggorm_bindings import (
     DerivationOutputImpure,
     DerivationOutputInputAddressed,
     DerivedPathBuilt,
+    Doc,
     DrvOutput,
     FlakeRef,
     GCAction,
@@ -47,6 +49,7 @@ from huggorm_bindings import (
     RegistryWrite,
     Signature,
     SingleDerivedPathBuilt,
+    SourceLocation,
     Store,
     StoreLocation,
     StorePath,
@@ -1841,6 +1844,15 @@ def test_every_wire_value_survives_its_own_round_trip(
               _rebuild(FlakeRef, {"type": "github", "owner": "o",
                                   "repo": "r"}),
               False)]),
+        "Doc": (
+            _rebuild(Doc, "add", 2, ["e1", "e2"], "Add.", None, 0),
+            [(None, 0, [], "Function.", "/a.nix", 3)]),
+        "AttrDoc": (
+            _rebuild(AttrDoc, "/a.nix", 3, "Foo."),
+            [("«string»", 1, None)]),
+        "SourceLocation": (
+            _rebuild(SourceLocation, "/a.nix", 0),
+            [("/b.nix", 7)]),
         # A pin answers `locked`, an add does not, and a removal has no
         # target.
         "RegistryWrite": (

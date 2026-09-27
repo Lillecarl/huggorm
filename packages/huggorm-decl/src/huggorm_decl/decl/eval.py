@@ -680,23 +680,26 @@ if (!self.get()->isPrimOp())
 return self.get()->primOp()->args;
         """)
 
-    @guard("function")
     @blocks
-    def doc(self) -> Str:
-        """Documentation for this function, or "".
+    def doc(self) -> Doc | None:
+        """Documentation for this value, or None.
 
         `EvalState::getDoc`, which is what the REPL's `:doc` shows -
-        and it answers a DIFFERENT shape per function kind rather than
+        and it answers a DIFFERENT shape per value kind rather than
         one thing:
 
         - a primop with documentation gives its own doc string;
-        - a primop WITHOUT gives "", because the branch is behind `if
-          (primOp.doc)` (eval.cc:578);
+        - a primop WITHOUT gives None, because the branch is behind
+          `if (primOp.doc)` (eval.cc:578);
         - a lambda gives PROSE built for the REPL - "Function `name`
           defined at ..." followed by its doc comment, if any
           (eval.cc:585-625);
-        - a partially-applied primop gives "", having no branch at
-          all.
+        - a functor set gives the documentation of `__functor` applied
+          to the set, which RUNS that function;
+        - anything else, a partially-applied primop included, gives
+          None.
+
+        Forces the value first, as `:doc` does.
 
         BLOCKS, and this is the surprise worth the marker. A lambda's
         doc comment is not stored: `getInnerText` resolves two
@@ -717,17 +720,22 @@ return self.get()->primOp()->args;
         `basic_string::substr: __pos (which is 3) > this->size()`.
 
         Reported rather than swallowed, and that is the choice worth
-        stating. "" would mean "no documentation" where the truth is
+        stating. None would mean "no documentation" where the truth is
         "cannot read the documentation", and conflating those two is
         this repo's named failure mode - an absence standing in for a
         failure. A caller who does not care can catch it; one who
-        gets "" cannot un-lose the difference."""
+        gets None cannot un-lose the difference."""
         Cxx("""
+huggorm::gc_register_thread();
+self.state().forceValue(*self.get(), nix::noPos);
 try {
     auto doc = self.state().getDoc(*self.get());
-    if (!doc.has_value() || doc->doc == nullptr)
-        return std::string();
-    return std::string(doc->doc);
+    if (!doc.has_value())
+        return std::nullopt;
+    return huggorm::Doc{doc->name, static_cast<std::int64_t>(doc->arity), doc->args,
+                        doc->doc,
+                        doc->pos ? std::optional(huggorm::position_file(doc->pos)) : std::nullopt,
+                        doc->pos.line};
 } catch (const std::out_of_range &) {
     // Upstream's own bug, surfaced with its cause rather than
     // reported as an empty answer. Narrow on purpose: this is the
@@ -739,6 +747,126 @@ try {
         "handle that");
 }
         """)
+
+    @blocks
+    def attr_doc(self, name: Str) -> AttrDoc | None:
+        """Where this set defines `name`, and the doc comment there.
+
+        What the REPL's `:doc a.b` shows for an attribute. None when
+        the set has no such attribute, or holds one with no position,
+        such as one `builtins` made. Forces the set, and reads the
+        source file for the comment, as `doc` does."""
+        Cxx("""
+huggorm::gc_register_thread();
+auto & state = self.state();
+state.forceAttrs(*self.get(), nix::noPos, "while looking for documentation of a Nix attribute");
+const auto * attr = self.get()->attrs()->get(self.intern(name));
+if (attr == nullptr || !attr->pos)
+    return std::nullopt;
+auto pos = state.positions[attr->pos];
+std::optional<std::string> comment;
+if (auto found = state.getDocCommentForPos(attr->pos))
+    comment = found.getInnerText(state.positions);
+return huggorm::AttrDoc{huggorm::position_file(pos), pos.line, comment};
+        """)
+
+    @blocks
+    @needs("nix/expr/attr-path.hh")
+    def edit_location(self) -> SourceLocation:
+        """The file and line `nix edit` and the REPL's `:edit` open.
+
+        A path or a string names the file itself, at line 0. A lambda
+        is where it is defined. Anything else is taken as a
+        derivation, and its `meta.position` answers. A location with
+        no file on disk raises: no editor can open it."""
+        Cxx("""
+huggorm::gc_register_thread();
+auto & state = self.state();
+auto & value = *self.get();
+state.forceValue(value, nix::noPos);
+std::optional<nix::SourcePath> source;
+std::uint32_t line = 0;
+if (value.type() == nix::nPath || value.type() == nix::nString) {
+    nix::NixStringContext context;
+    source = state.coerceToPath(
+        nix::noPos, value, context, "while evaluating the filename to edit");
+} else if (value.isLambda()) {
+    auto pos = state.positions[value.lambda().fun->pos];
+    auto path = std::get_if<nix::SourcePath>(&pos.origin);
+    if (path == nullptr)
+        throw nix::EvalError(state, "'%s' cannot be shown in an editor", pos);
+    source = *path;
+    line = pos.line;
+} else {
+    auto [path, found] = nix::findPackageFilename(state, value, "selected value");
+    source = std::move(path);
+    line = found;
+}
+auto physical = source->getPhysicalPath();
+if (!physical)
+    throw nix::EvalError(
+        state, "cannot open '%s' in an editor because it has no physical path", *source);
+return huggorm::SourceLocation{physical->string(), line};
+        """)
+
+
+@produced(by="Value.doc")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class Doc:
+    """A value's documentation, as `EvalState::getDoc` answers it."""
+
+    def name(self) -> Str | None:
+        """The function's name. An anonymous lambda's is "".
+
+        Optional because upstream's field is. In 2.34 both `getDoc`
+        branches set it, the lambda one to an empty name
+        (eval.cc:630), so None does not occur there."""
+
+    def arity(self) -> I64:
+        """How many arguments a primop wants. 0 for a lambda."""
+
+    def args(self) -> list[Str]:
+        """A primop's argument names. Empty for a lambda."""
+
+    def doc(self) -> Str:
+        """The text. For a lambda, prose built for the REPL."""
+
+    def path(self) -> Str | None:
+        """The file that defines it, or None for a primop, which has
+        no position. A string or stdin is named as Nix names it."""
+
+    def line(self) -> I64:
+        """The line in that file, or 0 with no position."""
+
+
+@produced(by="Value.attr_doc")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class AttrDoc:
+    """Where a set defines an attribute, and the comment there."""
+
+    def path(self) -> Str:
+        """The file, or Nix's name for a string or stdin."""
+
+    def line(self) -> I64:
+        """The line of the definition."""
+
+    def doc(self) -> Str | None:
+        """The doc comment before the definition, or None."""
+
+
+@produced(by="Value.edit_location")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class SourceLocation:
+    """A file on disk, and a line in it."""
+
+    def path(self) -> Str:
+        """The file."""
+
+    def line(self) -> I64:
+        """The line, or 0 for the whole file."""
 
 
 @header("huggorm_decl/cpp/logging.hpp")

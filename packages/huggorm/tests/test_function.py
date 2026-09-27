@@ -134,7 +134,7 @@ def test_a_partly_applied_builtin_is_the_third_shape(state: Any) -> None:
 
     with pytest.raises(Exception, match="not a builtin"):
         partial.primop_arity()
-    assert partial.doc() == "", "no getDoc branch for this shape"
+    assert partial.doc() is None, "no getDoc branch for this shape"
 
     # It still applies, which is the point of the shape existing.
     got = partial.apply(state.make_int(41))
@@ -257,8 +257,28 @@ def test_a_builtin_declares_an_arity_and_its_arguments(state: Any) -> None:
 def test_a_builtin_has_documentation(state: Any) -> None:
     """`getDoc`'s primop branch, which is a real doc string."""
     doc = fn(state, "builtins.add").doc()
-    assert doc, "builtins.add is documented upstream"
-    assert "return" in doc.lower() or "sum" in doc.lower(), doc
+    assert doc is not None, "builtins.add is documented upstream"
+    text = doc.doc().lower()
+    assert "return" in text or "sum" in text, text
+    assert (doc.name(), doc.arity(), doc.args()) == ("add", 2, ["e1", "e2"])
+    assert doc.path() is None, "a primop has no position"
+
+
+def test_a_value_that_is_not_a_function_has_no_documentation(
+        state: Any) -> None:
+    assert state.eval_expr("1").doc() is None
+    assert state.eval_expr("{ a = 1; }").doc() is None
+
+
+def test_a_functor_is_documented_by_its_functor(
+        state: Any, tmp_path: Any) -> None:
+    """getDoc applies `__functor` to the set, and documents what that
+    answers."""
+    src = tmp_path / "functor.nix"
+    src.write_text("{ __functor = self: /** The inner one. */ x: x; }\n")
+    doc = state.eval_file(str(src)).doc()
+    assert doc is not None
+    assert "The inner one." in doc.doc()
 
 
 def test_a_lambda_doc_is_prose_and_reads_the_source(
@@ -281,8 +301,54 @@ def test_a_lambda_doc_is_prose_and_reads_the_source(
     state.force(f)
 
     doc = f.doc()
-    assert "Function" in doc, doc
-    assert "Adds one to its argument." in doc, "the source was not read"
+    assert doc is not None
+    assert "Function" in doc.doc(), doc.doc()
+    assert "Adds one to its argument." in doc.doc(), "the source was not read"
+    assert (doc.path(), doc.line()) == (str(src), 2)
+    assert doc.name() == "", "getDoc sets an anonymous lambda's name to empty"
+    assert doc.arity() == 0 and doc.args() == []
+
+
+def test_an_attribute_is_documented_where_the_set_defines_it(
+        state: Any, tmp_path: Any) -> None:
+    src = tmp_path / "set.nix"
+    src.write_text("{\n  /** Foo it is. */\n  foo = 1;\n  bar = 2;\n}\n")
+    attrs = state.eval_file(str(src))
+
+    foo = attrs.attr_doc("foo")
+    assert foo is not None
+    # Measured: the inner text keeps the newline after the comment.
+    assert (foo.path(), foo.line(), foo.doc()) == (str(src), 3, "Foo it is. \n")
+    bar = attrs.attr_doc("bar")
+    assert bar is not None and bar.doc() is None and bar.line() == 4
+    assert attrs.attr_doc("missing") is None
+
+
+def test_an_attribute_from_a_string_is_in_nixs_string(state: Any) -> None:
+    """Named as Nix names it, which the REPL's `:doc` prints."""
+    doc = state.eval_expr("{ foo = 1; }").attr_doc("foo")
+    assert doc is not None and doc.path() == "«string»" and doc.line() == 1
+
+
+def test_a_lambda_is_edited_where_it_is_defined(
+        state: Any, tmp_path: Any) -> None:
+    src = tmp_path / "edit.nix"
+    src.write_text("\n\nx: x\n")
+    where = state.eval_file(str(src)).edit_location()
+    assert (where.path(), where.line()) == (str(src), 3)
+
+
+def test_a_path_is_edited_as_the_whole_file(
+        state: Any, tmp_path: Any) -> None:
+    target = tmp_path / "some.nix"
+    target.write_text("1\n")
+    where = state.eval_expr(f"{target}").edit_location()
+    assert (where.path(), where.line()) == (str(target), 0)
+
+
+def test_a_lambda_from_a_string_cannot_be_edited(state: Any) -> None:
+    with pytest.raises(Exception, match="cannot be shown in an editor"):
+        state.eval_expr("x: x").edit_location()
 
 
 def test_a_lambda_doc_reports_a_source_that_went_away(
