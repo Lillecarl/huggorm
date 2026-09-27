@@ -667,3 +667,35 @@ describes all of `globalConfig`, which holds all three.
 `huggorm-bindings` carries Nix's `get-env.sh`. Nix compiles it into
 the `nix` binary, so no library holds it. The package copies it from
 the source of the Nix it links, as nanopynix-bindings does.
+
+## Documentation and editor locations
+
+`Value.doc` answers a `Doc`, or None, for any value. It answered a
+string before, and "" for no documentation. `getDoc` also documents a
+functor set, by applying `__functor`, so the function guard is gone
+and the body forces the value.
+
+`Value.attr_doc` answers where a set defines an attribute, and the
+doc comment there. `Value.edit_location` answers the file and line
+`nix edit` opens.
+
+A position's file is `huggorm::position_file`. For a string or stdin
+it answers Nix's own name, which `Pos::print` writes before the first
+':'. pynix prints that name in `:doc`, so None would show "None:1".
+
+Measured, not guessed: an anonymous lambda's `Doc.name` is "", not
+None, because `getDoc` sets it to an empty name. A doc comment's
+inner text keeps the newline after the comment.
+
+## The lane's memory
+
+The lane died at its 6 GB scope cap. Measured: each `pynix search`
+index build keeps about 90 MB, the same on both engines, and a forced
+collection between tests returns nothing. That is nanopynix#310, not
+this port. The lane now runs as two pytest runs.
+
+Lane, as `-k 'not (pynix and not nanopynix)'` and `-k 'pynix and not
+nanopynix'`: 2680 passed, 137 failed; peaks 2.7 GB and 3.7 GB, 18 min
+23 s together. Next by count: `Store.write_dev_shell_derivation` (9),
+then `Store.verify_store`, `Store.add_indirect_root` (3 each) and
+`Store.find_roots`.
