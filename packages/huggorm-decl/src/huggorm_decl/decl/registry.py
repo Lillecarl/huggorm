@@ -102,7 +102,8 @@ class RegistryWrite:
         that is not locked still moves when its branch does."""
 
 
-@needs("huggorm_decl/cpp/fetch.hpp", "nix/fetchers/registry.hh")
+@needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
+       "nix/fetchers/registry.hh")
 @threading("pool")
 @blocks
 def registry_entries(store: Store,
@@ -119,7 +120,8 @@ def registry_entries(store: Store,
     every later one. A write through this module does not reach a
     later listing; read the file."""
     Cxx("""
-auto fetch = huggorm::fetch_settings(settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
 std::vector<huggorm::RegistryEntry> out;
 for (auto & registry : nix::fetchers::getRegistries(*fetch, store))
     for (auto & entry : registry->entries)
@@ -138,8 +140,9 @@ return nix::fetchers::getUserRegistryPath().string();
     """)
 
 
-@needs("huggorm_decl/cpp/fetch.hpp", "nix/fetchers/registry.hh",
-       "nix/flake/flakeref.hh", "nix/util/source-path.hh")
+@needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
+       "nix/fetchers/registry.hh", "nix/flake/flakeref.hh",
+       "nix/util/source-path.hh")
 @threading("pool")
 @blocks
 def registry_add(path: Str | None, source: Str, target: Str,
@@ -152,7 +155,8 @@ def registry_add(path: Str | None, source: Str, target: Str,
     subdirectory, and Nix keeps that as the `dir` extra attribute. An
     entry replaces every earlier one for the same source."""
     Cxx("""
-auto fetch = huggorm::fetch_settings(settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(*fetch, source, dir);
@@ -173,8 +177,9 @@ return huggorm::RegistryWrite{file.string(), removed, to.input.to_string(), std:
     """)
 
 
-@needs("huggorm_decl/cpp/fetch.hpp", "nix/fetchers/registry.hh",
-       "nix/flake/flakeref.hh", "nix/util/source-path.hh")
+@needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
+       "nix/fetchers/registry.hh", "nix/flake/flakeref.hh",
+       "nix/util/source-path.hh")
 @threading("pool")
 @blocks
 def registry_remove(path: Str | None, source: Str,
@@ -185,7 +190,8 @@ def registry_remove(path: Str | None, source: Str,
     Whole references compare, so `nixpkgs` does not remove an entry
     written for `nixpkgs/nixos-unstable`."""
     Cxx("""
-auto fetch = huggorm::fetch_settings(settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(*fetch, source, dir);
@@ -201,8 +207,9 @@ return huggorm::RegistryWrite{file.string(), removed, std::nullopt, std::nullopt
     """)
 
 
-@needs("huggorm_decl/cpp/fetch.hpp", "nix/fetchers/registry.hh",
-       "nix/flake/flakeref.hh", "nix/util/source-path.hh")
+@needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
+       "nix/fetchers/registry.hh", "nix/flake/flakeref.hh",
+       "nix/util/source-path.hh")
 @threading("pool")
 @blocks
 def registry_pin(store: Store, path: Str | None, source: Str,
@@ -215,7 +222,8 @@ def registry_pin(store: Store, path: Str | None, source: Str,
     through the registry names a branch, and only the fetch turns it
     into a revision."""
     Cxx("""
-auto fetch = huggorm::fetch_settings(settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(*fetch, source, dir);

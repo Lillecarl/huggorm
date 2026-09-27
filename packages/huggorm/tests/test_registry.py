@@ -92,7 +92,7 @@ def test_a_relative_path_parses_against_the_base(tmp_path: pathlib.Path) -> None
 
 def test_a_name_that_is_not_a_fetcher_setting_is_refused(
         tmp_path: pathlib.Path) -> None:
-    with pytest.raises(UsageError, match="not a fetcher setting"):
+    with pytest.raises(UsageError, match="not a setting this call takes"):
         registry_add(str(tmp_path / "r.json"), "a", "github:o/a",
                      settings={"pure-eval": "true"})
 
