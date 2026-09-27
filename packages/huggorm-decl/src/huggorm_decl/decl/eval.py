@@ -212,13 +212,16 @@ class Value:
     def size(self) -> I64:
         """Elements in a list, or attributes in an attribute set.
 
-        No `@guard`: it takes ONE arm and this accepts two."""
+        No `@guard`: it takes ONE arm and this accepts two. Anything
+        else raises the `TypeError` a guard raises, naming both."""
         Cxx("""
 if (self.get()->type<true>() == nix::nList)
     return static_cast<std::int64_t>(self.get()->listSize());
 if (self.get()->type<true>() == nix::nAttrs)
     return static_cast<std::int64_t>(self.get()->attrs()->size());
-throw std::runtime_error("value is not a list or an attribute set");
+throw nix::TypeError(self.state(), "expected %s or %s but found %s",
+                     nix::showType(nix::nList), nix::showType(nix::nAttrs),
+                     nix::showType(*self.get()));
         """)
 
     @guard("list")
@@ -261,11 +264,23 @@ return self.wrap(by_name[static_cast<std::size_t>(index)]->value);
 
     @guard("attrs")
     def get(self, name: Str) -> Value:
-        """One attribute by name. Raises when it is missing."""
+        """One attribute by name.
+
+        A missing one raises the `EvalError` that `{ ... }.name`
+        raises, with the suggestions Nix ranks from this set's names
+        (eval.cc:1438)."""
         Cxx("""
 const auto * attr = self.get()->attrs()->get(self.intern(name));
-if (attr == nullptr)
-    throw std::runtime_error("attribute '" + name + "' is missing");
+if (attr == nullptr) {
+    nix::StringSet names;
+    for (const auto & each : *self.get()->attrs())
+        names.insert(self.symbol(each.name));
+    auto suggestions = nix::Suggestions::bestMatches(names, name);
+    self.state()
+        .error<nix::EvalError>("attribute '%1%' missing", name)
+        .withSuggestions(suggestions)
+        .debugThrow();
+}
 return self.wrap(attr->value);
         """)
 

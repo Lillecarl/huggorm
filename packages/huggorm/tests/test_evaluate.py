@@ -53,6 +53,24 @@ def test_the_wrong_type_is_nix_s_own_type_error(state: Any) -> None:
         state.list_append(items, state.make_int(1))
 
 
+def test_a_size_of_neither_collection_is_a_type_error(state: Any) -> None:
+    from huggorm_bindings.errors import NixTypeError
+
+    with pytest.raises(NixTypeError,
+                       match="expected a list or a set but found an integer"):
+        state.eval_expr("1").size()
+
+
+def test_a_missing_attribute_is_nix_s_own_error(state: Any) -> None:
+    """The error `{ foo = 1; }.fo` raises, with the suggestion Nix
+    ranks from the set's own names."""
+    from huggorm_bindings.errors import EvalError
+
+    with pytest.raises(EvalError, match="attribute 'fo' missing") as caught:
+        state.eval_expr("{ foo = 1; bar = 2; }").get("fo")
+    assert "Did you mean foo?" in str(caught.value)
+
+
 def test_an_attribute_set_that_is_not_a_derivation_refuses(
         state: Any) -> None:
     from huggorm_bindings.errors import NixError
