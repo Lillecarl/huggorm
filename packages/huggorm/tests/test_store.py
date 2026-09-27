@@ -339,6 +339,24 @@ def test_a_store_with_no_filesystem_has_no_real_path(store: Store) -> None:
         store.real_path(StorePath(HELLO))
 
 
+def test_a_chroot_store_keeps_its_directories_under_its_root(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    assert chroot.root_dir() == tmp_path
+    assert chroot.state_dir() == tmp_path / "nix/var/nix"
+    assert chroot.log_dir() == tmp_path / "nix/var/log/nix"
+    assert chroot.real_store_dir() == tmp_path / "nix/store"
+    assert chroot.store_dir() == "/nix/store"
+    assert chroot.build_dir() == tmp_path / "nix/var/nix/builds"
+
+
+def test_a_store_with_no_filesystem_has_no_directories(store: Store) -> None:
+    assert store.root_dir() is None
+    assert store.state_dir() is None
+    assert store.log_dir() is None
+    assert store.real_store_dir() is None
+    assert store.build_dir() is None
+
+
 def test_a_store_answers_for_a_path_it_holds(
         chroot: Store, source: pathlib.Path,
         tmp_path: pathlib.Path) -> None:

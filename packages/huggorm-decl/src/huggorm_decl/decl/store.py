@@ -480,6 +480,65 @@ if (fs == nullptr)
         self.config.getHumanReadableURI());
 return fs->toRealPath(path);
         """)
+    # The directories below answer None, not `real_path`'s refusal:
+    # "this store has no state directory" is a fact about a daemon
+    # store, and a caller that lists a store's directories asks it of
+    # every kind.
+    @instant
+    @needs("nix/store/local-fs-store.hh")
+    def root_dir(self) -> Path | None:
+        """The directory a chroot store is rooted at, or None for a
+        store at its logical location or with no filesystem."""
+        Cxx("""
+auto * fs = dynamic_cast<nix::LocalFSStore *>(&self);
+if (fs == nullptr || !fs->config.rootDir.get())
+    return std::nullopt;
+return std::filesystem::path(*fs->config.rootDir.get()).string();
+        """)
+    @instant
+    @needs("nix/store/local-fs-store.hh")
+    def state_dir(self) -> Path | None:
+        """Where the store keeps its database, roots and profiles, or
+        None for a store with no filesystem."""
+        Cxx("""
+auto * fs = dynamic_cast<nix::LocalFSStore *>(&self);
+if (fs == nullptr)
+    return std::nullopt;
+return std::filesystem::path(fs->config.stateDir.get()).string();
+        """)
+    @instant
+    @needs("nix/store/local-fs-store.hh")
+    def log_dir(self) -> Path | None:
+        """Where the store keeps build logs, or None for a store with
+        no filesystem."""
+        Cxx("""
+auto * fs = dynamic_cast<nix::LocalFSStore *>(&self);
+if (fs == nullptr)
+    return std::nullopt;
+return std::filesystem::path(fs->config.logDir.get()).string();
+        """)
+    @instant
+    @needs("nix/store/local-fs-store.hh")
+    def real_store_dir(self) -> Path | None:
+        """Where the store's files really are, or None for a store with
+        no filesystem. Differs from `store_dir` for a chroot store."""
+        Cxx("""
+auto * fs = dynamic_cast<nix::LocalFSStore *>(&self);
+if (fs == nullptr)
+    return std::nullopt;
+return std::filesystem::path(fs->config.realStoreDir.get()).string();
+        """)
+    @instant
+    @needs("nix/store/local-store.hh")
+    def build_dir(self) -> Path | None:
+        """Where a local store runs its builds, or None for any other
+        kind of store: a daemon's builds run where the daemon says."""
+        Cxx("""
+auto * local = dynamic_cast<nix::LocalStore *>(&self);
+if (local == nullptr)
+    return std::nullopt;
+return local->config->getBuildDir().string();
+        """)
     # Nothing about PathInfo is here any more, and that is the whole
     # of tasks/056. It binds nix::ValidPathInfo, in `decl/pathinfo.py`
     # beside the header it comes from, and this file IMPORTS it. What
