@@ -2075,6 +2075,53 @@ def test_a_store_with_no_collector_refuses_to_collect() -> None:
         Store("dummy://").collect_garbage(GCOptions())
 
 
+def test_a_perm_root_is_a_link_the_store_registers(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    """The link points at the path, and `gcroots/auto` points at the
+    link, because the link is outside the store's own roots."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    link = tmp_path / "result"
+
+    assert chroot.add_perm_root(held, str(link)) == link
+    assert link.readlink() == pathlib.Path(chroot.print_store_path(held))
+    state = chroot.state_dir()
+    assert state is not None
+    auto = state / "gcroots/auto"
+    assert [entry.readlink() for entry in auto.iterdir()] == [link]
+
+
+def test_a_perm_root_must_be_absolute(chroot: Store) -> None:
+    """libstore's refusal, and the empty string, which it asserts on."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    with pytest.raises(NixError, match="not an absolute path"):
+        chroot.add_perm_root(held, "result")
+    with pytest.raises(NixError, match="must not be empty"):
+        chroot.add_perm_root(held, "")
+
+
+def test_a_store_with_no_filesystem_refuses_a_perm_root(
+        store: Store, tmp_path: pathlib.Path) -> None:
+    path = StorePath("00000000000000000000000000000000-a")
+    with pytest.raises(Unsupported, match="not supported by store"):
+        store.add_perm_root(path, str(tmp_path / "result"))
+
+
+def test_optimising_links_identical_files(chroot: Store) -> None:
+    """Two paths with the same contents share one inode after."""
+    first, second = (
+        chroot.add_to_store(name, b"same", CA.NAR, HashAlgorithm.SHA256)
+        for name in ("first", "second"))
+    files = [chroot.real_path(p) for p in (first, second)]
+    assert files[0].stat().st_ino != files[1].stat().st_ino
+
+    chroot.optimise_store()
+    assert files[0].stat().st_ino == files[1].stat().st_ino
+
+
+def test_a_store_that_cannot_optimise_does_nothing(store: Store) -> None:
+    store.optimise_store()
+
+
 def test_a_path_this_process_added_is_not_garbage(chroot: Store) -> None:
     """`RETURN_DEAD` answers nothing here, and that is the right answer.
 

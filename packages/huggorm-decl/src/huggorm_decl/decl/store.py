@@ -958,6 +958,40 @@ nix::GCResults results;
 gc->collectGarbage(options, results);
 return results;
         """)
+    @needs("nix/store/local-fs-store.hh")
+    def add_perm_root(self, path: StorePath, gc_root: Str) -> Path:
+        """Make `gc_root` a symlink to this path, and root the path
+        through it. `nix-store --add-root`.
+
+        A permanent root: it outlives this process, and removing the
+        symlink removes the root. libstore registers every link in
+        `gcroots/auto` as an indirect root, and answers the link in
+        canonical form.
+
+        `gc_root` must be absolute: libstore's `canonPath` refuses a
+        relative one. The empty string raises here, because
+        `canonPath` asserts on it and the assertion ends the process.
+
+        Only a store with a filesystem can hold one. Another store
+        raises "not supported by store", as `collect_garbage` does."""
+        Cxx("""
+auto * fs = dynamic_cast<nix::LocalFSStore *>(&self);
+if (fs == nullptr)
+    throw nix::Unsupported(
+        "operation 'add_perm_root' is not supported by store '%s'",
+        self.config.getHumanReadableURI());
+if (gc_root.empty())
+    throw nix::Error("a garbage collector root must not be empty");
+return fs->addPermRoot(path, gc_root).string();
+        """)
+    @cxx_name("optimiseStore")
+    def optimise_store(self) -> None:
+        """Hard-link identical files in the store together.
+        `nix-store --optimise`.
+
+        A store that cannot optimise does nothing and does not say so:
+        that is `nix::Store`'s own default. A daemon store asks the
+        daemon."""
 
     def follow_links_to_store(self, path: Str) -> Str:
         """Follow symlinks until the path lands in the store, and
