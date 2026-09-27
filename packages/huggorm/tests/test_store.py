@@ -1354,6 +1354,20 @@ def test_building_what_is_already_there_does_nothing(chroot: Store) -> None:
     assert set(chroot.query_all_valid_paths()) == before
 
 
+def test_a_validity_registration_is_what_dump_db_prints(
+        chroot: Store) -> None:
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    info = chroot.query_path_info(held)
+    printed = chroot.print_store_path(held)
+
+    full = chroot.make_validity_registration([held])
+    assert full.splitlines() == [
+        printed, info.nar_hash().base16(),
+        str(info.nar_size()), "", "0"]
+    bare = chroot.make_validity_registration([held], False, False)
+    assert bare.splitlines() == [printed, "", "0"]
+
+
 def test_a_map_return_is_a_dict(chroot: Store) -> None:
     """The first declared `dict[str, T]` over a bound class.
 

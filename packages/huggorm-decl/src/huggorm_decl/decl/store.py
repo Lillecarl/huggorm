@@ -452,6 +452,24 @@ nix::StorePathSet referrers;
 self.queryReferrers(path, referrers);
 return as_list(referrers);
         """)
+    def make_validity_registration(
+        self,
+        paths: list[StorePath],
+        show_derivers: Bint = True,
+        show_hash: Bint = True,
+    ) -> Str:
+        """These paths as `nix-store --dump-db` prints them, which is
+        what `nix-store --load-db` reads back.
+
+        Per path, a line each: the path; its NAR hash in base16 and
+        its size, when `show_hash`; its deriver, empty when it has
+        none or `show_derivers` is false; the number of references;
+        each reference. In store-path order, because Nix takes a
+        set."""
+        Cxx("""
+return self.makeValidityRegistration(as_set<nix::StorePathSet>(paths),
+                                     show_derivers, show_hash);
+        """)
     # A pathlib.Path, not a str, and the alias says so. The boundary
     # still carries a std::string; what changes above it is that this
     # answer names a file on THIS machine, so it is a path a caller
