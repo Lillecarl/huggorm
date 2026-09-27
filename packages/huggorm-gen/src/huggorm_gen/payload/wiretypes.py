@@ -15,6 +15,7 @@ two that drift.
 """
 
 import ast
+from collections.abc import Collection, Mapping
 
 # The manifest's shape, bumped whenever a consumer that reads an OLD
 # manifest would be wrong rather than merely missing something. The
@@ -280,6 +281,37 @@ def optional_value(type_str: str) -> str | None:
             f"{type_str}: a union of {len(rest)} types plus None has no wire "
             f"representation. Presence separates one type from nothing.")
     return rest[0]
+
+
+def adoptee(type_str: str,
+            adoptable: Collection[str]) -> tuple[str, bool] | None:
+    """The class a return of `type_str` adopts into a runner, and
+    whether None may stand in for it. None when nothing is adopted.
+
+    `X | None` adopts X when there is one, and passes None through:
+    the async wrapper writes no wrapper, the server fills no handle,
+    and the client reads an unset field as None. A union the wire
+    cannot spell adopts nothing here; `optional_value` refuses it
+    where the schema is built."""
+    if type_str in adoptable:
+        return type_str, False
+    try:
+        inner = optional_value(type_str)
+    except TypeError:
+        return None
+    if inner is None or inner not in adoptable:
+        return None
+    return inner, True
+
+
+def respell(type_str: str, spelling: Mapping[str, str]) -> str:
+    """`type_str` with its adopted class spelled as `spelling` says,
+    keeping `| None`: `Value | None` becomes `AsyncValue | None`."""
+    found = adoptee(type_str, spelling)
+    if found is None:
+        return type_str
+    name, optional = found
+    return f"{spelling[name]} | None" if optional else spelling[name]
 
 
 def entry_name(field_name: str) -> str:

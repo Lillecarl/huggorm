@@ -31,6 +31,8 @@ cannot carry, rather than pretending.
 
 from typing import Any
 
+from huggorm_gen.payload.wiretypes import adoptee
+
 Proto = dict[str, Any]
 
 PROTOCOL_MODULE = "protocols"
@@ -157,5 +159,6 @@ def check_adoptable(manifest: Proto, adoptable: set[str]) -> list[str]:
         for group in ("wrappers", "returned_types")
         for proto in manifest[group].values()
         for m in proto["methods"]
-        if m["return_type"] in wrapped and m["return_type"] not in adoptable
+        if (found := adoptee(m["return_type"], wrapped)) is not None
+        and found[0] not in adoptable
     ]

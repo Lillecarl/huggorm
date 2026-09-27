@@ -24,7 +24,7 @@ from huggorm_gen.cppgen.generate import (
     declared_returned,
     declared_unions,
 )
-from huggorm_gen.payload.wiretypes import names_in
+from huggorm_gen.payload.wiretypes import adoptee, names_in
 from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
@@ -296,7 +296,8 @@ def build_manifest() -> Proto:
     for proto in protos:
         if proto["threading"] == "pool":
             before = len(proto["methods"])
-            proto["methods"] = [m for m in proto["methods"] if m["return_type"] not in affine_bound]
+            proto["methods"] = [m for m in proto["methods"]
+                                if adoptee(m["return_type"], affine_bound) is None]
             dropped = before - len(proto["methods"])
             if dropped:
                 print(f"dropped {dropped} affine-returning method(s) "

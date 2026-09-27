@@ -565,9 +565,10 @@ class NixClient:
             self.codec.encode(req, a.name, a.type, val,
                               lambda obj: obj.handle_id)
         resp = await self._rpc(spec.path, req, spec.resp)
+        returned, _ = self.codec.split_optional(spec.returns)
         return self.codec.decode(
             resp, "result", spec.returns,
-            lambda hid: self.proxy(spec.returns, hid))
+            lambda hid: self.proxy(returned, hid))
 
     async def invoke(self, m: Call, handle_id: str | None,
                      args: list[Any]) -> Any:
@@ -601,9 +602,10 @@ class NixClient:
 
         # Proxies stay remote behind a handle; values come back as real
         # local objects.
+        returned, _ = self.codec.split_optional(m.returns)
         return self.codec.decode(
             resp, "result", m.returns,
-            lambda hid: self.proxy(m.returns, hid))
+            lambda hid: self.proxy(returned, hid))
 
 
 @contextlib.asynccontextmanager

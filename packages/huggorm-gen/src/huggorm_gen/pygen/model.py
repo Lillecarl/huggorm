@@ -23,6 +23,7 @@ from typing import Any, get_args, get_origin
 
 from huggorm_gen.payload.wiretypes import (
     CONTAINERS,
+    adoptee,
     head,
     list_value,
     map_value,
@@ -367,7 +368,7 @@ def check_wrap_contract(protos: list[Proto]) -> list[str]:
                 f"{proto['name']}: an unwrapped class must be threading "
                 f"'pool', not {proto['threading']!r}")
         for m in proto["methods"]:
-            if m["return_type"] in wrapped:
+            if adoptee(m["return_type"], wrapped) is not None:
                 bad.append(
                     f"{proto['name']}.{m['name']} returns {m['return_type']}, "
                     f"which needs a wrapper. An unwrapped class cannot "
@@ -377,36 +378,22 @@ def check_wrap_contract(protos: list[Proto]) -> list[str]:
 
 
 def check_optional_contract(protos: list[Proto]) -> list[str]:
-    """An optional return may name a value, never a wrapped type.
+    """An optional return names one type and None.
 
     `T | None` works because a protobuf message field has presence, so
-    the wire needs nothing new. What has no answer is the layer above
-    it: every layer adopts a wrapped return into a runner - the async
-    wrapper writes `AsyncX(result, self._runner)`, the server puts a
-    handle, the client builds a proxy - and none of them adopts
-    nothing.
-
-    grpc_schema already refuses it for the WIRE, but that would leave
-    the in-process wrapper handing back a bare sync object with no
-    runner attached: accepted, built, and wrong at the first await.
-    So it is refused here, for every surface at once.
+    the wire needs nothing new. A wrapped T is adopted when it is there
+    and None passes through: the async wrapper writes no wrapper, the
+    server fills no handle, and the client reads an unset field as
+    None (`wiretypes.adoptee`).
 
     Returns a list of complaints; empty means the contract holds."""
-    wrapped = {p["name"] for p in protos if p["wrapped"]}
     bad = []
     for proto in protos:
         for m in proto["methods"]:
             try:
-                inner = optional_value(m["return_type"])
+                optional_value(m["return_type"])
             except TypeError as e:
                 bad.append(f"{proto['name']}.{m['name']}: {e}")
-                continue
-            if inner is not None and inner in wrapped:
-                bad.append(
-                    f"{proto['name']}.{m['name']} returns {m['return_type']}, "
-                    f"and {inner} needs a runner attached. Every layer adopts "
-                    f"one object and none of them adopts nothing. Raise "
-                    f"instead, or return a wire value.")
     return bad
 
 
@@ -433,8 +420,8 @@ def check_collection_contract(protos: list[Proto]) -> list[str]:
     for proto in protos:
         for m in proto["methods"]:
             rt = m["return_type"]
-            if rt in wrapped:
-                continue  # a single wrapped object is the supported case
+            if adoptee(rt, wrapped) is not None:
+                continue  # one wrapped object, or None, is the supported case
             for named in sorted(names_in(rt) & wrapped):
                 bad.append(
                     f"{proto['name']}.{m['name']} returns {rt}, a collection "

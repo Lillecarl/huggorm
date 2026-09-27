@@ -196,12 +196,13 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     real presence - so the old refusal described what this schema
     builder emitted rather than what proto3 can say (tasks/048).
 
-    The refusal that matters most is a WRAPPED T. The wire could
-    almost carry it - a Handle is a message - but every layer above
-    adopts a returned proxy into a runner, and none of them adopts
-    nothing. That one is refused for every surface at once rather than
-    only for the wire."""
-    from huggorm_gen.payload.wiretypes import optional_value
+    A WRAPPED T is allowed too. A Handle is a message, so the wire has
+    presence already, and every layer adopts T when it is there and
+    passes None through. The emitted async body is checked here,
+    because a body that adopts None builds a wrapper around nothing
+    and fails only at the first await on it."""
+    from huggorm_gen.payload.wiretypes import adoptee, optional_value, respell
+    from huggorm_gen.pygen.emitter import _append_hop_method
     from huggorm_gen.pygen.grpc_schema import wire_blocker
     from huggorm_gen.pygen.model import check_optional_contract
 
@@ -220,20 +221,36 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
 
     kinds = {"StorePath": "value", "Store": "proxy", "Word": "enum"}
     for good in ("StorePath | None", "str | None", "int | None",
-                 "Word | None"):
+                 "Word | None", "Store | None"):
         assert wire_blocker(good, kinds) is None, good
-    for bad, why in (("list[StorePath] | None", "IS an empty one"),
-                     ("Store | None", "adopts nothing")):
-        blocker = wire_blocker(bad, kinds)
-        assert blocker is not None and why in blocker, (bad, blocker)
+    blocker = wire_blocker("list[StorePath] | None", kinds)
+    assert blocker is not None and "IS an empty one" in blocker, blocker
+
+    assert adoptee("Store", {"Store"}) == ("Store", False)
+    assert adoptee("Store | None", {"Store"}) == ("Store", True)
+    assert adoptee("list[Store]", {"Store"}) is None
+    assert adoptee("str | int", {"Store"}) is None
+    assert respell("Store | None", {"Store": "AsyncStore"}) == "AsyncStore | None"
+    assert respell("str", {"Store": "AsyncStore"}) == "str"
+
+    cls = ast.ClassDef(name="AsyncProbe", bases=[], keywords=[], body=[],
+                       decorator_list=[], type_params=[])
+    method = {"name": "find", "return_type": "Store | None", "params": [],
+              "doc": ""}
+    _append_hop_method(cls, {}, method, "Probe", set(), {"Store": "affine"}, {})
+    emitted = ast.unparse(ast.fix_missing_locations(cls))
+    assert "return None if result is None else AsyncStore(result, self._runner)" \
+        in emitted, emitted
+    assert "-> AsyncStore | None" in emitted, emitted
 
     def proto(rt: str) -> dict[str, object]:
         return {"name": "Probe", "wrapped": True, "threading": "pool",
                 "methods": [{"name": "find", "return_type": rt, "params": []}]}
 
     assert check_optional_contract([proto("StorePath | None")]) == []
-    complaints = check_optional_contract([proto("Probe | None")])
-    assert len(complaints) == 1 and "adopts nothing" in complaints[0]
+    assert check_optional_contract([proto("Probe | None")]) == []
+    complaints = check_optional_contract([proto("str | int")])
+    assert len(complaints) == 1 and "no wire representation" in complaints[0]
 
 
 def test_runtime_contract(out: pathlib.Path) -> None:
@@ -1101,7 +1118,8 @@ def test_conformance(out: pathlib.Path) -> None:
         protocol mentions no type that differs by location);
       - a return is identical in all three, unless the protocol names
         another protocol - then each implementation must return ITS
-        form of that same class."""
+        form of that same class, or of that class or None."""
+    from huggorm_gen.payload.wiretypes import adoptee, respell
     from huggorm_gen.pygen.generate import build_manifest
 
     manifest = build_manifest()
@@ -1187,10 +1205,10 @@ def test_conformance(out: pathlib.Path) -> None:
                 if not sig["is_async"]:
                     failures.append(f"{cls_name}.{m}: {label} is not async")
                 expected = want["returns"]
-                if expected in speaks_for:
-                    other = wrapped[speaks_for[expected]]
-                    expected = other["async_class"] if label == "in-process" \
-                        else other["rpc_class"]
+                if adoptee(expected, speaks_for) is not None:
+                    side = "async_class" if label == "in-process" else "rpc_class"
+                    expected = respell(expected, {
+                        p: wrapped[c][side] for p, c in speaks_for.items()})
                 elif label == "in-process":
                     # A declared async twin is the same value in the
                     # other spelling - anyio.Path wraps a pathlib.Path

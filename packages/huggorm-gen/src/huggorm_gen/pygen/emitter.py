@@ -11,9 +11,11 @@ from typing import Any
 
 from huggorm_gen.payload.wiretypes import (
     SCALAR_NAMES,
+    adoptee,
     dotted_heads,
     names_in,
     python_spelling,
+    respell,
 )
 
 # One class, method or function as a plain dict. See model.Proto.
@@ -108,8 +110,8 @@ def _return_ann(rt: str, bound_policies: dict[str, str],
     Three answers. A proxy is adopted into its Async form. A type with
     a declared async twin is handed back as the twin - same value,
     awaitable methods. Everything else is itself."""
-    if rt in bound_policies:
-        return f"Async{rt}"
+    if adoptee(rt, bound_policies) is not None:
+        return respell(rt, {n: f"Async{n}" for n in bound_policies})
     return twins.get(rt, rt)
 
 
@@ -703,16 +705,23 @@ def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
     if m["doc"]:
         body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
     rt = m["return_type"]
-    if rt in bound_policies:
+    if (adopted := adoptee(rt, bound_policies)) is not None:
         # Adopt the produced object instead of returning it raw.
+        name, optional = adopted
         body.append(ast.Assign(
             targets=[ast.Name(id="result")],
             value=ast.Await(value=_hop_call(m["name"], m["params"]))))
-        body.append(ast.Return(value=ast.Call(
-            func=ast.Name(id=f"Async{rt}"),
+        wrapped: ast.expr = ast.Call(
+            func=ast.Name(id=f"Async{name}"),
             args=[ast.Name(id="result"),
                   ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
-            keywords=[])))
+            keywords=[])
+        if optional:
+            wrapped = ast.IfExp(
+                test=ast.Compare(left=ast.Name(id="result"), ops=[ast.Is()],
+                                 comparators=[ast.Constant(value=None)]),
+                body=ast.Constant(value=None), orelse=wrapped)
+        body.append(ast.Return(value=wrapped))
     elif rt in twins:
         # Same value, other spelling. anyio.Path takes any path-like,
         # so the wrapper constructs one rather than casting: a cast
@@ -773,7 +782,8 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     # A forward hands back Any; the declared type is the manifest's
     # claim, and cast is where it gets made. Adopted returns build a
     # real object instead, and None returns do not return.
-    if any(m["return_type"] != "None" and m["return_type"] not in bound_policies
+    if any(m["return_type"] != "None"
+           and adoptee(m["return_type"], bound_policies) is None
            for m in proto["methods"]):
         typing_names.add("cast")
     if typing_names:
@@ -1020,7 +1030,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
     defined = {protocol_name(p["name"]) for p in ordered}
 
     def ret_ann(rt: str) -> str:
-        return protocol_name(rt) if rt in adoptable else rt
+        return respell(rt, {n: protocol_name(n) for n in adoptable})
 
     annotations: list[str] = []
     defaults: list[str] = []
@@ -1241,7 +1251,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         for m in (m for m in proto["methods"] if "rpc" in m):
             annotations += [ann.get(p["type"], p["type"]) for p in m["params"]]
             defaults += _default_names(m["params"])
-            annotations.append(ann.get(m["return_type"], m["return_type"]))
+            annotations.append(respell(m["return_type"], ann))
 
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(ast.Expr(value=ast.Constant(value=(
@@ -1372,13 +1382,13 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
                     ast.Attribute(value=ast.Name(id="self"), attr="handle_id"),
                     ast.List(elts=[ast.Name(id=p["name"]) for p in m["params"]]),
                 ],
-                keywords=[]), ann.get(m["return_type"], m["return_type"])))
+                keywords=[]), respell(m["return_type"], ann)))
             cls.body.append(ast.AsyncFunctionDef(
                 name=m["name"],
                 args=_params(m, name, ann),
                 body=body,
                 decorator_list=[],
-                returns=_ann(ann.get(m["return_type"], m["return_type"]),
+                returns=_ann(respell(m["return_type"], ann),
                              f"{name}.{m['name']}"),
                 type_params=[]))
 

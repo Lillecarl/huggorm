@@ -277,11 +277,6 @@ def wire_blocker(type_str: str, kinds: dict[str, str],
                 return (f"{type_str}: a repeated field has no presence and "
                         f"needs none - an absent container IS an empty one. "
                         f"Declare {inner} and return it empty.")
-            if kinds.get(inner) == "proxy":
-                return (f"{type_str}: a proxy return is adopted into a "
-                        f"wrapper by every layer, and none of them adopts "
-                        f"nothing. Absence would arrive as an object that is "
-                        f"not one.")
             type_str = inner
         value_type = map_value(type_str)
         item_type = list_value(type_str)
