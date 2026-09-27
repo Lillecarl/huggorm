@@ -283,3 +283,17 @@ def test_a_store_uri_renders_as_nix_normalises_it() -> None:
     uri = "local?root=/tmp/x"
     assert render_store_reference(uri) == "local://?root=/tmp/x"
     assert render_store_reference(uri, with_params=False) == "local://"
+
+
+def test_a_flake_setting_from_the_config_is_read() -> None:
+    """`accept-flake-config` is a `flake::Settings` member. Without a
+    registration nix.conf's line goes to `unknownSettings`, and the
+    name is unknown to the process. `get_setting` lists no setting
+    whose feature is off, so the feature is on too."""
+    probe = ("from huggorm_bindings import get_setting, load_config;"
+             "load_config(); print(get_setting('accept-flake-config'))")
+    env = {**os.environ, "NIX_CONFIG": "experimental-features = flakes\n"
+                                       "accept-flake-config = true"}
+    out = subprocess.run([sys.executable, "-c", probe], env=env,
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "true"

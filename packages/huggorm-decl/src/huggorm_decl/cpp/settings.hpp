@@ -4,16 +4,18 @@
  * The settings objects nix.conf fills in for an evaluator.
  *
  * `nix::settings` registers itself on `globalConfig` from libstore, so
- * the store reads nix.conf with no help. `EvalSettings` and
- * `fetchers::Settings` do not: `nix` registers them from libcmd
- * (`common-eval-args.cc`), which this repo does not link. With no
- * registration, `loadConfFile` puts `pure-eval`, `nix-path`,
- * `restrict-eval` and every fetcher setting in
- * `globalConfig.unknownSettings`, and nothing reads them again. Nothing
- * warns either: `warnUnknownSettings` is called from libmain.
+ * the store reads nix.conf with no help. `EvalSettings`,
+ * `fetchers::Settings` and `flake::Settings` do not: `nix` registers
+ * them from libcmd (`common-eval-args.cc`), which this repo does not
+ * link. With no registration, `loadConfFile` puts `pure-eval`,
+ * `nix-path`, `restrict-eval`, `accept-flake-config` and every fetcher
+ * setting in `globalConfig.unknownSettings`, and nothing reads them
+ * again. Nothing warns either: `warnUnknownSettings` is called from
+ * libmain.
  *
- * So these two are registered here, the way libcmd does it, and each
- * `Evaluator` copies what the file set onto its own pair (tasks/097).
+ * So these three are registered here, the way libcmd does it, and each
+ * `Evaluator` copies what the file set onto its own eval and fetcher
+ * pair (tasks/097).
  *
  * A registration after `loadConfFile` sees nothing. `Config::addSetting`
  * consults the config's OWN unknown map, and the values sit in
@@ -37,6 +39,7 @@
 #include "nix/expr/eval-settings.hh"
 #include "nix/expr/eval.hh"
 #include "nix/fetchers/fetch-settings.hh"
+#include "nix/flake/settings.hh"
 #include "nix/store/globals.hh"
 #include "nix/util/config-global.hh"
 #include "nix/util/configuration.hh"
@@ -48,6 +51,9 @@ struct ConfiguredSettings
 {
     nix::fetchers::Settings fetch;
     nix::EvalSettings eval{nix::settings.readOnlyMode};
+    // Registered so nix.conf reaches it; `call_settings` copies it for
+    // one `lock_flake`. No state holds one.
+    nix::flake::Settings flake;
 };
 
 inline ConfiguredSettings & configured_settings()
@@ -62,6 +68,7 @@ inline void register_configured_settings()
         auto & configured = configured_settings();
         static const nix::GlobalConfig::Register fetch(&configured.fetch);
         static const nix::GlobalConfig::Register eval(&configured.eval);
+        static const nix::GlobalConfig::Register flake(&configured.flake);
         nix::globalConfig.reapplyUnknownSettings();
         return true;
     }();
