@@ -730,3 +730,30 @@ Part A's scope peaked at 5.1 GB, then 4.0 GB on a second run with the
 same 70 failures; it was 2.7 GB before. The pytest process's RSS stays
 under 957 MB, so the peak and its spread come from outside that
 process. Part B peaked at 4.1 GB.
+
+## A Python callable as a Nix function
+
+`EvalState.make_primop` answers an anonymous primop value, so a primop
+implemented in Python can return a function. nanopynix's ipaddress
+primops return sets of them. `register_primop` and `make_primop` share
+one body, the `primop_impl` helper, which names the function in its
+errors: `builtins.<name>` for a registered one, the given name for a
+made one.
+
+The callable lives on the core, as a registered one does, so the
+collector sees it through `evaluator_tp_traverse`. It lives as long as
+the state, so a primop that makes a function on every call grows the
+state by one callable each time. nanopynix-bindings keeps every such
+callable in a process-wide registry, so this is no worse.
+
+Arity 0 is refused. nanopynix's adapter calls a callable with no
+parameters at once, as the other engine does.
+
+Proved by breaks: the `builtins.` label, no arity guard, and an extra
+reference to the callable turned 3 tests red.
+
+Lane: 2700 passed, 117 failed (1824/62 and 876/55), 16 min 36 s; both
+scopes peaked at 4.6 GB. The 8 ipaddress tests are the whole
+difference, and no `NotPortedError` is left. The remaining failures
+are small groups, the largest 8 tests: "value is not a list or an
+attribute set", from nanopynix's `test_scalar_accessor_semantics`.
