@@ -619,3 +619,8 @@ build tests:
   other engine's binding wrote it (`nix_expr.cpp:586`), and pynix's
   test calls it Nix's message. huggorm says "the value is not a
   derivation".
+
+Lane with the flake builtins: 2642 passed, 150 failed, 31 errors,
+17 min 11 s. The time grows because the tests that import nixpkgs now
+evaluate it. Next by count: `EvalState.set_eval_setting` (7),
+`Store.dump_db` (5).
