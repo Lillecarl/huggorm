@@ -1051,6 +1051,7 @@ state.forceValue(*made, made->determinePos(nix::noPos));
 return self.wrap(made);
         """)
 
+    @needs("nix/cmd/common-eval-args.hh")
     def eval_file(self, path: Str) -> Value:
         """`EvalState.eval_file`, in this scope: the file sees the
         bindings, as an expression does. Not cached, because the
@@ -1058,19 +1059,20 @@ return self.wrap(made);
         Cxx("""
 auto & state = self.state();
 auto * made = state.allocValue();
-state.parseExprFromFile(nix::resolveExprPath(state.rootPath(path)), self.static_env)
+state.parseExprFromFile(nix::resolveExprPath(nix::lookupFileArg(state, path)), self.static_env)
     ->eval(state, **self.env, *made);
 state.forceValue(*made, made->determinePos(nix::noPos));
 return self.wrap(made);
         """)
 
+    @needs("nix/cmd/common-eval-args.hh")
     def load_file(self, path: Str) -> Value:
         """What `:load` adds: the file, called with no arguments when
         it is a function. Nothing is added; `add_attrs` adds it."""
         Cxx("""
 auto & state = self.state();
 nix::Value loaded;
-state.evalFile(state.rootPath(path), loaded);
+state.evalFile(nix::lookupFileArg(state, path), loaded);
 auto * made = state.allocValue();
 state.autoCallFunction(*state.buildBindings(0).finish(), loaded, *made);
 return self.wrap(made);
@@ -1246,6 +1248,7 @@ self.state().forceValue(*made, nix::noPos);
 return self.wrap(made);
         """)
 
+    @needs("nix/cmd/common-eval-args.hh")
     def eval_file(self, path: Str) -> Value:
         """Evaluate a file, and remember it.
 
@@ -1265,10 +1268,10 @@ return self.wrap(made);
         server's filesystem, and no client path crosses - the argument
         goes as the string it is.
 
-        `rootPath` takes a relative path too, and resolves it against
-        the process's own directory. Left to libexpr rather than
-        refused here: a caller who passes one gets upstream's answer,
-        which is the same answer `nix-instantiate` gives them.
+        `path` is what `nix eval --file` takes, read by libcmd's
+        `lookupFileArg`: `<nixpkgs>` from the lookup path, `flake:x`,
+        a tarball URL, or a path. A relative path resolves against the
+        process's own directory.
 
         Forced to WHNF, like every other `evalFile` caller: upstream
         forces the thunk before it hands the value back. Not deeply -
@@ -1278,7 +1281,7 @@ return self.wrap(made);
 if (path.empty())
     throw std::invalid_argument("empty path");
 auto * made = self.alloc();
-self.state().evalFile(self.state().rootPath(path), *made);
+self.state().evalFile(nix::lookupFileArg(self.state(), path), *made);
 return self.wrap(made);
         """)
 
@@ -2110,14 +2113,14 @@ return nix::EvalSettings::isPseudoUrl(value);
     """)
 
 
-@needs("huggorm_decl/cpp/settings.hpp")
+@needs("nix/cmd/common-eval-args.hh")
 def current_system() -> Str:
     """The system `builtins.currentSystem` answers, process-wide.
 
     `eval-system`, or the machine's `system` when that is empty. An
     `EvalState` built with its own `eval-system` answers its own."""
     Cxx("""
-return huggorm::configured_settings().eval.getCurrentSystem();
+return nix::evalSettings.getCurrentSystem();
     """)
 
 
@@ -2139,17 +2142,6 @@ def boehm_gc() -> Bint:
     Cxx("""
 return static_cast<bool>(NIX_USE_BOEHMGC);
     """)
-
-
-@needs("huggorm_decl/cpp/settings.hpp")
-@binds("huggorm::register_configured_settings")
-@startup
-def _settings_init() -> None:
-    """Register the evaluator and fetcher settings, once, at import.
-
-    So `get_setting("pure-eval")` answers before any state exists. An
-    `Evaluator` also registers them on construction, and whichever
-    comes first does the work."""
 
 
 @needs("huggorm_decl/cpp/logging.hpp")

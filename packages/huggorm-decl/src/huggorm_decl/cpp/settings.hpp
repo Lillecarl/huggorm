@@ -3,30 +3,15 @@
 /**
  * The settings objects nix.conf fills in for an evaluator.
  *
- * `nix::settings` registers itself on `globalConfig` from libstore, so
- * the store reads nix.conf with no help. `EvalSettings`,
- * `fetchers::Settings` and `flake::Settings` do not: `nix` registers
- * them from libcmd (`common-eval-args.cc`), which this repo does not
- * link. With no registration, `loadConfFile` puts `pure-eval`,
- * `nix-path`, `restrict-eval`, `accept-flake-config` and every fetcher
- * setting in `globalConfig.unknownSettings`, and nothing reads them
- * again. Nothing warns either: `warnUnknownSettings` is called from
- * libmain.
+ * libcmd's own: `nix::evalSettings`, `nix::fetchSettings` and
+ * `nix::flakeSettings`, which `common-eval-args.cc` registers on
+ * `globalConfig` when the library loads, as the `nix` CLI has them.
+ * Each `Evaluator` copies what the file set onto its own eval and
+ * fetcher pair (tasks/097).
  *
- * So these three are registered here, the way libcmd does it, and each
- * `Evaluator` copies what the file set onto its own eval and fetcher
- * pair (tasks/097).
- *
- * A registration after `loadConfFile` sees nothing. `Config::addSetting`
- * consults the config's OWN unknown map, and the values sit in
- * `globalConfig`'s. `reapplyUnknownSettings` sends them through
- * `set` again, which is what `plugin.cc` does after a plugin registers.
- * That makes the order of the store module's `initLibStore` and this
- * startup irrelevant.
- *
- * Function-local statics, and only `eval` includes this header. A
- * second module including it would register a second copy in its own
- * shared object.
+ * NOT a second registered copy. `GlobalConfig::set` stops at the first
+ * registered object that takes a name, so a copy registered after
+ * libcmd's never sees a value.
  */
 
 #include <map>
@@ -36,6 +21,7 @@
 // forward-declares it.
 #include <nlohmann/json.hpp>
 
+#include "nix/cmd/common-eval-args.hh"
 #include "nix/expr/eval-settings.hh"
 #include "nix/expr/eval.hh"
 #include "nix/fetchers/fetch-settings.hh"
@@ -45,35 +31,6 @@
 #include "nix/util/configuration.hh"
 
 namespace huggorm {
-
-/** What nix.conf and NIX_CONFIG say, and never handed to a state. */
-struct ConfiguredSettings
-{
-    nix::fetchers::Settings fetch;
-    nix::EvalSettings eval{nix::settings.readOnlyMode};
-    // Registered so nix.conf reaches it; `call_settings` copies it for
-    // one `lock_flake`. No state holds one.
-    nix::flake::Settings flake;
-};
-
-inline ConfiguredSettings & configured_settings()
-{
-    static ConfiguredSettings configured;
-    return configured;
-}
-
-inline void register_configured_settings()
-{
-    static bool done = [] {
-        auto & configured = configured_settings();
-        static const nix::GlobalConfig::Register fetch(&configured.fetch);
-        static const nix::GlobalConfig::Register eval(&configured.eval);
-        static const nix::GlobalConfig::Register flake(&configured.flake);
-        nix::globalConfig.reapplyUnknownSettings();
-        return true;
-    }();
-    (void) done;
-}
 
 /**
  * Set on `target` every value the file set on `source`.
@@ -108,10 +65,8 @@ using Settings = std::map<std::string, std::string>;
  */
 inline bool apply_configured(nix::fetchers::Settings & fetch, nix::EvalSettings & eval, const Settings & own)
 {
-    register_configured_settings();
-    auto & configured = configured_settings();
-    replay_overridden(fetch, configured.fetch);
-    replay_overridden(eval, configured.eval);
+    replay_overridden(fetch, nix::fetchSettings);
+    replay_overridden(eval, nix::evalSettings);
     for (auto & [name, value] : own)
         if (!eval.set(name, value) && !fetch.set(name, value))
             throw nix::UsageError("'%s' is not an evaluator or fetcher setting", name);

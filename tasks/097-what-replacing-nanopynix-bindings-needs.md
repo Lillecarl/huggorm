@@ -540,3 +540,18 @@ still passed, twice: once on this thread, and once with the scope
 made on a thread that exited. The finalizer count is what the other
 engine settled on for issue #70, for the same reason. With the count,
 the broken root fails: `assert 16 == 15`, the held scope freed.
+
+## Linking libcmd
+
+A file argument is what `nix eval --file` takes: `<nixpkgs>`,
+`flake:x`, a tarball URL, or a path. `lookupFileArg` reads it, in
+libcmd. Carl chose to link libcmd over a copy of its four branches.
+`EvalState.eval_file`, `Repl.eval_file` and `Repl.load_file` call it.
+
+libcmd registers its own `evalSettings`, `fetchSettings` and
+`flakeSettings` on `globalConfig` when it loads. `settings.hpp`
+registered a second copy of each, and five settings tests failed:
+`GlobalConfig::set` stops at the first object that takes a name, so
+the copies never saw a value. huggorm now reads libcmd's objects, as
+the `nix` CLI does, and `_settings_init` is gone: the registration
+happens at load, before anything can read nix.conf.

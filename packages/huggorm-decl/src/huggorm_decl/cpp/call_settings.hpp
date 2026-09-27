@@ -3,12 +3,9 @@
 /**
  * A settings object for one call, outside any evaluator.
  *
- * Not `settings.hpp`. That header owns the process's registered copies,
- * and a function-local static in a second extension module is a second
- * copy that nothing registers. This one registers nothing: it reads
- * what `globalConfig` holds, and the `eval` module registers the
- * evaluator, fetcher and flake settings there at import
- * (`_settings_init`), before any other module of the package can run.
+ * It registers nothing: it reads what `globalConfig` holds, where
+ * libcmd registers the evaluator, fetcher and flake settings when it
+ * loads (`settings.hpp`).
  */
 
 #include <map>

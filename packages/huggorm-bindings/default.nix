@@ -17,6 +17,9 @@
   nix-expr,
   nix-fetchers,
   nix-flake,
+  # For `lookupFileArg`, which resolves `<nixpkgs>`, `flake:x` and a
+  # tarball URL as `nix eval --file` does. It lives in libcmd.
+  nix-cmd,
   pkg-config,
   ...
 }:
@@ -27,6 +30,7 @@ let
     nix-expr
     nix-fetchers
     nix-flake
+    nix-cmd
   ];
 in
 python3Packages.buildPythonPackage {

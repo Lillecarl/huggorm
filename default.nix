@@ -116,6 +116,7 @@ rec {
       nix-expr
       nix-fetchers
       nix-flake
+      nix-cmd
       ;
   };
   # this is a Python library that uses huggorm-bindings

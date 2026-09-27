@@ -100,6 +100,19 @@ def test_a_file_sees_the_bindings(repl: Repl, tmp_path: pathlib.Path) -> None:
     assert repl.eval_file(str(tmp_path)).integer() == 42
 
 
+def test_a_file_is_found_in_the_lookup_path(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "expressions").mkdir()
+    (tmp_path / "expressions" / "default.nix").write_text("x + 1")
+    (tmp_path / "plain.nix").write_text("{ y ? 1 }: y")
+    lookup = f"example={tmp_path / 'expressions'} plain={tmp_path / 'plain.nix'}"
+    state = EvalState(Store(str(tmp_path / "store")), {"nix-path": lookup})
+    repl = state.repl()
+    repl.process_line("x = 41")
+    assert repl.eval_file("<example>").integer() == 42
+    assert state.eval_file("<plain>").type_name() == "function"
+    assert repl.load_file("<plain>").integer() == 1
+
+
 def test_a_loaded_file_is_called_and_not_added(
         repl: Repl, tmp_path: pathlib.Path) -> None:
     (tmp_path / "default.nix").write_text("{ value ? 41 }: { answer = value + 1; }")
