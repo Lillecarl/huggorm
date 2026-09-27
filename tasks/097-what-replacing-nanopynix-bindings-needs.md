@@ -493,3 +493,11 @@ that is not a set, and huggorm raises a bare `RuntimeError` ("value is
 not attrs") where the other engine raises Nix's own type error from
 `forceAttrs`. That is an error-type gap in every `Value` accessor, not
 a flake one.
+
+Closed the same day: `errors.py` declares `EvalError` and
+`NixTypeError`, and the emitted guard throws `nix::TypeError` with
+`forceAttrs`'s words ("expected a set but found an integer"). An
+evaluation failure now crosses as `EvalError`, not the root
+`NixError`, which two smoke checks and three tests had pinned.
+nanopynix maps an engine error through its MRO. Lane: 2432 passed,
+276 failed, 107 errors.
