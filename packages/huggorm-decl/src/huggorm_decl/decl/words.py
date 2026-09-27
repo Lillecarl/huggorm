@@ -390,3 +390,35 @@ class GCAction:
     points at survives, so this asks rather than orders - `nix-store
     --delete` is the same operation and fails loudly on a path with
     referrers."""
+
+
+@header("nix/fetchers/registry.hh")
+@words(
+    # No `parsed_by`: nothing upstream parses a layer from a string.
+    # `nix registry list` prints a padded column of its own, so these
+    # words are the enumerators' names, lower case.
+    enumerated=Enumerated(
+        "nix::fetchers::Registry::RegistryType",
+        spelled={"FLAG": "Flag", "USER": "User", "SYSTEM": "System",
+                 "GLOBAL": "Global", "CUSTOM": "Custom"},
+    ),
+)
+class RegistryType:
+    """Which layer of the flake registry an entry comes from.
+
+    Nix consults them in this order, and the first match wins."""
+
+    FLAG = "flag"
+    """`--override-flake` on a command line."""
+
+    USER = "user"
+    """`~/.config/nix/registry.json`."""
+
+    SYSTEM = "system"
+    """`/etc/nix/registry.json`."""
+
+    GLOBAL = "global"
+    """The file the `flake-registry` setting names, usually a URL."""
+
+    CUSTOM = "custom"
+    """A file a command names with `--registry`."""

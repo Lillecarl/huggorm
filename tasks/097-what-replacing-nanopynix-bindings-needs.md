@@ -404,3 +404,38 @@ primop argument names and docs.
 Lane: 2276 passed, 366 failed, 170 errors, 4 min 26 s. The groups:
 `Store.add_to_store` (154), `flake.parse_flake_ref` (50), the flake
 registry (55), `EvalState.begin_repl` (31).
+
+## The flake registry
+
+2026-09-27. `decl/registry.py`: `registry_entries`, `user_registry_path`,
+`registry_add`, `registry_remove`, `registry_pin`, and two produced
+values, `RegistryEntry` and `RegistryWrite`.
+
+Decisions:
+
+- `Attr` is a TYPED union, `Str | U64 | Bint` (Carl's call over a JSON
+  string). The DSL had no scalar arm, so it gained one: named by its
+  wire spelling (`uint` keeps the width), refused when two arms are one
+  Python type. The codec matches a scalar arm by EXACT type: with
+  `isinstance`, the wire test got `{'yes': 1}` for `{'yes': True}`.
+- Every call takes its own `settings`, over what the process has, and
+  needs no evaluator. `cpp/fetch.hpp` builds them from `globalConfig`
+  rather than from `settings.hpp`'s copy: a function-local static in a
+  second extension module is a second, unregistered copy. The `eval`
+  module registers the fetcher settings at import, and the package's
+  front door imports it before any other module runs.
+- A write reads the file it names with `Registry::read`, never
+  `getUserRegistry`, which caches the first read for the process.
+- A reference parses against `base`, None for the working directory.
+- The flake feature is required, as Nix requires it: the first test
+  run refused every parse with "experimental Nix feature 'flakes' is
+  disabled".
+
+Wrong on the way: the emitter included no header for a class that a
+signature names from another declaration (`registry.cpp` got an
+incomplete `nix::Store`), and the manifest took a free function named
+by `@produced(by=...)` as a constructor even for a class with no
+`__init__`. Both were fixed generically, in their own commits.
+
+Not verified: `registry_pin` fetches, and the sandbox has no network,
+so no test calls it. Nix writes an empty registry as `"flakes": null`.

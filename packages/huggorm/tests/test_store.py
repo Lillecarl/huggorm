@@ -39,6 +39,9 @@ from huggorm_bindings import (
     OutputsSpec,
     PathInfo,
     Realisation,
+    RegistryEntry,
+    RegistryType,
+    RegistryWrite,
     Signature,
     SingleDerivedPathBuilt,
     Store,
@@ -1770,6 +1773,19 @@ def test_every_wire_value_survives_its_own_round_trip(
             DerivationOutputImpure(CA.NAR, HashAlgorithm.SHA256),
             [(CA.TEXT, HashAlgorithm.SHA512)]),
         "DerivationOutputDeferred": (DerivationOutputDeferred(), []),
+        # A registry entry's attributes hold all three arms of an
+        # `Attr` in the second case, and the first holds only the one a
+        # registry file can: `dir`.
+        "RegistryEntry": (
+            _rebuild(RegistryEntry, RegistryType.USER, "flake:a",
+                     "github:o/a", {"dir": "sub"}, False),
+            [(RegistryType.GLOBAL, "flake:b", "path:/b",
+              {"n": 7, "f": True}, True)]),
+        # A pin answers `locked`, an add does not, and a removal has no
+        # target.
+        "RegistryWrite": (
+            _rebuild(RegistryWrite, "/a.json", 0, "github:o/a", None),
+            [("/b.json", 2, None, True)]),
         # The arms of a store reference. Three have no parts; the
         # fourth's second case differs in both.
         "StoreReferenceAuto": (StoreReferenceAuto(), []),

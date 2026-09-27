@@ -53,8 +53,10 @@ def pkg_config(*packages: str) -> dict[str, list[str]]:
         + [f"-Wl,-rpath,{d}" for d in library_dirs],
     }
 
-# Real Nix, and nothing else. nix-expr for the evaluator and
-# nix-store for everything else; pkg-config resolves the Requires
+# Real Nix, and nothing else. nix-expr for the evaluator, nix-flake
+# for flake references, and nix-store for everything else. nix-flake
+# sits above nix-expr, so nix-expr's chain does not bring it; the
+# chain does bring nix-fetchers. pkg-config resolves the Requires
 # chain, so nix-util and nlohmann_json arrive without being named
 # (tasks/015).
 #
@@ -62,7 +64,7 @@ def pkg_config(*packages: str) -> dict[str, list[str]]:
 # table saying which of the two libraries each module linked, because
 # some of them linked a mock. There is one library now, so the table
 # said the same word nine times (tasks/060).
-_nix = pkg_config("nix-store", "nix-expr")
+_nix = pkg_config("nix-store", "nix-expr", "nix-flake")
 # ...plus huggorm-decl, for the headers a DECLARATION names. They
 # live with the declarations because that is where the hand-written
 # input to this build is: `@needs("huggorm_decl/cpp/eval.hpp")` names

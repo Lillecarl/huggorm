@@ -57,6 +57,7 @@ NANOBIND = (
     "store_reference.py",
     "store.py",
     "eval.py",
+    "registry.py",
     "terminal.py",
 )
 
