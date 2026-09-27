@@ -41,6 +41,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -96,6 +97,7 @@ namespace huggorm {
 // defined, so the name has to exist first. It sat in `gc.hpp` after
 // the split, where nothing used it.
 class Bridge;
+struct Repl;
 
 // ---- the file cache, which libexpr keeps to itself ----------------
 //
@@ -448,6 +450,9 @@ public:
     {
         return LockedFlake{core_, std::move(locked)};
     }
+
+    /** An empty REPL scope over this state's base environment. */
+    Repl repl() const;
 
     /**
      * Publishes a Python callable as `builtins.<name>`.
@@ -967,6 +972,64 @@ inline void Evaluator::register_primop(const std::string & name,
     state.staticBaseEnv->sort();
 }
 
-// ---- Bridge, out of line ------------------------------------------
+// ---- one REPL scope -----------------------------------------------
+
+/**
+ * A Nix environment that later expressions see, as `nix repl` keeps
+ * one. `nix::NixRepl` holds the same three things in libcmd, which
+ * huggorm does not link; `env_size` is its `envSize`.
+ *
+ * THE ROOT IS THE TRAP. `allocEnv` returns collector memory, and this
+ * struct lives in the Python heap, which Boehm does not scan. A plain
+ * `nix::Env *` member lets a collection free the environment and every
+ * binding in it. The pointer lives in a traceable allocation instead,
+ * which is how `nix::allocRootValue` keeps a value.
+ *
+ * Not copyable: a copy would share the environment and count its
+ * slots apart, so two scopes would write the same slot.
+ */
+struct Repl
+{
+    static constexpr std::size_t env_size = 32768;
+
+    explicit Repl(std::shared_ptr<EvalCore> owner)
+        : core(std::move(owner))
+        , static_env(std::make_shared<nix::StaticEnv>(nullptr, core->state().staticBaseEnv))
+        , env(std::allocate_shared<nix::Env *>(traceable_allocator<nix::Env *>(),
+                                               &core->state().mem.allocEnv(env_size)))
+    {
+        (*env)->up = &core->state().baseEnv;
+        count_when_collected(*env);
+    }
+
+    Repl(const Repl &) = delete;
+    Repl & operator=(const Repl &) = delete;
+    Repl(Repl &&) = default;
+
+    /** Registers the thread before the root goes, as `~Bridge` does. */
+    ~Repl() { gc_register_thread(); }
+
+    nix::EvalState & state() const { return core->state(); }
+
+    Bridge wrap(nix::Value * v) const { return Bridge(core, v); }
+
+    std::shared_ptr<EvalCore> core;
+    std::shared_ptr<nix::StaticEnv> static_env;
+    std::shared_ptr<nix::Env *> env;
+    std::size_t displ = 0;
+};
+
+/** The name and the set of `a.b.c` without its last select. */
+struct ReplSelection
+{
+    std::string name;
+    Bridge attrs;
+};
+
+inline Repl Evaluator::repl() const
+{
+    gc_register_thread();
+    return Repl(core_);
+}
 
 }  // namespace huggorm

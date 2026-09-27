@@ -962,6 +962,171 @@ flake.lockFilePath().invalidateCache();
         """)
 
 
+@produced(by="Repl.select")
+@header("huggorm_decl/cpp/eval.hpp")
+@binding(threading="affine", blocking=False, cxx="huggorm::ReplSelection")
+class ReplSelection:
+    """`a.b.c` split before its last select, as `nix repl` splits it
+    to complete a name and to find the documentation of one."""
+
+    @reads("name")
+    def name(self) -> Str:
+        """The last attribute name, `c`. Evaluated when it is `${...}`."""
+
+    @reads("attrs")
+    def attrs(self) -> Value:
+        """`a.b`, evaluated, and not checked to be a set."""
+
+
+@produced(by="EvalState.repl")
+@header("huggorm_decl/cpp/eval.hpp")
+@binding(
+    # The environment belongs to one state, and its thunks evaluate
+    # there. The async layer keeps it on the state's runner.
+    threading="affine",
+    blocking=True,
+    cxx="huggorm::Repl",
+)
+class Repl:
+    """One `nix repl` scope: a binding made here is visible to every
+    later expression evaluated here, and to nothing else.
+
+    It holds 32768 bindings, as `nix repl` does. A rebinding takes a
+    new slot too, because an earlier thunk still refers to the old
+    one.
+
+    `nix repl` refuses a set of attributes that exactly fills the free
+    slots, which is one slot short of the allocation. This takes it."""
+
+    def process_line(self, line: Str, base: Str | None = None) -> Value | None:
+        """One line, as `nix repl` reads a line that is not a command.
+
+        Bindings such as `x = 1` or `inherit (a) b` are added lazily,
+        and answer None. Any other line is an expression, and answers
+        its value, forced. `base` is as `eval_expr` takes it."""
+        Cxx("""
+auto & state = self.state();
+auto base_path = state.rootPath(std::string_view(base ? *base : "."));
+nix::ExprAttrs * bindings = nullptr;
+try {
+    bindings = state.parseReplBindings(line, base_path, self.static_env);
+} catch (nix::ParseError &) {
+    try {
+        bindings = state.parseReplBindings(line + ";", line, base_path, self.static_env);
+    } catch (nix::ParseError &) {
+    }
+}
+nix::Env * env = *self.env;
+if (!bindings) {
+    auto * made = state.allocValue();
+    state.parseExprFromString(line, base_path, self.static_env)->eval(state, *env, *made);
+    state.forceValue(*made, made->determinePos(nix::noPos));
+    return self.wrap(made);
+}
+nix::Env * inherit_env = bindings->inheritFromExprs
+    ? bindings->buildInheritFromEnv(state, *env) : nullptr;
+for (auto & [symbol, def] : *bindings->attrs) {
+    if (self.displ >= huggorm::Repl::env_size)
+        throw nix::Error("environment full; cannot add more variables");
+    auto * made = state.allocValue();
+    made->mkThunk(def.chooseByKind(env, env, inherit_env), def.e);
+    if (auto old = self.static_env->find(symbol); old != self.static_env->vars.end())
+        self.static_env->vars.erase(old);
+    self.static_env->vars.emplace_back(symbol, self.displ);
+    self.static_env->sort();
+    env->values[self.displ++] = made;
+}
+return std::nullopt;
+        """)
+
+    def eval_expr(self, expr: Str, base: Str | None = None) -> Value:
+        """`EvalState.eval_expr`, in this scope."""
+        Cxx("""
+auto & state = self.state();
+auto * made = state.allocValue();
+state.parseExprFromString(
+    expr, state.rootPath(std::string_view(base ? *base : ".")), self.static_env)
+    ->eval(state, **self.env, *made);
+state.forceValue(*made, made->determinePos(nix::noPos));
+return self.wrap(made);
+        """)
+
+    def eval_file(self, path: Str) -> Value:
+        """`EvalState.eval_file`, in this scope: the file sees the
+        bindings, as an expression does. Not cached, because the
+        answer depends on the scope."""
+        Cxx("""
+auto & state = self.state();
+auto * made = state.allocValue();
+state.parseExprFromFile(nix::resolveExprPath(state.rootPath(path)), self.static_env)
+    ->eval(state, **self.env, *made);
+state.forceValue(*made, made->determinePos(nix::noPos));
+return self.wrap(made);
+        """)
+
+    def load_file(self, path: Str) -> Value:
+        """What `:load` adds: the file, called with no arguments when
+        it is a function. Nothing is added; `add_attrs` adds it."""
+        Cxx("""
+auto & state = self.state();
+nix::Value loaded;
+state.evalFile(state.rootPath(path), loaded);
+auto * made = state.allocValue();
+state.autoCallFunction(*state.buildBindings(0).finish(), loaded, *made);
+return self.wrap(made);
+        """)
+
+    def add_attrs(self, attrs: Value) -> list[Str]:
+        """Bind every attribute of a set, as `:load` does, and answer
+        the names added."""
+        Cxx("""
+auto & state = self.state();
+auto & value = *attrs.get();
+state.forceAttrs(value, [&]() { return value.determinePos(nix::noPos); },
+                 "while evaluating an attribute set to be merged in the global scope");
+if (self.displ + value.attrs()->size() > huggorm::Repl::env_size)
+    throw nix::Error("environment full; cannot add more variables");
+std::vector<std::string> names;
+names.reserve(value.attrs()->size());
+nix::Env * env = *self.env;
+for (auto & attr : *value.attrs()) {
+    self.static_env->vars.emplace_back(attr.name, self.displ);
+    env->values[self.displ++] = attr.value;
+    names.emplace_back(state.symbols[attr.name]);
+}
+self.static_env->sort();
+self.static_env->deduplicate();
+return names;
+        """)
+
+    def names(self) -> list[Str]:
+        """Every name an expression here can see, sorted: the bindings
+        and the base scope, `builtins` and `true` among them."""
+        Cxx("""
+auto & state = self.state();
+std::set<std::string> seen;
+for (std::shared_ptr<const nix::StaticEnv> scope = self.static_env; scope; scope = scope->up)
+    for (auto & [symbol, displ] : scope->vars)
+        seen.emplace(state.symbols[symbol]);
+return std::vector<std::string>(seen.begin(), seen.end());
+        """)
+
+    def select(self, expr: Str, base: Str | None = None) -> ReplSelection | None:
+        """`a.b.c` split before its last select, or None when `expr`
+        is not a select."""
+        Cxx("""
+auto & state = self.state();
+auto * parsed = state.parseExprFromString(
+    expr, state.rootPath(std::string_view(base ? *base : ".")), self.static_env);
+auto * select = dynamic_cast<nix::ExprSelect *>(parsed);
+if (!select)
+    return std::nullopt;
+auto * attrs = state.allocValue();
+auto name = select->evalExceptFinalSelect(state, **self.env, *attrs);
+return huggorm::ReplSelection{std::string(state.symbols[name]), self.wrap(attrs)};
+        """)
+
+
 @header("huggorm_decl/cpp/eval.hpp")
 # A state HOLDS Python callables - `register_primop` gives it one -
 # and the natural way to write one closes over the state itself,
@@ -1460,6 +1625,10 @@ for (auto & input : update) {
 return self.keep(nix::flake::lockFlake(*flake_settings, self.state(), ref, flags));
         """)
 
+    def repl(self) -> Repl:
+        """A new, empty REPL scope over this state's base scope."""
+        Cxx("return self.repl();")
+
     def call_flake(self, locked: LockedFlake) -> Value:
         """The flake's outputs, as `builtins.getFlake` gives them:
         unforced, so no output is evaluated until it is read."""
@@ -1537,6 +1706,9 @@ return {
     // root that is never dropped keeps its value alive forever, and no
     // heap counter can tell that from a heap that simply grew.
     {"live_roots", huggorm::live_roots().load()},
+    // OURS too: REPL environments freed. A held scope must never
+    // count here, and nothing else can tell.
+    {"scopes_collected", huggorm::scopes_collected().load()},
 };
     """)
 

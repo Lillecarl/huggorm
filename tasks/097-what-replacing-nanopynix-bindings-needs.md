@@ -501,3 +501,42 @@ evaluation failure now crosses as `EvalError`, not the root
 `NixError`, which two smoke checks and three tests had pinned.
 nanopynix maps an engine error through its MRO. Lane: 2432 passed,
 276 failed, 107 errors.
+
+## The REPL scope
+
+`EvalState.repl()` makes a `Repl`: one `nix repl` scope, affine, with
+`process_line`, `eval_expr`, `eval_file`, `load_file`, `add_attrs`,
+`names` and `select`. The bodies follow `NixRepl` in libcmd's
+`repl.cc`: bindings first, then with a `;` appended, then an
+expression. Each scope is its own environment, so a state can hold
+several; the other engine held one per state.
+
+Decisions:
+
+- Nix's own error when the scope is full: `nix::Error("environment
+  full; cannot add more variables")`. The other engine had its own
+  `RuntimeError`; it now throws Nix's too.
+- One divergence, on purpose. `addAttrsToScope` refuses a set when
+  `displ + size >= envSize`, one slot short of the allocation. This
+  takes a set that fills the scope exactly, as the other engine did.
+  The environment has 32768 slots, so this is no more permissive
+  than what it binds.
+- An optional wrapped return. `process_line` answers `Value | None`
+  and `select` answers `ReplSelection | None`. The emitter refused
+  both ("none of them adopts nothing"). Carl chose to teach it:
+  `wiretypes.adoptee` names the class a return adopts, the async
+  wrapper passes None through, and the client makes a proxy for the
+  inner class. The server and the codec needed nothing, because a
+  handle is a message and has presence.
+- The root. `allocEnv` is collector memory and the struct is in the
+  Python heap, so the pointer lives in a traceable allocation, as
+  `allocRootValue` keeps a value. `gc_stats()["scopes_collected"]`
+  counts finalized environments, because a binding read back cannot
+  show a freed block.
+
+Wrong on the way: the first root test read a binding back after
+collections and churn. With the root broken (`std::allocator`) it
+still passed, twice: once on this thread, and once with the scope
+made on a thread that exited. The finalizer count is what the other
+engine settled on for issue #70, for the same reason. With the count,
+the broken root fails: `assert 16 == 15`, the held scope freed.

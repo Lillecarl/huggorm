@@ -162,4 +162,30 @@ inline std::atomic<std::size_t> & live_roots()
     static std::atomic<std::size_t> count{0};
     return count;
 }
+
+/**
+ * How many REPL environments the collector has freed.
+ *
+ * The one way to see that a scope's root holds. A freed block keeps
+ * its contents until the collector hands it out again, so reading a
+ * binding back succeeds whether the environment is alive or not. A
+ * finalizer runs when the collector finds the block unreachable.
+ *
+ * `no_order`, because Boehm refuses to finalize a block in a cycle of
+ * finalizable blocks, and an environment refers to itself through its
+ * own thunks.
+ */
+inline std::atomic<std::size_t> & scopes_collected()
+{
+    static std::atomic<std::size_t> count{0};
+    return count;
+}
+
+inline void count_when_collected(void * block)
+{
+    GC_register_finalizer_no_order(
+        block,
+        [](void *, void *) { scopes_collected().fetch_add(1, std::memory_order_relaxed); },
+        nullptr, nullptr, nullptr);
+}
 }  // namespace huggorm
