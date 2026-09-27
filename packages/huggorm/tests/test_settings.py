@@ -364,3 +364,10 @@ def test_a_flake_setting_from_the_config_is_read() -> None:
     out = subprocess.run([sys.executable, "-c", probe], env=env,
                          capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "true"
+
+
+def test_a_feature_name_is_known_or_not() -> None:
+    from huggorm_bindings import is_experimental_feature
+
+    assert is_experimental_feature("flakes") is True
+    assert is_experimental_feature("no-such-feature") is False

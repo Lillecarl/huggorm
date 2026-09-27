@@ -2313,6 +2313,16 @@ nix::globalConfig.resetOverridden();
     """)
 
 
+@needs("nix/util/experimental-features.hh")
+def is_experimental_feature(name: Str) -> Bint:
+    """Whether this Nix names an experimental feature `name`.
+
+    `extra-experimental-features` only warns about a name it does not
+    know, and enables nothing. A caller that must refuse one asks
+    here first."""
+    Cxx("return nix::parseExperimentalFeature(name).has_value();")
+
+
 @needs("huggorm_decl/cpp/settings.hpp")
 def settings_json() -> Str:
     """Every registered setting as Nix describes it, in JSON.
