@@ -813,3 +813,61 @@ The engine's `errors` namespace answers `Error` and `BadStorePath`.
 Lane: 2784 passed, 33 failed (1855/31 and 929/2), 15 min 7 s; peaks
 5.1 GB and 4.1 GB. No test failed that passed before. Four of the rest
 need `tasks/100`, an error that carries Nix's `ErrorInfo`.
+
+## nix.conf after a reset, and the activity filter
+
+A state and a one-call settings object copied only the settings marked
+overridden. nanopynix calls `reset_overridden` right after loading
+nix.conf, to tell the file's settings from its own, and the reset
+clears the mark and keeps the value. So `pure-eval` and
+`flake-registry` from the file reached nothing. Both now copy every
+value that differs from the fresh object's own. The `nix` CLI reads
+the global objects' values and never the marks, so this is the closer
+mirror.
+
+Found by measurement: `eval_settings_json` said `pure-eval` was true
+when the state was made, huggorm alone honoured it after
+`load_config`, and it stopped doing so once `reset_overridden` ran.
+
+nanopynix's adapter now filters activities in its log pump, as
+nanopynix-bindings' `ActivityTracker` does in C++. The pump drains
+huggorm's queue on a thread of its own, so the filter costs the
+evaluation nothing.
+
+Lane with the settings fix: 2788 passed, 29 failed (1859/27 and 929/2);
+peaks 4.2 GB and 3.6 GB.
+
+## apply and functors, wordings, and experimental features
+
+`Value.apply` had `@guard("function")`. `callFunction` checks the type
+itself and reads no payload first, and it calls a set with
+`__functor`, as `f x` does. So the guard refused only a call Nix
+makes. It is gone, and a non-function raises Nix's own "attempt to
+call something which is not a function".
+
+`drv_path` and `output_paths` say "selected value is not a
+derivation". Nix has no one wording: each caller of `getDerivation`
+writes its own. That one is nanopynix-bindings', and pynix reads it.
+
+`enable_experimental_feature` inserts a feature and leaves the
+setting's overridden mark, as nanopynix-bindings does. Through
+`extra-experimental-features` nanopynix's own default features showed
+up as the caller's change to the host's nix.conf.
+`is_experimental_feature` answers whether Nix knows a name: the setting
+only warns about one it does not know, and nanopynix raises.
+
+nanopynix's bridge names the primop and the type when an argument
+holds a function, in the other engine's words.
+
+Lane: 2798 passed, 19 failed (1867/19 and 931/0), 17 min 3 s; peaks
+2.4 GB and 4.0 GB. Part B, pynix, passes whole. Of the 19:
+
+- 13 import `nanopynix_bindings` themselves: the meta tests of stub
+  patterns, the soak roster and the docs, and one init test. They
+  pass only when nanopynix stops shipping that package.
+- 5 need `tasks/100`, Nix's `ErrorInfo` on an error.
+- 1 is a namespaced worker. `unshare(CLONE_NEWUSER)` fails with EINVAL
+  in a process with more than one thread, and importing huggorm starts
+  15 Boehm marker threads (`GC-marker-0` to `-14`, read from
+  `/proc/self/task`). nanopynix-bindings starts none at import: its
+  `init_libexpr` starts the collector.
