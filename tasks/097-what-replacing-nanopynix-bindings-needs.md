@@ -646,3 +646,24 @@ warns about each, as it does for `real_path`.
 Lane: 2652 passed, 140 failed, 31 errors, 16 min 38 s. Next by count:
 `Store.optimise_store`, `Store.add_perm_root`, `get_env_sh_path` and
 the settings metadata JSON, three each.
+
+## Roots, optimising, get-env.sh and the settings documents
+
+`Store.add_perm_root` and `Store.optimise_store` are bound. The first
+refuses a store with no filesystem, as `collect_garbage` does. The
+second keeps `nix::Store`'s default, which does nothing and says
+nothing.
+
+Wrong turn: the first docstring said libstore takes a relative
+`gc_root` as given. `IndirectRootStore::addPermRoot` calls
+`canonPath`, which refuses a relative path and ASSERTS on an empty
+one. The body now refuses the empty string itself, as
+`parse_store_path` does.
+
+`eval_settings_json`, `fetch_settings_json` and `flake_settings_json`
+describe libcmd's three settings objects, one each. `settings_json`
+describes all of `globalConfig`, which holds all three.
+
+`huggorm-bindings` carries Nix's `get-env.sh`. Nix compiles it into
+the `nix` binary, so no library holds it. The package copies it from
+the source of the Nix it links, as nanopynix-bindings does.
