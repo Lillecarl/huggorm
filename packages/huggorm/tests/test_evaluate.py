@@ -100,7 +100,8 @@ def test_an_attribute_set_that_is_not_a_derivation_refuses(
         state: Any) -> None:
     from huggorm_bindings.errors import NixError
 
-    with pytest.raises(NixError, match="not a derivation"):
+    # Nix words this per caller; this is nanopynix's, which pynix reads.
+    with pytest.raises(NixError, match="selected value is not a derivation"):
         state.eval_expr("{ a = 1; }").drv_path()
 
 

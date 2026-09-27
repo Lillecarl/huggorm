@@ -517,7 +517,7 @@ return self.wrap(out);
 huggorm::gc_register_thread();
 auto info = nix::getDerivation(self.state(), *self.get(), false);
 if (!info)
-    throw nix::EvalError(self.state(), "the value is not a derivation");
+    throw nix::EvalError(self.state(), "selected value is not a derivation");
 auto path = info->queryDrvPath();
 if (!path)
     throw nix::EvalError(self.state(), "the derivation has no drvPath");
@@ -542,7 +542,7 @@ return *path;
 huggorm::gc_register_thread();
 auto info = nix::getDerivation(self.state(), *self.get(), false);
 if (!info)
-    throw nix::EvalError(self.state(), "the value is not a derivation");
+    throw nix::EvalError(self.state(), "selected value is not a derivation");
 std::map<std::string, std::optional<nix::StorePath>> out;
 for (auto & [name, path] : info->queryOutputs(true, false))
     out.emplace(name, path);
