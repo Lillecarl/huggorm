@@ -82,6 +82,14 @@ def scalar_spelling(type_str: str) -> str | None:
     return SPELLED.get(type_str)
 
 
+def python_spelling(type_str: str) -> str:
+    """The Python type a wire scalar is above the boundary.
+
+    `uint` is an `int` there: the width is a fact about the crossing.
+    Every other name answers itself, a class's included."""
+    return "int" if type_str == "uint" else type_str
+
+
 # Every Nix attribute name is a string, so a map key is always one.
 # That is what makes an attribute set representable as a protobuf map
 # at all (tasks/030).

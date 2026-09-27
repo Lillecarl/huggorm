@@ -224,8 +224,16 @@ def _arms_type(cls: Class, known: dict[str, Class]) -> str:
     Not what a signature says any more - that is the union's own C++
     type - but what the caster casts through, and what `from_arms`
     takes."""
-    inner = ", ".join(_bare(known[a], known) for a in cls.decl.arms)
+    inner = ", ".join(_arm(cls, a, known) for a in cls.decl.arms)
     return f"std::variant<{inner}>"
+
+
+def _arm(cls: Class, arm: str, known: dict[str, Class]) -> str:
+    """One arm as Python has it, in C++: a builtin from the alias the
+    declaration wrote, and a class through its own declaration."""
+    if (scalar := cls.decl.scalars.get(arm)) is not None:
+        return _cxx(scalar, known)[0]
+    return _bare(known[arm], known)
 
 
 def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | None]:
@@ -497,7 +505,8 @@ def includes(classes: Sequence[Class],
         held = None if t.origin else (known or {}).get(t.python)
         if held is not None and held.is_union:
             for arm in held.decl.arms:
-                note(Type(python=arm, bound=True))
+                note(held.decl.scalars.get(arm)
+                     or Type(python=arm, bound=True))
 
     for pr, t in _sites(classes, functions):
         note(t)
@@ -1489,7 +1498,7 @@ def _alternative(cls: Class, arm: str,
     wrap = variant.wraps.get(arm)
     if wrap is not None:
         return wrap.cxx, wrap.holds
-    return _bare(known[arm], known), ""
+    return _arm(cls, arm, known), ""
 
 
 def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
@@ -1534,11 +1543,11 @@ def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
     for arm in arms[:-1]:
         alt, member = _alternative(cls, arm, known)
         out += [f"{INDENT}if (auto * arm = "
-                f"std::get_if<{_bare(known[arm], known)}>(&a))",
+                f"std::get_if<{_arm(cls, arm, known)}>(&a))",
                 f"{INDENT * 2}return {alt + '{*arm}' if member else '*arm'};"]
     last = arms[-1]
     alt, member = _alternative(cls, last, known)
-    got = f"std::get<{_bare(known[last], known)}>(a)"
+    got = f"std::get<{_arm(cls, last, known)}>(a)"
     out += [f"{INDENT}return {alt + '{' + got + '}' if member else got};",
             "}", ""]
 

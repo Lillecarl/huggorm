@@ -323,6 +323,12 @@ class Decl:
     # - so it has no decorator to carry this and the reader fills it
     # in. Empty for everything that is not one.
     arms: tuple[str, ...] = ()
+    # The arms that cross as a builtin, by their name in `arms`, which
+    # is the wire spelling: `uint` for a U64. Each value is the reader's
+    # `Type` for the arm, so an emitter spells its C++ from the alias
+    # the declaration wrote. `Any` because the reader imports this
+    # module, not the other way round.
+    scalars: dict[str, Any] = field(default_factory=dict)
     # The C++ union a sum type stands for, from the `Variant(...)` on
     # its Annotated alias. None for a union declared without one,
     # which is legal: a union whose arms C++ holds directly needs no

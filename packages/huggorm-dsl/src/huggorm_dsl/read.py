@@ -1781,8 +1781,12 @@ def _unions(body: list[ast.stmt], where: str,
             held, *meta = get_args(alias)
         if get_origin(held) not in (types.UnionType, typing.Union):
             continue
-        arms = tuple("None" if a is type(None) else getattr(a, "__name__", repr(a))
-                     for a in get_args(held))
+        parts = [(_scalar_arm(a, name, item), a) for a in get_args(held)]
+        scalars = {s.wire: s for s, _ in parts if s is not None}
+        arms = tuple(s.wire if s is not None
+                     else "None" if a is type(None)
+                     else getattr(a, "__name__", repr(a))
+                     for s, a in parts)
         variant = _variant(name, tuple(meta), arms, item)
         doc = ""
         nxt = body[i + 1] if i + 1 < len(body) else None
@@ -1792,9 +1796,29 @@ def _unions(body: list[ast.stmt], where: str,
         out.append(Class(
             name=name, doc=doc, ctor=None, module=where,
             decl=Decl(name=name, kind="union", arms=arms, wire="value",
-                      variant=variant),
+                      variant=variant, scalars=scalars),
         ))
     return tuple(out)
+
+
+def _scalar_arm(arm: object, union: str, node: ast.AST) -> Type | None:
+    """A union arm that crosses as a builtin, or None for a class arm.
+
+    Named by its WIRE spelling, `uint` for a U64, because that is the
+    spelling that carries the width. Above the boundary it is an `int`
+    like any other."""
+    if isinstance(arm, type) and arm.__module__ == "builtins" \
+            and arm is not type(None):
+        raise DeclarationError(
+            node, f"{union}: '{arm.__name__}' names no C++ type. Use the "
+                  f"alias - Str, I64, U64, Bint - so the arm has one.")
+    if get_origin(arm) is not Annotated:
+        return None
+    held, *meta = get_args(arm)
+    cxx = next((m for m in meta if isinstance(m, Cxx)), None)
+    if cxx is None:
+        return None
+    return Type(python=_spelled(held), cxx=cxx)
 
 
 def _variant(name: str, meta: tuple[object, ...], arms: tuple[str, ...],
@@ -1835,7 +1859,19 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
     `T | None` was the only union an annotation could hold, and it
     stayed narrow on purpose. This widens it exactly as far as a sum
     type needs and no further."""
+    # A SCALAR arm is told apart from its siblings by its Python type,
+    # so two arms of one Python type could not be. `uint` and `int`
+    # are both an `int` above the boundary.
+    seen: dict[str, str] = {}
+    for arm, scalar in cls.decl.scalars.items():
+        if (first := seen.setdefault(scalar.python, arm)) != arm:
+            raise DeclarationError(
+                node, f"{cls.name}: '{first}' and '{arm}' are both a "
+                      f"Python {scalar.python}, so a value could not say "
+                      f"which arm it is.")
     for arm in cls.decl.arms:
+        if arm in cls.decl.scalars:
+            continue
         other = known.get(arm)
         if other is None:
             # UNKNOWN, not wrong. The arm names a class this reader
@@ -1850,9 +1886,8 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
                 continue
             raise DeclarationError(
                 node, f"{cls.name}: '{arm}' is not a declared class. A "
-                      f"union names types some declaration declares - a "
-                      f"scalar has no distinguishable arms, so `str | int` "
-                      f"is not a union but a mistake.")
+                      f"union names types some declaration declares, or "
+                      f"a scalar alias such as Str, U64 or Bint.")
         if other.is_words:
             raise DeclarationError(
                 node, f"{cls.name}: '{arm}' is a vocabulary, which crosses "

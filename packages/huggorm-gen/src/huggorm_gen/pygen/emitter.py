@@ -9,7 +9,12 @@ import ast
 from collections.abc import Sequence
 from typing import Any
 
-from huggorm_gen.payload.wiretypes import dotted_heads, names_in
+from huggorm_gen.payload.wiretypes import (
+    SCALAR_NAMES,
+    dotted_heads,
+    names_in,
+    python_spelling,
+)
 
 # One class, method or function as a plain dict. See model.Proto.
 Proto = dict[str, Any]
@@ -191,7 +196,7 @@ def _written_out(name: str) -> ast.expr:
     """`name`, or the arms of the union it names, each written out too."""
     arms = _UNION_ARMS.get(name)
     if arms is None:
-        return ast.Name(id=name)
+        return ast.Name(id=python_spelling(name))
     expanded = _written_out(arms[0])
     for arm in arms[1:]:
         expanded = ast.BinOp(left=expanded, op=ast.BitOr(),
@@ -454,7 +459,9 @@ def unions_module(unions: dict[str, list[str]]) -> str:
     the declaration says `DerivedPath = StorePath | DerivedPathBuilt`
     once and this is the same sentence in the package a caller
     imports."""
-    arms = sorted({a for v in unions.values() for a in v})
+    # A scalar arm is a builtin, and huggorm_bindings has none to import.
+    arms = sorted({a for v in unions.values() for a in v
+                   if a not in SCALAR_NAMES})
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=(
             "The declared SUM types, as the aliases they are.\n\n"
@@ -466,10 +473,10 @@ def unions_module(unions: dict[str, list[str]]) -> str:
                        names=[ast.alias(name=a) for a in arms], level=0),
     ]
     for alias, members in unions.items():
-        value: ast.expr = ast.Name(id=members[0])
+        value: ast.expr = ast.Name(id=python_spelling(members[0]))
         for arm in members[1:]:
             value = ast.BinOp(left=value, op=ast.BitOr(),
-                              right=ast.Name(id=arm))
+                              right=ast.Name(id=python_spelling(arm)))
         body.append(ast.Assign(targets=[ast.Name(id=alias)], value=value))
     body.append(ast.Assign(
         targets=[ast.Name(id="__all__")],

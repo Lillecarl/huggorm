@@ -1455,6 +1455,8 @@ def _same(spelling: str) -> str:
     an `_`-prefixed name reaches no stub. A collapse of the input
     spelling was written here, passed, and was removed when taking it
     out changed nothing (tasks/071)."""
+    from huggorm_gen.payload.wiretypes import python_spelling
+
     out = re.sub(r"huggorm_bindings\.\w+\.", "", spelling)
     out = out.replace("collections.abc.Sequence[", "list[")
     for name in _ERRORS:
@@ -1464,7 +1466,8 @@ def _same(spelling: str) -> str:
     for _ in range(len(_UNIONS) + 1):
         before = out
         for alias, arms in _UNIONS.items():
-            out = re.sub(rf"\b{re.escape(alias)}\b", " | ".join(arms), out)
+            out = re.sub(rf"\b{re.escape(alias)}\b",
+                         " | ".join(python_spelling(a) for a in arms), out)
         if out == before:
             break
     return re.sub(r"\s+", " ", out).strip()

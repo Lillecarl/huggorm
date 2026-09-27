@@ -283,11 +283,13 @@ class WireCodec:
     # - which is the same annotation the typechecker reads.
     def map_to_msg(self, type_str: str, obj: dict[str, Any], msg: Any) -> None:
         vtype = self._map_value(type_str)
-        if self.kind(vtype) == "value":
+        kind = self.kind(vtype)
+        if kind in ("value", "union"):
+            fill = self.value_to_msg if kind == "value" else self.union_to_msg
             for key, val in obj.items():
                 # A message-valued map entry is filled in place; there
                 # is no assigning one.
-                self.value_to_msg(vtype, val, msg[key])
+                fill(vtype, val, msg[key])
         else:
             # self.scalar, not the _SCALARS table: an enum is a scalar
             # and its constructor is the enum CLASS, which that table
@@ -300,8 +302,11 @@ class WireCodec:
 
     def map_from_msg(self, type_str: str, msg: Any) -> dict[str, Any]:
         vtype = self._map_value(type_str)
-        if self.kind(vtype) == "value":
-            return {k: self.value_from_msg(vtype, v) for k, v in msg.items()}
+        kind = self.kind(vtype)
+        if kind in ("value", "union"):
+            read = (self.value_from_msg if kind == "value"
+                    else self.union_from_msg)
+            return {k: read(vtype, v) for k, v in msg.items()}
         # Cast on the way back too. `dict(msg)` kept the raw strs, so
         # an enum map arrived untyped - the quieter half of the same
         # bug, and the one that breaks 038's promise that a value read
@@ -450,14 +455,22 @@ class WireCodec:
                      depth: int = 0) -> None:
         """Fill msg's oneof from whichever arm `obj` is.
 
-        By isinstance over the declared arms, in order. The arms are
-        distinct bound classes - the reader refuses a scalar or a
-        vocabulary arm precisely so that this test can be exact - so
-        the first match is the only match."""
+        By isinstance over the declared arms, in order. The reader
+        refuses a vocabulary arm and two scalar arms of one Python type,
+        so the first match is the only match.
+
+        A scalar arm matches its EXACT type. `True` is an `int` to
+        isinstance, and a bool sent as the int arm arrives as 1."""
         self._not_too_deep(type_str, depth)
         held = self._sync(obj)
         for arm in self.unions[type_str]:
-            if isinstance(held, getattr(self.bindings, arm)):
+            if self.kind(arm) == "scalar":
+                # `object`: a scalar's constructor IS its type here.
+                exact: object = self.scalar(arm)
+                if type(held) is exact:
+                    setattr(msg, arm_field(arm), self.to_wire(arm)(held))
+                    return
+            elif isinstance(held, getattr(self.bindings, arm)):
                 self.value_to_msg(arm, held, getattr(msg, arm_field(arm)),
                                   depth + 1)
                 return
@@ -478,9 +491,11 @@ class WireCodec:
                 f"itself, so this message was not written by a peer that "
                 f"read the same schema.")
         for arm in self.unions[type_str]:
-            if arm_field(arm) == which:
-                return self.value_from_msg(arm, getattr(msg, which),
-                                           depth + 1)
+            if arm_field(arm) != which:
+                continue
+            if self.kind(arm) == "scalar":
+                return self.scalar(arm)(getattr(msg, which))
+            return self.value_from_msg(arm, getattr(msg, which), depth + 1)
         raise ValueError(f"{type_str} has no arm called {which!r}")
 
     def _not_too_deep(self, type_str: str, depth: int) -> None:
