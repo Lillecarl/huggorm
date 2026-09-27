@@ -222,6 +222,16 @@ def test_a_name_the_state_does_not_hold_refuses(name: str) -> None:
         EvalState(Store("dummy://"), {name: "false"})
 
 
+def test_a_stack_overflow_is_not_an_eval_error() -> None:
+    from huggorm_bindings import EvalState, Store
+    from huggorm_bindings.errors import EvalBaseError, EvalError
+
+    state = EvalState(Store("dummy://"), {"max-call-depth": "20"})
+    with pytest.raises(EvalBaseError) as raised:
+        state.eval_expr("let f = n: if n == 0 then 0 else f (n - 1); in f 200")
+    assert not isinstance(raised.value, EvalError)
+
+
 def test_the_current_system_is_what_the_evaluator_answers() -> None:
     from huggorm_bindings import EvalState, Store, current_system
 

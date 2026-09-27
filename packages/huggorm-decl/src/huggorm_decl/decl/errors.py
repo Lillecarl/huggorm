@@ -189,7 +189,19 @@ class BadStorePathName(BadStorePath):
     header = "nix/store/store-dir-config.hh"
 
 
-class EvalError(NixError):
+class EvalBaseError(NixError):
+    """nix::EvalBaseError - evaluation stopped, not always because the
+    code is wrong.
+
+    Upstream's parent of `EvalError`. It is thrown as itself only by
+    a few: `StackOverflowError` (`max-call-depth`), `IFDError` and
+    `RecoverableEvalError`."""
+
+    cxx = "nix::EvalBaseError"
+    header = "nix/expr/eval-error.hh"
+
+
+class EvalError(EvalBaseError):
     """nix::EvalError - evaluation failed."""
 
     cxx = "nix::EvalError"
