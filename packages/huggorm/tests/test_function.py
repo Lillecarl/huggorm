@@ -97,7 +97,7 @@ def test_applying_a_non_function_is_refused(state: Any) -> None:
     `nix::Value` is a tagged union whose readers are `noexcept` and
     undefined on the wrong tag, so this has to fail as an error rather
     than as a reinterpretation."""
-    with pytest.raises(Exception, match="not function"):
+    with pytest.raises(Exception, match="expected a function but found an integer"):
         state.eval_expr("42").apply(state.make_int(1))
 
 

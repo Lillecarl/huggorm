@@ -905,7 +905,7 @@ def _guard_head(cls: Class, m: Method,
             # builder test and then reads the wrong union member,
             # which is undefined rather than an error.
             f"{INDENT * 4}if ({target}.{hold}->{ask} != {table[arm]})",
-            f'{INDENT * 5}throw std::runtime_error("value is not {arm}");',
+            f"{INDENT * 5}{_wrong_arm(target, hold, table[arm])}",
             f"{INDENT * 4}if (!{target}.is_builder())",
             f"{INDENT * 5}throw std::invalid_argument(",
             f'{INDENT * 6}"this value did not come from {maker}, and a "',
@@ -929,8 +929,19 @@ def _guard_head(cls: Class, m: Method,
     obj = _self(cls)
     return [
         f"{INDENT * 4}if ({obj}.{hold}->{ask} != {table[m.guard]})",
-        f'{INDENT * 5}throw std::runtime_error("value is not {m.guard}");',
+        f"{INDENT * 5}{_wrong_arm(obj, hold, table[m.guard])}",
     ]
+
+
+def _wrong_arm(owner: str, hold: str, expected: str) -> str:
+    """Nix's own refusal of a value of the wrong type.
+
+    `forceAttrs` says "expected a set but found an integer", as a
+    `nix::TypeError`, and so does this: a caller catches one class for
+    both. An eval error names its state, so `owner` must have
+    `state()`. Nix also prints the value, which this does not."""
+    return (f'throw nix::TypeError({owner}.state(), "expected %s but found %s", '
+            f"nix::showType({expected}), nix::showType(*{owner}.{hold}));")
 
 
 def _returns(m: Method, known: dict[str, Class] | None) -> str:

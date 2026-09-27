@@ -40,6 +40,19 @@ def test_the_drv_is_the_one_nix_computes(state: Any) -> None:
     assert spelled == f"/nix/store/{v.drv_path().to_string()}"
 
 
+def test_the_wrong_type_is_nix_s_own_type_error(state: Any) -> None:
+    """`forceAttrs` refuses a number with this class and these words, so a
+    caller catches one error for Nix and for the binding."""
+    from huggorm_bindings.errors import NixTypeError
+
+    with pytest.raises(NixTypeError,
+                       match="expected a set but found an integer"):
+        state.eval_expr("1").has("x")
+    items = state.make_attrs()
+    with pytest.raises(NixTypeError, match="expected a list but found a set"):
+        state.list_append(items, state.make_int(1))
+
+
 def test_an_attribute_set_that_is_not_a_derivation_refuses(
         state: Any) -> None:
     from huggorm_bindings.errors import NixError

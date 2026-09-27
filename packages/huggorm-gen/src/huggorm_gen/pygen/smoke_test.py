@@ -305,6 +305,7 @@ async def test_behavior() -> None:
     import huggorm_bindings
     from huggorm_bindings import ContentAddressMethod as CA
     from huggorm_bindings import HashAlgorithm, StorePath
+    from huggorm_bindings.errors import NixTypeError
     from huggorm_generated import (
         AsyncEvalState,
         AsyncStore,
@@ -560,14 +561,14 @@ async def test_behavior() -> None:
     assert await state.get_store_uri() == "dummy://"
 
     # Thunk protocol: parse gives an unforced value; accessors throw
-    # until it is forced.
+    # Nix's own type error until it is forced.
     thunk = await state.parse_expr("42")
     assert await thunk.type_name() == "thunk"
     try:
         await thunk.integer()
         raise AssertionError("expected unforced access to fail")
-    except InternalError as e:
-        assert type(e.__cause__) is RuntimeError
+    except NixTypeError as e:
+        assert "expected an integer but found a thunk" in str(e)
     await state.force(thunk)
     assert await thunk.type_name() == "int"
     assert await thunk.integer() == 42
@@ -720,10 +721,11 @@ async def test_behavior() -> None:
         try:
             await make()
         except Exception as e:
-            # The runtime wraps a binding failure in InternalError, so
-            # the C++ text is on the cause, not the message.
+            # A wrong kind is Nix's own type error. The runtime wraps
+            # another binding failure in InternalError, so its C++ text
+            # is on the cause, not the message.
             why = str(e.__cause__ or e)
-            assert "is not" in why or "out of range" in why, why
+            assert "but found" in why or "out of range" in why, why
         else:
             raise AssertionError("wrong-kind access succeeded")
     await builder.aclose()

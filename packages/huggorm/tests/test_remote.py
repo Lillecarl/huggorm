@@ -16,7 +16,7 @@ import huggorm_bindings
 import huggorm_generated.async_store
 from huggorm_bindings import ContentAddressMethod as CA
 from huggorm_bindings import HashAlgorithm
-from huggorm_bindings.errors import BadStorePath, NixError
+from huggorm_bindings.errors import BadStorePath, NixError, NixTypeError
 from huggorm_generated import RPCValue
 from huggorm_generated._runtime import InternalError
 
@@ -109,7 +109,9 @@ async def test_backfilled_any_params_call_over_the_wire(client: Any) -> None:
 async def test_thunks_force_remotely(client: Any) -> None:
     state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
     thunk = await state.parse_expr("42")
-    await typed_failure(thunk.integer())
+    # Nix's own type error is declared, so it crosses as itself.
+    with pytest.raises(NixTypeError, match="found a thunk"):
+        await thunk.integer()
     await state.force(thunk)
     assert await thunk.integer() == 42, "force mutates in place remotely"
 
