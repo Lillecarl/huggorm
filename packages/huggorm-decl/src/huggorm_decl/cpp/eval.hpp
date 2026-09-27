@@ -868,6 +868,25 @@ inline Bridge Evaluator::wrap_builder(nix::Value * v) const
 }
 
 /**
+ * What a Python primop's exception says in the Nix error.
+ *
+ * One of huggorm's typed errors (it has `to_dict`, the duck-type the
+ * runtime reads) is a Nix error the primop meant, so its message
+ * stands bare, as a C++ primop's would. Any other class is a failure,
+ * and its name leads the message. `e.what()` is not used: it carries
+ * the Python traceback into every Nix error.
+ */
+inline std::string primop_failure(const nb::python_error & e)
+{
+    const std::string message = nb::cast<std::string>(nb::str(e.value()));
+    if (nb::hasattr(e.value(), "to_dict"))
+        return message;
+    const std::string kind =
+        nb::cast<std::string>(nb::str(e.type().attr("__name__")));
+    return message.empty() ? kind : kind + ": " + message;
+}
+
+/**
  * The body of a primop implemented in Python: `register_primop` and
  * `make_primop` both call it. `label` names the function in its
  * errors.
@@ -918,7 +937,7 @@ inline nix::fun<nix::PrimOpFun> primop_impl(
                 .atPos(pos)
                 .debugThrow();
         } catch (nb::python_error & e) {
-            state.error<nix::EvalError>("%1%", e.what())
+            state.error<nix::EvalError>("%1%", primop_failure(e))
                 .atPos(pos)
                 .debugThrow();
         }

@@ -82,6 +82,34 @@ def test_a_python_exception_becomes_a_nix_error(state: Any) -> None:
     assert "the primop said no" in str(caught.value)
 
 
+def test_a_failing_primop_names_the_class_and_not_the_traceback(
+        state: Any) -> None:
+    def boom(v: Any) -> Any:
+        raise ValueError("the primop said no")
+
+    state.register_primop("boom2", 1, boom)
+
+    with pytest.raises(Exception) as caught:
+        state.eval_expr("builtins.boom2 1")
+    assert "ValueError: the primop said no" in str(caught.value)
+    assert "Traceback" not in str(caught.value)
+
+
+def test_a_primop_raising_a_nix_error_shows_it_bare(state: Any) -> None:
+    """The way a Python primop rejects its input, as a C++ one does:
+    one of huggorm's own errors, whose message Nix shows as it is."""
+    from huggorm_bindings.errors import EvalError
+
+    def reject(v: Any) -> Any:
+        raise EvalError("no such user")
+
+    state.register_primop("reject", 1, reject)
+
+    with pytest.raises(EvalError) as caught:
+        state.eval_expr("builtins.reject 1")
+    assert str(caught.value).rstrip().endswith("error: no such user")
+
+
 def test_returning_something_that_is_not_a_value_is_an_error(
         state: Any) -> None:
     """The failure a too-narrow catch would have let escape.
