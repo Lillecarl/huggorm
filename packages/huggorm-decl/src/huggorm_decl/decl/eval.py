@@ -484,6 +484,31 @@ if (!path)
 return *path;
         """)
 
+    @guard("attrs")
+    @blocks
+    @needs("nix/expr/get-drvs.hh")
+    def output_paths(self) -> dict[str, StorePath | None]:
+        """Each output this derivation value names, and its path.
+
+        `PackageInfo::queryOutputs`, every output rather than only
+        `meta.outputsToInstall`. A path is None only for a set with
+        no `outputs` list and no `outPath`. A floating
+        content-addressed output raises: its `outPath` is a
+        placeholder, not a store path.
+
+        BLOCKS for the reason `drv_path` does. Raises for an attribute
+        set that is not a derivation."""
+        Cxx("""
+huggorm::gc_register_thread();
+auto info = nix::getDerivation(self.state(), *self.get(), false);
+if (!info)
+    throw nix::EvalError(self.state(), "the value is not a derivation");
+std::map<std::string, std::optional<nix::StorePath>> out;
+for (auto & [name, path] : info->queryOutputs(true, false))
+    out.emplace(name, path);
+return out;
+        """)
+
     @guard("function")
     def lambda_name(self) -> Str:
         """The name this lambda was bound to, or "" for an anonymous

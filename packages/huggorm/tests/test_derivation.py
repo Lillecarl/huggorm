@@ -115,6 +115,27 @@ def test_an_output_of_an_output_is_a_child_node(
     assert child.dynamic_outputs() == {}
 
 
+def test_a_derivation_value_names_its_outputs(
+        tmp_path: pathlib.Path) -> None:
+    from huggorm_bindings import EvalState, Store
+
+    store = Store(str(tmp_path))
+    value = EvalState(store).eval_expr(LEAF, str(tmp_path))
+    paths = value.output_paths()
+    assert sorted(paths) == ["dev", "out"]
+    assert paths == store.query_derivation_output_map(value.drv_path())
+
+
+def test_a_floating_output_is_not_a_store_path_yet(
+        tmp_path: pathlib.Path, dynamic_derivations: None) -> None:
+    from huggorm_bindings import EvalState, Store
+    from huggorm_bindings.errors import EvalError
+
+    value = EvalState(Store(str(tmp_path))).eval_expr(INNER, str(tmp_path))
+    with pytest.raises(EvalError, match="is not in the Nix store"):
+        value.output_paths()
+
+
 def test_json_round_trips_to_the_same_path(
         store: Any, tmp_path: pathlib.Path) -> None:
     """`add` of what `show` printed writes the same `.drv`."""
