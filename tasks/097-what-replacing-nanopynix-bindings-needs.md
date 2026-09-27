@@ -624,3 +624,25 @@ Lane with the flake builtins: 2642 passed, 150 failed, 31 errors,
 17 min 11 s. The time grows because the tests that import nixpkgs now
 evaluate it. Next by count: `EvalState.set_eval_setting` (7),
 `Store.dump_db` (5).
+
+## Live settings and the database dump
+
+`EvalState.set_setting` changes a live state's own settings, the
+evaluator's first and then the fetcher's, as the constructor tries
+them. nanopynix's two setters both call it.
+
+Its test found a second gap: `max-call-depth` throws
+`StackOverflowError`, which derives `EvalBaseError`, not `EvalError`.
+huggorm declared no `EvalBaseError`, so it reached Python as the base
+`NixError`. It is declared now, with `EvalError` below it, as upstream
+has them. nanopynix maps that name to its own `EvalError`.
+
+`Store.make_validity_registration` is `nix-store --dump-db`.
+
+The new store directories and `Value.output_paths` have no RPC form:
+`pathlib.Path` and `StorePath | None` have no wire policy. The build
+warns about each, as it does for `real_path`.
+
+Lane: 2652 passed, 140 failed, 31 errors, 16 min 38 s. Next by count:
+`Store.optimise_store`, `Store.add_perm_root`, `get_env_sh_path` and
+the settings metadata JSON, three each.
