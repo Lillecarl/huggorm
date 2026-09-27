@@ -47,6 +47,24 @@ from huggorm_dsl.declare import (
 )
 
 
+@produced(by="Store.find_roots")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class GcRoot:
+    """One root the collector keeps, and the store path it keeps.
+
+    One record per link. Upstream maps each store path to the set of
+    links that root it, and several links can root one path."""
+
+    def link(self) -> Str:
+        """The root: a symlink, or the process file that holds the
+        path, or a name in braces such as `{temp:PID}`, `{lsof}` or
+        `{censored}`."""
+
+    def path(self) -> StorePath:
+        """The store path the root keeps alive."""
+
+
 @produced(by="Store.to_store_path")
 @binding(threading="pool", blocking=False)
 @wire_value()
@@ -992,6 +1010,65 @@ return fs->addPermRoot(path, gc_root).string();
         A store that cannot optimise does nothing and does not say so:
         that is `nix::Store`'s own default. A daemon store asks the
         daemon."""
+    @needs("nix/store/indirect-root-store.hh")
+    def add_indirect_root(self, path: Str) -> None:
+        """Register the symlink at `path` as a root, and leave the
+        symlink to the caller. `nix-store --add-root --indirect` does
+        this after it writes the link.
+
+        Pass an absolute path. libstore does not canonicalise `path`,
+        and the collector resolves a relative one against
+        `gcroots/auto`. The collector drops a root whose symlink is
+        gone.
+
+        Only a local or daemon store holds one. Another store raises
+        "not supported by store", as `collect_garbage` does."""
+        Cxx("""
+auto * indirect = dynamic_cast<nix::IndirectRootStore *>(&self);
+if (indirect == nullptr)
+    throw nix::Unsupported(
+        "operation 'add_indirect_root' is not supported by store '%s'",
+        self.config.getHumanReadableURI());
+indirect->addIndirectRoot(path);
+        """)
+    @needs("algorithm")
+    def find_roots(self, censor: Bint) -> list[GcRoot]:
+        """Every root the collector would keep, sorted by link.
+        `nix-store --gc --print-roots`.
+
+        libstore reads `/proc` of the whole machine for the roots that
+        running processes hold. `censor` names each of those and each
+        temporary root `{censored}`, as the daemon does for an
+        untrusted client, rather than the process that holds it.
+
+        Only a store that collects can answer. Another store raises
+        "not supported by store", as `collect_garbage` does."""
+        Cxx("""
+auto * gc = dynamic_cast<nix::GcStore *>(&self);
+if (gc == nullptr)
+    throw nix::Unsupported(
+        "operation 'find_roots' is not supported by store '%s'",
+        self.config.getHumanReadableURI());
+std::vector<huggorm::GcRoot> roots;
+for (auto & [path, links] : gc->findRoots(censor))
+    for (auto & link : links)
+        roots.push_back(huggorm::GcRoot{link, path});
+std::ranges::sort(roots, {}, &huggorm::GcRoot::link);
+return roots;
+        """)
+    def verify_store(self, check_contents: Bint,
+                     repair: Bint = False) -> Bint:
+        """Check the store's database against its files.
+        `nix-store --verify`, and True when errors remain.
+
+        `check_contents` hashes every path, which reads the whole
+        store. `repair` fixes what it can, and an error it fixes does
+        not count. A store that cannot verify answers False: that is
+        `nix::Store`'s own default."""
+        Cxx("""
+return self.verifyStore(check_contents,
+                        repair ? nix::Repair : nix::NoRepair);
+        """)
 
     def follow_links_to_store(self, path: Str) -> Str:
         """Follow symlinks until the path lands in the store, and

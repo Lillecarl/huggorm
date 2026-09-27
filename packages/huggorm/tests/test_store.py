@@ -8,6 +8,7 @@ nothing on disk, which is what makes it testable in a build sandbox.
 
 import datetime
 import gc
+import os
 import pathlib
 import sys
 from typing import Any, cast
@@ -33,6 +34,7 @@ from huggorm_bindings import (
     GCAction,
     GCOptions,
     GCResults,
+    GcRoot,
     Hash,
     HashAlgorithm,
     InputDrvNode,
@@ -1853,6 +1855,9 @@ def test_every_wire_value_survives_its_own_round_trip(
         "SourceLocation": (
             _rebuild(SourceLocation, "/a.nix", 0),
             [("/b.nix", 7)]),
+        "GcRoot": (
+            _rebuild(GcRoot, "/a/result", held),
+            [("{censored}", other)]),
         # A pin answers `locked`, an add does not, and a removal has no
         # target.
         "RegistryWrite": (
@@ -2132,6 +2137,75 @@ def test_optimising_links_identical_files(chroot: Store) -> None:
 
 def test_a_store_that_cannot_optimise_does_nothing(store: Store) -> None:
     store.optimise_store()
+
+
+def _roots(store: Store, censor: bool) -> list[tuple[str, StorePath]]:
+    return [(root.link(), root.path()) for root in store.find_roots(censor)]
+
+
+def test_an_indirect_root_keeps_the_path_its_link_names(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    """The caller writes the link; the store registers it and then
+    counts it among its roots."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    link = tmp_path / "result"
+    link.symlink_to(chroot.print_store_path(held))
+
+    chroot.add_indirect_root(str(link))
+    state = chroot.state_dir()
+    assert state is not None
+    auto = state / "gcroots/auto"
+    assert [entry.readlink() for entry in auto.iterdir()] == [link]
+    assert (str(link), held) in _roots(chroot, True)
+
+
+def test_a_store_with_no_filesystem_refuses_an_indirect_root(
+        store: Store, tmp_path: pathlib.Path) -> None:
+    with pytest.raises(Unsupported, match="not supported by store"):
+        store.add_indirect_root(str(tmp_path / "result"))
+
+
+def test_censoring_hides_which_process_holds_a_temp_root(
+        chroot: Store) -> None:
+    """`add_to_store` takes a temp root for this process, and the
+    root's name says so unless censored."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+
+    assert (f"{{temp:{os.getpid()}}}", held) in _roots(chroot, False)
+    assert ("{censored}", held) in _roots(chroot, True)
+
+
+def test_the_roots_arrive_sorted_by_link(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    for name in ("b", "c", "a"):
+        chroot.add_perm_root(held, str(tmp_path / name))
+    links = [root.link() for root in chroot.find_roots(True)]
+    assert links == sorted(links)
+    assert len(links) >= 3
+
+
+def test_a_store_that_does_not_collect_has_no_roots_to_find(
+        store: Store) -> None:
+    with pytest.raises(Unsupported, match="not supported by store"):
+        store.find_roots(True)
+
+
+def test_verifying_finds_a_changed_file(chroot: Store) -> None:
+    """Only `check_contents` hashes the files, so only it sees the
+    change."""
+    held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
+    assert chroot.verify_store(True) is False
+
+    file = chroot.real_path(held)
+    file.chmod(0o644)
+    file.write_bytes(b"y")
+    assert chroot.verify_store(False) is False
+    assert chroot.verify_store(True) is True
+
+
+def test_a_store_that_cannot_verify_answers_no_errors(store: Store) -> None:
+    assert store.verify_store(True, True) is False
 
 
 def test_a_path_this_process_added_is_not_garbage(chroot: Store) -> None:
