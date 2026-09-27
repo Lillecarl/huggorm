@@ -2134,6 +2134,39 @@ return nix::globalConfig.toJSON().dump();
     """)
 
 
+@needs("huggorm_decl/cpp/settings.hpp")
+def eval_settings_json() -> Str:
+    """The evaluator's settings as `settings_json` describes them.
+
+    libcmd's `nix::evalSettings`, which nix.conf fills and each state
+    copies. A state's own settings are not in it."""
+    Cxx("""
+return nix::evalSettings.toJSON().dump();
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
+def fetch_settings_json() -> Str:
+    """The fetchers' settings as `settings_json` describes them.
+
+    libcmd's `nix::fetchSettings`, as `eval_settings_json` reads
+    `nix::evalSettings`."""
+    Cxx("""
+return nix::fetchSettings.toJSON().dump();
+    """)
+
+
+@needs("huggorm_decl/cpp/settings.hpp")
+def flake_settings_json() -> Str:
+    """The flake settings as `settings_json` describes them.
+
+    libcmd's `nix::flakeSettings`, as `eval_settings_json` reads
+    `nix::evalSettings`."""
+    Cxx("""
+return nix::flakeSettings.toJSON().dump();
+    """)
+
+
 @needs("nix/expr/eval-settings.hh")
 def parse_nix_path(value: Str) -> list[Str]:
     """Split a `NIX_PATH`-style string into its entries, as `nix` does.

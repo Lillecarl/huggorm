@@ -186,6 +186,23 @@ def test_the_json_is_nix_s_own_description() -> None:
     assert "description" in described["pure-eval"]
 
 
+def test_each_settings_object_describes_itself() -> None:
+    """libcmd's three objects, each holding only its own names."""
+    from huggorm_bindings import (
+        eval_settings_json,
+        fetch_settings_json,
+        flake_settings_json,
+    )
+
+    evaluator = json.loads(eval_settings_json())
+    fetcher = json.loads(fetch_settings_json())
+    flake = json.loads(flake_settings_json())
+    assert "pure-eval" in evaluator and "pure-eval" not in fetcher
+    assert "access-tokens" in fetcher and "access-tokens" not in evaluator
+    assert "accept-flake-config" in flake
+    assert not {"substituters", "pure-eval"} & flake.keys()
+
+
 def test_a_state_takes_its_own_settings() -> None:
     """Over what the process has, and for that state alone."""
     from huggorm_bindings import EvalState, Store
