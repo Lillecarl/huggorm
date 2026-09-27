@@ -189,6 +189,23 @@ class BadStorePathName(BadStorePath):
     header = "nix/store/store-dir-config.hh"
 
 
+class EvalError(NixError):
+    """nix::EvalError - evaluation failed."""
+
+    cxx = "nix::EvalError"
+    header = "nix/expr/eval-error.hh"
+
+
+class NixTypeError(EvalError):
+    """nix::TypeError - a value is not the type the operation needs.
+
+    `Nix` in the name because a Python `TypeError` would shadow the
+    builtin, as `SysError` explains."""
+
+    cxx = "nix::TypeError"
+    header = "nix/expr/eval-error.hh"
+
+
 class Interrupted(BaseException):
     """nix::Interrupted - a call cancelled at Nix's next checkInterrupt.
 

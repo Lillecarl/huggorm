@@ -832,8 +832,10 @@ async def test_behavior() -> None:
         await state.eval_expr("not an expression")
         raise AssertionError("expected an evaluation error")
     except NixError as e:
+        # The narrowest declared class: an undefined variable is a
+        # nix::EvalError, and `except NixError` still catches it.
         d = e.to_dict()
-        assert d["code"] == "NixError", d
+        assert d["code"] == "EvalError", d
         assert "undefined variable" in d["message"], d
     try:
         await state.eval_expr("")
