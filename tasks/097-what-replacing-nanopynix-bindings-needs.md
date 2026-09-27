@@ -447,3 +447,40 @@ errors, 4 min 36 s. The groups: `flake.parse_flake_ref` (52),
 stubs on its path, so every vocabulary a stub names was Unknown to
 pyright; it now carries the runtime package too, which `partial` asks
 for.
+
+## Flakes
+
+2026-09-27. `decl/flakeref.py`: `FlakeRef`, a value made by
+`parse_flake_ref`. `decl/eval.py`: `LockedFlake` and `LockedInput`,
+and `EvalState.lock_flake`, `call_flake`, `get_flake` and
+`flake_metadata_json`.
+
+Decisions:
+
+- `FlakeRef` is a VALUE. Nix 2.34's `Input` keeps no settings pointer,
+  so nanopynix's owner of the parse settings (its #34, a 2.31 fix) has
+  nothing to own here. Its one wire part is `to_attrs`; `dir` carries
+  the subdirectory both ways.
+- `flake::Settings` is REGISTERED, as the eval and fetcher settings
+  are. Without it `accept-flake-config` from nix.conf went to
+  `unknownSettings`; the new test read `None` with the line removed.
+  `get_setting` lists no setting whose feature is off, so a test of a
+  flake setting turns `flakes` on too.
+- `LockedFlake` holds a share of the state's core, as a `Bridge` does,
+  through `Evaluator::keep`. Affine, like `Value`.
+- nanopynix's `update_inputs: bool | list[str]` is split into
+  `recreate` and `update`: a union of a scalar and a container has no
+  declaration, and two parameters say the same thing.
+- The per-call settings helper is one template, `call_settings<S>`,
+  for fetcher and flake settings alike.
+
+Not done, and Nix does it: `flake::Settings::configureEvalSettings`
+adds `builtins.getFlake`, `parseFlakeRef` and `flakeRefToString` to a
+state. libcmd calls it; neither engine does, so both lack the three
+builtins.
+
+Wrong on the way: `FlakeRef(url)` as a constructor. A constructed
+value's constructor must take its wire parts, and the build refused a
+URL. The smoke comparison read nanobind's `Mapping[str, str]` for a
+map parameter as a disagreement; it now treats `Mapping` as `dict`,
+as it treats `Sequence` as `list`.

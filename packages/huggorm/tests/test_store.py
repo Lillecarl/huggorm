@@ -34,6 +34,7 @@ from huggorm_bindings import (
     Hash,
     HashAlgorithm,
     KeyedBuildResult,
+    LockedInput,
     LogField,
     LogRecord,
     MissingPaths,
@@ -1789,6 +1790,18 @@ def test_every_wire_value_survives_its_own_round_trip(
             _rebuild(FlakeRef, {"type": "github", "owner": "o", "repo": "r",
                                 "dir": "sub"}),
             [({"type": "path", "path": "/x", "lastModified": 5},)]),
+        # Two references and a flag, each different in the second case.
+        "LockedInput": (
+            _rebuild(LockedInput,
+                     _rebuild(FlakeRef, {"type": "path", "path": "/a",
+                                         "lastModified": 1}),
+                     _rebuild(FlakeRef, {"type": "path", "path": "/a"}),
+                     True),
+            [(_rebuild(FlakeRef, {"type": "github", "owner": "o",
+                                  "repo": "r", "rev": "0" * 40}),
+              _rebuild(FlakeRef, {"type": "github", "owner": "o",
+                                  "repo": "r"}),
+              False)]),
         # A pin answers `locked`, an add does not, and a removal has no
         # target.
         "RegistryWrite": (

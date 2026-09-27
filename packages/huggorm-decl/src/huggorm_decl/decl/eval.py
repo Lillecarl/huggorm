@@ -26,6 +26,7 @@ in this binding a declaration could not have written, and
 `cpp/eval.hpp` says why line by line.
 """
 
+from huggorm_decl.decl.flakeref import FlakeRef
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.store import Store
 from huggorm_dsl.declare import (
@@ -901,6 +902,66 @@ class LogStream:
         from being callable."""
 
 
+@produced(by="LockedFlake.find_input")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class LockedInput:
+    """One input of a lock file, as `flake.lock` records it."""
+
+    def locked_ref(self) -> FlakeRef:
+        """What the input is pinned to."""
+
+    def original_ref(self) -> FlakeRef:
+        """What `flake.nix` asked for."""
+
+    def is_flake(self) -> Bint:
+        """False for an input with `flake = false`."""
+
+
+@produced(by="EvalState.lock_flake")
+@header("huggorm_decl/cpp/eval.hpp")
+@binding(
+    # Locked for one state, and handed back to that state to call. The
+    # async layer keeps it on the state's runner, as it keeps a Value.
+    threading="affine",
+    blocking=False,
+    cxx="huggorm::LockedFlake",
+)
+class LockedFlake:
+    """A flake with its lock file resolved, for the state that locked it."""
+
+    def description(self) -> Str | None:
+        """The `description` in `flake.nix`, or None without one."""
+        Cxx("return self.locked.flake.description;")
+
+    def find_input(self, path: list[Str]) -> LockedInput | None:
+        """The input at `path`, `["nixpkgs"]` or `["a", "b"]`, found as
+        Nix finds it: through `follows`, raising on a cycle.
+
+        None when the path names nothing, and for the root, which
+        records no locked reference."""
+        Cxx("""
+auto node = std::dynamic_pointer_cast<const nix::flake::LockedNode>(
+    self.locked.lockFile.findInput(nix::flake::InputAttrPath(path.begin(), path.end())));
+if (!node)
+    return std::nullopt;
+return huggorm::LockedInput{node->lockedRef, node->originalRef, node->isFlake};
+        """)
+
+    @blocks
+    def write_lock_file(self) -> None:
+        """Write `flake.lock` beside `flake.nix`, as `nix flake lock`
+        does, whatever `lock_flake` was told."""
+        Cxx("""
+auto & flake = self.locked.flake;
+auto [text, keys] = self.locked.lockFile.to_string();
+auto & subdir = flake.originalRef.subdir;
+auto relative = (subdir.empty() ? "" : subdir + "/") + "flake.lock";
+flake.originalRef.input.putFile(nix::CanonPath(relative), text + "\\n", std::nullopt);
+flake.lockFilePath().invalidateCache();
+        """)
+
+
 @header("huggorm_decl/cpp/eval.hpp")
 # A state HOLDS Python callables - `register_primop` gives it one -
 # and the natural way to write one closes over the state itself,
@@ -1371,6 +1432,87 @@ return self.wrap_builder(made);
         Setting a name twice replaces its value, matching an attribute
         set built by assignment."""
         Cxx("return target.stage_attr(name, item.get());")
+
+    @needs("huggorm_decl/cpp/call_settings.hpp", "nix/flake/settings.hh")
+    def lock_flake(self, ref: FlakeRef, recreate: Bint = False,
+                   update: list[Str] = None,  # noqa: RUF013 -- an absent list is an empty one
+                   write_lock_file: Bint = True,
+                   settings: dict[str, Str] | None = None) -> LockedFlake:
+        """Lock a flake, as `nix flake lock` does.
+
+        `recreate` drops the old lock file; `update` names the inputs to
+        refresh, `nixpkgs` or `a/b`. `settings` are flake settings over
+        the process's, such as `accept-flake-config`.
+
+        THIS FETCHES what is not locked yet, into this state's store."""
+        Cxx("""
+auto flake_settings = huggorm::call_settings<nix::flake::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
+nix::flake::LockFlags flags;
+flags.recreateLockFile = recreate;
+flags.writeLockFile = write_lock_file;
+for (auto & input : update) {
+    auto path = nix::flake::NonEmptyInputAttrPath::parse(input);
+    if (!path)
+        throw nix::UsageError("an input path must not be empty: '%s'", input);
+    flags.inputUpdates.insert(*path);
+}
+return self.keep(nix::flake::lockFlake(*flake_settings, self.state(), ref, flags));
+        """)
+
+    def call_flake(self, locked: LockedFlake) -> Value:
+        """The flake's outputs, as `builtins.getFlake` gives them:
+        unforced, so no output is evaluated until it is read."""
+        Cxx("""
+auto * made = self.alloc();
+nix::flake::callFlake(self.state(), locked.locked, *made);
+return self.wrap(made);
+        """)
+
+    def get_flake(self, ref: FlakeRef, use_registries: Bint = True) -> FlakeRef:
+        """What `ref` resolves to through the registries, fetched.
+
+        THIS FETCHES the flake, into this state's store."""
+        Cxx("""
+auto flake = nix::flake::getFlake(
+    self.state(), ref,
+    use_registries ? nix::fetchers::UseRegistries::All : nix::fetchers::UseRegistries::No);
+return flake.resolvedRef;
+        """)
+
+    @needs("nlohmann/json.hpp", "nix/fetchers/attrs.hh")
+    def flake_metadata_json(self, locked: LockedFlake) -> Str:
+        """The object `nix flake metadata --json` prints.
+
+        `CmdFlakeMetadata::run`, line for line. The store is the build
+        store, as Nix uses the store of the command."""
+        Cxx("""
+auto & lockedFlake = locked.locked;
+auto & flake = lockedFlake.flake;
+auto & store = *self.state().buildStore;
+nlohmann::json j;
+if (flake.description)
+    j["description"] = *flake.description;
+j["originalUrl"] = flake.originalRef.to_string();
+j["original"] = nix::fetchers::attrsToJSON(flake.originalRef.toAttrs());
+j["resolvedUrl"] = flake.resolvedRef.to_string();
+j["resolved"] = nix::fetchers::attrsToJSON(flake.resolvedRef.toAttrs());
+j["url"] = flake.lockedRef.to_string();
+j["locked"] = nix::fetchers::attrsToJSON(flake.lockedRef.toAttrs());
+if (auto rev = flake.lockedRef.input.getRev())
+    j["revision"] = rev->to_string(nix::HashFormat::Base16, false);
+if (auto dirty = nix::fetchers::maybeGetStrAttr(flake.lockedRef.toAttrs(), "dirtyRev"))
+    j["dirtyRevision"] = *dirty;
+if (auto count = flake.lockedRef.input.getRevCount())
+    j["revCount"] = *count;
+if (auto modified = flake.lockedRef.input.getLastModified())
+    j["lastModified"] = *modified;
+j["path"] = store.printStorePath(store.toStorePath(flake.path.path.abs()).first);
+j["locks"] = lockedFlake.lockFile.toJSON().first;
+if (auto fingerprint = lockedFlake.getFingerprint(store, self.state().fetchSettings))
+    j["fingerprint"] = fingerprint->to_string(nix::HashFormat::Base16, false);
+return j.dump();
+        """)
 
 
 # --- free functions ------------------------------------------------

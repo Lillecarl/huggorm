@@ -67,6 +67,7 @@ namespace nb = nanobind;
 #include "nix/expr/symbol-table.hh"
 #include "nix/expr/value.hh"
 #include "nix/fetchers/fetch-settings.hh"
+#include "nix/flake/flake.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-open.hh"
 
@@ -390,6 +391,20 @@ inline std::shared_ptr<EvalCore> make_core(nix::ref<nix::Store> store, const Set
             }};
 }
 
+/**
+ * A locked flake, and a share of the state that locked it.
+ *
+ * The share is what a `Bridge` holds, for the same two reasons: the
+ * state outlives every object made for it, and the async layer tells a
+ * foreign one apart by it. Member order is destruction order in
+ * reverse, so the flake goes before the last share of the state.
+ */
+struct LockedFlake
+{
+    std::shared_ptr<EvalCore> core;
+    nix::flake::LockedFlake locked;
+};
+
 class Evaluator
 {
 public:
@@ -427,6 +442,12 @@ public:
 
     Bridge wrap(nix::Value * v) const;
     Bridge wrap_builder(nix::Value * v) const;
+
+    /** A locked flake, tied to this state as `wrap` ties a value. */
+    LockedFlake keep(nix::flake::LockedFlake && locked) const
+    {
+        return LockedFlake{core_, std::move(locked)};
+    }
 
     /**
      * Publishes a Python callable as `builtins.<name>`.
