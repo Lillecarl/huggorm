@@ -484,3 +484,12 @@ value's constructor must take its wire parts, and the build refused a
 URL. The smoke comparison read nanobind's `Mapping[str, str]` for a
 map parameter as a disagreement; it now treats `Mapping` as `dict`,
 as it treats `Sequence` as `list`.
+
+Lane with nanopynix's flake adapter: 2391 passed, 314 failed, 107
+errors, 5 min 43 s. Left: `EvalState.begin_repl` (31),
+`Store.read_derivation_typed` (14), `Store.query_missing_typed` (10).
+Four pynix flake tests still fail; one reads `has_attr` on a value
+that is not a set, and huggorm raises a bare `RuntimeError` ("value is
+not attrs") where the other engine raises Nix's own type error from
+`forceAttrs`. That is an error-type gap in every `Value` accessor, not
+a flake one.
