@@ -699,3 +699,34 @@ nanopynix'`: 2680 passed, 137 failed; peaks 2.7 GB and 3.7 GB, 18 min
 23 s together. Next by count: `Store.write_dev_shell_derivation` (9),
 then `Store.verify_store`, `Store.add_indirect_root` (3 each) and
 `Store.find_roots`.
+
+## Dev shells, verifying and the root list
+
+`write_dev_shell_derivation` needs no new binding. nanopynix's adapter
+follows `getDerivationEnvironment` over the derivation's JSON, and
+`add_derivation` fills in the deferred output paths. nanopynix-bindings
+does the same in C++ with a branch per Nix version; `add_derivation`
+makes that branch unnecessary. The 25 `test_develop` tests pass.
+
+`Store.verify_store`, `Store.add_indirect_root` and `Store.find_roots`
+are bound. `find_roots` answers `GcRoot` records, one per link, sorted
+by link, because libstore's `Roots` is a hash map of path to links.
+`censor` hides the link names only: libstore reads `/proc` either way.
+
+Wrong turn: `GcRoot` was declared in `gc.py`, beside `GCResults`, and
+the build failed with "'GcRoot' is not a member of 'huggorm'" in
+`store.cpp`. A generated struct is emitted in the module that declares
+it, so it moved to `store.py`, the module of its producer.
+
+Each new test was proved by a break: no sort, `censor` forced off and
+`check_contents` forced off turned 3 tests red.
+
+Lane: 2692 passed, 125 failed (1816/70 and 876/55), 17 min 15 s. No
+`Store.*` name is left in the NotPorted grouping. The next by count is
+"cannot yet make a Nix value from function" (16): a Python callable
+passed as a Nix value.
+
+Part A's scope peaked at 5.1 GB, then 4.0 GB on a second run with the
+same 70 failures; it was 2.7 GB before. The pytest process's RSS stays
+under 957 MB, so the peak and its spread come from outside that
+process. Part B peaked at 4.1 GB.
