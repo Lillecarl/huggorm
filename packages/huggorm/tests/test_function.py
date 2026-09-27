@@ -91,14 +91,18 @@ def test_the_result_comes_back_in_whnf(state: Any) -> None:
     assert inner.integer() == 42
 
 
-def test_applying_a_non_function_is_refused(state: Any) -> None:
-    """The guard, and the reason every accessor here has one.
+def test_applying_a_non_function_is_nix_s_own_refusal(state: Any) -> None:
+    """What `42 1` raises, from `callFunction` itself."""
+    from huggorm_bindings.errors import NixTypeError
 
-    `nix::Value` is a tagged union whose readers are `noexcept` and
-    undefined on the wrong tag, so this has to fail as an error rather
-    than as a reinterpretation."""
-    with pytest.raises(Exception, match="expected a function but found an integer"):
+    with pytest.raises(NixTypeError, match="attempt to call something "
+                       "which is not a function but an integer"):
         state.eval_expr("42").apply(state.make_int(1))
+
+
+def test_a_functor_set_applies_as_nix_calls_it(state: Any) -> None:
+    functor = state.eval_expr("{ n = 40; __functor = self: x: self.n + x; }")
+    assert functor.apply(state.make_int(2)).integer() == 42
 
 
 # -- the three shapes ------------------------------------------------------

@@ -413,7 +413,6 @@ return argv;
         and a caller cannot ask for."""
         Cxx("return self.get()->isPrimOpApp();")
 
-    @guard("function")
     @blocks
     def apply(self, arg: Value) -> Value:
         """Apply one argument. `f x`, and the answer may be a function.
@@ -436,7 +435,11 @@ return argv;
 
         `noPos`, because the call site is Python and there is no Nix
         position to name. The trace on a failure therefore starts
-        inside the function rather than at a caller."""
+        inside the function rather than at a caller.
+
+        No `@guard`: `callFunction` reads no payload before it checks
+        the type, and it also calls a set with `__functor`, as `f x`
+        does. Anything else raises Nix's own `TypeError`."""
         Cxx("""
 huggorm::gc_register_thread();
 auto * out = self.state().allocValue();
