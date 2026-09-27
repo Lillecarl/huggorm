@@ -583,3 +583,34 @@ Lane with the three adapters: 2478 passed, 236 failed, 107 errors,
 6 min 0 s. Next by count: `EvalState.set_eval_setting` (7),
 `Store.dump_db` (5), then `BuildMode`, which fails every build test
 through `build_mode_value`.
+
+## Building
+
+`Store.build_paths` and `build_paths_with_results` take `eval_store`,
+and `Value.output_paths` is `PackageInfo::queryOutputs`. nanopynix's
+`Value.build` needs both.
+
+Wrong turn: `output_paths` was first documented as None for a
+content-addressed output. Nix's `queryOutputs` raises there instead:
+the `outPath` is a placeholder, not a store path. A test states it.
+
+Wrong turn: the eval-store test first used `FIXED`'s hash, which is
+not the hash of the empty file it added. The builder ran. The test
+now takes the hash from the path it adds.
+
+The lane also found a nanopynix adapter bug: `Value.auto_call`
+returned `self`, so two `CoreValue`s shared one engine value and one
+close released it for both.
+
+Lane: 2542 passed, 208 failed, 72 errors, 6 min 27 s. Left in the
+build tests:
+
+- `builtins.parseFlakeRef` is missing, because the huggorm engine
+  does not turn on the default experimental features at init.
+  `test_init_entry_point_enables_the_default_experimental_features`
+  names it. Two build tests import nixpkgs and fail on it.
+- `test_build_keeps_the_message_of_nix_for_any_other_value` expects
+  "selected value is not a derivation". Nix never says that; the
+  other engine's binding wrote it (`nix_expr.cpp:586`), and pynix's
+  test calls it Nix's message. huggorm says "the value is not a
+  derivation".
