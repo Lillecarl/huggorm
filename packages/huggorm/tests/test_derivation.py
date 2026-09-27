@@ -136,6 +136,40 @@ def test_a_floating_output_is_not_a_store_path_yet(
         value.output_paths()
 
 
+def test_a_build_reads_its_derivation_from_the_eval_store(
+        tmp_path: pathlib.Path) -> None:
+    """A fixed output already valid in the build store needs no
+    builder: only the `.drv`, which the eval store holds and the
+    build store does not."""
+    from huggorm_bindings import (
+        ContentAddressMethod,
+        DerivedPathBuilt,
+        HashAlgorithm,
+        OutputsSpec,
+        Store,
+    )
+
+    built = Store(str(tmp_path / "build"))
+    held = built.add_to_store("fixed", b"", ContentAddressMethod.FLAT,
+                              HashAlgorithm.SHA256)
+    ca = built.query_path_info(held).ca()
+    assert ca is not None
+    sri = ca.hash().sri()
+    (tmp_path / "eval").mkdir()
+    drv = instantiate(tmp_path / "eval", FIXED.replace(
+        "sha256-47DEQpj8HBSa+/TWmW+nGUhGKf1Kq8BQi/ljyeGd3sQ=", sri))
+    evaluated = Store(str(tmp_path / "eval"))
+    target = DerivedPathBuilt(drv, OutputsSpec(names=["out"]))
+
+    [result] = built.build_paths_with_results([target],
+                                              eval_store=evaluated)
+    assert result.error() is None
+    assert not built.is_valid_path(drv)
+
+    [alone] = built.build_paths_with_results([target])
+    assert alone.error() is not None
+
+
 def test_json_round_trips_to_the_same_path(
         store: Any, tmp_path: pathlib.Path) -> None:
     """`add` of what `show` printed writes the same `.drv`."""

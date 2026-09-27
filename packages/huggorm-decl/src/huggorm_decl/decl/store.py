@@ -684,7 +684,8 @@ return nix::Realisation{*found, id};
     # (tasks/059): both take the same list, and only one of them
     # changes the store.
     def build_paths(self, targets: list[DerivedPath],
-                    mode: BuildMode = BuildMode.NORMAL) -> None:
+                    mode: BuildMode = BuildMode.NORMAL,
+                    eval_store: Store | None = None) -> None:
         """Build or fetch every one of these, and wait.
 
         A target that is a derivation gets BUILT, which means its
@@ -708,16 +709,17 @@ return nix::Realisation{*found, id};
         no longer hash to its name; `check` rebuilds a valid output
         and compares without replacing it. The default is upstream's.
 
-        No `evalStore`. It is a second store the caller supplies for
-        derivations only, and the shape a Python caller wants for
-        that is a question rather than a parameter to pass through."""
-        Cxx("self.buildPaths(targets, mode);")
+        `eval_store` is where the `.drv` files are, when that is not
+        this store: `nix --eval-store A --store B` builds in B from
+        derivations A holds. None reads them from this store."""
+        Cxx("self.buildPaths(targets, mode, eval_store.value_or(nullptr));")
 
     @needs("nix/store/build-result.hh")
     @cxx_name("buildPathsWithResults")
     def build_paths_with_results(
             self, targets: list[DerivedPath],
             mode: BuildMode = BuildMode.NORMAL,
+            eval_store: Store | None = None,
     ) -> list[KeyedBuildResult]:
         """Build or fetch every one of these, and report on each.
 
@@ -738,9 +740,8 @@ return nix::Realisation{*found, id};
         is for a build that RAN and did not produce the outputs, and
         not for a caller who asked something incoherent.
 
-        No `evalStore`, the same third parameter `build_paths` leaves
-        out and for the same reason."""
-        Cxx("return self.buildPathsWithResults(targets, mode);")
+        `eval_store` is `build_paths`' own."""
+        Cxx("return self.buildPathsWithResults(targets, mode, eval_store.value_or(nullptr));")
     @cxx_name("ensurePath")
     def ensure_path(self, path: StorePath) -> None:
         """Make this path valid, by substituting it if it is not.
