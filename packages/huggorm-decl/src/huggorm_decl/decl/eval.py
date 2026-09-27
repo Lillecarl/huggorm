@@ -2323,6 +2323,25 @@ def is_experimental_feature(name: Str) -> Bint:
     Cxx("return nix::parseExperimentalFeature(name).has_value();")
 
 
+@needs("nix/util/experimental-features.hh")
+def enable_experimental_feature(name: Str) -> None:
+    """Add one experimental feature to the process's set.
+
+    As a program that needs a feature turns it on at startup, and not
+    as a line of nix.conf: the setting keeps its overridden mark as it
+    was, so `list_settings(overridden_only=True)` still names only
+    what the configuration and the caller set. Raises `UsageError` for
+    a name this Nix does not know, where the setting only warns."""
+    Cxx("""
+auto feature = nix::parseExperimentalFeature(name);
+if (!feature)
+    throw nix::UsageError("unknown experimental feature '%s'", name);
+auto features = nix::experimentalFeatureSettings.experimentalFeatures.get();
+features.insert(*feature);
+nix::experimentalFeatureSettings.experimentalFeatures = features;
+    """)
+
+
 @needs("huggorm_decl/cpp/settings.hpp")
 def settings_json() -> Str:
     """Every registered setting as Nix describes it, in JSON.

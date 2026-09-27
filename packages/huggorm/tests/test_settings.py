@@ -371,3 +371,23 @@ def test_a_feature_name_is_known_or_not() -> None:
 
     assert is_experimental_feature("flakes") is True
     assert is_experimental_feature("no-such-feature") is False
+
+
+def test_enabling_a_feature_adds_it_and_marks_nothing() -> None:
+    probe = ("from huggorm_bindings import enable_experimental_feature,"
+             " get_setting, list_settings, reset_overridden;"
+             "reset_overridden();"
+             "enable_experimental_feature('fetch-closure');"
+             "print('fetch-closure' in get_setting('experimental-features').split(),"
+             " 'experimental-features' in list_settings(overridden_only=True))")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                         text=True, check=True)
+    assert out.stdout.split() == ["True", "False"]
+
+
+def test_an_unknown_feature_is_refused() -> None:
+    from huggorm_bindings import enable_experimental_feature
+    from huggorm_bindings.errors import UsageError
+
+    with pytest.raises(UsageError, match="unknown experimental feature"):
+        enable_experimental_feature("no-such-feature")
