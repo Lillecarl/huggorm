@@ -20,16 +20,20 @@ import pytest
 
 PROBE = """
 import sys
-from huggorm_bindings import EvalState, Store, load_config
-if sys.argv[1] == "load":
+from huggorm_bindings import EvalState, Store, load_config, reset_overridden
+if sys.argv[1] in ("load", "reset"):
     load_config()
+if sys.argv[1] == "reset":
+    reset_overridden()
 print(EvalState(Store("dummy://")).eval_expr("builtins ? currentTime").boolean())
 """
 
 
-def has_current_time(nix_config: str, *, load: bool) -> bool:
+def has_current_time(nix_config: str, *, load: bool,
+                     reset: bool = False) -> bool:
     env = {**os.environ, "NIX_CONFIG": nix_config}
-    argv = [sys.executable, "-c", PROBE, "load" if load else "skip"]
+    mode = "reset" if reset else "load" if load else "skip"
+    argv = [sys.executable, "-c", PROBE, mode]
     out = subprocess.run(argv, env=env, capture_output=True, text=True,
                          check=True)
     return {"True": True, "False": False}[out.stdout.strip()]
@@ -38,6 +42,14 @@ def has_current_time(nix_config: str, *, load: bool) -> bool:
 def test_pure_eval_from_the_config_reaches_the_state() -> None:
     """`nix eval` answers false here, and so must a state."""
     assert has_current_time("pure-eval = true", load=True) is False
+
+
+def test_the_config_reaches_the_state_after_the_marks_are_reset() -> None:
+    """nanopynix resets the overridden marks right after loading, to
+    tell the file's settings from its own. The values stay, and a
+    state reads the values."""
+    assert has_current_time("pure-eval = true", load=True,
+                            reset=True) is False
 
 
 def test_import_alone_reads_no_config() -> None:

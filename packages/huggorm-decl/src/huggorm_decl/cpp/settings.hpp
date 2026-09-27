@@ -33,19 +33,23 @@
 namespace huggorm {
 
 /**
- * Set on `target` every value the file set on `source`.
+ * Set on `target` every value of `source` that differs from
+ * `target`'s own.
  *
- * Overridden only, so a state keeps the compiled default wherever the
- * file is silent. `set` answers false for a setting Nix refused, such
- * as an experimental one whose feature is off, and Nix has warned
- * already.
+ * By value, not by the `overridden` mark: `reset_overridden` clears
+ * the mark and keeps the value, and nanopynix calls it right after
+ * loading nix.conf. A value equal to the default is not set, so an
+ * experimental setting whose feature is off does not warn. `set`
+ * answers false for a setting Nix refused, and Nix has warned already.
  */
-inline void replay_overridden(nix::Config & target, const nix::Config & source)
+inline void replay_configured(nix::Config & target, const nix::Config & source)
 {
-    std::map<std::string, nix::Config::SettingInfo> overridden;
-    source.getSettings(overridden, /*overriddenOnly=*/true);
-    for (auto & [name, info] : overridden)
-        target.set(name, info.value);
+    std::map<std::string, nix::Config::SettingInfo> configured, own;
+    source.getSettings(configured);
+    target.getSettings(own);
+    for (auto & [name, info] : configured)
+        if (auto mine = own.find(name); mine == own.end() || mine->second.value != info.value)
+            target.set(name, info.value);
 }
 
 /** One state's own settings: a name, and its value as nix.conf spells it. */
@@ -65,8 +69,8 @@ using Settings = std::map<std::string, std::string>;
  */
 inline bool apply_configured(nix::fetchers::Settings & fetch, nix::EvalSettings & eval, const Settings & own)
 {
-    replay_overridden(fetch, nix::fetchSettings);
-    replay_overridden(eval, nix::evalSettings);
+    replay_configured(fetch, nix::fetchSettings);
+    replay_configured(eval, nix::evalSettings);
     // `builtins.getFlake`, `parseFlakeRef` and `flakeRefToString`, as
     // `nix`'s main.cc adds them. The `flakes` feature still gates each.
     nix::flakeSettings.configureEvalSettings(eval);
