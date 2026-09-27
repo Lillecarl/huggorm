@@ -225,6 +225,23 @@ throw nix::TypeError(self.state(), "expected %s or %s but found %s",
         """)
 
     @guard("list")
+    def length(self) -> I64:
+        """Elements in a list. `size` for a caller that must refuse
+        an attribute set."""
+        Cxx("return static_cast<std::int64_t>(self.get()->listSize());")
+
+    @guard("attrs")
+    def names(self) -> list[Str]:
+        """Every attribute name, in alphabetical order. `name_at` for
+        each index, in one call."""
+        Cxx("""
+std::vector<std::string> names;
+for (const auto * attr : self.sorted())
+    names.push_back(self.symbol(attr->name));
+return names;
+        """)
+
+    @guard("list")
     def at(self, index: I64) -> Value:
         """One element of a list.
 

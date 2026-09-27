@@ -61,6 +61,19 @@ def test_a_size_of_neither_collection_is_a_type_error(state: Any) -> None:
         state.eval_expr("1").size()
 
 
+def test_length_and_names_each_take_one_collection(state: Any) -> None:
+    """`size` answers for either; these refuse the other one, even
+    when it is empty."""
+    from huggorm_bindings.errors import NixTypeError
+
+    assert state.eval_expr("[ 1 2 ]").length() == 2
+    assert state.eval_expr("{ b = 1; a = 2; }").names() == ["a", "b"]
+    with pytest.raises(NixTypeError, match="expected a list but found a set"):
+        state.eval_expr("{ }").length()
+    with pytest.raises(NixTypeError, match="expected a set but found a list"):
+        state.eval_expr("[ ]").names()
+
+
 def test_a_missing_attribute_is_nix_s_own_error(state: Any) -> None:
     """The error `{ foo = 1; }.fo` raises, with the suggestion Nix
     ranks from the set's own names."""
