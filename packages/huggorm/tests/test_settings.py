@@ -222,6 +222,34 @@ def test_a_name_the_state_does_not_hold_refuses(name: str) -> None:
         EvalState(Store("dummy://"), {name: "false"})
 
 
+def test_a_live_setting_reaches_the_next_evaluation() -> None:
+    from huggorm_bindings import EvalState, Store
+    from huggorm_bindings.errors import EvalBaseError
+
+    recurse = "let f = n: if n == 0 then 0 else f (n - 1); in f 200"
+    state = EvalState(Store("dummy://"))
+    assert state.eval_expr(recurse).integer() == 0
+    state.set_setting("max-call-depth", "20")
+    # Nix's StackOverflowError derives EvalBaseError, not EvalError.
+    with pytest.raises(EvalBaseError, match="max-call-depth"):
+        state.eval_expr(recurse)
+
+
+def test_a_live_state_takes_a_fetcher_setting() -> None:
+    from huggorm_bindings import EvalState, Store
+
+    EvalState(Store("dummy://")).set_setting("warn-dirty", "false")
+
+
+@pytest.mark.parametrize("name", ["no-such-setting", "sandbox"])
+def test_a_live_state_refuses_a_name_it_does_not_hold(name: str) -> None:
+    from huggorm_bindings import EvalState, Store
+    from huggorm_bindings.errors import UsageError
+
+    with pytest.raises(UsageError, match=name):
+        EvalState(Store("dummy://")).set_setting(name, "false")
+
+
 def test_a_stack_overflow_is_not_an_eval_error() -> None:
     from huggorm_bindings import EvalState, Store
     from huggorm_bindings.errors import EvalBaseError, EvalError

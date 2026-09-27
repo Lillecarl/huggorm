@@ -1230,6 +1230,23 @@ class EvalState:
         `.drv` files to the first, and a realise builds in the second
         and copies the outputs back. None builds where it evaluates."""
 
+    def set_setting(self, name: Str, value: Str) -> None:
+        """Change one of this state's own settings, as the constructor's
+        `settings` spell them.
+
+        The evaluator's settings first, then the fetcher's, as the
+        constructor tries them. A name neither holds raises
+        `UsageError`.
+
+        A live state reads most names at the point of use, such as
+        `max-call-depth` and `allow-dirty`. It reads a few only in its
+        constructor, such as `pure-eval`: this changes the object and
+        not the state, so pass those to the constructor."""
+        Cxx("""
+if (!self.eval_settings().set(name, value) && !self.fetch_settings().set(name, value))
+    throw nix::UsageError("'%s' is not an evaluator or fetcher setting", name);
+        """)
+
     def get_store_uri(self) -> Str:
         """How this state's store describes itself, as `Store.get_uri`
         does. For logging only: it does not round-trip."""

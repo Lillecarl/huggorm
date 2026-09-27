@@ -268,6 +268,11 @@ public:
 
     nix::Store & store() const { return *store_; }
 
+    // The state holds both by const reference and reads most names at
+    // the point of use, so a write here reaches the next evaluation.
+    nix::EvalSettings & eval_settings() { return eval_settings_; }
+    nix::fetchers::Settings & fetch_settings() { return fetch_settings_; }
+
     // -- the ONE strong reference to each registered callable ------
     //
     // A primop's `impl` used to capture the `nb::object` itself, and
@@ -424,6 +429,9 @@ public:
     nix::EvalState & state() const { return core_->state(); }
 
     nix::Store & store() const { return core_->store(); }
+
+    nix::EvalSettings & eval_settings() const { return core_->eval_settings(); }
+    nix::fetchers::Settings & fetch_settings() const { return core_->fetch_settings(); }
 
     // -- the two primitives every producer stands on ---------------
     //
