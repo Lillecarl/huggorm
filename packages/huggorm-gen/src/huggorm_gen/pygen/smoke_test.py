@@ -1426,9 +1426,9 @@ def _same(spelling: str) -> str:
       what a caller must import. `StorePath` and
       `huggorm_bindings.path.StorePath` are one type. `pathlib.Path`
       keeps its module, because it is not one of ours.
-    - a caster takes a `Sequence` and answers a `list`. The
-      declaration says `list` for both, which is the surface a caller
-      sees.
+    - a caster takes a `Sequence` and answers a `list`, and takes a
+      `Mapping` and answers a `dict`. The declaration says `list` and
+      `dict` for both, which is the surface a caller sees.
     - a VOCABULARY is a StrEnum whose members ARE the strings
       libstore parses, so it crosses as `str` and nanobind says so.
       That is the whole point of declaring it as words rather than
@@ -1459,6 +1459,7 @@ def _same(spelling: str) -> str:
 
     out = re.sub(r"huggorm_bindings\.\w+\.", "", spelling)
     out = out.replace("collections.abc.Sequence[", "list[")
+    out = out.replace("collections.abc.Mapping[", "dict[")
     for name in _ERRORS:
         out = re.sub(rf"\b{re.escape(name)}\b(\s*\|\s*None)?", "object", out)
     for name in _VOCABULARIES:
