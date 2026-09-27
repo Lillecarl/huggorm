@@ -353,7 +353,8 @@ def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
     different fact from an emitter losing one method of a class it
     did bind."""
     wrote = set(BOUND_NAME.findall(text))
-    factories = {c.decl.built_by for c in mod.classes if c.decl.built_by}
+    factories = {c.decl.built_by for c in mod.classes
+                 if c.decl.built_by and c.ctor is not None}
     bad = []
     for cls in bound:
         for m in cls.methods:

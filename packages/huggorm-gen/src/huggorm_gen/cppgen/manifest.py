@@ -300,8 +300,13 @@ def _ctor_params(cls: Class,
     Two sources, and only one applies to any class. An ordinary class
     declares `__init__` and that is the signature. A `@produced(by=X)`
     class is built by X, so X's parameters are what a caller passes -
-    including X's defaults, which is the part that was being lost."""
-    if cls.decl.built_by:
+    including X's defaults, which is the part that was being lost.
+
+    Only a class that declares `__init__`. Without one, X is a function
+    whose ANSWER is this class - `registry_entries` returns entries -
+    and a caller never passes X's parameters to build one, as
+    `nbemit` binds no constructor for it either."""
+    if cls.decl.built_by and cls.ctor is not None:
         made = next((f for f in functions if f.name == cls.decl.built_by),
                     None)
         if made is not None:
