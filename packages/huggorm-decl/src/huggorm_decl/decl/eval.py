@@ -1609,6 +1609,29 @@ if (arity < 0)
 self.register_primop(name, static_cast<std::size_t>(arity), fn);
         """)
 
+    @instant
+    def make_primop(self, name: Str, arity: I64, fn: PyFunc) -> Value:
+        """A Python callable as a Nix function value, which
+        `builtins` does not hold.
+
+        A primop answers a function in its result this way. `fn`
+        takes `arity` Values and returns a Value, as for
+        `register_primop`, and its arguments arrive forced. `name` is
+        what `primop_name` and an error from `fn` show.
+
+        `arity` must be at least 1. Nix has no function of no
+        arguments; `register_primop` makes a lazy constant for 0, and
+        a caller with a value in hand has no use for one.
+
+        The callable lives as long as this state, as a registered one
+        does. So each call keeps one more callable, and a primop that
+        makes a function on every call grows the state."""
+        Cxx("""
+if (arity < 1)
+    throw std::invalid_argument("arity must be at least 1");
+return self.make_primop(name, static_cast<std::size_t>(arity), fn);
+        """)
+
     def subscribe_logs(self, capacity: I64 = 1024,
                        level: I64 = 3) -> LogStream:
         """Record what Nix says on THIS state's thread.

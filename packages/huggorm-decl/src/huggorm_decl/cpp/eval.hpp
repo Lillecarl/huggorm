@@ -496,6 +496,10 @@ public:
     void register_primop(const std::string & name, std::size_t arity,
                          nb::object fn) const;
 
+    /** A Python callable as an anonymous function value. */
+    Bridge make_primop(const std::string & name, std::size_t arity,
+                       nb::object fn) const;
+
     // What the GC slots below report and drop. On the CORE rather
     // than here, because a Bridge shares the core and the callables
     // have to outlive this wrapper exactly as the state does.
@@ -864,6 +868,64 @@ inline Bridge Evaluator::wrap_builder(nix::Value * v) const
 }
 
 /**
+ * The body of a primop implemented in Python: `register_primop` and
+ * `make_primop` both call it. `label` names the function in its
+ * errors.
+ */
+inline nix::fun<nix::PrimOpFun> primop_impl(
+    std::weak_ptr<EvalCore> weak, std::size_t slot, std::size_t arity,
+    std::string label)
+{
+    return [weak, slot, arity, label](nix::EvalState & state,
+                                      const nix::PosIdx pos,
+                                      nix::Value ** args,
+                                      nix::Value & out) {
+        auto held = weak.lock();
+        if (!held)
+            state.error<nix::EvalError>("the evaluator is gone")
+                .atPos(pos)
+                .debugThrow();
+
+        for (std::size_t i = 0; i < arity; ++i)
+            state.forceValue(*args[i], pos);
+
+        nb::gil_scoped_acquire gil;
+        // Empty once `tp_clear` has run, which happens only for a
+        // cycle Python already found unreachable - so nothing
+        // should be able to call this. It is checked rather than
+        // assumed, because the alternative is calling a null.
+        nb::object fn = held->primop(slot);
+        if (!fn.is_valid())
+            state
+                .error<nix::EvalError>(
+                    "the Python implementation of %1% was released", label)
+                .atPos(pos)
+                .debugThrow();
+        try {
+            nb::list made;
+            for (std::size_t i = 0; i < arity; ++i)
+                made.append(nb::cast(Bridge(held, args[i])));
+            out = *nb::cast<Bridge>(fn(*nb::tuple(made))).get();
+        } catch (nb::cast_error &) {
+            // A `cast_error` and not a `python_error`: returning a
+            // plain int fails HERE, and catching only the latter
+            // would let it escape through C++ evaluation frames.
+            state
+                .error<nix::EvalError>(
+                    "the Python implementation of %1% did not return a "
+                    "Value",
+                    label)
+                .atPos(pos)
+                .debugThrow();
+        } catch (nb::python_error & e) {
+            state.error<nix::EvalError>("%1%", e.what())
+                .atPos(pos)
+                .debugThrow();
+        }
+    };
+}
+
+/**
  * Publishes a Python callable as `builtins.<name>`.
  *
  * The direction everything else here runs the other way. Every
@@ -922,54 +984,7 @@ inline void Evaluator::register_primop(const std::string & name,
         // from it when it is set, and names there are for
         // documentation this binding does not carry.
         .arity = arity,
-        .impl = [weak, slot, arity, name](nix::EvalState & state,
-                                          const nix::PosIdx pos,
-                                          nix::Value ** args,
-                                          nix::Value & out) {
-            auto held = weak.lock();
-            if (!held)
-                state.error<nix::EvalError>("the evaluator is gone")
-                    .atPos(pos)
-                    .debugThrow();
-
-            for (std::size_t i = 0; i < arity; ++i)
-                state.forceValue(*args[i], pos);
-
-            nb::gil_scoped_acquire gil;
-            // Empty once `tp_clear` has run, which happens only for a
-            // cycle Python already found unreachable - so nothing
-            // should be able to call this. It is checked rather than
-            // assumed, because the alternative is calling a null.
-            nb::object fn = held->primop(slot);
-            if (!fn.is_valid())
-                state
-                    .error<nix::EvalError>(
-                        "the Python implementation of builtins.%1% was "
-                        "released", name)
-                    .atPos(pos)
-                    .debugThrow();
-            try {
-                nb::list made;
-                for (std::size_t i = 0; i < arity; ++i)
-                    made.append(nb::cast(Bridge(held, args[i])));
-                out = *nb::cast<Bridge>(fn(*nb::tuple(made))).get();
-            } catch (nb::cast_error &) {
-                // A `cast_error` and not a `python_error`: returning a
-                // plain int fails HERE, and catching only the latter
-                // would let it escape through C++ evaluation frames.
-                state
-                    .error<nix::EvalError>(
-                        "the Python implementation of builtins.%1% did not "
-                        "return a Value",
-                        name)
-                    .atPos(pos)
-                    .debugThrow();
-            } catch (nb::python_error & e) {
-                state.error<nix::EvalError>("%1%", e.what())
-                    .atPos(pos)
-                    .debugThrow();
-            }
-        },
+        .impl = primop_impl(weak, slot, arity, "builtins." + name),
     };
     auto & state = core_->state();
     (state.*get(AddPrimOp{}))(std::move(op));
@@ -1000,6 +1015,27 @@ inline void Evaluator::register_primop(const std::string & name,
     // without this would work almost always.
     const_cast<nix::Bindings *>(state.getBuiltins().attrs())->sort();
     state.staticBaseEnv->sort();
+}
+
+/**
+ * A Python callable as a Nix function value, under no name in
+ * `builtins`. The callable lives as long as the state, as a
+ * registered one does, so each call keeps one more.
+ *
+ * `new PrimOp`, as `addPrimOp` allocates one.
+ */
+inline Bridge Evaluator::make_primop(const std::string & name,
+                                     std::size_t arity,
+                                     nb::object fn) const
+{
+    const std::size_t slot = core_->hold_primop(std::move(fn));
+    auto * made = alloc();
+    made->mkPrimOp(new nix::PrimOp{
+        .name = name,
+        .arity = arity,
+        .impl = primop_impl(core_, slot, arity, name),
+    });
+    return wrap(made);
 }
 
 // ---- one REPL scope -----------------------------------------------

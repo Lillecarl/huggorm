@@ -311,3 +311,71 @@ def test_the_callable_still_works_while_the_state_is_reachable() -> None:
     gc.collect()
     gc.collect()
     assert state.eval_expr("builtins.twice2 21").integer() == 42
+
+
+def test_a_python_function_becomes_a_nix_function(state: Any) -> None:
+    """`make_primop` answers a function value that no name in
+    `builtins` holds, and applying it calls Python."""
+    inc = state.make_primop(
+        "inc", 1, lambda v: state.make_int(v.integer() + 1))
+
+    assert inc.is_primop()
+    assert inc.primop_name() == "inc"
+    assert inc.apply(state.make_int(41)).integer() == 42
+    assert state.eval_expr("builtins ? inc").boolean() is False
+
+
+def test_a_primop_can_answer_a_function(state: Any) -> None:
+    """The shape a primop that returns a set of functions needs: the
+    inner function closes over the outer argument."""
+    def adder(a: Any) -> Any:
+        return state.make_primop(
+            "add", 1, lambda b: state.make_int(a.integer() + b.integer()))
+
+    state.register_primop("adder", 1, adder)
+
+    assert state.eval_expr("builtins.adder 40 2").integer() == 42
+    assert state.eval_expr("map (builtins.adder 1) [ 1 2 ]").to_json(False) \
+        == "[2,3]"
+
+
+def test_a_made_function_names_itself_in_its_errors(state: Any) -> None:
+    """The label is the given name, not `builtins.<name>`, because
+    `builtins` does not hold it."""
+    wrong = state.make_primop("wrong", 1, lambda v: 42)
+
+    with pytest.raises(Exception) as caught:
+        wrong.apply(state.make_int(1)).integer()
+    assert "implementation of wrong did not return a Value" \
+        in str(caught.value)
+
+
+def test_a_made_function_needs_an_argument(state: Any) -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        state.make_primop("nothing", 0, lambda: state.make_null())
+
+
+def test_a_made_function_closing_over_its_state_does_not_leak_it() -> None:
+    """As for a registered primop: the callable lives on the core,
+    which the collector sees through `evaluator_tp_traverse`."""
+    from huggorm_bindings import EvalState, Store
+
+    died: list[str] = []
+
+    def build() -> None:
+        state = EvalState(Store(URI))
+        canary = _Canary(died)
+
+        def keep(v: Any) -> Any:
+            assert canary is not None
+            return state.make_int(v.integer())
+
+        made = state.make_primop("keep", 1, keep)
+        assert made.apply(state.make_int(1)).integer() == 1
+
+    build()
+    gc.collect()
+    gc.collect()
+
+    assert died == ["collected"], \
+        "the state and its callable survived a full collection"
