@@ -555,3 +555,9 @@ registered a second copy of each, and five settings tests failed:
 the copies never saw a value. huggorm now reads libcmd's objects, as
 the `nix` CLI does, and `_settings_init` is gone: the registration
 happens at load, before anything can read nix.conf.
+
+Lane with nanopynix's REPL adapter: 2450 passed, 258 failed, 107
+errors, 5 min 57 s. Every pynix REPL test passes. Left in the REPL
+area: `Value.get_doc` and `Value.edit_location`, which `:doc` and
+`:edit` read. Next by count: `Store.read_derivation_typed` (14),
+`Store.query_missing_typed` (10), `Store.get_store_dirs` (8).
