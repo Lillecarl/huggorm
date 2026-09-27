@@ -556,6 +556,12 @@ def includes(classes: Sequence[Class],
     # beyond its own - the words live in another declaration file.
     wanted |= {v.decl.header for v in _vocabularies_used(
         classes, functions, known)}
+    # A class from ANOTHER declaration that a signature names. nanobind
+    # casts by type, so a forward declaration is not enough:
+    # `registry.cpp` names `nix::Store` only as a parameter.
+    wanted |= {other.decl.header for _, t in _sites(classes, functions)
+               if t is not None
+               and (other := (known or {}).get(t.leaf.python)) is not None}
     wanted |= {h for cls in classes for h in cls.decl.headers}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
     wanted |= {h for cls in classes if cls.from_parts is not None
