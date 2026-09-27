@@ -439,3 +439,11 @@ by `@produced(by=...)` as a constructor even for a class with no
 
 Not verified: `registry_pin` fetches, and the sandbox has no network,
 so no test calls it. Nix writes an empty registry as `"flakes": null`.
+
+Lane with nanopynix's registry adapter: 2350 passed, 355 failed, 107
+errors, 4 min 36 s. The groups: `flake.parse_flake_ref` (52),
+`EvalState.begin_repl` (31), `Store.read_derivation_typed` (13),
+`Store.query_missing_typed` (10). nanopynix's type gate had only the
+stubs on its path, so every vocabulary a stub names was Unknown to
+pyright; it now carries the runtime package too, which `partial` asks
+for.
