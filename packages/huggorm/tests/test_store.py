@@ -33,6 +33,7 @@ from huggorm_bindings import (
     GCResults,
     Hash,
     HashAlgorithm,
+    InputDrvNode,
     KeyedBuildResult,
     LockedInput,
     LogField,
@@ -1776,6 +1777,12 @@ def test_every_wire_value_survives_its_own_round_trip(
             DerivationOutputImpure(CA.NAR, HashAlgorithm.SHA256),
             [(CA.TEXT, HashAlgorithm.SHA512)]),
         "DerivationOutputDeferred": (DerivationOutputDeferred(), []),
+        # A node holds itself, so the first case nests one level and
+        # the second nests none: a dropped child map fails the pair.
+        "InputDrvNode": (
+            _rebuild(InputDrvNode, ["dev", "out"],
+                     {"out": _rebuild(InputDrvNode, ["lib"], {})}),
+            [(["out"], {})]),
         # A registry entry's attributes hold all three arms of an
         # `Attr` in the second case, and the first holds only the one a
         # registry file can: `dir`.

@@ -6,6 +6,7 @@ store, which writes the `.drv` and needs no builder.
 
 import json
 import pathlib
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -19,6 +20,14 @@ FIXED = ('derivation { name = "fixed"; system = "x86_64-linux"; '
          'builder = "/bin/sh"; outputHashMode = "flat"; '
          'outputHashAlgo = "sha256"; outputHash = '
          '"sha256-47DEQpj8HBSa+/TWmW+nGUhGKf1Kq8BQi/ljyeGd3sQ="; }')
+# `outer` needs `out` of the derivation that building `inner` makes:
+# the one shape that gives an input a child node.
+INNER = ('derivation { name = "inner"; system = "x86_64-linux"; '
+         'builder = "/bin/sh"; __contentAddressed = true; '
+         'outputHashMode = "text"; outputHashAlgo = "sha256"; }')
+OUTER = (f'derivation {{ name = "outer"; system = "x86_64-linux"; '
+         f'builder = "/bin/sh"; '
+         f'args = [ (builtins.outputOf ({INNER}).outPath "out") ]; }}')
 
 
 @pytest.fixture
@@ -26,6 +35,20 @@ def store(tmp_path: pathlib.Path) -> Any:
     from huggorm_bindings import Store
 
     return Store(str(tmp_path))
+
+
+@pytest.fixture
+def dynamic_derivations() -> Iterator[None]:
+    """`builtins.outputOf` and what it needs, on for one test."""
+    from huggorm_bindings import get_setting, set_setting
+
+    before = get_setting("experimental-features") or ""
+    set_setting("extra-experimental-features",
+                "ca-derivations dynamic-derivations")
+    try:
+        yield
+    finally:
+        set_setting("experimental-features", before)
 
 
 def instantiate(tmp_path: pathlib.Path, expr: str) -> Any:
@@ -72,9 +95,24 @@ def test_inputs_are_the_derivations_and_sources_it_needs(
         store: Any, tmp_path: pathlib.Path) -> None:
     leaf = instantiate(tmp_path, LEAF)
     root = store.read_derivation(instantiate(tmp_path, ROOT))
-    assert root.input_drvs() == {leaf.to_string(): ["dev"]}
+    [(name, node)] = root.input_drvs().items()
+    assert name == leaf.to_string()
+    assert node.outputs() == ["dev"]
+    assert node.dynamic_outputs() == {}
     [src] = root.input_srcs()
     assert src.name() == "src"
+
+
+@pytest.mark.usefixtures("dynamic_derivations")
+def test_an_output_of_an_output_is_a_child_node(
+        store: Any, tmp_path: pathlib.Path) -> None:
+    [node] = store.read_derivation(
+        instantiate(tmp_path, OUTER)).input_drvs().values()
+    assert node.outputs() == []
+    [(output, child)] = node.dynamic_outputs().items()
+    assert output == "out"
+    assert child.outputs() == ["out"]
+    assert child.dynamic_outputs() == {}
 
 
 def test_json_round_trips_to_the_same_path(

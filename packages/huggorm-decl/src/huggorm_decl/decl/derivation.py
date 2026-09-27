@@ -158,6 +158,29 @@ DerivationOutput = Annotated[
 """How one output of a derivation is addressed."""
 
 
+@header("nix/store/derivations.hh")
+@binding(
+    cxx="nix::DerivedPathMap<std::set<nix::OutputName, std::less<>>>::ChildNode",
+    threading="pool",
+    blocking=False,
+)
+@wire_value(compare="cxx")
+class InputDrvNode:
+    """Which outputs of one input derivation a build needs.
+
+    A tree: with dynamic derivations an output of an input is itself a
+    derivation, and its outputs are a child node."""
+
+    @reads("value", collection="std::set<nix::OutputName, std::less<>>")
+    def outputs(self) -> list[Str]:
+        """The outputs needed directly, sorted."""
+
+    @reads("childMap")
+    def dynamic_outputs(self) -> dict[str, InputDrvNode]:
+        """Per output that is itself a derivation, the outputs of that
+        derivation the build needs."""
+
+
 @produced(by="Store.read_derivation")
 @header("nix/store/derivations.hh")
 @binding(
@@ -192,27 +215,15 @@ class Derivation:
     def input_srcs(self) -> list[StorePath]:
         """Store paths the build reads that no derivation makes."""
 
-    @needs("nix/store/store-api.hh")
-    def input_drvs(self) -> dict[str, list[Str]]:
+    def input_drvs(self) -> dict[str, InputDrvNode]:
         """The derivations the build needs, by `.drv` base name, and
         which of their outputs.
 
-        Keyed by base name because a map is keyed by str on the wire.
-
-        Raises for an output of an output: that is dynamic
-        derivations, which this does not carry, and leaving the
-        nested outputs out would be a silent answer. `to_json()` has
-        them."""
+        Keyed by base name because a map is keyed by str on the wire."""
         Cxx("""
-std::map<std::string, std::vector<std::string>> out;
-for (auto & [path, node] : self.inputDrvs.map) {
-    if (!node.childMap.empty())
-        throw nix::Unsupported(
-            "'%s' needs an output of an output of '%s' (dynamic derivations)",
-            self.name, path.to_string());
-    out.emplace(std::string(path.to_string()),
-                std::vector<std::string>(node.value.begin(), node.value.end()));
-}
+std::map<std::string, nix::DerivedPathMap<std::set<nix::OutputName, std::less<>>>::ChildNode> out;
+for (auto & [path, node] : self.inputDrvs.map)
+    out.emplace(std::string(path.to_string()), node);
 return out;
         """)
 
