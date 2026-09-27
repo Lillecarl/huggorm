@@ -1146,7 +1146,8 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
 
     have = corpus()
     headers = pyerrors.headers(have.resolved(have.errors))
-    assert headers == ["nix/expr/eval-error.hh",
+    assert headers == ["huggorm_decl/cpp/eval_errors.hpp",
+                       "nix/expr/eval-error.hh",
                        "nix/store/store-api.hh",
                        "nix/store/store-dir-config.hh",
                        "nix/util/error.hh",

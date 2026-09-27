@@ -77,11 +77,23 @@ def test_length_and_names_each_take_one_collection(state: Any) -> None:
 def test_a_missing_attribute_is_nix_s_own_error(state: Any) -> None:
     """The error `{ foo = 1; }.fo` raises, with the suggestion Nix
     ranks from the set's own names."""
-    from huggorm_bindings.errors import EvalError
+    from huggorm_bindings.errors import MissingAttribute
 
-    with pytest.raises(EvalError, match="attribute 'fo' missing") as caught:
+    with pytest.raises(MissingAttribute,
+                       match="attribute 'fo' missing") as caught:
         state.eval_expr("{ foo = 1; bar = 2; }").get("fo")
     assert "Did you mean foo?" in str(caught.value)
+
+
+def test_an_index_past_the_end_names_both_numbers(state: Any) -> None:
+    from huggorm_bindings.errors import EvalError, ListIndex
+
+    items = state.eval_expr("[ 1 2 ]")
+    for index in (2, -1):
+        with pytest.raises(ListIndex, match=f"list index {index} is out of "
+                           "bounds for a list of size 2") as caught:
+            items.at(index)
+        assert isinstance(caught.value, EvalError)
 
 
 def test_an_attribute_set_that_is_not_a_derivation_refuses(

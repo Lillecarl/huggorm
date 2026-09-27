@@ -218,6 +218,25 @@ class NixTypeError(EvalError):
     header = "nix/expr/eval-error.hh"
 
 
+class MissingAttribute(EvalError):
+    """`Value.get` of a name the set does not hold.
+
+    Nix's own words, `attribute '...' missing`, and its suggestions.
+    Nix raises a plain `EvalError` for `{ }.x`; this class is how a
+    caller of `get` tells a missing name from a failure of the
+    evaluation."""
+
+    cxx = "huggorm::MissingAttribute"
+    header = "huggorm_decl/cpp/eval_errors.hpp"
+
+
+class ListIndex(EvalError):
+    """`Value.at` of an index the list does not hold."""
+
+    cxx = "huggorm::ListIndex"
+    header = "huggorm_decl/cpp/eval_errors.hpp"
+
+
 class Interrupted(BaseException):
     """nix::Interrupted - a call cancelled at Nix's next checkInterrupt.
 

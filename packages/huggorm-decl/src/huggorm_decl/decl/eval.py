@@ -242,15 +242,20 @@ return names;
         """)
 
     @guard("list")
+    @needs("huggorm_decl/cpp/eval_errors.hpp")
     def at(self, index: I64) -> Value:
         """One element of a list.
 
         It may still be a thunk: forcing a list forces the list, not
-        what is in it."""
+        what is in it. An index past either end raises `ListIndex`,
+        which names the index and the size, as `builtins.elemAt`
+        does."""
         Cxx("""
 auto items = self.get()->listView();
 if (index < 0 || static_cast<std::size_t>(index) >= items.size())
-    throw std::runtime_error("list index out of range");
+    throw huggorm::ListIndex(
+        self.state(), "list index %d is out of bounds for a list of size %d",
+        index, items.size());
 return self.wrap(items[static_cast<std::size_t>(index)]);
         """)
 
@@ -280,11 +285,12 @@ return self.wrap(by_name[static_cast<std::size_t>(index)]->value);
         Cxx("return self.get()->attrs()->get(self.intern(name)) != nullptr;")
 
     @guard("attrs")
+    @needs("huggorm_decl/cpp/eval_errors.hpp")
     def get(self, name: Str) -> Value:
         """One attribute by name.
 
-        A missing one raises the `EvalError` that `{ ... }.name`
-        raises, with the suggestions Nix ranks from this set's names
+        A missing one raises `MissingAttribute`, an `EvalError` with
+        the words and the suggestions `{ ... }.name` gives
         (eval.cc:1438)."""
         Cxx("""
 const auto * attr = self.get()->attrs()->get(self.intern(name));
@@ -292,11 +298,10 @@ if (attr == nullptr) {
     nix::StringSet names;
     for (const auto & each : *self.get()->attrs())
         names.insert(self.symbol(each.name));
-    auto suggestions = nix::Suggestions::bestMatches(names, name);
-    self.state()
-        .error<nix::EvalError>("attribute '%1%' missing", name)
-        .withSuggestions(suggestions)
-        .debugThrow();
+    huggorm::MissingAttribute missing(
+        self.state(), "attribute '%s' missing", name);
+    missing.with_suggestions(nix::Suggestions::bestMatches(names, name));
+    throw missing;
 }
 return self.wrap(attr->value);
         """)
