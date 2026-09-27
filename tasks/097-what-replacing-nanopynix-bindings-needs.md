@@ -791,3 +791,25 @@ suggestions, turned the tests red.
 Lane: 2764 passed, 53 failed (1835/51 and 929/2), 18 min 30 s; peaks
 4.9 GB and 3.8 GB. Part B went from 55 failures to 2, and no test
 failed that passed before.
+
+## A primop's exception, builtins.sleep and the errors namespace
+
+A Python primop's exception reached Nix as `nb::python_error::what()`,
+which carries the Python traceback. Now one of huggorm's typed errors
+(it has `to_dict`) shows its message bare, as a C++ primop's
+`EvalError` does, and any other class reads "Class: message". The
+helper is `primop_failure` in `cpp/eval.hpp`.
+
+nanopynix's bridge raises huggorm's `EvalError` for `PrimopError` and
+`ValueError`, which the other engine shows bare. `builtins.sleep` is a
+Python primop in each state: nanopynix-bindings adds it in C++ for the
+cancel tests, and `time.sleep` polls no Nix interrupt either.
+
+The engine's `errors` namespace answers `Error` and `BadStorePath`.
+`stores.parse` catches the first to report a bad URI as a `ValueError`.
+`as_float` widens an integer, as `forceFloat` does; huggorm's
+`floating` reads one kind.
+
+Lane: 2784 passed, 33 failed (1855/31 and 929/2), 15 min 7 s; peaks
+5.1 GB and 4.1 GB. No test failed that passed before. Four of the rest
+need `tasks/100`, an error that carries Nix's `ErrorInfo`.
