@@ -561,3 +561,25 @@ errors, 5 min 57 s. Every pynix REPL test passes. Left in the REPL
 area: `Value.get_doc` and `Value.edit_location`, which `:doc` and
 `:edit` read. Next by count: `Store.read_derivation_typed` (14),
 `Store.query_missing_typed` (10), `Store.get_store_dirs` (8).
+
+## Derivations, missing paths and store directories
+
+`Derivation.input_drvs` raised for dynamic derivations. nanopynix
+reads the whole tree, and two fidelity tests prove it. `InputDrvNode`
+now binds `DerivedPathMap`'s `ChildNode` as a wire value that holds
+itself. The generator needed nothing new for the recursion. The set
+member needs `collection=`, because `_from_parts` gets a vector.
+
+`Derivation` still has no RPC surface: it is a proxy with no service,
+and the build warns so. nanopynix's RPC runs through its own worker,
+so the lane does not need it. A remote test of the node was written
+and dropped for that reason; the round-trip test covers its parts.
+
+`Store` gains `root_dir`, `state_dir`, `log_dir`, `real_store_dir`
+and `build_dir`, each None for a store with no filesystem.
+`query_missing` needed only an adapter: `parse_derived_path` existed.
+
+Lane with the three adapters: 2478 passed, 236 failed, 107 errors,
+6 min 0 s. Next by count: `EvalState.set_eval_setting` (7),
+`Store.dump_db` (5), then `BuildMode`, which fails every build test
+through `build_mode_value`.
