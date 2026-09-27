@@ -757,3 +757,37 @@ scopes peaked at 4.6 GB. The 8 ipaddress tests are the whole
 difference, and no `NotPortedError` is left. The remaining failures
 are small groups, the largest 8 tests: "value is not a list or an
 attribute set", from nanopynix's `test_scalar_accessor_semantics`.
+
+## Nix's errors from the collection accessors
+
+Three accessors raised a bare `RuntimeError`, which a caller that
+catches Nix's errors cannot tell from a bug. pynix-lsp is that caller:
+it catches `NixError` around attribute lookups, so the `RuntimeError`
+escaped it.
+
+- `size` raises Nix's `TypeError` for neither collection, as a guard
+  does, naming both kinds.
+- `get` raises `MissingAttribute`, with Nix's words and suggestions.
+- `at` raises `ListIndex`, naming the index and the size.
+
+`MissingAttribute` and `ListIndex` are huggorm's own classes, as
+nanopynix-bindings' are. Nix reports both only from inside the
+evaluator, as a plain `EvalError`. A caller of `get` must tell a
+missing name from a failed evaluation, and nanopynix maps each to a
+class that is also a `KeyError` or an `IndexError`. Parsing the
+message was the alternative, and it is banned.
+
+Their C++ classes are a helper, `cpp/eval_errors.hpp`. libexpr
+instantiates `EvalErrorBuilder` for its own classes only, so
+`state.error<huggorm::MissingAttribute>` would not link.
+
+`length` and `names` are guarded versions of `size` for one kind.
+nanopynix's `list_length` and `attr_names` must refuse the other kind,
+and `size` of an empty list answered 0 where `attr_names` must raise.
+
+Proved by breaks: a plain `EvalError` from `get` and `at`, and no
+suggestions, turned the tests red.
+
+Lane: 2764 passed, 53 failed (1835/51 and 929/2), 18 min 30 s; peaks
+4.9 GB and 3.8 GB. Part B went from 55 failures to 2, and no test
+failed that passed before.
