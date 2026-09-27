@@ -64,6 +64,15 @@ python3Packages.buildPythonPackage {
 
   propagatedBuildInputs = nixLibs;
 
+  # Nix's own `src/nix/get-env.sh`, which `nix develop` runs as a
+  # builder. Nix compiles it into the `nix` binary and no library
+  # carries it, so the package that links the libraries carries the
+  # copy of the same version. `-f`: no source must fail the build.
+  postInstall = ''
+    cp -f "${nix-store.src}/src/nix/get-env.sh" \
+      "$out/${python3Packages.python.sitePackages}/huggorm_bindings/get-env.sh"
+  '';
+
   # Don't run `pip check` that might fail
   pythonImportsCheck = [ "huggorm_bindings" ];
 }

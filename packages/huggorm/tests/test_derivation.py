@@ -4,6 +4,7 @@ The derivations are instantiated by evaluating them against a chroot
 store, which writes the `.drv` and needs no builder.
 """
 
+import importlib.resources
 import json
 import pathlib
 from collections.abc import Iterator
@@ -211,3 +212,9 @@ def test_a_dev_shell_derivation_from_generated_operations(
         assert isinstance(output, DerivationOutputInputAddressed)
     assert shell.outputs()["out"].path() != \
         store.read_derivation(path).outputs()["out"].path()
+
+
+def test_the_package_carries_nix_s_get_env_script() -> None:
+    """`nix develop`'s builder script, which no Nix library holds."""
+    script = importlib.resources.files("huggorm_bindings") / "get-env.sh"
+    assert "__dumpEnv() {" in script.read_text()
