@@ -10,7 +10,6 @@ import os
 import pathlib
 import subprocess
 import sys
-from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
@@ -20,26 +19,15 @@ from huggorm.wire import WireCodec
 from huggorm_bindings import (
     RegistryEntry,
     RegistryType,
-    get_setting,
     registry_add,
     registry_remove,
-    set_setting,
 )
 from huggorm_bindings.errors import UsageError
 
 NO_GLOBAL = {"flake-registry": ""}
 
 
-@pytest.fixture(autouse=True)
-def flakes() -> Iterator[None]:
-    """Nix parses no flake reference with the feature off, and neither
-    does this. The setting belongs to the process, so it goes back."""
-    before = get_setting("experimental-features") or ""
-    set_setting("extra-experimental-features", "flakes")
-    try:
-        yield
-    finally:
-        set_setting("experimental-features", before)
+pytestmark = pytest.mark.usefixtures("flakes")
 
 
 def _flakes(file: pathlib.Path) -> list[dict[str, Any]]:

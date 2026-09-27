@@ -58,6 +58,7 @@ NANOBIND = (
     "store.py",
     "eval.py",
     "registry.py",
+    "flakeref.py",
     "terminal.py",
 )
 

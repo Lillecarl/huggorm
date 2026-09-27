@@ -27,6 +27,7 @@ from huggorm_bindings import (
     DerivationOutputInputAddressed,
     DerivedPathBuilt,
     DrvOutput,
+    FlakeRef,
     GCAction,
     GCOptions,
     GCResults,
@@ -1572,6 +1573,7 @@ def _failed_result() -> Any:
     return _rebuild(KeyedBuildResult, *seed._parts())
 
 
+@pytest.mark.usefixtures("flakes")
 def test_every_wire_value_survives_its_own_round_trip(
         chroot: Store, tmp_path: pathlib.Path) -> None:
     """A wire value must rebuild from the parts it hands over.
@@ -1781,6 +1783,12 @@ def test_every_wire_value_survives_its_own_round_trip(
                      "github:o/a", {"dir": "sub"}, False),
             [(RegistryType.GLOBAL, "flake:b", "path:/b",
               {"n": 7, "f": True}, True)]),
+        # One part, the attributes, and the second case holds the two
+        # arms the first does not.
+        "FlakeRef": (
+            _rebuild(FlakeRef, {"type": "github", "owner": "o", "repo": "r",
+                                "dir": "sub"}),
+            [({"type": "path", "path": "/x", "lastModified": 5},)]),
         # A pin answers `locked`, an add does not, and a removal has no
         # target.
         "RegistryWrite": (

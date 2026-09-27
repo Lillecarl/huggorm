@@ -37,6 +37,23 @@ from anyio.streams.text import TextReceiveStream
 HOST = "127.0.0.1"
 
 
+@pytest.fixture
+def flakes() -> Iterator[None]:
+    """The `flakes` feature, on for one test and put back after.
+
+    Nix parses no flake reference with it off, and neither does this.
+    The setting belongs to the process, so a value left behind would
+    change every later test."""
+    from huggorm_bindings import get_setting, set_setting
+
+    before = get_setting("experimental-features") or ""
+    set_setting("extra-experimental-features", "flakes")
+    try:
+        yield
+    finally:
+        set_setting("experimental-features", before)
+
+
 @pytest.fixture(scope="session")
 def ambient_store() -> Any:
     """The machine's OWN store, for tests marked `live`.
