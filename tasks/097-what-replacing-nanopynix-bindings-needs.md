@@ -893,3 +893,41 @@ which nanopynix's huggorm scope carries too.
 Lane: 2804 passed, 13 failed (1873/13 and 931/0), 17 min 58 s; peaks
 4.5 GB and 4.1 GB. The 13 import `nanopynix_bindings`, and pass only
 when nanopynix stops shipping that package.
+
+## Tests that never ran on huggorm
+
+Fifteen nanopynix test modules imported `nanopynix_bindings` at the top,
+so on the huggorm lane they did not collect, and their tests counted as
+nothing. They now take the engine from `nanopynix._engine`. On the first
+run, 352 more tests passed, and 43 failed on what huggorm had not ported.
+
+What huggorm gained for them:
+
+- libexpr's error classes: `ParseError`, `UndefinedVarError`,
+  `NixAssertionError`, `ThrownError`, `Abort`, `UnimplementedError`.
+  A `throw` raised a plain `EvalError`.
+- `log_message(level, text)`: one message through `nix::logger`.
+- `start_collector()`: nanopynix's session starts the collector as the
+  other engine does, so `NIX_PATH` reaches `nix-path` at session start
+  and not in some later test.
+- `collector_owner_thread()` and `gc_stats()["non_gc_bytes"]`.
+
+nanopynix gained a `nix_engine(name, reason)` marker for the tests of
+nanopynix-bindings' own artifacts: its API pages, its stub patterns, and
+its REPL environment probes. Each names what huggorm has instead, or why
+the test cannot apply.
+
+Still open, from the lane:
+
+- A primop argument with string context: nanopynix-bindings realises it
+  and carries the context onto the returned string. huggorm's bridge
+  does neither.
+- `fetchers.Input` (`input_from_url`, `input_from_attrs`).
+- `list_store_types_json`, which the store-model tests read.
+- Two handles on one local store share one temp-roots file on
+  nanopynix-bindings; huggorm opens two.
+- The error event of the log stream carries no structured payload.
+- The verbosity ceiling test: the default is CHATTY where INFO is
+  expected.
+- The settings-leak guard fires where a pynix test and a nanopynix test
+  meet. That may come from the lane's two-part split; not proven.
