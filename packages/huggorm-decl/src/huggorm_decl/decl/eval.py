@@ -1938,6 +1938,9 @@ return {
     {"collections", static_cast<std::int64_t>(GC_get_gc_no())},
     {"used_bytes",
      static_cast<std::int64_t>(GC_get_heap_size() - GC_get_free_bytes())},
+    // Uncollectable blocks, and every root is one: the number moves with
+    // the live roots, in bytes rather than in count.
+    {"non_gc_bytes", static_cast<std::int64_t>(GC_get_non_gc_bytes())},
     // OURS, not the collector's: how many roots this process holds. A
     // root that is never dropped keeps its value alive forever, and no
     // heap counter can tell that from a heap that simply grew.
@@ -1963,6 +1966,19 @@ def collect_garbage() -> None:
     signalling every registered thread, and a thread it does not know
     cannot answer - the collection aborts the process with "Collecting
     from unknown thread"."""
+
+
+@needs("huggorm_decl/cpp/gc.hpp")
+def collector_owner_thread() -> I64:
+    """The kernel thread id of the thread that initialised the collector,
+    or 0 where the platform has none.
+
+    Boehm scans that thread's stack up to the process's main-stack base
+    for as long as the process lives, so it must not exit. It is the
+    thread that imported huggorm."""
+    Cxx("""
+return huggorm::gc_owner().load(std::memory_order_acquire);
+    """)
 
 
 @needs("huggorm_decl/cpp/gc.hpp")

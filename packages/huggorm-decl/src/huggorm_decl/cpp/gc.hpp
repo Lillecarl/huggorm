@@ -16,7 +16,10 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
+
+#include <unistd.h>
 
 #include <gc/gc.h>
 
@@ -25,6 +28,13 @@
 namespace huggorm {
 
 // ---- the collector's start -----------------------------------------
+
+/** The thread `gc_boot` ran on, as the kernel numbers it, or 0. */
+inline std::atomic<std::int64_t> & gc_owner()
+{
+    static std::atomic<std::int64_t> tid{0};
+    return tid;
+}
 
 /**
  * Boehm's own start, at import, on the importing thread. It starts no
@@ -52,6 +62,9 @@ inline void gc_boot()
     GC_set_all_interior_pointers(0);
     GC_set_no_dls(1);
     GC_INIT();
+#ifdef __linux__
+    gc_owner().store(::gettid(), std::memory_order_release);
+#endif
 }
 
 /**
