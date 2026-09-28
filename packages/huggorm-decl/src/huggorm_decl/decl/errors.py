@@ -204,6 +204,24 @@ class BadStorePathName(BadStorePath):
     header = "nix/store/store-dir-config.hh"
 
 
+class UnimplementedError(NixError):
+    """nix::UnimplementedError - Nix has no implementation of this, on
+    this platform or in this build."""
+
+    cxx = "nix::UnimplementedError"
+    header = "nix/util/error.hh"
+
+
+class ParseError(NixError):
+    """nix::ParseError - the text is not a Nix expression.
+
+    A sibling of `EvalBaseError`, as upstream has it: a parse fails
+    before any evaluation starts."""
+
+    cxx = "nix::ParseError"
+    header = "nix/expr/eval-error.hh"
+
+
 class EvalBaseError(NixError):
     """nix::EvalBaseError - evaluation stopped, not always because the
     code is wrong.
@@ -230,6 +248,39 @@ class NixTypeError(EvalError):
     builtin, as `SysError` explains."""
 
     cxx = "nix::TypeError"
+    header = "nix/expr/eval-error.hh"
+
+
+class UndefinedVarError(EvalError):
+    """nix::UndefinedVarError - an expression names a variable that no
+    scope binds."""
+
+    cxx = "nix::UndefinedVarError"
+    header = "nix/expr/eval-error.hh"
+
+
+class NixAssertionError(EvalError):
+    """nix::AssertionError - an `assert` was false.
+
+    `Nix` in the name because a Python `AssertionError` would shadow the
+    builtin, as `NixTypeError` explains."""
+
+    cxx = "nix::AssertionError"
+    header = "nix/expr/eval-error.hh"
+
+
+class ThrownError(NixAssertionError):
+    """nix::ThrownError - `builtins.throw`. Upstream derives it from
+    AssertionError, and so does this."""
+
+    cxx = "nix::ThrownError"
+    header = "nix/expr/eval-error.hh"
+
+
+class Abort(EvalError):
+    """nix::Abort - `builtins.abort`."""
+
+    cxx = "nix::Abort"
     header = "nix/expr/eval-error.hh"
 
 

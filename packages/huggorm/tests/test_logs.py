@@ -120,6 +120,27 @@ def test_the_level_refuses_what_it_did_not_ask_for(state: Any) -> None:
     assert "refused" not in seen
 
 
+def test_a_message_the_caller_logs_arrives_as_nix_s_own(
+        subscribed: tuple[Any, Any]) -> None:
+    """`log_message` is `nix::logger->log`, so the record is a "msg"
+    at the level given, and the level filters it as it does Nix's."""
+    from huggorm_bindings import log_message
+
+    _, stream = subscribed
+    log_message(3, "from python")
+    log_message(7, "too verbose")
+    records = stream.drain()
+    assert [(r.action(), r.level(), r.text()) for r in records] == [
+        ("msg", 3, "from python")]
+
+
+def test_a_logged_level_outside_nix_s_range_is_refused() -> None:
+    from huggorm_bindings import log_message
+
+    with pytest.raises(ValueError, match="level must be from 0"):
+        log_message(8, "nowhere")
+
+
 def test_nothing_is_recorded_without_a_subscription(state: Any) -> None:
     """A tap that is always installed must cost nothing when unused.
 

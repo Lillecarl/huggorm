@@ -127,6 +127,35 @@ def test_a_deep_trace_keeps_the_frames_nearest_the_error(state: Any) -> None:
     assert info.is_from_expr()
 
 
+@pytest.mark.parametrize(("expr", "name"), [
+    ('throw "boom"', "ThrownError"),
+    ("assert false; 1", "NixAssertionError"),
+    ('abort "stop"', "Abort"),
+    ("undefined_name", "UndefinedVarError"),
+    ("1 +", "ParseError"),
+])
+def test_each_evaluation_error_raises_its_own_class(
+        state: Any, expr: str, name: str) -> None:
+    """The class libexpr throws, so `except ThrownError` means `throw`
+    and nothing else."""
+    from huggorm_bindings import errors
+
+    with pytest.raises(errors.NixError) as caught:
+        state.eval_expr(expr)
+    assert type(caught.value).__name__ == name
+
+
+def test_the_classes_nest_as_libexpr_s_do() -> None:
+    """A `throw` is an assertion is an evaluation error; a parse error
+    is none of them."""
+    from huggorm_bindings import errors
+
+    assert issubclass(errors.ThrownError, errors.NixAssertionError)
+    assert issubclass(errors.NixAssertionError, errors.EvalError)
+    assert issubclass(errors.Abort, errors.EvalError)
+    assert not issubclass(errors.ParseError, errors.EvalBaseError)
+
+
 def test_an_error_python_builds_carries_no_info() -> None:
     from huggorm_bindings.errors import NixError
 

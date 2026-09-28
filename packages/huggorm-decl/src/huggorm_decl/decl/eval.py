@@ -2073,6 +2073,19 @@ huggorm::set_default_verbosity(static_cast<nix::Verbosity>(level));
 
 
 @needs("huggorm_decl/cpp/logging.hpp")
+def log_message(level: I64, message: Str) -> None:
+    """Write one message through Nix's logger, at `level`.
+
+    The same call a Nix builtin makes, so a subscriber receives it as
+    a `msg` record, and the level filters it as it filters Nix's own."""
+    Cxx("""
+if (level < 0 || level > nix::lvlVomit)
+    throw std::invalid_argument("level must be from 0 (error) to 7 (vomit)");
+nix::logger->log(static_cast<nix::Verbosity>(level), message);
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
 def current_request() -> I64:
     """The call this thread is inside, as `begin_request` named it, or 0.
 
