@@ -44,6 +44,7 @@ from huggorm_generated._callspec import Arg
 from huggorm_generated._policy import ERROR_FIELDS, ERROR_MODULE
 
 from . import grpc_pb as schema
+from .wire import WireCodec
 
 # The suffix grpc_schema gives an error class's message. One place,
 # because the schema builder writes it and this module reads it back.
@@ -118,6 +119,9 @@ class FaultCodec:
         self.fields: dict[str, tuple[Arg, ...]] = ERROR_FIELDS
         self.pool = pool
         self._module = module
+        # A part is put as an rpc field is: a record part such as
+        # `info` is a message, and `str()` of it is no part at all.
+        self.wire = WireCodec()
 
     @property
     def module(self) -> ModuleType:
@@ -165,8 +169,7 @@ class FaultCodec:
     def _parts(self, name: str, err: Any) -> Any:
         """One declared error as the message it crosses in."""
         msg = self._msg(name + FAULT_SUFFIX)()
-        for f in self.fields[name]:
-            setattr(msg, f.name, str(getattr(err, f.name)))
+        self.wire.error_to_msg(name, err, msg)
         return msg
 
     def _declared(self, err: BaseException | None) -> str | None:
@@ -214,13 +217,13 @@ class FaultCodec:
 
         Rebuilt as `cls(*parts)`, in the order `_wire_fields` states -
         which is why that order is the constructor's."""
-        for name, fields in self.fields.items():
+        for name in self.fields:
             msg = self._named(details, name + FAULT_SUFFIX)
             if msg is None:
                 continue
             kls = getattr(self.module, name, None)
             if isinstance(kls, type) and issubclass(kls, BaseException):
-                return kls(*(getattr(msg, f.name) for f in fields))
+                return kls(*self.wire.error_parts(name, msg))
         return None
 
     def _cause(self, details: Sequence[Any], fault: Any) -> BaseException:

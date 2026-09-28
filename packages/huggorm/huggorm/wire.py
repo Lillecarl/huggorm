@@ -258,7 +258,10 @@ class WireCodec:
         Python's own object and carries no such helper, and its parts
         are attributes the class already publishes."""
         for f in self.errors[type_str]:
-            self.encode(msg, f.name, f.type, getattr(err, f.name),
+            value = getattr(err, f.name)
+            if value is None and f.type.endswith("?"):
+                continue  # the field's presence says "absent"
+            self.encode(msg, f.name, f.type.removesuffix("?"), value,
                         _no_proxy(type_str, f.name))
 
     def error_from_msg(self, type_str: str, msg: Any) -> Any:
@@ -273,8 +276,17 @@ class WireCodec:
         class: it selects an entry in a table this build wrote
         (tasks/036)."""
         kls = getattr(importlib.import_module(self.error_module), type_str)
-        return kls(*(self.decode(msg, f.name, f.type, _no_proxy(type_str, f.name))
-                     for f in self.errors[type_str]))
+        return kls(*self.error_parts(type_str, msg))
+
+    def error_parts(self, type_str: str, msg: Any) -> list[Any]:
+        """An exception's parts off its message, in constructor order.
+
+        Shared with the fault codec, which takes the class from a
+        module of its own and the parts from here."""
+        return [self.decode(msg, f.name, f.type.removesuffix("?"),
+                            _no_proxy(type_str, f.name),
+                            optional=f.type.endswith("?"))
+                for f in self.errors[type_str]]
 
     # -- maps -------------------------------------------------------------
     # An attribute set has string keys, always, so `map<string, V>`
