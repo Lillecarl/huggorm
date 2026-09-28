@@ -1,0 +1,60 @@
+# Importing starts no thread
+
+**OPEN.** Found by the nanopynix port (`tasks/097`), 2026-09-28.
+
+## Problem
+
+Importing huggorm started 15 Boehm marker threads (`GC-marker-0` to
+`-14`, read from `/proc/self/task`). `unshare(CLONE_NEWUSER)` fails
+with EINVAL in a process with more than one thread, so nanopynix's
+namespaced stdio worker could not enter its namespace.
+
+Carl, 2026-09-28: "importing should not create any threads at all,
+not until you create eval/store there should be anything running".
+
+## What starts the markers
+
+`GC_init` starts none. `GC_allow_register_threads` does
+(`pthread_support.c:2150`), and `nix::initGC` calls it
+(`eval-gc.cc:68`). A store needs no collector thread.
+
+## Why not start everything lazily
+
+The thread that calls `GC_init` gets `MAIN_THREAD`, and its stack is
+scanned up to the process's main-stack base
+(`pthread_stop_world.c:849`). On a pool thread that range is wrong.
+So `gc_boot` runs `GC_INIT` at import, on the importing thread, and
+`gc_start` runs `nix::initGC` once, at the first evaluator or thread
+registration.
+
+## The bdwgc defect
+
+The first build of that failed one test,
+`test_a_held_scope_is_never_collected`: "attribute 'length' missing",
+so `builtins` was freed under a live evaluator.
+
+- Wrong turn: interior pointers switched after init. Setting them
+  before `GC_INIT` in `gc_boot` made it a segfault instead.
+- The cause: `GC_init` resets the valid offsets and then registers
+  offset 0 (`misc.c:1364-1365`). The setter resets them and does not
+  (`misc.c:2577`). `nix::initGC` calls the setter, now after
+  `GC_init`, so a pointer to the start of an object stopped counting.
+  gc.h allows the late call. bdwgc master has the same code.
+
+Carl chose a patch to bdwgc over a `GC_register_displacement(0)` in
+huggorm, and no upstream report:
+`nix/patches/bdwgc-late-interior-pointers.patch`.
+
+## A second defect, found on the way
+
+A process loaded `pkgs.boehmgc`, the libgc the bindings link, and not
+the one libnixexpr links: nixDependencies builds that one with
+`enableLargeConfig` and a larger mark stack. Measured from
+`/proc/self/maps`. The bindings now take libnixexpr's.
+
+## NIX_PATH
+
+`nix::initGC` copies `NIX_PATH` into `nix-path`. That now happens at
+the first evaluator, after nix.conf is loaded, which is the Nix CLI's
+order: the environment wins over nix.conf. A global `nix-path` set
+before the first evaluator loses to `NIX_PATH`; a per-state one wins.

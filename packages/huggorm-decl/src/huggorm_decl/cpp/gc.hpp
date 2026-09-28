@@ -16,10 +16,61 @@
 
 #include <atomic>
 #include <cstddef>
+#include <mutex>
 
 #include <gc/gc.h>
 
+#include "nix/expr/eval-gc.hh"
+
 namespace huggorm {
+
+// ---- the collector's start -----------------------------------------
+
+/**
+ * Boehm's own start, at import, on the importing thread. It starts no
+ * thread.
+ *
+ * The thread that calls `GC_init` becomes the collector's main thread,
+ * and its stack is scanned up to the PROCESS's main stack base
+ * (`pthread_stop_world.c:849`). So it has to run on the thread
+ * that imports, and cannot wait for a pool thread.
+ *
+ * The marker threads, 15 on dynhetz, start in
+ * `GC_allow_register_threads` (`pthread_support.c:2150`), which
+ * `nix::initGC` calls. That waits for `gc_start`. A process that only
+ * imports, or only opens a store, runs no thread of the collector:
+ * `unshare(CLONE_NEWUSER)` refuses a process with more than one.
+ *
+ * The two settings `nix::initGC` makes before its own `GC_INIT`
+ * (eval-gc.cc:55-59) come first here, so `GC_init` runs in the mode
+ * Nix asks for. bdwgc calls a later switch "not recommended"
+ * (misc.c:2573), and its setter drops offset 0 without huggorm's
+ * patch, `nix/patches/bdwgc-late-interior-pointers.patch`.
+ */
+inline void gc_boot()
+{
+    GC_set_all_interior_pointers(0);
+    GC_set_no_dls(1);
+    GC_INIT();
+}
+
+/**
+ * `nix::initGC`, once, before the first GC allocation or thread
+ * registration.
+ *
+ * `nix::initGC` guards itself with a plain bool, so two threads could
+ * both pass its test; `call_once` serialises them. It repeats the two
+ * settings `gc_boot` made, to the same values.
+ *
+ * It also copies `NIX_PATH` into `nix-path`, so that happens when the
+ * first evaluator is made, after nix.conf is loaded. The Nix CLI has
+ * the same order: the environment wins over nix.conf.
+ */
+inline void gc_start()
+{
+    static std::once_flag once;
+    std::call_once(once, [] { nix::initGC(); });
+}
 
 // ---- the collector, and the threads Python made -------------------
 
@@ -31,9 +82,9 @@ namespace huggorm {
  * touching GC memory: allocation from an unregistered thread races
  * with a collection.
  *
- * `nix::initGC()` already calls `GC_allow_register_threads()`
- * (eval-gc.cc:68), so the permission is upstream's and only the
- * per-thread half is ours.
+ * `nix::initGC()` calls `GC_allow_register_threads()` (eval-gc.cc:68),
+ * so the permission is upstream's and only the per-thread half is
+ * ours. `gc_start` runs it first.
  *
  * The flag records whether WE registered this thread.
  * `GC_register_my_thread` answers `GC_DUPLICATE` for a thread the
@@ -102,6 +153,7 @@ inline void gc_register_thread()
 {
     if (gc_asked())
         return;
+    gc_start();
     gc_asked() = true;
     struct GC_stack_base sb;
     GC_get_stack_base(&sb);

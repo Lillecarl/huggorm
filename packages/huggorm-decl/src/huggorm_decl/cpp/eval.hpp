@@ -363,6 +363,12 @@ public:
     }
 
 private:
+    // First, because `nix::EvalState` asserts the collector is up, and
+    // `nix::initGC` sets `nix-path` before the settings below copy it.
+    struct GcStarted
+    {
+        GcStarted() { gc_start(); }
+    } gc_started_;
     bool read_only_ = false;
     nix::fetchers::Settings fetch_settings_;
     nix::EvalSettings eval_settings_;

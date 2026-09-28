@@ -2555,11 +2555,12 @@ def _log_tap_init() -> None:
 
 
 @needs("huggorm_decl/cpp/gc.hpp")
-@binds("nix::initGC")
+@binds("huggorm::gc_boot")
 @startup
 def _gc_init() -> None:
-    """Start the collector, once, before any value can exist.
+    """Initialise the collector on the importing thread, and start no
+    thread.
 
-    Bound straight from libexpr. It also calls
-    `GC_allow_register_threads`, so the permission is upstream's and
-    only the per-thread registration is ours."""
+    `nix::initGC` waits for the first evaluator or thread
+    registration (`gc_start`), because it starts the marker threads.
+    Importing huggorm starts none."""
