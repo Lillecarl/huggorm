@@ -1966,6 +1966,17 @@ def collect_garbage() -> None:
 
 
 @needs("huggorm_decl/cpp/gc.hpp")
+@binds("huggorm::gc_start")
+def start_collector() -> None:
+    """Start the collector's threads now, rather than at the first
+    evaluator.
+
+    Once per process; a later call does nothing. It is also where Nix
+    copies `NIX_PATH` into `nix-path`, so a caller that reads its
+    settings before it makes an evaluator calls this first."""
+
+
+@needs("huggorm_decl/cpp/gc.hpp")
 @binds("huggorm::gc_unregister_thread")
 def gc_release_thread() -> None:
     """Take the CURRENT thread off the collector's list.

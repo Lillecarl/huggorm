@@ -34,3 +34,19 @@ def test_nothing_runs_until_there_is_an_evaluator() -> None:
     imported, opened, evaluating = map(int, out.stdout.split())
     assert (imported, opened) == (1, 1)
     assert evaluating > 1
+
+
+START = """
+import os
+import huggorm_bindings as h
+h.start_collector()
+print(len(os.listdir("/proc/self/task")))
+"""
+
+
+def test_a_caller_can_start_the_collector_before_an_evaluator() -> None:
+    """For a caller that reads `nix-path` first: `start_collector` is
+    where Nix copies `NIX_PATH` into it."""
+    out = subprocess.run([sys.executable, "-c", START], capture_output=True,
+                         text=True, check=True)
+    assert int(out.stdout) > 1
