@@ -1130,6 +1130,10 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 101 (importing starts no thread) is DONE. `GC_INIT` runs at import,
+  on the importing thread; `nix::initGC`, which starts the markers,
+  at the first evaluator. bdwgc's late interior-pointer setter drops
+  offset 0, and huggorm patches it.
 - 100 (an error carries Nix's ErrorInfo) is DONE. `NixError.info` is
   an `ErrorInfo` record with the position, the trace and the
   suggestions, and it crosses the wire typed. One translator, in

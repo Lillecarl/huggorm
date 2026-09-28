@@ -1,6 +1,6 @@
 # Importing starts no thread
 
-**OPEN.** Found by the nanopynix port (`tasks/097`), 2026-09-28.
+**DONE**, 2026-09-28. Found by the nanopynix port (`tasks/097`), 2026-09-28.
 
 ## Problem
 
@@ -58,3 +58,17 @@ the one libnixexpr links: nixDependencies builds that one with
 the first evaluator, after nix.conf is loaded, which is the Nix CLI's
 order: the environment wins over nix.conf. A global `nix-path` set
 before the first evaluator loses to `NIX_PATH`; a per-state one wins.
+
+## Proved
+
+`tests/test_threads.py` counts `/proc/self/task` in a fresh
+interpreter: 1 after import, 1 after a store, more after an
+evaluator. With `nix::initGC` back in `gc_boot` it fails
+`(16, 16) == (1, 1)`. The two builds without the bdwgc patch failed
+`test_a_held_scope_is_never_collected`, one with a missing `builtins`
+and one with a segfault; with it, 603 pass.
+
+nanopynix's huggorm scope adds `bdwgcPatches` to its own collector,
+and only that scope: the other engine calls `nix::initGC` before any
+evaluation, and keeps its cached closure. Lane: the namespaced worker
+passes, and nothing else changed.

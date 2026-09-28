@@ -883,3 +883,13 @@ Lane: 2803 passed, 14 failed (1872/14 and 931/0), 20 min 11 s; peaks
 1.8 GB and 3.7 GB. Part A fixes the five `info` tests and adds no
 failure. Of the 14, 13 import `nanopynix_bindings` and 1 is the
 namespaced worker.
+
+## No thread at import
+
+`tasks/101` is done. Importing huggorm starts no thread; the first
+evaluator starts the collector's markers. That needed a bdwgc patch,
+which nanopynix's huggorm scope carries too.
+
+Lane: 2804 passed, 13 failed (1873/13 and 931/0), 17 min 58 s; peaks
+4.5 GB and 4.1 GB. The 13 import `nanopynix_bindings`, and pass only
+when nanopynix stops shipping that package.
