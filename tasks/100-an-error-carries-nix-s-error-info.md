@@ -37,3 +37,38 @@ header.
 Open question: whether a position is `huggorm::position_file` plus
 line and column, the shape `Doc` and `AttrDoc` use, or Nix's own
 rendering of the origin.
+
+## Design, 2026-09-28
+
+Carl chose the typed route from three: typed records, a class bound
+to `nix::ErrorInfo`, or a dict attribute as nanopynix-bindings has.
+
+- **Records.** `Position`, `Trace` and `ErrorInfo` are wire values in
+  `decl/path.py`. A record is visible only in the unit that declares
+  it, and `path` holds the translator.
+- **One translator.** `store.py` had the same one. nanobind's
+  translators serve the whole process, and `store` imports `path`, so
+  the second one went.
+- **The part.** `NixError._wire_fields` gains `("info",
+  "ErrorInfo?")`, and `reader = "huggorm::error_info"` names the C++
+  that reads it. `pyerrors.chain` reads both off the IMPORT, so a
+  subclass inherits them, and emits one reader per part beyond the
+  message: `raise_as(module, name, e, huggorm::error_info<huggorm::
+  ErrorInfo>)`. A class with such parts and no reader is refused.
+  `Interrupted` declares two parts, so its catch passes no reader.
+- **The reader.** `cpp/error_info.hpp`, a template over the record
+  type. It fills the records with designated initialisers, so a
+  renamed or reordered field fails to compile. `raise_as` calls each
+  reader inside its `try`, so a reader that throws cannot escape the
+  translator.
+- **The position** is `position_file` plus line and column, the shape
+  `Doc` and `AttrDoc` use. nanopynix-bindings writes `Pos::print`
+  into `file`, which repeats the line and the column.
+- **The trace order** is Nix's: `addTrace` pushes to the front, so the
+  list is outermost first. nanopynix-bindings keeps the first 32 and
+  says they are the innermost. They are the outermost. huggorm keeps
+  the last 32, nearest the error.
+- **The wire.** `FaultCodec` put each part with `str()`, so a record
+  part crossed as its repr. It now puts and reads each part through
+  `WireCodec`, as a value's field is. `to_dict` keeps each part as
+  itself for the same reason.

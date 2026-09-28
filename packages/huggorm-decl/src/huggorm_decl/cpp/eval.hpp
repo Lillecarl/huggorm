@@ -88,6 +88,7 @@ namespace nb = nanobind;
 // nest, and every name in them becomes `huggorm::huggorm::` - which
 // is what the compiler said when they were first put where the code
 // used to be.
+#include "huggorm_decl/cpp/error_info.hpp"
 #include "huggorm_decl/cpp/gc.hpp"
 #include "huggorm_decl/cpp/logging.hpp"
 #include "huggorm_decl/cpp/settings.hpp"
@@ -158,27 +159,6 @@ struct AddPrimOp
 auto get(AddPrimOp);
 
 template struct Reach<AddPrimOp, &nix::EvalState::addPrimOp>;
-
-/**
- * The file a position is in: the physical path where it has one, so
- * an editor can open it.
- *
- * Otherwise Nix's own name for the origin, `«string»`, `«stdin»` or
- * `«none»`. `Pos::print` is the one place that names them, and it
- * writes the name before the first ':', which none of them holds.
- */
-inline std::string position_file(const nix::Pos & pos)
-{
-    if (auto source = pos.getSourcePath()) {
-        if (auto physical = source->getPhysicalPath())
-            return physical->string();
-        return source->to_string();
-    }
-    std::ostringstream out;
-    pos.print(out, true);
-    auto text = out.str();
-    return text.substr(0, text.find(':'));
-}
 
 /**
  * Every file whose evaluation this state has cached, resolved.

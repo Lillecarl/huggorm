@@ -30,6 +30,7 @@ from huggorm_bindings import (
     DerivedPathBuilt,
     Doc,
     DrvOutput,
+    ErrorInfo,
     FlakeRef,
     GCAction,
     GCOptions,
@@ -45,6 +46,7 @@ from huggorm_bindings import (
     MissingPaths,
     OutputsSpec,
     PathInfo,
+    Position,
     Realisation,
     RegistryEntry,
     RegistryType,
@@ -59,6 +61,7 @@ from huggorm_bindings import (
     StoreReferenceDaemon,
     StoreReferenceLocal,
     StoreReferenceSpecified,
+    Trace,
     TrustedFlag,
 )
 from huggorm_bindings import ContentAddressMethod as CA
@@ -1858,6 +1861,20 @@ def test_every_wire_value_survives_its_own_round_trip(
         "GcRoot": (
             _rebuild(GcRoot, "/a/result", held),
             [("{censored}", other)]),
+        # What an error carries. The second case has a position where
+        # the first has none, and a trace where the first has none.
+        "Position": (
+            _rebuild(Position, "/a.nix", 3, 5),
+            [("«string»", 1, 1)]),
+        "Trace": (
+            _rebuild(Trace, "while evaluating 'x'", None),
+            [("while calling 'f'", _rebuild(Position, "/b.nix", 2, 4))]),
+        "ErrorInfo": (
+            _rebuild(ErrorInfo, 0, "boom", None, False, 1, [], False, []),
+            [(1, "attribute 'fo' missing",
+              _rebuild(Position, "/c.nix", 7, 9), True, 100,
+              [_rebuild(Trace, "while evaluating 'y'", None)], True,
+              ["foo"])]),
         # A pin answers `locked`, an add does not, and a removal has no
         # target.
         "RegistryWrite": (

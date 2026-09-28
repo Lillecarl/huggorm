@@ -198,8 +198,9 @@ def error_chain() -> list[str]:
     and fills `_policy.ERROR_MODULE`, so the catch chain cannot point
     somewhere the module is not."""
     have = corpus()
-    return pyerrors.chain(have.resolved(have.errors), "huggorm::raise_as",
-                          errors_module())
+    return pyerrors.chain(have.resolved(have.errors),
+                          have.imported(have.errors), "huggorm::raise_as",
+                          errors_module(), nbemit.NAMESPACE)
 
 
 def error_headers() -> list[str]:
@@ -796,7 +797,7 @@ def main(out_dir: str) -> int:
     # name here would let the two disagree - and renaming the
     # declaration proved they did.
     target = out / f"{pathlib.Path(have.errors).stem}.py"
-    target.write_text(pyerrors.module(tree, doc) + "\n")
+    target.write_text(pyerrors.module(tree, doc, PACKAGE) + "\n")
     print(f"{have.errors} -> {target}")
     for name in have.vocabularies:
         mod = have.module(name)

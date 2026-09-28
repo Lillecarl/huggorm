@@ -102,7 +102,8 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
     # ...and it inherits, which is the half only the IMPORT knows.
     assert entries["Here"]["bases"] == ["NixError"]
 
-    chain = "\n".join(pyerrors.chain(tree, "raise_as", "pkg.errors"))
+    chain = "\n".join(pyerrors.chain(tree, load(path), "raise_as",
+                                      "pkg.errors"))
     assert "nix::Here" in chain
     assert "nix::Gone" not in chain
     # Most-derived first, or the base swallows the subclass.
@@ -111,6 +112,46 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
     emitted = pyerrors.module(tree, "emitted")
     assert "class Here" in emitted
     assert "Gone" not in emitted
+
+
+READERLESS = '''
+class NixError(Exception):
+    cxx = "nix::Error"
+    header = "nix/util/error.hh"
+    _wire_fields = (("message", "str"), ("colored", "str"),
+                    ("info", "ErrorInfo?"))
+
+
+class Read(NixError):
+    cxx = "nix::Read"
+    header = "nix/util/error.hh"
+    reader = "huggorm::error_info"
+'''
+
+
+def test_a_part_beyond_the_message_needs_a_reader(
+        tmp_path: pathlib.Path) -> None:
+    """A catch with a part and no reader calls the constructor short,
+    and `raise_as` turns that refusal into a RuntimeError in silence.
+
+    So the chain refuses it, and a subclass that names a reader gets
+    one argument per extra part, typed by the part's record."""
+    from huggorm_dsl.read import DeclarationError, load, resolved
+    from huggorm_gen.cppgen import pyerrors
+
+    path = _declaration(tmp_path, READERLESS)
+    with pytest.raises(DeclarationError, match="NixError: `_wire_fields`"):
+        pyerrors.chain(resolved(path), load(path), "raise_as", "pkg.errors")
+
+    fixed = READERLESS.replace('    header = "nix/util/error.hh"\n    _wire',
+                               '    header = "nix/util/error.hh"\n'
+                               '    reader = "huggorm::error_info"\n    _wire')
+    (tmp_path / "fixed").mkdir()
+    path = _declaration(tmp_path / "fixed", fixed)
+    chain = "\n".join(pyerrors.chain(resolved(path), load(path), "raise_as",
+                                     "pkg.errors"))
+    assert ('raise_as("pkg.errors", "Read", e, '
+            "huggorm::error_info<huggorm::ErrorInfo>);") in chain
 
 
 def test_the_emitted_module_keeps_no_trace_of_the_branch(
@@ -164,7 +205,7 @@ def test_the_errors_emitter_refuses_a_tree_nothing_resolved(
 
     readings: list[Callable[[], object]] = [
         lambda: pyerrors.entries(raw, mod),
-        lambda: pyerrors.chain(raw, "raise_as", "pkg.errors"),
+        lambda: pyerrors.chain(raw, mod, "raise_as", "pkg.errors"),
         lambda: pyerrors.module(raw, "emitted"),
     ]
     for reading in readings:
@@ -1083,11 +1124,12 @@ def test_a_function_the_emitter_writes_another_way_is_not_missing() -> None:
     """Three declared functions that are not bound names, and none of
     them is exempt by name.
 
-    `store.py` has all three shapes. `_init_libstore` is `@startup`,
-    emitted as a CALL at module init; `_translate_nix_error` is a
-    `@translator`, emitted as a registration; and `open_store` is what
-    `Store` names in `@produced(by=...)`, emitted as that class's
-    `nb::new_` - a caller writes `Store(uri)` and never the function.
+    `_init_libstore` is `@startup`, emitted as a CALL at module init;
+    `_translate_nix_error` is a `@translator`, emitted as a
+    registration; and `open_store` is what `Store` names in
+    `@produced(by=...)`, emitted as that class's `nb::new_` - a caller
+    writes `Store(uri)` and never the function. `store.py` has the
+    first and the third, and `path.py` the first two.
 
     Without the third the census would fail the real corpus, which is
     how it was found."""
@@ -1096,13 +1138,13 @@ def test_a_function_the_emitter_writes_another_way_is_not_missing() -> None:
     from huggorm_gen.cppgen.nbemit import bindable, extension
 
     have = corpus()
-    mod = have.module("store.py")
-    declared = {f.name for f in mod.functions}
-    assert {"open_store", "_init_libstore", "_translate_nix_error"} <= declared
-
-    text = extension(mod, "huggorm_bindings.store", chain=[], errors="")
-    assert 'def("open_store"' not in text, "it is a constructor, not a name"
-    generate.census_written(mod, bindable(mod), text)
+    for stem, shapes in (("store", {"open_store", "_init_libstore"}),
+                         ("path", {"_init_libstore", "_translate_nix_error"})):
+        mod = have.module(f"{stem}.py")
+        assert shapes <= {f.name for f in mod.functions}
+        text = extension(mod, f"huggorm_bindings.{stem}", chain=[], errors="")
+        assert 'def("open_store"' not in text, "it is a constructor, not a name"
+        generate.census_written(mod, bindable(mod), text)
 
 
 def test_the_codegen_runs_the_written_census(
@@ -1207,10 +1249,11 @@ def test_the_header_line_does_not_reach_the_emitted_module() -> None:
 
     have = corpus()
     tree = have.resolved(have.errors)
-    text = pyerrors.module(tree, "doc")
+    text = pyerrors.module(tree, "doc", "pkg")
     lines = [ln.strip() for ln in text.splitlines()]
     assert not [ln for ln in lines if ln.startswith("header =")], text
     assert not [ln for ln in lines if ln.startswith("cxx =")], text
+    assert not [ln for ln in lines if ln.startswith("reader =")], text
     # The classes still arrive, so the absence above is a strip and
     # not an empty module. Prose may still say "cxx" - a docstring
     # explaining the declaration is not a line a caller can act on -
@@ -1242,9 +1285,10 @@ def test_emitting_the_module_leaves_the_declaration_alone() -> None:
     have = corpus()
     tree = have.resolved(have.errors)
 
-    before = pyerrors.chain(tree, "raise_as", "pkg.errors")
-    pyerrors.module(tree, "doc")
-    after = pyerrors.chain(tree, "raise_as", "pkg.errors")
+    mod = have.imported(have.errors)
+    before = pyerrors.chain(tree, mod, "raise_as", "pkg.errors")
+    pyerrors.module(tree, "doc", "pkg")
+    after = pyerrors.chain(tree, mod, "raise_as", "pkg.errors")
 
     assert before == after, "the transform kept its hands off the tree"
     assert "nix::InvalidPath" in "\n".join(after)

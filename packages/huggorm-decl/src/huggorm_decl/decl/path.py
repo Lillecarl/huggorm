@@ -12,6 +12,7 @@ surface would prove nothing.
 """
 
 from huggorm_dsl.declare import (
+    I64,
     Bint,
     Field,
     Str,
@@ -21,6 +22,7 @@ from huggorm_dsl.declare import (
     cxx_name,
     header,
     needs,
+    produced,
     startup,
     translator,
     wire_value,
@@ -100,6 +102,81 @@ class StorePath:
         ...
 
 
+# --- what an error carries beyond its message -----------------------
+
+# Declared here because this module holds the translator, and a record
+# is visible only in the unit that declares it. Every other module
+# imports this one, so its translator serves the whole process.
+
+
+@produced(by="NixError.info")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class Position:
+    """A place in Nix source: a file, a line and a column."""
+
+    def file(self) -> Str:
+        """The file, or Nix's name for a string or stdin."""
+
+    def line(self) -> I64:
+        """The line."""
+
+    def column(self) -> I64:
+        """The column."""
+
+
+@produced(by="ErrorInfo.traces")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class Trace:
+    """One frame of an evaluation trace, `--show-trace`'s unit."""
+
+    def hint(self) -> Str:
+        """What Nix was doing, such as "while evaluating the attribute
+        'x'". It carries Nix's escape sequences."""
+
+    def pos(self) -> Position | None:
+        """Where, or None when the frame has no position."""
+
+
+@produced(by="NixError.info")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class ErrorInfo:
+    """What `nix::ErrorInfo` holds, beside the rendered message.
+
+    Capped, because an error crosses the wire in a status header:
+    32 trace frames and 4096 bytes for each string."""
+
+    def level(self) -> I64:
+        """`nix::Verbosity`: 0 error, 1 warn, and upward."""
+
+    def msg(self) -> Str:
+        """The message alone, with no position and no trace. It
+        carries Nix's escape sequences."""
+
+    def pos(self) -> Position | None:
+        """Where the error is, or None when Nix gave no position."""
+
+    def is_from_expr(self) -> Bint:
+        """Whether a Nix expression raised it with `throw` or
+        `abort`."""
+
+    def status(self) -> I64:
+        """The exit status Nix's CLI gives for this error."""
+
+    def traces(self) -> list[Trace]:
+        """The evaluation trace, in the order Nix prints it: the
+        outermost frame first. Past 32 frames, the outermost ones go,
+        because the frames nearest the error say the most."""
+
+    def truncated(self) -> Bint:
+        """Whether Nix held more frames than `traces` does."""
+
+    def suggestions(self) -> list[Str]:
+        """Nix's "did you mean" names, the best match first."""
+
+
 # --- what the module does before a caller exists -------------------
 
 # Neither of these is surface. They are declared because this is
@@ -123,7 +200,7 @@ def _init_libstore() -> None:
     """
 
 
-@needs("huggorm_decl/cpp/errors.hpp")
+@needs("huggorm_decl/cpp/errors.hpp", "huggorm_decl/cpp/error_info.hpp")
 @binds("huggorm::translate_nix_error")
 @translator
 def _translate_nix_error() -> None:

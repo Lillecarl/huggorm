@@ -85,6 +85,54 @@ def test_a_missing_attribute_is_nix_s_own_error(state: Any) -> None:
     assert "Did you mean foo?" in str(caught.value)
 
 
+def test_a_missing_attribute_carries_its_suggestions(state: Any) -> None:
+    """The ranking travels as data too, the best match first."""
+    from huggorm_bindings.errors import MissingAttribute
+
+    with pytest.raises(MissingAttribute) as caught:
+        state.eval_expr("{ foo = 1; bar = 2; }").get("fo")
+    info = caught.value.info
+    assert info is not None
+    assert info.suggestions()[0] == "foo"
+
+
+def test_an_error_carries_its_position(state: Any) -> None:
+    """C++ is the only place that holds where an error is (tasks/100)."""
+    from huggorm_bindings.errors import EvalError
+
+    with pytest.raises(EvalError) as caught:
+        state.eval_expr('let\n  x = 1;\nin\n  x + "a"')
+    info = caught.value.info
+    assert info is not None
+    pos = info.pos()
+    assert pos is not None
+    assert (pos.file(), pos.line(), pos.column()) == ("«string»", 4, 7)
+    assert "cannot add" in info.msg()
+
+
+def test_a_deep_trace_keeps_the_frames_nearest_the_error(state: Any) -> None:
+    """32 frames, the last of them the innermost, and a flag for the
+    rest: the error crosses the wire in a status header."""
+    from huggorm_bindings.errors import EvalError
+
+    deep = ('let f = n: if n == 0 then throw "x" else { a = f (n - 1); }; '
+            "in builtins.toJSON (f 40)")
+    with pytest.raises(EvalError) as caught:
+        state.eval_expr(deep).string_value()
+    info = caught.value.info
+    assert info is not None
+    assert len(info.traces()) == 32
+    assert info.truncated()
+    assert "throw" in info.traces()[-1].hint()
+    assert info.is_from_expr()
+
+
+def test_an_error_python_builds_carries_no_info() -> None:
+    from huggorm_bindings.errors import NixError
+
+    assert NixError("made here").info is None
+
+
 def test_an_index_past_the_end_names_both_numbers(state: Any) -> None:
     from huggorm_bindings.errors import EvalError, ListIndex
 

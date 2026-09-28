@@ -69,6 +69,27 @@ def test_a_declared_error_crosses_as_its_own_message(
         == [f"{PKG}.Fault"]
 
 
+def test_an_error_s_info_survives_the_wire() -> None:
+    """The record part crosses as a message, and comes back equal.
+
+    Not `str()` of each part: that is a record's repr, and a proto
+    message field refuses a string (tasks/100)."""
+    from huggorm.faults import FaultCodec
+    from huggorm.grpc_pb import load_pool
+    from huggorm_bindings import EvalState, Store
+    from huggorm_bindings.errors import MissingAttribute
+
+    with pytest.raises(MissingAttribute) as caught:
+        EvalState(Store("dummy://")).eval_expr("{ foo = 1; }").get("fo")
+    sent = caught.value
+    codec = FaultCodec(load_pool())
+    rebuilt = codec.rebuild(codec.details(sent))
+    assert isinstance(rebuilt, MissingAttribute)
+    assert rebuilt.info is not None
+    assert rebuilt.info == sent.info
+    assert rebuilt == sent
+
+
 def test_every_declared_error_has_a_message(manifest: dict[str, Any]) -> None:
     """One message per declared class, emitted from the manifest.
 

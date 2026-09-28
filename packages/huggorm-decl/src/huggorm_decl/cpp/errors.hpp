@@ -92,12 +92,17 @@ inline nanobind::object as_error(const char * module, const char * name,
  * translator's catch(...), where letting an exception out would lose
  * the error entirely. A RuntimeError with libstore's message still
  * beats that.
+ *
+ * `read` holds one reader per part beyond the two strings, and each
+ * takes the caught exception. They run inside the try: a reader that
+ * throws gives the fallback, and cannot escape the translator.
  */
+template <typename E, typename... Read>
 inline void raise_as(const char * module, const char * name,
-                     const std::exception & e)
+                     const E & e, Read... read)
 {
     try {
-        nanobind::object exc = as_error(module, name, e);
+        nanobind::object exc = as_error(module, name, e, read(e)...);
         PyErr_SetObject(exc.type().ptr(), exc.ptr());
     } catch (...) {
         PyErr_Clear();

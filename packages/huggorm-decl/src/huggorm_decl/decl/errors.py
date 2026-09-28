@@ -25,6 +25,8 @@ message from naming any importable class (tasks/036). The set is
 this file: the emitter writes the module and knows where it put it.
 """
 
+from huggorm_decl.decl.path import ErrorInfo
+
 
 class NixError(Exception):
     """Anything nix::Error, and the base of everything below.
@@ -33,10 +35,18 @@ class NixError(Exception):
     are wrong in a traceback and wrong over the wire. `e.colored` is
     what libstore actually wrote - the colour exists so an error can be
     printed to a terminal, and stripping it at the boundary would take
-    that away from every caller who has one."""
+    that away from every caller who has one.
+
+    `e.info` is the `ErrorInfo` behind the message: the position, the
+    evaluation trace and the suggestions. C++ is the only place that
+    holds them. None when Python built the error (tasks/100)."""
 
     cxx = "nix::Error"
     header = "nix/util/error.hh"
+    # The C++ template that reads each part beyond the two strings off
+    # the caught exception, given the part's record type. Inherited,
+    # and taken off the emitted module as `cxx` is.
+    reader = "huggorm::error_info"
 
     # What crosses the wire, in constructor order: an error is rebuilt
     # as cls(*parts) on the far side. Declared once and inherited,
@@ -45,12 +55,15 @@ class NixError(Exception):
     # same thing - the parts this object can be rebuilt from - though
     # an error travels in the gRPC status details rather than as a
     # response message of its own (tasks/036).
-    _wire_fields = (("message", "str"), ("colored", "str"))
+    _wire_fields = (("message", "str"), ("colored", "str"),
+                    ("info", "ErrorInfo?"))
 
-    def __init__(self, message: str, colored: str | None = None) -> None:
+    def __init__(self, message: str, colored: str | None = None,
+                 info: ErrorInfo | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.colored = message if colored is None else colored
+        self.info = info
 
     @property
     def code(self) -> str:
@@ -107,7 +120,7 @@ class NixError(Exception):
         return hash((type(self).__name__,
                      tuple(sorted(self.to_dict().items()))))
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         """This error as its declared parts, for a peer to rebuild.
 
         The duck-type the runtime looks for. It is emitted beside the
@@ -118,9 +131,11 @@ class NixError(Exception):
         Derived from `_wire_fields` rather than naming `message` and
         `colored`: a subclass that declares more parts gets them here
         with no edit, and a method that listed the two would be the
-        same fact stated twice."""
-        parts = {name: str(getattr(self, name))
-                 for name, _ in self._wire_fields}
+        same fact stated twice.
+
+        Each part as itself, not as `str()` of it: `info` is a record,
+        and its text is not a part anyone rebuilds from."""
+        parts = {name: getattr(self, name) for name, _ in self._wire_fields}
         return {"code": self.code, **parts}
 
 

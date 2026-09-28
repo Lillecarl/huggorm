@@ -42,7 +42,6 @@ from huggorm_dsl.declare import (
     produced,
     reads,
     startup,
-    translator,
     wire_value,
 )
 
@@ -1254,13 +1253,6 @@ def _init_libstore() -> None:
     initialisation.
     """
 
-@needs("huggorm_decl/cpp/errors.hpp")
-@binds("huggorm::translate_nix_error")
-@translator
-def _translate_nix_error() -> None:
-    """Map a nix exception onto the right class in errors.py.
-
-    nix has an exception hierarchy worth keeping - BadStorePath is a
-    different answer from InvalidPath - and nanobind's default would
-    flatten every one of them to RuntimeError.
-    """
+# No translator here. nanobind's translators serve the whole process,
+# and this module imports `path`, whose translator is registered
+# first. A second one here would emit the catch chain twice.

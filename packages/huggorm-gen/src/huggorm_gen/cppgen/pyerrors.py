@@ -46,13 +46,18 @@ import copy
 from types import ModuleType
 from typing import Any
 
-from huggorm_dsl.read import DeclarationError
+from huggorm_dsl.read import DECLARATIONS, DeclarationError
 
 # The attribute a declared exception uses to name its C++ class. Not a
 # decorator: an exception declaration has no behaviour to mark, and a
 # bare assignment reads as the fact it is.
 CXX = "cxx"
 HEADER = "header"
+# The C++ template that reads a part beyond the two strings. Unlike
+# the two above it is read off the IMPORT, so a subclass inherits it.
+READER = "reader"
+# The parts `as_error` fills from `what()` itself.
+MESSAGE_PARTS = 2
 
 
 # The package a declaration is WRITTEN in. Read off the reader's own
@@ -253,7 +258,34 @@ def entries(tree: ast.Module,
     return out
 
 
-def chain(tree: ast.Module, raise_as: str, module: str) -> list[str]:
+def _readers(node: ast.ClassDef, kls: type, namespace: str) -> str:
+    """The reader arguments the catch for one class passes, or "".
+
+    One per part beyond the message, in `_wire_fields` order, because
+    `as_error` hands them to the constructor in that order. Each is
+    the class's `reader` template given the part's record type, so a
+    part that is not a record fails to compile rather than cross as
+    something it is not.
+
+    Refused when a class has such parts and no reader: its catch
+    would call a constructor with parts missing, and `raise_as` turns
+    that refusal into a RuntimeError, in silence."""
+    extra = list(getattr(kls, WIRE_FIELDS, ()))[MESSAGE_PARTS:]
+    if not extra:
+        return ""
+    reader = getattr(kls, READER, "")
+    if not reader:
+        raise DeclarationError(
+            node, f"{node.name}: `_wire_fields` declares "
+                  f"{[f for f, _ in extra]} beyond the message, and no "
+                  f"`reader = \"...\"` says which C++ reads them off the "
+                  f"caught exception.")
+    return "".join(f", {reader}<{namespace}::{ftype.removesuffix('?')}>"
+                   for _, ftype in extra)
+
+
+def chain(tree: ast.Module, mod: ModuleType, raise_as: str, module: str,
+          namespace: str = "huggorm") -> list[str]:
     """The translator's catch chain, most-derived first.
 
     `raise_as` is the C++ helper that sets the Python error: it is the
@@ -272,20 +304,43 @@ def chain(tree: ast.Module, raise_as: str, module: str) -> list[str]:
     A class with no `cxx` is skipped. That is how a Python-only
     exception - one this binding raises itself and Nix never throws -
     stays in the module without inventing a catch for it.
+
+    `mod` is the imported declaration. It says which parts each class
+    INHERITS, and which reader, where the tree says only what the
+    class itself writes (`_readers`).
     """
     bases = _bases(tree)
-    caught = [(n.name, _cxx_of(n)) for n in _body(tree)
+    caught = [n for n in _body(tree)
               if isinstance(n, ast.ClassDef) and _cxx_of(n)]
-    caught.sort(key=lambda pair: -_depth(pair[0], bases))
+    caught.sort(key=lambda n: -_depth(n.name, bases))
     out = ["    try {", "        throw;"]
-    for name, cxx in caught:
-        out.append(f"    }} catch (const {cxx} & e) {{")
-        out.append(f'        {raise_as}("{module}", "{name}", e);')
+    for node in caught:
+        readers = _readers(node, getattr(mod, node.name), namespace)
+        out.append(f"    }} catch (const {_cxx_of(node)} & e) {{")
+        out.append(f'        {raise_as}("{module}", "{node.name}", e{readers});')
     out.append("    }")
     return out
 
 
-def module(tree: ast.Module, doc: str) -> str:
+def _emitted_import(node: ast.stmt, package: str) -> ast.stmt:
+    """An import of another declaration, pointed at what it emitted.
+
+    `from huggorm_decl.decl.path import ErrorInfo` names the type a
+    part carries. The emitted module runs where the declarations are
+    not installed, and the class it means is the one `path` emitted."""
+    if not (isinstance(node, ast.ImportFrom) and node.module
+            and node.module.startswith(f"{DECLARATIONS}.")):
+        return node
+    if not package:
+        raise DeclarationError(
+            node, f"`{node.module}` is a declaration, and nothing says "
+                  f"which package its emitted module is in.")
+    out = copy.deepcopy(node)
+    out.module = f"{package}.{node.module.removeprefix(f'{DECLARATIONS}.')}"
+    return out
+
+
+def module(tree: ast.Module, doc: str, package: str = "") -> str:
     """The exception module, as the declaration with its C++ taken off.
 
     A transform rather than a print, for `pyenum.py`'s reason: the
@@ -311,6 +366,7 @@ def module(tree: ast.Module, doc: str) -> str:
     for node in _body(tree):
         if _is_language_import(node):
             continue
+        node = _emitted_import(node, package)
         if isinstance(node, ast.ClassDef):
             # A COPY, because `corpus()` is cached for the process and
             # hands every emitter the same tree. Stripping in place
@@ -329,7 +385,7 @@ def module(tree: ast.Module, doc: str) -> str:
                         if not (isinstance(item, ast.Assign)
                                 and len(item.targets) == 1
                                 and isinstance(item.targets[0], ast.Name)
-                                and item.targets[0].id in (CXX, HEADER))]
+                                and item.targets[0].id in (CXX, HEADER, READER))]
             cls.decorator_list = []
             body.append(cls)
             continue
