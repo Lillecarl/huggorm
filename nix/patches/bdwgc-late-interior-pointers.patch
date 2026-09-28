@@ -1,0 +1,26 @@
+Keep offset 0 valid when interior pointers are switched after GC_init.
+
+GC_init resets the valid offsets and then registers offset 0, so a
+pointer to the start of an object counts (misc.c:1364-1365). The
+setter resets them the same way and does not register offset 0 again.
+gc.h allows the late call: "if the GC is already initialized, the
+setter acquires the GC lock".
+
+huggorm calls GC_INIT at import and nix::initGC at the first
+evaluator, so that importing starts no marker thread. nix::initGC
+calls GC_set_all_interior_pointers(0), and without offset 0 the
+collector freed `builtins` under a live evaluator: "attribute 'length'
+missing", then a segfault (huggorm tasks/101).
+
+bdwgc master (2026-09-28) has the same code.
+
+--- a/misc.c
++++ b/misc.c
+@@ -2575,6 +2575,7 @@
+       /* even after switching the mode.                                 */
+       LOCK();
+       GC_initialize_offsets(); /* NOTE: this resets manual offsets as well */
++      GC_register_displacement_inner(0L); /* as GC_init does */
+       if (!GC_all_interior_pointers)
+         GC_bl_init_no_interiors();
+       UNLOCK();

@@ -57,10 +57,31 @@ rec {
   # It raises both sizes to 512 and makes the two base-environment
   # writes TEST the bound, so a consumer that still exceeds it reads
   # an error instead of corrupting the heap.
-  nix = pkgs.nix.appendPatches [
-    ./nix/patches/nix-base-env-size.patch
-    ./nix/patches/nix-interrupted-thunk-recovers.patch
-  ];
+  #
+  # The collector carries one patch too. huggorm starts Boehm at import
+  # and runs `nix::initGC` at the first evaluator, so importing starts
+  # no marker thread. `initGC` then switches interior pointers after
+  # `GC_init`, and bdwgc's setter drops offset 0 when it does. The
+  # patch header has the detail (tasks/101).
+  nix =
+    (pkgs.nix.appendPatches [
+      ./nix/patches/nix-base-env-size.patch
+      ./nix/patches/nix-interrupted-thunk-recovers.patch
+    ]).overrideScope
+      (
+        final: prev: {
+          # Not in `prev`: the components take it from nixDependencies.
+          boehmgc = pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
+          });
+        }
+      );
+  # The libgc libnixexpr links. The bindings link the same one, because
+  # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
+  # process ran libnixexpr on a libgc built without its large config.
+  boehmgc = lib.findFirst (
+    p: (p.pname or "") == "boehm-gc"
+  ) (throw "libnixexpr links no boehmgc") nix.libs.nix-expr.propagatedBuildInputs;
   # The LANGUAGE a declaration is written in, and the reader that
   # parses one. No declaration and no emitter is in here, which is
   # what lets the two below depend on it without depending on each
@@ -109,7 +130,12 @@ rec {
   # own setup.py writes from a declaration, before setuptools is told
   # the sources exist.
   huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
-    inherit huggorm-gen huggorm-decl huggorm-dsl;
+    inherit
+      huggorm-gen
+      huggorm-decl
+      huggorm-dsl
+      boehmgc
+      ;
     inherit (nix.libs)
       nix-util
       nix-store
