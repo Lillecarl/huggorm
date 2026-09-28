@@ -2444,3 +2444,33 @@ def test_a_store_with_no_logs_says_so(store: Store) -> None:
 def test_a_path_with_no_log_reads_as_none(chroot: Store) -> None:
     path = chroot.add_to_store("added", b"never built\n")
     assert chroot.get_build_log(path) is None
+
+
+def test_two_stores_on_one_directory_keep_their_own_temp_roots(
+        tmp_path: pathlib.Path) -> None:
+    """Each LocalStore holds its own temp-roots file, and neither
+    deletes the other's.
+
+    Nix names the file by pid alone, so the second store took the
+    first one's file for a stale one and deleted it: the collector no
+    longer saw the first store's roots. huggorm's Nix patch names it
+    `<pid>-<n>` (nix/patches/nix-temp-roots-per-store.patch)."""
+    import os
+
+    first, second = Store(str(tmp_path)), Store(str(tmp_path))
+    first.add_to_store("first", b"1\n", CA.TEXT, HashAlgorithm.SHA256)
+    second.add_to_store("second", b"2\n", CA.TEXT, HashAlgorithm.SHA256)
+
+    temp_roots = tmp_path / "nix" / "var" / "nix" / "temproots"
+    held = []
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith(str(temp_roots)):
+            held.append(target)
+    assert len(held) == 2, held
+    assert not [h for h in held if h.endswith(" (deleted)")], held
+    assert sorted(p.name for p in temp_roots.iterdir()) == sorted(
+        os.path.basename(h) for h in held)

@@ -1,0 +1,55 @@
+Give each LocalStore its own temporary roots file.
+
+LocalStore names the file <stateDir>/temproots/<pid>, and its comment
+says why that is safe: a file with this process's pid "*must* be stale,
+since there can be no two processes with the same pid" (gc.cc:57). A
+second LocalStore on the same state directory in the same process breaks
+that. It takes the first store's file for a stale one and deletes it, so
+the collector no longer sees the first store's temporary roots and may
+delete a path that store is using. When the two open the file at the
+same moment, the second one waits in flock for ever instead.
+
+`nix` opens one store per process. An embedder such as huggorm opens as
+many as its callers ask for. nanopynix's
+test_two_handles_on_one_local_store_keep_each_others_temp_roots drives
+the deletion. Later Nix git gives each store its own name with
+makeTempPath; the 2.36pre that nixpkgs carries does not yet, so drop
+this patch once the bound Nix does.
+
+The file is <pid>-<n> now, with n counted per process. findTempRoots
+reads the pid with std::stoi, which stops at the '-', so every Nix that
+reads the directory still reads the name.
+
+--- a/src/libstore/local-store.cc
++++ b/src/libstore/local-store.cc
+@@ -50,6 +50,8 @@
+
+ #include <nlohmann/json.hpp>
+
++#include <atomic>
++
+ #include "nix/util/strings.hh"
+
+ #include "store-config-private.hh"
+@@ -114,6 +116,12 @@
+     SQLiteStmt QueryValidPaths;
+ };
+
++/* One temporary roots file per LocalStore, not per process: a second
++   store in this process would otherwise take the first one's file for a
++   stale one and delete it. findTempRoots reads the pid with stoi, which
++   stops at the '-'. */
++static std::atomic<uint64_t> nextTempRootsFile{0};
++
+ LocalStore::LocalStore(ref<const Config> config)
+     : Store{*config}
+     , LocalFSStore{*config}
+@@ -124,7 +132,7 @@
+     , reservedPath(dbDir / "reserved")
+     , schemaPath(dbDir / "schema")
+     , tempRootsDir(config->stateDir.get() / "temproots")
+-    , fnTempRoots(tempRootsDir / std::to_string(getpid()))
++    , fnTempRoots(tempRootsDir / (std::to_string(getpid()) + "-" + std::to_string(nextTempRootsFile++)))
+ {
+     auto state(_state->lock());
+     state->stmts = std::make_unique<State::Stmts>();

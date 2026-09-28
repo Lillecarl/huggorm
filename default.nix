@@ -58,16 +58,24 @@ rec {
   # writes TEST the bound, so a consumer that still exceeds it reads
   # an error instead of corrupting the heap.
   #
+  # The third names each LocalStore's temporary roots file `<pid>-<n>`.
+  # Named by pid alone, a second store on one directory deleted the
+  # first one's file, and the collector stopped seeing its roots.
+  # Carl's call, 2026-09-29: patch Nix rather than cache stores per URI.
+  #
   # The collector carries one patch too. huggorm starts Boehm at import
   # and runs `nix::initGC` at the first evaluator, so importing starts
   # no marker thread. `initGC` then switches interior pointers after
   # `GC_init`, and bdwgc's setter drops offset 0 when it does. The
   # patch header has the detail (tasks/101).
   nix =
-    (pkgs.nix.appendPatches [
-      ./nix/patches/nix-base-env-size.patch
-      ./nix/patches/nix-interrupted-thunk-recovers.patch
-    ]).overrideScope
+    (pkgs.nix.appendPatches (
+      [
+        ./nix/patches/nix-base-env-size.patch
+        ./nix/patches/nix-interrupted-thunk-recovers.patch
+      ]
+      ++ libstorePatches
+    )).overrideScope
       (
         final: prev: {
           # Not in `prev`: the components take it from nixDependencies.
@@ -76,9 +84,11 @@ rec {
           });
         }
       );
-  # Exported: a consumer that builds its own collector for these
-  # bindings, as nanopynix does, needs the same patch.
+  # Exported: a consumer that builds its own collector and its own Nix
+  # for these bindings, as nanopynix does, needs the same patches. The
+  # other two Nix patches are nanopynix's own already.
   bdwgcPatches = [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
+  libstorePatches = [ ./nix/patches/nix-temp-roots-per-store.patch ];
   # The libgc libnixexpr links. The bindings link the same one, because
   # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
   # process ran libnixexpr on a libgc built without its large config.
