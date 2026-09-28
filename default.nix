@@ -72,10 +72,13 @@ rec {
         final: prev: {
           # Not in `prev`: the components take it from nixDependencies.
           boehmgc = pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
+            patches = (old.patches or [ ]) ++ bdwgcPatches;
           });
         }
       );
+  # Exported: a consumer that builds its own collector for these
+  # bindings, as nanopynix does, needs the same patch.
+  bdwgcPatches = [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
   # The libgc libnixexpr links. The bindings link the same one, because
   # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
   # process ran libnixexpr on a libgc built without its large config.
