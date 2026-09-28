@@ -1130,6 +1130,10 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 102 (pin the verbosity gate) is OPEN. Carl chose a pin at CHATTY at
+  import, and a Nix patch so `setOptions` does not send the pin to the
+  daemon. Two questions remain before the work: what a subscription
+  above CHATTY gets, and what the daemon is told.
 - 101 (importing starts no thread) is DONE. `GC_INIT` runs at import,
   on the importing thread; `nix::initGC`, which starts the markers,
   at the first evaluator. bdwgc's late interior-pointer setter drops

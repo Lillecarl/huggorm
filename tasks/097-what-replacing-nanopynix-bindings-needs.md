@@ -931,3 +931,29 @@ Still open, from the lane:
   expected.
 - The settings-leak guard fires where a pynix test and a nanopynix test
   meet. That may come from the lane's two-part split; not proven.
+
+## The verbosity ceiling: measured at CHATTY
+
+nanopynix-bindings writes `nix::verbosity` once, at CHATTY, before any
+Nix thread exists; its `nix_util.cpp` measured the ceiling for
+evaluation, store queries and flake fetches. huggorm moves the gate as
+subscriptions ask, because `RemoteStore::setOptions` sends the gate to
+the daemon and the client re-raises each daemon line as `printError`
+(tasks/095).
+
+The probe (`.scratchpad/097/chatty_probe.py`): a daemon store, Nix
+2.34.8 on both sides, 16 real paths, 20 rounds of `is_valid_path`,
+`query_path_info` and `compute_fs_closure`. The gate is held by a
+subscription on another thread, and the count is Nix's lines on the
+caller's stderr. Three processes per level, identical each time:
+
+| gate | lines |
+| --- | --- |
+| INFO (none held) | 0 |
+| CHATTY | 0 |
+| DEBUG | 32, all `performing daemon worker op` |
+
+So query work costs nothing at CHATTY. Libstore holds 24 sites at
+TALKATIVE or CHATTY, in GC, file transfer, substitution and the
+builders; on a daemon those would reach a caller's stderr as errors
+when the daemon does that work. Not measured.
