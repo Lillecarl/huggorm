@@ -1,6 +1,6 @@
 # An error carries Nix's ErrorInfo
 
-**OPEN.** Found by the nanopynix port (`tasks/097`), 2026-09-27.
+**DONE**, 2026-09-28. Found by the nanopynix port (`tasks/097`), 2026-09-27.
 
 ## Problem
 
@@ -72,3 +72,20 @@ to `nix::ErrorInfo`, or a dict attribute as nanopynix-bindings has.
   part crossed as its repr. It now puts and reads each part through
   `WireCodec`, as a value's field is. `to_dict` keeps each part as
   itself for the same reason.
+
+## Proved by breaking it
+
+- The codec back to `str()` of each part: the round trip fails, and
+  so do ten rpc tests, because a message field refuses a string.
+- `max_traces` at 33: the deep-trace test fails.
+- A chain that passes no readers: five tests fail, the refusal test
+  and the four that read `info`.
+
+Measured on the bindings: `{ foo = 1; bar = 2; }.fo` suggests `foo`
+then `bar`; `1 + "a"` on line 4 is at `«string»:4:7`; a 40-deep
+`toJSON` keeps 32 frames, the last "while calling the 'throw'
+builtin"; max-call-depth has a position and no frames.
+
+nanopynix: each engine answers `error_detail(exc)`, and
+`translate_nix_exception` and the rpc status details both use it. The
+five lane tests that read `info` pass.

@@ -871,3 +871,15 @@ Lane: 2798 passed, 19 failed (1867/19 and 931/0), 17 min 3 s; peaks
   15 Boehm marker threads (`GC-marker-0` to `-14`, read from
   `/proc/self/task`). nanopynix-bindings starts none at import: its
   `init_libexpr` starts the collector.
+
+## Nix's ErrorInfo on an error
+
+`tasks/100` is done. A huggorm error carries `info`, an `ErrorInfo`
+record with the position, the trace and the suggestions, and it
+crosses huggorm's wire typed. nanopynix reads it through each engine's
+`error_detail`, into the dict `NixError.info` documents.
+
+Lane: 2803 passed, 14 failed (1872/14 and 931/0), 20 min 11 s; peaks
+1.8 GB and 3.7 GB. Part A fixes the five `info` tests and adds no
+failure. Of the 14, 13 import `nanopynix_bindings` and 1 is the
+namespaced worker.
