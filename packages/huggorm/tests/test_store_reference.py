@@ -55,3 +55,18 @@ def test_a_bare_path_is_a_local_uri() -> None:
 def test_what_libstore_cannot_read_raises() -> None:
     with pytest.raises(UsageError, match="Cannot parse Nix store"):
         parse_store_reference("not a uri")
+
+
+def test_the_store_registry_names_nix_s_own_types() -> None:
+    """The document `nix __dump-cli` prints under `stores`."""
+    import json
+
+    from huggorm_bindings import store_types_json
+
+    types = json.loads(store_types_json())
+    local = types["Local Store"]
+    assert "local" in local["uri-schemes"]
+    assert "root" in local["settings"]
+    assert local["experimentalFeature"] is None
+    assert types["Experimental Local Overlay Store"]["experimentalFeature"] \
+        == "local-overlay-store"

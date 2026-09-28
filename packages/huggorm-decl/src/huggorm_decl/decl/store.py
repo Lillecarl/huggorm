@@ -1239,6 +1239,31 @@ return nix::StoreReference::parse(uri).render(with_params);
     """)
 
 
+@needs("nix/store/store-registration.hh", "nix/util/experimental-features.hh",
+       "nix/util/json-utils.hh")
+def store_types_json() -> Str:
+    """Every registered store type, in JSON, keyed by its name.
+
+    Each entry holds `doc`, `uri-schemes`, `settings` and
+    `experimentalFeature`, as `nix __dump-cli` prints them under
+    `stores` (main.cc:204). `settings` are the settings a URI can set,
+    each at its default, in the shape `settings_json` gives.
+
+    The registry fills at load, one entry per linked store, and grows
+    when a caller registers a store of its own."""
+    Cxx("""
+auto out = nlohmann::json::object();
+for (auto & [name, implementation] : nix::Implementations::registered()) {
+    auto & entry = out[name];
+    entry["doc"] = implementation.doc;
+    entry["uri-schemes"] = implementation.uriSchemes;
+    entry["settings"] = implementation.getConfig()->toJSON();
+    entry["experimentalFeature"] = implementation.experimentalFeature;
+}
+return out.dump();
+    """)
+
+
 @needs("huggorm_decl/cpp/libstore.hpp")
 @binds("huggorm::init_libstore")
 @startup
