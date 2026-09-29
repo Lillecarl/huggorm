@@ -2154,7 +2154,7 @@ def set_thread_verbosity(level: I64) -> None:
     `subscribe_logs` replaces this level, and `unsubscribe_logs`
     clears it: one thread holds one level."""
     Cxx("""
-if (level < 0 || level > nix::lvlVomit)
+if (level < 0 || level > std::to_underlying(nix::lvlVomit))
     throw std::invalid_argument("level must be from 0 (error) to 7 (vomit)");
 huggorm::thread_level().set(static_cast<nix::Verbosity>(level));
     """)
@@ -2188,7 +2188,7 @@ def set_default_verbosity(level: I64) -> None:
     subscription does. `subscribe_process_logs` sets this too, and
     `unsubscribe_process_logs` puts nix's own `lvlInfo` back."""
     Cxx("""
-if (level < 0 || level > nix::lvlVomit)
+if (level < 0 || level > std::to_underlying(nix::lvlVomit))
     throw std::invalid_argument("level must be from 0 (error) to 7 (vomit)");
 huggorm::set_default_verbosity(static_cast<nix::Verbosity>(level));
     """)
@@ -2201,7 +2201,7 @@ def log_message(level: I64, message: Str) -> None:
     The same call a Nix builtin makes, so a subscriber receives it as
     a `msg` record, and the level filters it as it filters Nix's own."""
     Cxx("""
-if (level < 0 || level > nix::lvlVomit)
+if (level < 0 || level > std::to_underlying(nix::lvlVomit))
     throw std::invalid_argument("level must be from 0 (error) to 7 (vomit)");
 nix::logger->log(static_cast<nix::Verbosity>(level), message);
     """)

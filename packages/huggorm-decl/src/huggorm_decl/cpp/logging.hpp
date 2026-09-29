@@ -316,10 +316,10 @@ private:
                     widest = static_cast<nix::Verbosity>(i);
                 break;
             }
-        nix::remoteVerbosity.store(widest, std::memory_order_relaxed);
+        nix::remoteVerbosity.store(std::to_underlying(widest), std::memory_order_relaxed);
     }
 
-    static constexpr std::size_t kLevels = nix::lvlVomit + 1;
+    static constexpr std::size_t kLevels = std::to_underlying(nix::lvlVomit) + 1;
 
     std::mutex mutex_;
     std::array<int, kLevels> holders_{};
@@ -355,7 +355,7 @@ inline VerbosityDemand & verbosity_demand()
  */
 inline std::atomic<int> & default_verbosity()
 {
-    static std::atomic<int> level{nix::lvlInfo};
+    static std::atomic<int> level{static_cast<int>(std::to_underlying(nix::lvlInfo))};
     return level;
 }
 
@@ -881,7 +881,7 @@ inline nix::Verbosity log_ceiling()
     std::string key(raw);
     for (auto & c : key)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    static constexpr std::array<std::string_view, nix::lvlVomit + 1> names{
+    static constexpr std::array<std::string_view, std::to_underlying(nix::lvlVomit) + 1> names{
         "error", "warn", "notice", "info", "talkative", "chatty", "debug", "vomit"};
     for (std::size_t i = 0; i < names.size(); ++i)
         if (key == names[i] || key == std::to_string(i))
@@ -916,7 +916,7 @@ inline void install_log_tap()
     // would otherwise send the pin to every daemon, whose lines then
     // reach stderr as errors.
     nix::verbosity = log_ceiling();
-    nix::remoteVerbosity.store(nix::lvlInfo, std::memory_order_relaxed);
+    nix::remoteVerbosity.store(std::to_underlying(nix::lvlInfo), std::memory_order_relaxed);
     set_logger(nix::logger, std::make_unique<LogTap>());
 }
 
@@ -1011,7 +1011,7 @@ inline void unsubscribe_process_logs()
     // The daemon level drops to what the per-thread subscriptions
     // still need. `tasks/095` measured what leaving it up cost: 1052
     // daemon debug lines on an unsubscribed caller's stderr.
-    default_verbosity().store(nix::lvlInfo, std::memory_order_relaxed);
+    default_verbosity().store(std::to_underlying(nix::lvlInfo), std::memory_order_relaxed);
     set_process_demand(-1);
     std::shared_ptr<LogQueue> old;
     {
