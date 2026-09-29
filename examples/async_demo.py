@@ -1,22 +1,25 @@
-# Async demo over real Nix, with the evaluator still on the mock.
-# Mirrors the generated surface: pool stores overlap, affine states
-# serialize, returned values inherit the producer's threading policy.
+# Async demo over real Nix. Mirrors the generated surface: pool stores
+# overlap, affine states serialize, returned values inherit the
+# producer's threading policy.
 
-import asyncio
 import tempfile
 
+import anyio
+
 from huggorm_bindings import ContentAddressMethod as CA
-from huggorm_bindings import HashAlgorithm
+from huggorm_bindings import HashAlgorithm, StorePath
 from huggorm_generated import (
     AsyncEvalState,
     AsyncStore,
     StoreLike,
+    collect_garbage,
+    gc_stats,
 )
 from huggorm_generated._runtime import InternalError
 
 
-def _add(store: AsyncStore, name: str, body: bytes) -> object:
-    return store.add_to_store(name, body, CA.NAR, HashAlgorithm.SHA256)
+async def _add(store: StoreLike, name: str, body: bytes) -> StorePath:
+    return await store.add_to_store(name, body, CA.NAR, HashAlgorithm.SHA256)
 
 
 async def main() -> None:
@@ -31,31 +34,28 @@ async def main() -> None:
     print(p.to_string(), "valid:", await local.is_valid_path(p))
 
     print("\n=== GIL released during slow store ops ===")
-    t0 = asyncio.get_running_loop().time()
-    a, b = await asyncio.gather(
-        _add(local, "a.txt", b"aaa"),
-        _add(local, "b.txt", b"bbb"),
-    )
-    elapsed = asyncio.get_running_loop().time() - t0
-    print(f"2x add_to_store gathered: {elapsed * 1000:.0f}ms (parallel if << 200)")
+    added: dict[str, StorePath] = {}
+
+    async def add_one(name: str, body: bytes) -> None:
+        added[name] = await _add(local, name, body)
+
+    t0 = anyio.current_time()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(add_one, "a.txt", b"aaa")
+        tg.start_soon(add_one, "b.txt", b"bbb")
+    elapsed = anyio.current_time() - t0
+    print(f"2x add_to_store at once: {elapsed * 1000:.0f}ms (parallel if << 200)")
 
     print("\n=== thread pool (Store, pool) ===")
-    results = await asyncio.gather(
-        local.get_uri(),
-        _add(local, "c.txt", b"ccc"),
-        local.is_valid_path(b),
-    )
-    printed = []
-    for r in results:
-        if isinstance(r, str | bool):
-            printed.append(r)
-        else:
-            printed.append(r.to_string())
-    print(f"results: {printed}")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(add_one, "c.txt", b"ccc")
+        uri = await local.get_uri()
+        valid = await local.is_valid_path(added["b.txt"])
+    print(f"results: {[uri, added['c.txt'].to_string(), valid]}")
     print(f"workers seen: {sorted(local._runner.workers_seen)}")
 
     print("\n=== wire values off a real store ===")
-    info = await local.query_path_info(a)
+    info = await local.query_path_info(added["a.txt"])
     print(f"nar_size: {info.nar_size()}  hash: {info.nar_hash().to_string()[:24]}...")
 
     print("\n=== evaluation (EvalState, affine service) ===")
@@ -81,22 +81,24 @@ async def main() -> None:
           f"(state's: {sorted(state._runner.workers_seen)})")
     print(f"workers seen: {sorted(state._runner.workers_seen)}  <- must be exactly 1")
 
-    # Module-level binding functions get generated wrappers too, so the
-    # hand-written asyncio.to_thread hop is gone.
-    from huggorm_generated import collect_garbage, gc_stats
-
+    # Module-level binding functions get generated wrappers too.
     await collect_garbage()
     stats = await gc_stats()
     print(f"after 2x full GC: {await v.string_value()!r}")
     print(f"gc: {stats['collections']} collections, heap {stats['heap_size'] >> 10} KiB,"
           f" value in GC heap: {await v.is_gc_managed()}")
 
-    t0 = asyncio.get_running_loop().time()
-    await asyncio.gather(state.eval_expr("1"), state.eval_expr("2"))
-    elapsed = asyncio.get_running_loop().time() - t0
-    print(f"2x eval_expr gathered: {elapsed * 1000:.0f}ms (>=80: one dedicated thread)")
+    async def evaluate(expr: str) -> None:
+        await state.eval_expr(expr)
 
-    print("\n=== C++ exception surfaces as InternalError with cause chain ===")
+    t0 = anyio.current_time()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(evaluate, "1")
+        tg.start_soon(evaluate, "2")
+    elapsed = anyio.current_time() - t0
+    print(f"2x eval_expr at once: {elapsed * 1000:.0f}ms (one dedicated thread)")
+
+    print("\n=== a Nix error surfaces as InternalError with its cause ===")
     try:
         await state.eval_expr("not an expression")
         print("should not happen")
@@ -113,25 +115,20 @@ async def main() -> None:
         # Typed against the protocol. Everything it calls is on the
         # generated surface, so it never asks whether the store is in
         # this process or on the far side of a socket.
-        path = await store.add_to_store("shared.txt", b"either location",
-                                        CA.NAR, HashAlgorithm.SHA256)
+        path = await _add(store, "shared.txt", b"either location")
         return f"{await store.get_uri()}: {path.to_string()}"
 
     print(await report(local))
 
     print("\n=== constructors are typed, so arity fails at the call site ===")
-    # The wrapper states its constructor parameters, from the
-    # declaration that also wrote the binding.
-    # A wrong call used to sail through __init__(*args) and surface much
-    # later, from inside the lazy factory on a worker thread.
     try:
         # Deliberately wrong, and a typechecker says so - which is the
         # point being demonstrated. The ignore is what makes the demo
         # runnable AND checkable.
-        AsyncEvalState(AsyncStore("dummy://"), "unexpected-arg")  # type: ignore[call-arg]
+        AsyncEvalState(AsyncStore("dummy://"), None, None, "extra")  # type: ignore[call-arg]
         print("should not happen")
     except TypeError as e:
-        print(f"AsyncEvalState(AsyncStore('dummy://'), 'unexpected-arg') -> TypeError: {e}")
+        print(f"AsyncEvalState(store, None, None, 'extra') -> TypeError: {e}")
     try:
         AsyncEvalState()  # type: ignore[call-arg]
         print("should not happen")
@@ -143,4 +140,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main)

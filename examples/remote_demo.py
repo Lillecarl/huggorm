@@ -8,8 +8,9 @@ methods, so the same function can be typed against a protocol and take
 either an in-process wrapper or one of these.
 """
 
-import asyncio
 import tempfile
+
+import anyio
 
 from huggorm import remote
 
@@ -71,4 +72,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main)
