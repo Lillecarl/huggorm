@@ -1,5 +1,8 @@
 {
-  pkgs ? import <nixpkgs> { },
+  # Where every dependency lives. nix/sources.nix says how it finds them:
+  # the umbrella's lock, so huggorm builds the Nix nanopynix builds.
+  sources ? import ./nix/sources.nix,
+  pkgs ? import sources.nixpkgs { },
 }:
 rec {
   inherit pkgs;
