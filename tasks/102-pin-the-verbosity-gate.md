@@ -58,3 +58,26 @@ Carl answered both open questions:
 nanopynix's `test_nix_filters_at_a_pinned_ceiling_that_no_call_moves`
 fails on huggorm: the ceiling is INFO, and the test expects CHATTY and
 no movement.
+
+## The work
+
+- `nix-remote-verbosity.patch` adds `std::atomic<int>
+  nix::remoteVerbosity{-1}` to libstore. `setOptions` sends it when it
+  is zero or more, and `nix::verbosity` otherwise, so `nix` itself
+  does not change. It is in `libstorePatches`, which nanopynix's
+  huggorm scope already takes.
+- `install_log_tap` is the one write to `nix::verbosity`: the value of
+  `log_ceiling()`, at import, before any Nix thread exists. It sets
+  `remoteVerbosity` to lvlInfo in the same place.
+- `log_ceiling()` reads `HUGGORM_LOG_CEILING`: a level name in any
+  case, or 0 to 7. A value that names no level REFUSES the import.
+  nanopynix-bindings keeps its default for a bad value instead; that
+  ignores the caller with nothing said, which is this repository's
+  named failure mode.
+- `VerbosityDemand::reconcile` stores into `remoteVerbosity`, never
+  into `nix::verbosity`. Its floor is lvlInfo, a constant: the old
+  floor read `nix::verbosity`, which is now the pin.
+- `daemon_verbosity()` reads `remoteVerbosity`. The `test_logs` gates
+  that watched `process_verbosity()` move now watch it, and two new
+  gates pin `process_verbosity()` at CHATTY through subscriptions at
+  7 and refuse a record above CHATTY to a subscription at 7.

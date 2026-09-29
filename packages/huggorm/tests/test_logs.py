@@ -23,6 +23,8 @@ Two things every gate here has to keep in mind, both measured against
 
 import os
 import pathlib
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from typing import Any
@@ -1307,14 +1309,10 @@ def test_an_unsubscribed_caller_still_sees_only_the_default(
     """A raised global must not turn stderr into a firehose.
 
     `LogTap::fallback` is a `SimpleLogger`, and `SimpleLogger::log`
-    gates on `nix::verbosity` - which is the WIDEST level anyone has
-    asked for, not this thread's. So every override has to apply the
+    gates on `nix::verbosity` - which is the ceiling pinned at import,
+    not this thread's level. So every override has to apply the
     thread level BEFORE forwarding, or a console user who subscribed
     to nothing gets every line the noisiest subscriber wanted.
-
-    This said "the pin" until `tasks/095`. There is no pin, and the
-    gate is the same either way: something else raised the global,
-    and this thread did not.
 
     Perturbation: remove the `effective_verbosity` test from
     `LogTap::log` and this fails with `evaluating file` on stderr."""
@@ -1330,30 +1328,25 @@ def test_an_unsubscribed_caller_still_sees_only_the_default(
 
 def test_nothing_asks_nix_for_everything(state: Any,
                                          tmp_path: pathlib.Path) -> None:
-    """`nix::verbosity` is what the DAEMON is told to produce.
+    """`daemon_verbosity` is what the DAEMON is told to produce.
 
-    `RemoteStore::setOptions` sends this global over the worker
-    protocol (`remote-store.cc:118`) and `daemon.cc:239` assigns it
-    to the daemon's own. So pinning it at lvlVomit - which a draft of
-    `tasks/089` step 4 did, copying nanopynix - asks every daemon
-    connection this process opens to narrate everything down the
-    socket, forever, whether or not anybody subscribed.
+    `RemoteStore::setOptions` sends it over the worker protocol and
+    `daemon.cc:239` assigns it to the daemon's own. At lvlVomit it
+    asks every daemon connection this process opens to narrate
+    everything down the socket, whether or not anybody subscribed.
 
-    `dummy://` opens no daemon connection, so the suite could not see
-    it. This gate is the substitute: nothing may raise the process
-    gate to vomit.
+    `dummy://` opens no daemon connection, so the suite cannot see
+    it. This gate is the substitute: nothing may leave the daemon
+    level at vomit.
 
-    It is ORDER-INDEPENDENT, and `tasks/096` made it durable: a test
-    that asks for 7 and then unsubscribes gives the level back, so
-    the one below this file does exactly that and this still passes.
-    What fails it is a test that asks for 7 and STAYS subscribed.
-    That is the right failure - it makes the cost visible at the
-    moment somebody takes it - and this docstring is where they read
-    why.
+    It is ORDER-INDEPENDENT (`tasks/096`): a test that asks for 7
+    and then unsubscribes gives the level back. What fails it is a
+    test that asks for 7 and STAYS subscribed, which makes the cost
+    visible at the moment somebody takes it.
 
-    This used to say that any later test asking for 7 fails it. True
-    while the global only ever rose, and false now."""
-    from huggorm_bindings import process_verbosity
+    Perturbation: start `VerbosityDemand::reconcile`'s `widest` at
+    `nix::lvlVomit` and this fails."""
+    from huggorm_bindings import daemon_verbosity
 
     where = evaluated(tmp_path)
     stream = state.subscribe_logs()
@@ -1363,57 +1356,134 @@ def test_nothing_asks_nix_for_everything(state: Any,
     finally:
         state.unsubscribe_logs()
 
-    assert process_verbosity() < 7, (
-        "nix::verbosity is wide open, so every daemon connection is "
-        "told to narrate at vomit")
+    assert daemon_verbosity() < 7, (
+        "every new daemon connection is told to narrate at vomit")
 
 
 def test_a_subscription_raises_the_gate_it_needs(state: Any) -> None:
-    """Asking for more than the default has to move nix's own gate.
+    """Asking for more than the default has to reach the daemon.
 
-    `printMsg` rejects before any logger runs, so a per-thread level
-    cannot widen past `nix::verbosity` - raising it is not a
-    shortcut, it is the mechanism.
+    The daemon narrates at the level its handshake sent, so a
+    subscriber at talkative gets the daemon's talkative lines only if
+    the daemon level rises with it.
 
     Perturbation: drop the `verbosity_demand().add` call from
-    `subscribe_logs` and this fails."""
-    from huggorm_bindings import process_verbosity
+    `ThreadLevel::set` and this fails."""
+    from huggorm_bindings import daemon_verbosity
 
     state.subscribe_logs(level=TALKATIVE)
     try:
-        assert process_verbosity() >= TALKATIVE
+        assert daemon_verbosity() >= TALKATIVE
     finally:
         state.unsubscribe_logs()
 
 
 DEBUG = 6
+CHATTY = 5
+
+
+def test_the_ceiling_is_pinned_at_import(state: Any) -> None:
+    """`nix::verbosity` is written once, at import, and never again.
+
+    `printMsg` reads it on every thread, so a later write races with
+    every one of them (`tasks/102`). No subscription moves it, however
+    wide it asks.
+
+    Perturbation: write `nix::verbosity` in `VerbosityDemand::reconcile`
+    and this fails."""
+    from huggorm_bindings import (
+        process_verbosity,
+        subscribe_process_logs,
+        unsubscribe_process_logs,
+    )
+
+    assert process_verbosity() == CHATTY
+    subscribe_process_logs(level=7)
+    try:
+        state.subscribe_logs(level=7)
+        assert process_verbosity() == CHATTY
+        state.unsubscribe_logs()
+    finally:
+        unsubscribe_process_logs()
+    assert process_verbosity() == CHATTY
+
+
+def test_a_subscription_above_the_ceiling_gets_nothing_above_it(
+    state: Any, tmp_path: pathlib.Path
+) -> None:
+    """Nix produces nothing above the pin, so nothing above it arrives.
+
+    `findFile` resolves a search path element once per state and says
+    so with `debug()` (`eval.cc:3285`), so a fresh element is a debug
+    record Nix raises every time the pin lets it.
+
+    Perturbation: make `log_ceiling` default to `nix::lvlVomit` and
+    the record arrives at 6."""
+    stream = state.subscribe_logs(level=7)
+    try:
+        state.eval_expr(
+            f'builtins.findFile [ {{ prefix = "hg"; path = "{tmp_path}"; }} ] "hg"')
+        records = stream.drain()
+    finally:
+        state.unsubscribe_logs()
+
+    above = [(r.level(), r.text()) for r in records
+             if r.action() == "msg" and r.level() > CHATTY]
+    assert not above, above
+
+
+CEILING_PROBE = """
+from huggorm_bindings import process_verbosity, daemon_verbosity
+print(process_verbosity(), daemon_verbosity())
+"""
+
+
+@pytest.mark.parametrize(("value", "pinned"),
+                         [("", CHATTY), ("debug", DEBUG), ("DEBUG", DEBUG),
+                          ("2", 2)])
+def test_huggorm_log_ceiling_picks_the_pin(value: str, pinned: int) -> None:
+    """The daemon still starts at lvlInfo, whatever the pin is.
+
+    Perturbation: store `nix::lvlVomit` into `remoteVerbosity` in
+    `install_log_tap` and the second number is 7."""
+    out = subprocess.run([sys.executable, "-c", CEILING_PROBE],
+                         capture_output=True, text=True, check=False,
+                         env={**os.environ, "HUGGORM_LOG_CEILING": value})
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == [str(pinned), str(LOG_INFO)]
+
+
+@pytest.mark.parametrize("value", ["loud", "8", "-1"])
+def test_a_ceiling_that_names_no_level_refuses_the_import(value: str) -> None:
+    """Keeping the default would ignore the caller with nothing said."""
+    out = subprocess.run([sys.executable, "-c", CEILING_PROBE],
+                         capture_output=True, text=True, check=False,
+                         env={**os.environ, "HUGGORM_LOG_CEILING": value})
+    assert out.returncode != 0
+    assert f"HUGGORM_LOG_CEILING is '{value}'" in out.stderr, out.stderr
 
 
 def test_the_gate_goes_back_down_when_a_subscription_ends(
         state: Any) -> None:
     """The other half of the gate above, and it was missing.
 
-    `subscribe_logs` raises `nix::verbosity` and this used to be all
-    it ever did. `tasks/095` measured the cost of never lowering it:
-    the level reaches the DAEMON through
-    `RemoteStore::setOptions` (`remote-store.cc:118`), and a process
-    that subscribed once went on printing the daemon's debug lines on
-    an unsubscribed caller's stderr for the rest of its life.
+    `tasks/095` measured the cost of never lowering the daemon level:
+    a process that subscribed once went on printing the daemon's
+    debug lines on an unsubscribed caller's stderr for the rest of
+    its life.
 
     Perturbation: drop the `verbosity_demand().drop` call from
     `ThreadLevel::release` and this fails, along with the gate
     below.
 
-    lvlInfo is the floor, not a choice: `VerbosityDemand` reads
-    `nix::verbosity` once, before anything raises it, and never goes
-    below what it found."""
-    from huggorm_bindings import process_verbosity
+    lvlInfo is the floor, and Carl's choice (`tasks/102`)."""
+    from huggorm_bindings import daemon_verbosity
 
     state.subscribe_logs(level=TALKATIVE)
-    assert process_verbosity() >= TALKATIVE, "the gate went up"
+    assert daemon_verbosity() >= TALKATIVE, "the gate went up"
     state.unsubscribe_logs()
 
-    assert process_verbosity() == LOG_INFO, \
+    assert daemon_verbosity() == LOG_INFO, \
         "nothing asks for more than the default any more"
 
 
@@ -1433,18 +1503,18 @@ def test_the_gate_stays_up_for_a_subscription_that_is_still_live(
     Perturbation: make `drop` set the floor directly instead of
     reconciling, and this fails while the test above still passes.
     That is the naive fix, and the pair is what tells them apart."""
-    from huggorm_bindings import process_verbosity, subscribe_process_logs, unsubscribe_process_logs
+    from huggorm_bindings import daemon_verbosity, subscribe_process_logs, unsubscribe_process_logs
 
     subscribe_process_logs(level=DEBUG)
     try:
         state.subscribe_logs(level=TALKATIVE)
         state.unsubscribe_logs()
-        assert process_verbosity() >= DEBUG, \
+        assert daemon_verbosity() >= DEBUG, \
             "the process-wide subscription still needs it"
     finally:
         unsubscribe_process_logs()
 
-    assert process_verbosity() == LOG_INFO, "and now nobody does"
+    assert daemon_verbosity() == LOG_INFO, "and now nobody does"
 
 
 def test_a_thread_level_needs_no_queue(state: Any,
@@ -1460,7 +1530,7 @@ def test_a_thread_level_needs_no_queue(state: Any,
     above lvlInfo."""
     from huggorm_bindings import (
         clear_thread_verbosity,
-        process_verbosity,
+        daemon_verbosity,
         set_thread_verbosity,
         thread_verbosity,
     )
@@ -1469,7 +1539,7 @@ def test_a_thread_level_needs_no_queue(state: Any,
     set_thread_verbosity(TALKATIVE)
     try:
         assert thread_verbosity() == TALKATIVE
-        assert process_verbosity() >= TALKATIVE, "the gate went up"
+        assert daemon_verbosity() >= TALKATIVE, "the gate went up"
         state.eval_file(where)
     finally:
         clear_thread_verbosity()
@@ -1478,7 +1548,7 @@ def test_a_thread_level_needs_no_queue(state: Any,
             if r.action() == "msg" and r.level() == TALKATIVE]
     assert any("evaluating file" in r.text() for r in deep), deep
     assert thread_verbosity() == LOG_INFO, "back to the default"
-    assert process_verbosity() == LOG_INFO, "and the gate back down"
+    assert daemon_verbosity() == LOG_INFO, "and the gate back down"
 
 
 def test_a_thread_with_no_level_follows_the_default() -> None:
@@ -1487,8 +1557,8 @@ def test_a_thread_with_no_level_follows_the_default() -> None:
     Read LIVE, not copied when the thread starts: the thread below
     exists before the default moves."""
     from huggorm_bindings import (
+        daemon_verbosity,
         default_verbosity,
-        process_verbosity,
         set_default_verbosity,
         thread_verbosity,
     )
@@ -1505,14 +1575,14 @@ def test_a_thread_with_no_level_follows_the_default() -> None:
     set_default_verbosity(DEBUG)
     try:
         assert default_verbosity() == DEBUG
-        assert process_verbosity() >= DEBUG, "the gate went up"
+        assert daemon_verbosity() >= DEBUG, "the gate went up"
         moved.set()
         worker.join()
     finally:
         set_default_verbosity(LOG_INFO)
 
     assert seen == [DEBUG]
-    assert process_verbosity() == LOG_INFO
+    assert daemon_verbosity() == LOG_INFO
 
 
 @pytest.mark.parametrize("level", [-1, 8])

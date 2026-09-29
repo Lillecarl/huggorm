@@ -1747,16 +1747,15 @@ return self.make_primop(name, static_cast<std::size_t>(arity), fn);
         state's records and no other state's.
 
         `level` SETS this thread's verbosity, so it can widen as well
-        as narrow. Ask for `6` and debug records arrive.
+        as narrow, UP TO THE CEILING. `nix::verbosity` is pinned at
+        import at `HUGGORM_LOG_CEILING` (CHATTY when unset), and nix
+        produces nothing above it, so a subscription at `6` gets no
+        debug records under the default (`tasks/102`). The level is
+        per THREAD, so what a caller KEEPS costs no other caller
+        anything.
 
-        That sentence used to say the opposite, and it was true when
-        written: `nix::verbosity` filtered before any logger ran, so a
-        caller could only ask for less, and raising the global would
-        have flooded every other logger in the process. Two things
-        changed it (`tasks/089`). The level is per THREAD now, so what
-        a caller KEEPS costs no other caller anything. And the global
-        rises to the widest level any live subscription asks for, so
-        the record exists to be kept.
+        A daemon opened while this is live narrates at `level`, even
+        above the ceiling: its lines arrive as errors.
 
         The global then goes back DOWN when this subscription ends -
         to what the remaining subscriptions still need, never past
@@ -1793,9 +1792,9 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
         A queue already handed out still drains what it holds. This
         says only that nothing more goes into it.
 
-        It also gives back the verbosity this thread asked for.
-        `nix::verbosity` drops to the widest level any subscription
-        that is still live needs - never below one, because that
+        It also gives back the verbosity this thread asked for. The
+        level a new daemon connection is told drops to the widest
+        level any subscription that is still live needs - never below one, because that
         would drop a still-subscribed thread's records with nothing
         said. A thread that exits without calling this gives its
         level back anyway (`tasks/096`).
@@ -2078,21 +2077,25 @@ def gc_release_thread() -> None:
 def process_verbosity() -> I64:
     """What nix will PRODUCE, process-wide, right now.
 
-    `nix::verbosity`, read. Not what any subscriber KEEPS - that is
-    per thread and `subscribe_logs` sets it.
-
-    Runtime plumbing, like `gc_release_thread`, and it exists because
-    an invariant nothing can observe is one that gets broken. A draft
-    of `tasks/089` step 4 pinned this to `lvlVomit` at import, which
-    asks every daemon connection to narrate everything down the
-    socket - `RemoteStore::setOptions` sends this global
-    (`remote-store.cc:118`) and `daemon.cc:239` assigns it there. The
-    suite could not see it, because `dummy://` opens no daemon
-    connection.
-
-    So it is readable, and a gate reads it."""
+    `nix::verbosity`, read: the ceiling pinned at import from
+    `HUGGORM_LOG_CEILING`, CHATTY when unset. Nothing moves it after
+    that, because `printMsg` reads it on every thread and a later
+    write races. Not what any subscriber KEEPS - that is per thread
+    and `subscribe_logs` sets it."""
     Cxx("""
 return static_cast<std::int64_t>(nix::verbosity);
+    """)
+
+
+@needs("huggorm_decl/cpp/logging.hpp")
+def daemon_verbosity() -> I64:
+    """The level `RemoteStore::setOptions` tells a new daemon
+    connection: the widest level a live subscription asks for, and
+    `lvlInfo` when none does.
+
+    A connection already open keeps what its handshake sent."""
+    Cxx("""
+return static_cast<std::int64_t>(nix::remoteVerbosity.load(std::memory_order_relaxed));
     """)
 
 
@@ -2118,7 +2121,7 @@ def set_thread_verbosity(level: I64) -> None:
 
     The level half of `subscribe_logs`, for a caller that reads every
     record through the process queue and still wants a level per call.
-    It raises `nix::verbosity` as far as the level needs, and
+    It raises the level a new daemon connection is told, and
     `clear_thread_verbosity` gives that back.
 
     `subscribe_logs` replaces this level, and `unsubscribe_logs`
@@ -2154,7 +2157,7 @@ return static_cast<std::int64_t>(
 def set_default_verbosity(level: I64) -> None:
     """Set the level of every thread with no level of its own.
 
-    It raises `nix::verbosity` as far as the level needs, like a
+    It raises the level a new daemon connection is told, like a
     subscription does. `subscribe_process_logs` sets this too, and
     `unsubscribe_process_logs` puts nix's own `lvlInfo` back."""
     Cxx("""
@@ -2577,10 +2580,10 @@ def subscribe_process_logs(capacity: I64 = 1024,
     it. Asking for `6` here means every unclaimed thread reports at
     6 until the subscription ends.
 
-    It raises `nix::verbosity` too, and that one reaches further than
+    It raises the daemon level too, and that one reaches further than
     this process: `RemoteStore::setOptions` sends it to the daemon
-    (`remote-store.cc:118`), which then narrates every worker op back
-    over the socket. `unsubscribe_process_logs` gives it back. A
+    (`nix-remote-verbosity.patch`), which then narrates every worker
+    op back over the socket. `unsubscribe_process_logs` gives it back. A
     daemon connection ALREADY OPEN keeps what the handshake gave it,
     which is the one thing giving it back cannot reach (`tasks/096`).
 
@@ -2618,7 +2621,7 @@ def unsubscribe_process_logs() -> None:
     more goes into it.
 
     It puts BOTH levels back: the process default returns to nix's
-    own `lvlInfo`, and `nix::verbosity` drops to the widest level any
+    own `lvlInfo`, and the daemon level drops to the widest level any
     per-thread subscription still holds. `tasks/095` measured what
     the second one cost while it was missing - 1052 daemon debug
     lines on an unsubscribed caller's stderr.

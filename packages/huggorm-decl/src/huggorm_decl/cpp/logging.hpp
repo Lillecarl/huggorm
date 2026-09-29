@@ -15,17 +15,21 @@
 
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "nix/store/remote-store.hh"
 #include "nix/util/error.hh"
 #include "nix/util/logging.hh"
 
@@ -231,74 +235,47 @@ inline std::shared_ptr<LogQueue> & thread_queue()
 }
 
 /**
- * Every level a live subscription still needs, and nix's gate set to
- * the widest of them.
+ * The pin on `nix::verbosity`, and the widest level a live
+ * subscription asks the daemon for.
  *
- * TWO GATES, and they are not the duplicate `tasks/089` removed from
- * `LogQueue`. That one was a second filter at the same layer. These
- * are different questions:
+ * TWO GATES, and they answer different questions:
  *
  *   nix::verbosity        will nix PRODUCE the record at all
  *   effective_verbosity   will this thread KEEP it
  *
- * The first has to move, because `printMsg` gates on it before any
- * logger runs (logging.hh:314) - so no per-thread level can widen
- * past it, and pinning it wide open is not free either. It is what
- * `RemoteStore::setOptions` SENDS TO THE DAEMON
- * (remote-store.cc:118), and `daemon.cc:239` assigns it to the
- * daemon's own `nix::verbosity`.
+ * The first is PINNED, once, at import (`install_log_tap`), at
+ * `HUGGORM_LOG_CEILING`. `printMsg` reads it on every thread before
+ * any logger runs (logging.hh:314), and it is a plain global, so any
+ * write after a Nix thread exists is a data race. nanopynix-bindings
+ * found that race with ThreadSanitizer. A subscription above the pin
+ * gets nothing above it: nix never produces the record.
  *
- * THIS USED TO BE MONOTONIC and that was a defect, measured in
- * `tasks/095`. A process that subscribed once and unsubscribed went
- * on printing the daemon's debug lines on stderr, to every caller,
- * forever: 1052 lines in every repetition of the probe. Nothing
- * downstream can filter them, because
- * `worker-protocol-connection.cc:75` re-raises every daemon line
- * with `printError` and ERASES its level - a daemon `debug()`
- * arrives at the client as lvlError, which passes every gate there
- * is.
+ * THE DAEMON IS TOLD SOMETHING ELSE. `RemoteStore::setOptions` sends
+ * `nix::remoteVerbosity` (nix-remote-verbosity.patch), and
+ * `daemon.cc:239` assigns it to the daemon's own gate. The client
+ * re-raises each daemon line with `printError`
+ * (`worker-protocol-connection.cc:75`) and ERASES its level, so a
+ * daemon `debug()` arrives as lvlError and passes every gate there
+ * is. Sent the pin, every daemon narrates CHATTY lines onto an
+ * unsubscribed caller's stderr (`tasks/095`, `tasks/102`).
  *
- * So the gate goes back down. NOT TO A NUMBER, and that is the whole
- * reason this is a registry rather than a second assignment:
- * lowering to `lvlInfo` while another thread still holds a talkative
- * subscription would drop that thread's records with nothing said,
- * which is this repository's named failure mode. It goes to the
- * WIDEST level any live subscription still asks for.
- *
- * `server.py` computes the same thing one layer up, in `_widest`,
- * over the readers of one fanout. This is that rule for the process.
+ * So this keeps the daemon level at the WIDEST level any live
+ * subscription asks for, and at lvlInfo when none does. The pin does
+ * not cap it: a debug subscriber gets the daemon's debug lines,
+ * because they arrive as errors.
  *
  * A COUNT PER LEVEL rather than a maximum, because a maximum cannot
  * be undone: two subscriptions at talkative and one at debug, and
  * the debug one leaving has to return talkative rather than lvlInfo.
- * Eight counters, one per `nix::Verbosity`, and the widest non-empty
- * one wins.
- *
- * The FLOOR is read once rather than written as `lvlInfo`. It is
- * whatever `nix::verbosity` held before anything here touched it -
- * nix's own default (`logging.cc:150`) in this process, but a
- * caller that raised it for its own reasons keeps what it set.
- *
- * The write is still conditional, so it happens only when the widest
- * level actually changes. It is a plain non-atomic global and this
- * is a race by the letter of the standard - the same write nix's own
- * CLI performs while parsing arguments, on an aligned int.
- * `tasks/089` records that trade; this only makes the write happen
- * in both directions.
  *
  * ONE THING THIS CANNOT REACH: a daemon connection already open.
  * `setOptions` runs once, at handshake, so a `Store` opened while a
  * vomit subscription was live keeps receiving vomit until it is
- * closed. `tasks/096` says so rather than hiding it.
+ * closed (`tasks/096`).
  */
 class VerbosityDemand
 {
 public:
-    VerbosityDemand()
-        : floor_(nix::verbosity)
-    {
-    }
-
     void add(nix::Verbosity level)
     {
         std::lock_guard<std::mutex> held(mutex_);
@@ -325,21 +302,19 @@ private:
     /** Under `mutex_`. */
     void reconcile()
     {
-        nix::Verbosity widest = floor_;
+        nix::Verbosity widest = nix::lvlInfo;
         for (std::size_t i = kLevels; i-- > 0;)
             if (holders_[i] > 0) {
                 if (static_cast<nix::Verbosity>(i) > widest)
                     widest = static_cast<nix::Verbosity>(i);
                 break;
             }
-        if (nix::verbosity != widest)
-            nix::verbosity = widest;
+        nix::remoteVerbosity.store(widest, std::memory_order_relaxed);
     }
 
     static constexpr std::size_t kLevels = nix::lvlVomit + 1;
 
     std::mutex mutex_;
-    nix::Verbosity floor_;
     std::array<int, kLevels> holders_{};
 };
 
@@ -358,12 +333,10 @@ inline VerbosityDemand & verbosity_demand()
 /**
  * The level a thread with no level of its own REPORTS at.
  *
- * Not `nix::verbosity`, and the difference is still the point even
- * though both now go back down. That one is one number for the whole
- * process, so it can only ever be the WIDEST thing anyone asked for -
- * `VerbosityDemand` keeps it there. This one is what a thread that
- * asked for nothing KEEPS, and it goes to nix's own default the
- * moment the process sink detaches.
+ * Not `nix::verbosity`, which is the pin: what nix PRODUCES, for the
+ * whole process. This one is what a thread that asked for nothing
+ * KEEPS, and it goes to nix's own default the moment the process sink
+ * detaches.
  *
  * An ATOMIC, and it has to be: nix starts threads this binding never
  * sees - a curl worker, a substituter, a build hook reader - and none
@@ -526,10 +499,9 @@ inline ThreadLevel & thread_level()
  * The level that decides what this thread's records are worth.
  *
  * The only gate ON THIS SIDE, which is the whole of `tasks/089` step
- * 4. A subscription raises `nix::verbosity` far enough that nix
- * produces what it asked for, and this then decides who keeps it -
- * per thread, so one caller asking for talkative does not put every
- * other logger in the process on stderr.
+ * 4. Nix produces everything up to the pin, and this decides who
+ * keeps it - per thread, so one caller asking for talkative does not
+ * put every other logger in the process on stderr.
  *
  * A relaxed load, because there is nothing to order against: the
  * value is one int and a reader that sees the previous one for a
@@ -670,16 +642,11 @@ public:
      * THE FALLBACK GATES ON THE WRONG LEVEL, and that is why every
      * override below tests `effective_verbosity()` before
      * forwarding. `SimpleLogger::log` reads `nix::verbosity`
-     * (logging.cc:118), and one thread's `subscribe_logs` RAISES
-     * that global for the whole process, because nix has no
-     * per-thread gate of its own. So forwarding unguarded would put
-     * one thread's debug lines on every other caller's stderr. The
-     * tap does the filtering per thread that nix's global cannot.
-     *
-     * This used to say the fallback had NO gate, and that
-     * `install_log_tap` pins the global wide open. It does not, and
-     * has not since `tasks/089` step 4 removed the pin. The comment
-     * outlived the code it described.
+     * (logging.cc:118), which `install_log_tap` pins at the ceiling
+     * for the whole process, because nix has no per-thread gate of
+     * its own. So forwarding unguarded would put every chatty line
+     * on every caller's stderr. The tap does the filtering per thread
+     * that nix's global cannot.
      *
      * A MESSAGE is gated before routing too. An ACTIVITY is not, and
      * the asymmetry is the same one `LogQueue::push` already makes:
@@ -803,25 +770,20 @@ private:
      * `install_log_tap` no longer keeps the first one. It writes
      * descriptor 2 and gates on `nix::verbosity`.
      *
-     * IT IS NOT A SUFFICIENT GATE, and this used to claim it was:
-     * "an unsubscribed caller sees exactly what it saw before the
-     * tap existed". Measured false (`tasks/095`). A daemon store
-     * sends `nix::verbosity` to the daemon (remote-store.cc:118),
-     * the daemon narrates back as STDERR_NEXT, and the client
-     * re-raises every one of those with `printError`
+     * IT IS NOT A SUFFICIENT GATE for a daemon's lines. The daemon
+     * narrates at the level `setOptions` sent it, and the client
+     * re-raises every line with `printError`
      * (worker-protocol-connection.cc:75). That ERASES the daemon's
      * level: the line arrives as lvlError, passes every gate here
-     * and every gate above, and lands on stderr. The probe counted
-     * 1052 such lines on an UNSUBSCRIBED caller, in a process that
-     * subscribed once and unsubscribed.
+     * and every gate above, and lands on stderr. `VerbosityDemand`
+     * keeps that level at what a subscriber asked for (`tasks/095`).
      *
      * NO SECOND CEILING. A `level <= lvlWarn` cut was written into
      * `tasks/089` first, on the argument that a library must not
      * narrate uninvited. The probe refuted it: at the default
      * verbosity nothing above `lvlWarn` reaches stderr anyway, so
-     * the cut's only live effect is to silence a caller who RAISED
-     * `nix::verbosity` - a silent drop, and this repo's named
-     * failure mode.
+     * the cut's only live effect is to silence a caller who asked
+     * for more - a silent drop, and this repo's named failure mode.
      *
      * LEAKED, and deliberately. A `static unique_ptr` here destructs
      * at exit in an order nothing states, and a detached fetcher
@@ -856,21 +818,47 @@ private:
  * The one behaviour that changes is the one Carl asked for: a
  * SUBSCRIBED caller no longer also gets the record on stderr.
  */
+/**
+ * The pin for `nix::verbosity`: `HUGGORM_LOG_CEILING`, a level name
+ * or a number, and CHATTY when it is unset or empty.
+ *
+ * CHATTY is nanopynix-bindings' measurement (`nix_util.cpp`): the
+ * widest pin that costs evaluation, store queries and flake fetches
+ * nothing. DEBUG formats every `debug()` site, and cost a flake
+ * evaluation its RPC deadline there.
+ *
+ * A value that names no level REFUSES the import. Keeping the default
+ * instead would ignore what the caller asked for with nothing said.
+ */
+inline nix::Verbosity log_ceiling()
+{
+    const char * raw = std::getenv("HUGGORM_LOG_CEILING");
+    if (raw == nullptr || *raw == '\0')
+        return nix::lvlChatty;
+    std::string key(raw);
+    for (auto & c : key)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    static constexpr std::array<std::string_view, nix::lvlVomit + 1> names{
+        "error", "warn", "notice", "info", "talkative", "chatty", "debug", "vomit"};
+    for (std::size_t i = 0; i < names.size(); ++i)
+        if (key == names[i] || key == std::to_string(i))
+            return static_cast<nix::Verbosity>(i);
+    throw std::invalid_argument(
+        "HUGGORM_LOG_CEILING is '" + std::string(raw)
+        + "', and it takes a level name (error to vomit) or 0 to 7");
+}
+
 inline void install_log_tap()
 {
-    // NO PIN HERE, and a draft of `tasks/089` step 4 had one:
-    // `nix::verbosity = nix::lvlVomit`, once, at import, which is
-    // what nanopynix does. It is wrong for this binding, and the
-    // suite could not show it because `dummy://` opens no daemon
-    // connection.
+    // The one write to `nix::verbosity`. This runs at import, before
+    // any Nix thread exists, so thread creation orders every later
+    // read after it (`VerbosityDemand` says why a later write races).
     //
-    // `RemoteStore::setOptions` SENDS `nix::verbosity` to the daemon
-    // (remote-store.cc:118) and `daemon.cc:239` assigns it there. So
-    // a pin asks every daemon connection to narrate at vomit, over
-    // the socket, whether or not anyone subscribed.
-    // `VerbosityDemand` moves it only while a caller asks, which is
-    // what nix's own CLI does when a user passes `-vvv` - and unlike
-    // the CLI it moves back, because this process outlives the ask.
+    // The daemon starts at lvlInfo, not at the pin: `setOptions`
+    // would otherwise send the pin to every daemon, whose lines then
+    // reach stderr as errors.
+    nix::verbosity = log_ceiling();
+    nix::remoteVerbosity.store(nix::lvlInfo, std::memory_order_relaxed);
     nix::logger = std::make_unique<LogTap>();
 }
 
@@ -884,13 +872,9 @@ inline void install_log_tap()
 inline std::shared_ptr<LogQueue> subscribe_logs(std::size_t capacity,
                                                 uint64_t level)
 {
-    // Two writes, and they answer two different questions. Raising
-    // nix's gate is what makes the record EXIST; the thread level is
-    // what keeps it here rather than on every other thread.
-    //
-    // Before `tasks/089` step 4 only the second existed, so this
-    // could narrow and never widen: nix's macro had already rejected
-    // anything above the process default.
+    // The thread level keeps the record here rather than on every
+    // other thread, and its demand tells a daemon opened from now on
+    // to narrate at that level.
     //
     // `set` owns the pairing of the two demands, because doing it
     // here by hand is exactly what `tasks/096` got wrong.
@@ -966,16 +950,9 @@ inline void unsubscribe_process_logs()
     // Back to nix's own default (`logging.cc:150`), so a thread with
     // no level of its own sees what it saw before anyone subscribed.
     //
-    // `nix::verbosity` follows, and this comment used to say it does
-    // NOT - that it is a high-water mark, because lowering it would
-    // silence a per-thread subscription somebody else still holds.
-    // The premise was right and the conclusion was wrong: the answer
-    // is to lower it to what those subscriptions still need, not to
-    // leave it up. `VerbosityDemand` knows that number; dropping
-    // this one holder is the whole of what has to be said here.
-    //
-    // `tasks/095` measured what leaving it up cost: 1052 daemon
-    // debug lines on an unsubscribed caller's stderr.
+    // The daemon level drops to what the per-thread subscriptions
+    // still need. `tasks/095` measured what leaving it up cost: 1052
+    // daemon debug lines on an unsubscribed caller's stderr.
     default_verbosity().store(nix::lvlInfo, std::memory_order_relaxed);
     set_process_demand(-1);
     std::shared_ptr<LogQueue> old;

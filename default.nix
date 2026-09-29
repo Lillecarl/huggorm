@@ -63,6 +63,9 @@ rec {
   # first one's file, and the collector stopped seeing its roots.
   # Carl's call, 2026-09-29: patch Nix rather than cache stores per URI.
   #
+  # The fourth lets `setOptions` send a daemon a level other than
+  # `nix::verbosity`, which huggorm pins at import (tasks/102).
+  #
   # The collector carries one patch too. huggorm starts Boehm at import
   # and runs `nix::initGC` at the first evaluator, so importing starts
   # no marker thread. `initGC` then switches interior pointers after
@@ -88,7 +91,10 @@ rec {
   # for these bindings, as nanopynix does, needs the same patches. The
   # other two Nix patches are nanopynix's own already.
   bdwgcPatches = [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
-  libstorePatches = [ ./nix/patches/nix-temp-roots-per-store.patch ];
+  libstorePatches = [
+    ./nix/patches/nix-temp-roots-per-store.patch
+    ./nix/patches/nix-remote-verbosity.patch
+  ];
   # The libgc libnixexpr links. The bindings link the same one, because
   # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
   # process ran libnixexpr on a libgc built without its large config.

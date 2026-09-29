@@ -188,20 +188,10 @@ LOG_LEVEL = 3
 
 
 # The WIDEST any reader has asked for, recomputed as readers come and
-# go. Not a constant, which is what this was.
-#
-# It used to be `LOG_LEVEL_ALL = 7`, on the argument that "asking wide
-# costs nothing real, because the global `nix::verbosity` filters
-# BEFORE any logger runs, so a level-7 subscription still receives
-# only what the process was already willing to raise".
-#
-# `tasks/089` step 4 made that FALSE. A subscription now raises
-# `nix::verbosity` to what it asked for - it has to, or a per-thread
-# level could never widen - and `RemoteStore::setOptions` sends that
-# global to the daemon (`remote-store.cc:118`). So subscribing at 7
-# asked every daemon connection this server opens to narrate at vomit
-# down the socket, for the life of the process, whether or not any
-# client wanted it.
+# go. Not a constant 7: a subscription raises the level
+# `RemoteStore::setOptions` sends to the daemon, so subscribing at 7
+# asks every daemon connection this server opens to narrate at vomit
+# down the socket, whether or not any client wants it (`tasks/102`).
 #
 # The arrival-order problem that constant solved is still solved: a
 # reader that wants more REOPENS the subscription at its level rather

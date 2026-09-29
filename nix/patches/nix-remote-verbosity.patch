@@ -1,0 +1,63 @@
+Let an embedder tell a daemon a level other than its own gate.
+
+RemoteStore::setOptions sends nix::verbosity to the daemon at
+handshake, and the daemon logs at that level. The client re-raises each
+daemon line with printError, so the line loses its level and reaches
+stderr as an error.
+
+An embedder such as huggorm pins nix::verbosity once, before any Nix
+thread exists, because printMsg reads it on every thread and a later
+write is a data race. A pin at CHATTY then asks every daemon to log at
+CHATTY, and libstore's CHATTY sites in GC, substitution and the
+builders reach an unsubscribed caller's stderr as errors.
+
+remoteVerbosity is the level setOptions sends. It is atomic, so the
+embedder can move it while other threads open connections. Below zero,
+the default, setOptions sends nix::verbosity as before, so `nix` and
+every other caller see no change.
+
+--- a/src/libstore/include/nix/store/remote-store.hh	2026-09-29 04:14:08.849644238 +0200
++++ b/src/libstore/include/nix/store/remote-store.hh	2026-09-29 04:14:29.720769214 +0200
+@@ -1,6 +1,7 @@
+ #pragma once
+ ///@file
+ 
++#include <atomic>
+ #include <limits>
+ #include <set>
+ #include <string>
+@@ -21,6 +22,12 @@
+ class Pool;
+ class RemoteFSAccessor;
+ 
++/**
++ * The level `RemoteStore::setOptions` asks a daemon to log at. Below
++ * zero, it sends `verbosity`.
++ */
++extern std::atomic<int> remoteVerbosity;
++
+ struct RemoteStoreConfig : virtual StoreConfig
+ {
+     using StoreConfig::StoreConfig;
+--- a/src/libstore/remote-store.cc	2026-09-29 04:14:08.848644232 +0200
++++ b/src/libstore/remote-store.cc	2026-09-29 04:14:29.720769214 +0200
+@@ -28,6 +28,8 @@
+ 
+ namespace nix {
+ 
++std::atomic<int> remoteVerbosity{-1};
++
+ /* TODO: Separate these store types into different files, give them better names */
+ RemoteStore::RemoteStore(const Config & config)
+     : Store{config}
+@@ -114,8 +116,9 @@
+ 
+ void RemoteStore::setOptions(Connection & conn)
+ {
++    auto sent = remoteVerbosity.load(std::memory_order_relaxed);
+     conn.to << WorkerProto::Op::SetOptions << settings.keepFailed << settings.getWorkerSettings().keepGoing
+-            << settings.getWorkerSettings().tryFallback << verbosity << settings.getWorkerSettings().maxBuildJobs
++            << settings.getWorkerSettings().tryFallback << (sent < 0 ? verbosity : (Verbosity) sent) << settings.getWorkerSettings().maxBuildJobs
+             << settings.getWorkerSettings().maxSilentTime << true << (settings.verboseBuild ? lvlError : lvlVomit)
+             << 0 // obsolete log type
+             << 0 /* obsolete print build trace */
