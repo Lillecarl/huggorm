@@ -1501,45 +1501,9 @@ def _live(path: str) -> set[int]:
     Always a set. `load` refuses a file that will not import, so
     "the import kept nothing because there was no import" is no
     longer one of the answers (tasks/082)."""
-    mod = load(path)
-    name = mod.__name__
-
-    # Only what THIS file defines. A declaration imports its
-    # vocabulary - `binding`, `header`, `cxx_body` - and those are
-    # functions too, whose `co_firstlineno` points into declare.py.
-    # Counting them made every one of their lines an orphan, which is
-    # what the reconcile gate said the first time it ran.
-    here = str(pathlib.Path(path).resolve())
-    lines: set[int] = set()
-
-    def note(obj: object) -> None:
-        # A DESCRIPTOR holds the function rather than being one, so
-        # the function is asked for it. `property`, `staticmethod` and
-        # `classmethod` are the three a declaration can write, and
-        # none of them carries `__code__`.
-        #
-        # Without this a `@property` accessor named no line, `_resolve`
-        # dropped its node as if the import had dropped it, and the
-        # accessor vanished from the binding, from `_parts`, from
-        # `__repr__` and from `_wire_fields`. Measured on
-        # `PathInfo.registration_time`: the only complaint was
-        # `'registration_time' was not declared in this scope`, from
-        # the hand-written `_from_parts` body that still named it - so
-        # a class whose `_from_parts` is derived would have lost the
-        # field in silence (tasks/075).
-        obj = getattr(obj, "fget", None) or getattr(obj, "__func__", obj)
-        code = getattr(obj, "__code__", None)
-        if code is not None and code.co_filename == here:
-            lines.add(code.co_firstlineno)
-
-    for obj in vars(mod).values():
-        note(obj)
-        if isinstance(obj, type) and obj.__module__ == name:
-            lines.add(getattr(obj, "__firstlineno__", 0))
-            for member in vars(obj).values():
-                note(member)
-    lines.discard(0)
-    return lines
+    # `_definitions`' walk, so the two cannot disagree about what a
+    # definition is.
+    return set(_definitions(path))
 
 
 def _definitions(path: str) -> dict[int, Any]:
@@ -1558,12 +1522,20 @@ def _definitions(path: str) -> dict[int, Any]:
     out: dict[int, Any] = {}
 
     def note(obj: object) -> None:
-        obj = getattr(obj, "fget", None) or getattr(obj, "__func__", obj)
-        code = getattr(obj, "__code__", None)
-        if code is None or code.co_filename != here:
+        # A DESCRIPTOR holds the function rather than being one, so
+        # the function is asked for it. Without this a `@property`
+        # accessor named no line and vanished from the binding in
+        # silence (tasks/075).
+        fn = getattr(obj, "fget", None) or getattr(obj, "__func__", obj)
+        if not isinstance(fn, types.FunctionType):
             return
-        for one in (obj, *get_overloads(obj)):  # type: ignore[arg-type]
-            out[one.__code__.co_firstlineno] = one
+        # Python 3.14 compiles a module's annotations into an
+        # `__annotate__` function at line 1. No one wrote it.
+        if fn.__code__.co_filename != here or fn.__name__ == "__annotate__":
+            return
+        for one in (fn, *get_overloads(fn)):
+            if isinstance(one, types.FunctionType):
+                out[one.__code__.co_firstlineno] = one
 
     for obj in vars(mod).values():
         note(obj)
@@ -1806,7 +1778,7 @@ def _unions(body: list[ast.stmt], where: str,
             continue
         name = item.targets[0].id
         alias = glb.get(name)
-        held, meta = alias, ()
+        held, meta = alias, list[object]()
         if get_origin(alias) is Annotated:
             held, *meta = get_args(alias)
         if get_origin(held) not in (types.UnionType, typing.Union):

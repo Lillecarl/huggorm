@@ -523,7 +523,7 @@ async def test_behavior() -> None:
     # Wire policy lands in the manifest (the future RPC IDL) and on
     # generated classes: immutable types are wire-values, everything
     # else proxies.
-    def proto_of(name: str) -> dict:
+    def proto_of(name: str) -> dict[str, Any]:
         """One class's manifest entry, whichever group holds it.
 
         Which group a class lands in is a fact about how it is made -
@@ -533,7 +533,8 @@ async def test_behavior() -> None:
         """
         for group in ("wrappers", "returned_types"):
             if name in manifest[group]:
-                return manifest[group][name]
+                entry: dict[str, Any] = manifest[group][name]
+                return entry
         raise AssertionError(f"{name} is in no manifest group")
 
     assert proto_of("StorePath")["wire"] == "value"
@@ -1288,16 +1289,16 @@ def test_stubs(out: pathlib.Path) -> None:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 bound |= {(a.asname or a.name).split(".")[0] for a in node.names}
         used = set()
-        for node in ast.walk(tree):
+        for walked in ast.walk(tree):
             annotations = []
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(walked, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 annotations += [a.annotation for a in (
-                    *node.args.posonlyargs, *node.args.args,
-                    *node.args.kwonlyargs) if a.annotation is not None]
-                if node.returns is not None:
-                    annotations.append(node.returns)
-            elif isinstance(node, ast.AnnAssign):
-                annotations.append(node.annotation)
+                    *walked.args.posonlyargs, *walked.args.args,
+                    *walked.args.kwonlyargs) if a.annotation is not None]
+                if walked.returns is not None:
+                    annotations.append(walked.returns)
+            elif isinstance(walked, ast.AnnAssign):
+                annotations.append(walked.annotation)
             for ann in annotations:
                 used |= {n.id for n in ast.walk(ann) if isinstance(n, ast.Name)}
         if used - bound:
