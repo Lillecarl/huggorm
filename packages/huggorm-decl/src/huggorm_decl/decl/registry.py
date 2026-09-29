@@ -25,6 +25,7 @@ from typing import Annotated
 from huggorm_decl.decl.store import Store
 from huggorm_decl.decl.words import RegistryType
 from huggorm_dsl.declare import (
+    NIX_2_36,
     U64,
     Bint,
     Cxx,
@@ -154,7 +155,30 @@ def registry_add(path: Str | None, source: Str, target: Str,
     FLAKE references, because only a flake reference carries a
     subdirectory, and Nix keeps that as the `dir` extra attribute. An
     entry replaces every earlier one for the same source."""
-    Cxx("""
+    if NIX_2_36:
+        Cxx("""
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
+auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
+auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
+auto from = nix::parseFlakeRef(source, dir);
+auto to = nix::parseFlakeRef(target, dir);
+auto registry = nix::fetchers::Registry::read(
+    *fetch,
+    nix::SourcePath{nix::getFSSourceAccessor(), nix::CanonPath{file.string()}}.resolveSymlinks(),
+    nix::fetchers::Registry::User);
+nix::fetchers::Attrs extra;
+if (!to.subdir.empty())
+    extra["dir"] = to.subdir;
+auto before = registry->entries.size();
+registry->remove(from.input);
+auto removed = before - registry->entries.size();
+registry->add(from.input, to.input, extra);
+registry->write(file);
+return huggorm::RegistryWrite{file.string(), removed, to.input.to_string(), std::nullopt};
+        """)
+    else:
+        Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
     settings.value_or(std::map<std::string, std::string>{}));
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
@@ -174,7 +198,7 @@ auto removed = before - registry->entries.size();
 registry->add(from.input, to.input, extra);
 registry->write(file);
 return huggorm::RegistryWrite{file.string(), removed, to.input.to_string(), std::nullopt};
-    """)
+        """)
 
 
 @needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
@@ -189,7 +213,25 @@ def registry_remove(path: Str | None, source: Str,
 
     Whole references compare, so `nixpkgs` does not remove an entry
     written for `nixpkgs/nixos-unstable`."""
-    Cxx("""
+    if NIX_2_36:
+        Cxx("""
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
+auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
+auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
+auto from = nix::parseFlakeRef(source, dir);
+auto registry = nix::fetchers::Registry::read(
+    *fetch,
+    nix::SourcePath{nix::getFSSourceAccessor(), nix::CanonPath{file.string()}}.resolveSymlinks(),
+    nix::fetchers::Registry::User);
+auto before = registry->entries.size();
+registry->remove(from.input);
+auto removed = before - registry->entries.size();
+registry->write(file);
+return huggorm::RegistryWrite{file.string(), removed, std::nullopt, std::nullopt};
+        """)
+    else:
+        Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
     settings.value_or(std::map<std::string, std::string>{}));
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
@@ -204,7 +246,7 @@ registry->remove(from.input);
 auto removed = before - registry->entries.size();
 registry->write(file);
 return huggorm::RegistryWrite{file.string(), removed, std::nullopt, std::nullopt};
-    """)
+        """)
 
 
 @needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
@@ -221,7 +263,32 @@ def registry_pin(store: Store, path: Str | None, source: Str,
     `target` None pins `source` to itself. THIS FETCHES: resolving
     through the registry names a branch, and only the fetch turns it
     into a revision."""
-    Cxx("""
+    if NIX_2_36:
+        Cxx("""
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
+    settings.value_or(std::map<std::string, std::string>{}));
+auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
+auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
+auto from = nix::parseFlakeRef(source, dir);
+auto to = nix::parseFlakeRef(target ? *target : source, dir);
+auto resolved = to.resolve(*fetch, store).input.getAccessor(*fetch, store).second;
+auto registry = nix::fetchers::Registry::read(
+    *fetch,
+    nix::SourcePath{nix::getFSSourceAccessor(), nix::CanonPath{file.string()}}.resolveSymlinks(),
+    nix::fetchers::Registry::User);
+nix::fetchers::Attrs extra;
+if (!from.subdir.empty())
+    extra["dir"] = from.subdir;
+auto before = registry->entries.size();
+registry->remove(from.input);
+auto removed = before - registry->entries.size();
+registry->add(from.input, resolved, extra);
+registry->write(file);
+return huggorm::RegistryWrite{
+    file.string(), removed, resolved.to_string(), resolved.isLocked(*fetch)};
+        """)
+    else:
+        Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
     settings.value_or(std::map<std::string, std::string>{}));
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
@@ -243,4 +310,4 @@ registry->add(from.input, resolved, extra);
 registry->write(file);
 return huggorm::RegistryWrite{
     file.string(), removed, resolved.to_string(), resolved.isLocked(*fetch)};
-    """)
+        """)
