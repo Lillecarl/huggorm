@@ -1565,6 +1565,33 @@ def test_a_union_nested_past_the_limit_is_refused_by_name() -> None:
     assert codec.union_from_msg("SingleDerivedPath", ok) == fine
 
 
+
+@pytest.mark.parametrize("arm", [StoreReferenceAuto, StoreReferenceDaemon,
+                                 StoreReferenceLocal])
+def test_a_unit_arm_of_a_union_crosses_as_itself(arm: Any) -> None:
+    """An arm with no fields still names itself on the wire.
+
+    protobuf sets a oneof only when its message is written, and a unit
+    arm writes no field. So the codec sent no arm at all, and the far
+    side refused the message: found when 2.35's `GCWholeStore` could
+    not cross (tasks/055).
+
+    Perturbation: drop `SetInParent` from `WireCodec.union_to_msg` and
+    this fails with "arrived with no arm set"."""
+    from google.protobuf import message_factory
+
+    from huggorm.grpc_pb import load_pool
+    from huggorm.wire import WireCodec
+
+    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
+        load_pool().FindMessageTypeByName(  # type: ignore[no-untyped-call]
+            "huggorm.v1.StoreReferenceVariantMsg"))
+    msg = kls()
+    codec = WireCodec()
+    codec.union_to_msg("StoreReferenceVariant", arm(), msg)
+    assert isinstance(codec.union_from_msg("StoreReferenceVariant", msg), arm)
+
+
 # --- the wire-value round trip --------------------------------------
 
 

@@ -483,8 +483,12 @@ class WireCodec:
                     setattr(msg, arm_field(arm), self.to_wire(arm)(held))
                     return
             elif isinstance(held, getattr(self.bindings, arm)):
-                self.value_to_msg(arm, held, getattr(msg, arm_field(arm)),
-                                  depth + 1)
+                sub = getattr(msg, arm_field(arm))
+                self.value_to_msg(arm, held, sub, depth + 1)
+                # A unit arm writes no field, and protobuf sets a oneof
+                # only when its message is written: `GCWholeStore`
+                # arrived with no arm set (tasks/055).
+                sub.SetInParent()
                 return
         raise TypeError(
             f"{type(obj).__name__} is not one of {type_str}'s arms "
