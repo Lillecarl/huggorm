@@ -877,18 +877,21 @@ inline std::string primop_failure(const nb::python_error & e)
     return message.empty() ? kind : kind + ": " + message;
 }
 
-/** Where a primop was called: 2.35 passes the position, 2.36 a
- * `CallSite` that holds it. */
-inline nix::PosIdx call_position(nix::PosIdx pos)
+/** The position a primop's own errors carry. 2.35 passes the call
+ * position for exactly that. 2.36 passes a `CallSite` whose position
+ * the trace has ALREADY printed, and its contract (`eval.hh`, "Don't
+ * make it noisy") says to pass `noPos` instead: an error at the call
+ * site prints that position a second time, under the message. */
+inline nix::PosIdx error_position(nix::PosIdx pos)
 {
     return pos;
 }
 
 template <typename Site>
     requires requires(const Site & site) { site.pos; }
-nix::PosIdx call_position(const Site & site)
+nix::PosIdx error_position(const Site &)
 {
-    return site.pos;
+    return nix::noPos;
 }
 
 /**
@@ -907,7 +910,7 @@ inline nix::fun<nix::PrimOpFun> primop_impl(
                                       auto site,
                                       auto args,
                                       nix::Value & out) {
-        const nix::PosIdx pos = call_position(site);
+        const nix::PosIdx pos = error_position(site);
         auto held = weak.lock();
         if (!held)
             state.error<nix::EvalError>("the evaluator is gone")
@@ -989,10 +992,9 @@ inline nix::fun<nix::PrimOpFun> primop_impl(
  * registration is permanent, and that is upstream's shape rather
  * than a choice here.
  *
- * Errors go out the way `primops.cc` sends them
- * (`primops.cc:481`) - `.atPos(pos)`, because the position is the
- * half only a primop knows, and a Python failure with no position
- * points at the whole file.
+ * Errors go out the way `primops.cc` sends them, at
+ * `error_position`: the call position on 2.35, as its primops do,
+ * and `noPos` on 2.36, as its `CallSite` contract asks.
  */
 inline void Evaluator::register_primop(const std::string & name,
                                        std::size_t arity,

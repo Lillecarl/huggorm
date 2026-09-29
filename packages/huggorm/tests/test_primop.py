@@ -107,10 +107,12 @@ def test_a_primop_raising_a_nix_error_shows_it_bare(state: Any) -> None:
 
     with pytest.raises(EvalError) as caught:
         state.eval_expr("builtins.reject 1")
-    # A line of its own, and no class name on it. Nix 2.36 adds the call
-    # position under it, so the message no longer ENDS there.
-    lines = [line.strip() for line in str(caught.value).splitlines()]
-    assert "error: no such user" in lines, lines
+    # The last line, with no class name on it and no position under it:
+    # the trace line above already names the call site, once.
+    text = str(caught.value)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    assert lines[-1] == "error: no such user", lines
+    assert text.count("«string»:1:1") == 1, text
 
 
 def test_returning_something_that_is_not_a_value_is_an_error(
