@@ -1,8 +1,10 @@
 # Supporting adjacent Nix versions
 
-**OPEN, and undecided on purpose.** Not tested, not implemented. This
-records the design space while it is cheap to choose, because the
-choice constrains the emitter and the wire.
+**DONE.** Carl, 2026-09-29: "huggorm should build against
+2.35 and git as well", because nanopynix drops nanopynix_bindings and
+its CI covers 2.34, 2.35 and git. Option A below, already half built:
+`declare.NIX_VERSION` exists and a declaration branches on it with an
+ordinary `if`, but nothing set it, so every build read `(2, 34)`.
 
 ## Problem
 
@@ -115,3 +117,76 @@ already counts what it costs.
 No implementation, no version matrix in CI, no second Nix checkout.
 The cost of deciding late is that the emitter grows an assumption; the
 cost of building early is a matrix nobody has asked for.
+
+## Decided, 2026-09-29
+
+1. The range is a BUILD input. huggorm-bindings reads the version of
+   the `nix-store` it links and exports it as
+   `HUGGORM_NIX_VERSION`; huggorm-generated reads it off the bindings
+   package it is given, so the stubs, the wrappers and the gRPC schema
+   describe the same Nix the C++ was built against.
+2. The wire is per build. A client and a server built against
+   different Nix versions are not promised to agree; 022 still holds
+   the field-number question.
+3. How far: 2.34, 2.35 and git, what nanopynix's CI covers.
+
+First measured delta: 2.35's `DrvOutput` carries `drvPath`, not
+`drvHash` (`realisation.cpp:62`).
+
+## Done, 2026-09-29
+
+huggorm builds and passes its suite against 2.34.8, 2.35.2 and git
+(2.36pre20260804): 637 tests on each. `nixVersions.<v>` holds the
+bindings, the generated surface, the library and `bindings-src` for
+each; the top-level attributes are 2.34.
+
+The mechanism:
+
+- `HUGGORM_NIX_VERSION` is the `nix-store` version the bindings link,
+  set on all three builds from that one package. `declare.NIX_VERSION`
+  reads it; `NIX_2_35` and `NIX_2_36` name the same facts, because a
+  type checker holds a name constant and never a comparison.
+- A surface delta is a class-level or module-level `if NIX_2_35:` in a
+  declaration. The import picks the arm; every surface follows.
+- A delta inside one body is `if NIX_2_36: Cxx(...) else: Cxx(...)` in
+  that body. The reader picks the arm with the same names, and refuses
+  an `if` with no `else` and a test that names anything else.
+- A delta in a hand-written helper is detected by its shape, never by
+  a version: `if constexpr` on `nix::logger`'s type, a `requires` on
+  `Logger::Fields`, a generic lambda for `PrimOpFun`, `__has_include`
+  for `build.hh`.
+- `check` typechecks the declarations once per Nix; each version's
+  own build typechecks its suite and its generated surface against
+  its own stubs, with `--always-true`/`--always-false` per name.
+
+The deltas, as measured:
+
+| Nix | delta | handled by |
+| --- | --- | --- |
+| 2.35 | `DrvOutput` keys on `drvPath`, not `drvHash` | class branch |
+| 2.35 | `BuildResult::Success::builtOutputs` holds `UnkeyedRealisation` | new value, class branch |
+| 2.35 | `GCOptions::pathsToDelete` is `WholeStore` or `SpecificPaths` | new union, class branch |
+| 2.35 | `PosixSourceAccessor::createAtRoot` is gone | `getFSSourceAccessor`, in every Nix |
+| 2.35 | `nix::logger` is a raw pointer | `if constexpr` in a helper |
+| 2.35 | `SourcePath::invalidateCache` is gone | body branch |
+| 2.36 | `inputSrcs`/`inputDrvs` are `inputs.srcs`/`inputs.drvs` | class branch |
+| 2.36 | `buildPaths`, `buildPathsWithResults`, `ensurePath` live on `Builder` | body branches |
+| 2.36 | `parseJsonAndValidate` is a free function | body branch |
+| 2.36 | `Logger::Fields` is a span of variants; every virtual is `noexcept` | helper |
+| 2.36 | `PrimOpFun` takes a `CallSite` and `Value * const *` | generic lambda |
+
+Behaviour the suite saw change, each now asserted per version: a
+missing file says "does not exist" (2.35), a `DrvOutput` renders with
+`^` (2.35), a censored temp root keeps its file name (2.35), and a
+primop's error carries its call position (2.36).
+
+WRONG FIRST, twice:
+
+- The GC scope as `list[StorePath] | None`, "None is the whole store".
+  On the wire an absent list IS an empty one, and an empty
+  `SpecificPaths` deletes nothing where `WholeStore` covers everything.
+  The union says it instead.
+- The union then failed to cross: a unit arm writes no field, and
+  protobuf sets a oneof only when its message is written. Every unit
+  arm of every union had this, `StoreReferenceAuto` included; nothing
+  had sent one. `WireCodec.union_to_msg` now calls `SetInParent`.

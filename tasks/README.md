@@ -111,12 +111,12 @@ which was superseded rather than fixed.
   export list from the two packages rather than keeping a second copy.
 - 056 (PathInfo is declared twice) is done. One declaration, and the
   one the spike gate measures is the one we ship.
-- 055 (adjacent Nix versions) is OPEN and undecided on purpose. The
-  C++ answer - preprocessor ladders - does not transfer, because four
-  generated surfaces sit above the bindings and none of them has a
-  preprocessor. Resolving the version at GENERATE time is the
-  recommendation; the sharp open question is whether the wire must
-  stay stable across a version delta.
+- 055 (adjacent Nix versions) is DONE. huggorm builds and passes its
+  suite on 2.34, 2.35 and git, resolved at generate time from the
+  `nix-store` the bindings link. Surface deltas are declaration
+  branches on `NIX_2_35`/`NIX_2_36`; a delta inside one body is a
+  branch in that body; a helper detects the shape. The wire is per
+  build.
 - The source-format question is DECIDED. A Python declaration, read
   with `ast.parse` and never run, is the source; `huggorm-idl` is
   the package. Cython is gone with the question: 053 is the spike
