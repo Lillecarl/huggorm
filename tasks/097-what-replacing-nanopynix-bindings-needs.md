@@ -39,6 +39,71 @@ Carl's calls on the features the adapter could not serve:
   so huggorm's own Nix needs that patch per version.
 - `process_connection`: DROP.
 
+**Stage 2, done in nanopynix's working copy (not landed).** Six commits
+on top of stage 1: the evaluator, the store, the adapter's deletion, the
+`process_connection` drop, and two comment sweeps. `_engine_huggorm.py`
+is gone, `_engine.py` is again the one importer of `huggorm_bindings`,
+and `checks.types` reports 0 errors. Lane part A on each area: 2245,
+2236 and 2238 passed.
+
+- The public raw layer went with the adapter: `nanopynix.EvalState`,
+  `Value`, `eval_file`, `open_store`, the flake functions and
+  `input_from_*`. Tests of that layer use `_core`'s objects.
+- `register_primop(name, arity, callback)`: huggorm's primop carries no
+  argument names and no doc, so the call no longer takes them.
+- The eval counters and `register_store_implementation` raise
+  `NotImplementedError` until their ports land.
+- `GCOptions` takes a union from 2.35 on. nanopynix picks the shape by
+  `hasattr(huggorm_bindings, "GCSpecificPaths")`, and its pyright gate
+  holds that name false (`defineConstant`), because it reads the
+  stable stubs.
+- A nanobind subclass hands its constructor's arguments to the C++
+  constructor whatever its `__init__` does. `class Fake(Store)` called
+  with `"local"` opened the real store. A fake store is
+  `Fake("dummy://")`, told its name after construction.
+
+**The one lane error is older than stage 2.** Every huggorm lane since
+52 errors at the teardown of
+`test_empty_path_raises_instead_of_aborting[local-add_temp_root]`:
+`substituters` moved from the host's value to the test environment's.
+The settings guard is function-scoped, and pynix's module-scoped
+`populated_store` fixture runs an in-process pynix session, which
+applies the host's `nix.conf` outside any test's window. The next test
+that opens a session puts the environment's settings back, and the
+guard blames it. Reproduced with the two tests alone in 12 s; without the
+pynix test, 21 pass. Carl's call: pynix's fixture gets the test
+environment's settings, by someone who may edit `pynix/tests`, and the
+guard now reports a fixture's change at the setup of the test that asked
+for the fixture.
+
+**Eval counters: ported.** huggorm declares `EvalState.statistics_json`,
+`eval_counters_enabled` and `set_eval_counters_enabled`, and carries the
+three count-calls patches; nanopynix takes them from
+`nixPatchesFor`, which also picks git's own remote-verbosity patch, and
+dropped its copies.
+
+**Nix git moved under huggorm when it took the lock.** huggorm's own
+`<nixpkgs>` had Nix git 20260804; the umbrella lock has 20260912, and
+four changes there broke the git build, found one compile at a time:
+
+- `Derivation::inputs` is one `std::set<SingleDerivedPath>`.
+  `FullInputs::fromSet` splits it back, as upstream's ATerm writer does.
+- `Verbosity` is an `enum class`. `std::to_underlying` serves both kinds.
+- `parseFlakeRef`, `FlakeRef::fromAttrs`, `Input::fromURL` and
+  `Input::fromAttrs` take no fetcher settings. The three parse functions
+  dropped their `settings` parameter on every version.
+- The remote-verbosity patch's second hunk no longer anchors; git has
+  its own copy.
+
+Wrong first: I read the git lane as green because it passed on 0804.
+It had never compiled against the Nix that nanopynix's git lane uses.
+
+**Land order, Carl's call: land first, port `store_impl` next.** The
+drop lands with `register_store_implementation` raising
+`NotImplementedError`; nothing outside nanopynix uses it. tasks/084 is
+the design that port needs, and its ownership and threading choices are
+Carl's.
+
 **OPEN.** The board for one goal: nanopynix's Python layer runs on
 `huggorm_bindings` instead of its hand-written `nanopynix_bindings`.
 Measured 2026-09-25 against nanopynix `ce5ff758` and huggorm
