@@ -1379,6 +1379,60 @@ def records(classes: Sequence[Class],
     return [*out, f"}}  // namespace {NAMESPACE}", ""]
 
 
+def records_include(module: str, package: str) -> str:
+    """The name a unit includes a module's records header by.
+
+    Named for the package, as `huggorm_decl/cpp/...` is, because a
+    hand-written helper includes one too: `cpp/logging.hpp` holds a
+    `huggorm::ErrorInfo` that `decl/path.py` declares."""
+    name = f"{module}_records.hpp"
+    return f"{package}/{name}" if package else name
+
+
+def records_named(classes: Sequence[Class],
+                  functions: Sequence[Method] = (),
+                  known: dict[str, Class] | None = None) -> list[str]:
+    """Every module whose records this unit names, its own included.
+
+    A record is a struct the emitter declares, so a unit that names one
+    from another module needs that module's struct, not only its
+    Python class. Sorted, for `includes`' reason."""
+    out = {c.module for c in classes if c.is_value}
+    for _, t in _sites(classes, functions):
+        for node in _nodes(t):
+            held = None if node.origin else (known or {}).get(node.python)
+            if held is not None and held.is_value:
+                out.add(held.module)
+    return sorted(out)
+
+
+def records_header(mod: Module, package: str) -> str | None:
+    """The header a module's records are emitted into, or None.
+
+    A HEADER, not the unit, because a record is a C++ type another unit
+    can name: `eval`'s `LogRecord` holds `path`'s `ErrorInfo`. A struct
+    emitted into its own unit is visible nowhere else (`tasks/103`)."""
+    values = [c for c in bindable(mod) if c.is_value]
+    if not values:
+        return None
+    others = [m for m in records_named(values, (), mod.known)
+              if m != mod.name]
+    structs = records(values, mod.known)
+    # What the fields SPELL, read off the structs as `includes` reads
+    # a body: `std::int64_t` needs <cstdint>, and no caster names it.
+    text = "\n".join(structs)
+    spelled = sorted({h for spelling, h in BODY_HEADERS.items()
+                      if spelling in text})
+    return "\n".join([
+        "#pragma once", "",
+        *includes(values, (), mod.known),
+        *[f"#include <{h}>" for h in spelled],
+        *[f'#include "{records_include(m, package)}"' for m in others],
+        "",
+        *structs,
+    ])
+
+
 def _lists(cls: Class) -> list[str]:
     """The wire parts of this value that cross as lists.
 
@@ -2390,14 +2444,17 @@ def module(classes: Sequence[Class],
            functions: Sequence[Method] = (),
            known: dict[str, Class] | None = None,
            errors: str = "",
-           error_headers: Sequence[str] = ()) -> str:
+           error_headers: Sequence[str] = (),
+           package: str = "") -> str:
     """One translation unit: the includes, then a bind function each.
 
     Several classes, not one. A declaration file owns a module and
     may declare more than one class in it - `decl/store.py` declares
     three - and a nanobind extension is one translation unit, so the
     file and the unit are the same grain."""
-    head = [*includes(classes, functions, known, error_headers), "",
+    head = [*includes(classes, functions, known, error_headers),
+            *[f'#include "{records_include(m, package)}"'
+              for m in records_named(classes, functions, known)], "",
             "namespace nb = nanobind;",
             "using namespace nb::literals;", ""]
     if errors and _errors_used(classes, functions, known):
@@ -2410,11 +2467,10 @@ def module(classes: Sequence[Class],
                  "}  // namespace huggorm", ""]
     if _crosses_container(classes):
         head += [*CONTAINERS.strip().splitlines(), ""]
-    # `as_tuple`, for a value whose hash covers a list part. In its own
-    # namespace and ahead of the structs, because a RECORD is declared
-    # in that namespace too and a class that binds a real Nix type
-    # needs the helper just the same - which is what put it inside
-    # `records()` and left `pathinfo.cpp` without it.
+    # `as_tuple`, for a value whose hash covers a list part. In the
+    # unit, not in `records_header`, because a class that binds a real
+    # Nix type needs the helper just the same: `pathinfo.cpp` has no
+    # record.
     unions = _unions_used(classes, functions, known)
     vocabularies = _vocabularies_used(classes, functions, known)
     if any(_lists(cls) for cls in classes) or unions or vocabularies:
@@ -2438,9 +2494,6 @@ def module(classes: Sequence[Class],
         for u in wrapped:
             head += caster(u, known or {})
         head += ["}  // namespace nanobind::detail", ""]
-    # The structs first: a bind function returns one, so the type has
-    # to be complete before the compiler reads the lambda.
-    head += records(classes, known)
     out = "\n".join(head) + "\n" + "\n".join(
         bind_function(cls, known, functions) for cls in classes)
     exported = public([fn for fn in functions
@@ -2459,11 +2512,12 @@ def imports(mod: Module) -> list[str]:
 
     So the module imports what it needs, and the list is derived: a
     class arrives through `mod.uses` only because the declaration
-    imported it, and it needs binding only if it has C++ behind it. A
+    imported it, and it needs binding only if it has C++ behind it or
+    is a record the emitter declares. A
     vocabulary is filtered out here, which is why importing
     `HashAlgorithm` costs nothing."""
     return sorted({c.module for c in mod.uses.values()
-                   if c.decl.cxx and c.module != mod.name})
+                   if (c.decl.cxx or c.is_value) and c.module != mod.name})
 
 
 def extension(mod: Module, dotted: str,
@@ -2498,7 +2552,7 @@ def extension(mod: Module, dotted: str,
     # unit needs the headers behind the chain.
     return "\n".join([
         module(classes, mod.functions, known, errors,
-               error_headers if translators else ()),
+               error_headers if translators else (), package),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
         # The declaration file's own docstring, which is the only

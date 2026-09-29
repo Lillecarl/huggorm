@@ -72,7 +72,11 @@ _nix = pkg_config("nix-store", "nix-expr", "nix-flake", "nix-cmd")
 # live with the declarations because that is where the hand-written
 # input to this build is: `@needs("huggorm_decl/cpp/eval.hpp")` names
 # one, and nothing in THIS directory is hand-written at all.
-_nix["include_dirs"] = [huggorm_decl.include_dir()] + _nix["include_dirs"]
+#
+# ...and this directory, for the records headers the emitter writes:
+# `huggorm_bindings/path_records.hpp`, which `cpp/logging.hpp`
+# includes as well as the units do (tasks/103).
+_nix["include_dirs"] = [huggorm_decl.include_dir(), HERE] + _nix["include_dirs"]
 
 # Every module in the package, through nanobind.
 #

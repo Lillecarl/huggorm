@@ -86,12 +86,14 @@ def test_a_trace_arrives_as_a_message(subscribed: tuple[Any, Any]) -> None:
 
 
 def test_a_warning_takes_the_other_path(subscribed: tuple[Any, Any]) -> None:
-    """`logEI`, not `log`, and it arrives rendered.
+    """`logEI`, not `log`, and it arrives rendered, with its parts.
 
     `builtins.warn` builds an `ErrorInfo` and calls `logWarning`
     (`primops.cc:1324`), so this drives the second of the five
-    virtuals. An `ErrorInfo` carries a trace of positions, and what
-    crosses is what `JSONLogger` would have written: the rendering."""
+    virtuals. `text` is what `JSONLogger` would have written, and
+    `info` is the record a failed call's `NixError.info` holds.
+
+    Perturbation: drop `.info` from `LogTap::logEI` and this fails."""
     state, stream = subscribed
     state.eval_expr(WARN % "careful")
 
@@ -99,6 +101,21 @@ def test_a_warning_takes_the_other_path(subscribed: tuple[Any, Any]) -> None:
     assert [r.action() for r in records] == ["msg"]
     assert records[0].level() == 1, "lvlWarn"
     assert "careful" in records[0].text()
+    info = records[0].info()
+    assert info is not None, "logEI raised the record, and its parts are gone"
+    assert info.level() == 1
+    assert info.msg() == "careful"
+
+
+def test_a_plain_message_carries_no_error_info(
+        subscribed: tuple[Any, Any]) -> None:
+    """`log`, not `logEI`: a trace is text, and has no parts."""
+    state, stream = subscribed
+    state.eval_expr(TRACE % "plain")
+
+    records = stream.drain()
+    assert records, "the trace did not arrive"
+    assert all(r.info() is None for r in records)
 
 
 def test_the_level_refuses_what_it_did_not_ask_for(state: Any) -> None:

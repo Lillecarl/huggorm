@@ -29,6 +29,8 @@
 #include <utility>
 #include <vector>
 
+#include "huggorm_bindings/path_records.hpp"
+#include "huggorm_decl/cpp/error_info.hpp"
 #include "nix/store/remote-store.hh"
 #include "nix/util/error.hh"
 #include "nix/util/logging.hh"
@@ -96,6 +98,8 @@ struct LogRecord
     uint64_t request = 0;
     std::string text;
     std::vector<LogField> fields;
+    // What `logEI` was given, beside `text`. Nothing else sets it.
+    std::optional<ErrorInfo> info;
 };
 
 /**
@@ -665,19 +669,17 @@ public:
 
     void logEI(const nix::ErrorInfo & ei) override
     {
-        // RENDERED, the way JSONLogger renders it (logging.cc:283).
-        // An ErrorInfo carries a trace of positions, and a record
-        // that carried those parts would be a second error shape
-        // beside the one the typed-status path already crosses with
-        // (`tasks/036`). Those two should agree, and `tasks/032`
-        // holds that question open rather than answering it twice.
+        // RENDERED, the way JSONLogger renders it (logging.cc:283),
+        // and the parts beside it in the record a failed call crosses
+        // with, so the two error shapes are one (`tasks/103`).
         if (ei.level > effective_verbosity())
             return;
         std::ostringstream rendered;
         nix::showErrorInfo(rendered, ei, nix::loggerSettings.showTrace.get());
         if (!route({.action = "msg",
                     .level = static_cast<uint64_t>(ei.level),
-                    .text = rendered.str()}))
+                    .text = rendered.str(),
+                    .info = info_record<ErrorInfo>(ei)}))
             fallback().logEI(ei);
     }
 

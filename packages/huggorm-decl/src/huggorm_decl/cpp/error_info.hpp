@@ -1,10 +1,10 @@
 #pragma once
 // A `nix::ErrorInfo`, read into the records `decl/path.py` declares.
 //
-// Templates over the record types, because a record is emitted into
-// the unit that declares it, after every include. The designated
-// initialisers name each field, so a record that drops or reorders a
-// field fails to compile here.
+// Templates over the record types, so the catch chain names the
+// record each part reads into, and a part that is not a record fails
+// to compile. The designated initialisers name each field, so a record
+// that drops or reorders a field fails to compile here too.
 
 #include <algorithm>
 #include <cstddef>
@@ -74,12 +74,13 @@ std::optional<Position> position_of(const std::shared_ptr<const nix::Pos> & pos)
  * `decl/errors.py` names this as the reader of that part, and the
  * emitted catch chain calls it with the part's record type.
  */
+// Not an overload of `error_info`: the catch chain passes
+// `error_info<Info>` as a function, and an overload set deduces no type.
 template <typename Info>
-Info error_info(const nix::BaseError & e)
+Info info_record(const nix::ErrorInfo & info)
 {
     using Position = typename decltype(Info::pos)::value_type;
     using Trace = typename decltype(Info::traces)::value_type;
-    const nix::ErrorInfo & info = e.info();
 
     // Nix pushes each frame to the front, so the list is outermost
     // first. The frames kept are the last ones, nearest the error.
@@ -106,6 +107,12 @@ Info error_info(const nix::BaseError & e)
         .truncated = dropped > 0,
         .suggestions = std::move(suggestions),
     };
+}
+
+template <typename Info>
+Info error_info(const nix::BaseError & e)
+{
+    return info_record<Info>(e.info());
 }
 
 }  // namespace huggorm

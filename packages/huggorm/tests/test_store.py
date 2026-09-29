@@ -1910,10 +1910,16 @@ def test_every_wire_value_survives_its_own_round_trip(
         # `request` differs too, and the two values it takes are the
         # two it means: 0 for a record no wrapped call owns, and a
         # number for one raised inside one.
+        #
+        # `info` too: None for a start, and the parts for a warning
+        # `logEI` raised.
         "LogRecord": (
-            _rebuild(LogRecord, "msg", 0, 0, 0, 0, 0, "trace: hi", []),
+            _rebuild(LogRecord, "msg", 1, 0, 0, 0, 0, "warning: hi", [],
+                     _rebuild(ErrorInfo, 1, "hi",
+                              _rebuild(Position, "/w.nix", 1, 1), True, 0,
+                              [], False, [])),
             [("start", 3, 7, 2, 105, 41, "copying '/tmp/x' to the store",
-              [_rebuild(LogField, False, 0, "/tmp/x")])]),
+              [_rebuild(LogField, False, 0, "/tmp/x")], None)]),
     }
 
     declared = _wire_values()

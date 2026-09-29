@@ -50,3 +50,35 @@ the records it names, and let `LogRecord` hold
 `std::optional<huggorm::ErrorInfo>`, so `cpp/logging.hpp` includes a
 generated header. The info then crosses huggorm's wire typed, as an
 error's does.
+
+## The work
+
+Checked first: no record holds a union or a vocabulary, so a record
+needs nothing the unit emits ahead of it. `as_tuple` is used by the
+bind functions, not by a struct, so it stays in the unit.
+
+- `nbemit.records_header` writes `<module>_records.hpp` for each
+  module that declares a record, and `generate.emit_module` writes it
+  beside the unit. It carries the includes the fields need: the
+  casters and class headers `includes` derives, and the standard
+  headers the struct text spells (`std::int64_t` needs `<cstdint>`,
+  which no caster names; the first build of the header lacked it).
+- `records_named` lists every module whose records a unit names, its
+  own included, by walking every declared type. The unit includes
+  each of those headers.
+- `imports` now counts a record as something to import. `eval` names
+  `path`'s `ErrorInfo`, so it has to import `path` for the Python
+  class to exist.
+- `setup.py` puts the package directory on the include path, so a
+  header is named `huggorm_bindings/path_records.hpp` from a unit and
+  from `cpp/logging.hpp` alike.
+- `LogRecord` gains `std::optional<ErrorInfo> info`, and
+  `LogTap::logEI` fills it with `info_record<ErrorInfo>(ei)`, and
+  `error_info` for a `BaseError` forwards to that. WRONG FIRST: the
+  `nix::ErrorInfo` reader was an overload of `error_info`, and every
+  catch in `path.cpp` failed to compile. The chain passes
+  `error_info<ErrorInfo>` as a function argument, and an overload set
+  deduces no type, so `Read...` came out empty.
+  The action stays `"msg"`, as Nix's `JSONLogger` writes it.
+- nanopynix's `_callback_args` maps a `"msg"` that carries `info` to
+  `("error", level, info.msg(), dict)`, the other engine's shape.

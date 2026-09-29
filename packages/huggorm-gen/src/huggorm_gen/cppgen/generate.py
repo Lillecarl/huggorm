@@ -401,6 +401,11 @@ def emit_module(mod: Module, dotted: str, out: str,
                         error_headers=headers or ())
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(written)
+    header = nbemit.records_header(mod, PACKAGE)
+    if header is not None:
+        target = pathlib.Path(out).with_name(f"{mod.name}_records.hpp")
+        target.write_text(header + "\n")
+        print(f"{decl} -> {target}: records")
     names = ", ".join([c.name for c in bound] + [f.name for f in mod.functions])
     print(f"{decl} -> {out} (module {dotted}): {names}")
     # How much of each class the declaration derived, and how much a

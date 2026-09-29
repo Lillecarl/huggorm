@@ -27,7 +27,7 @@ in this binding a declaration could not have written, and
 """
 
 from huggorm_decl.decl.flakeref import FlakeRef
-from huggorm_decl.decl.path import StorePath
+from huggorm_decl.decl.path import ErrorInfo, StorePath
 from huggorm_decl.decl.store import Store
 from huggorm_dsl.declare import (
     F64,
@@ -1087,11 +1087,7 @@ class LogRecord:
         """The message, or the activity's description.
 
         An error arrives RENDERED, the way `JSONLogger` renders one
-        (`logging.cc:283`). An `ErrorInfo` carries a trace of
-        positions, and crossing those parts would be a second error
-        shape beside the one a failed call already crosses with
-        (`tasks/036`). Those two should agree; `tasks/032` holds the
-        question open rather than answering it twice."""
+        (`logging.cc:283`), and `info` holds its parts."""
 
     @reads("fields")
     def fields(self) -> list[LogField]:
@@ -1101,6 +1097,15 @@ class LogRecord:
         expected, running and failed; a `resBuildLogLine` carries the
         line. Upstream documents the pairing in `logging.hh` and this
         binding does not restate it."""
+
+    @reads("info")
+    def info(self) -> ErrorInfo | None:
+        """The parts of an error or a warning `logEI` raised: the
+        position, the trace and the suggestions. The same record a
+        failed call's `NixError.info` holds.
+
+        None for every other record, and for a message Nix raised as
+        text."""
 
 
 @header("huggorm_decl/cpp/logging.hpp")
