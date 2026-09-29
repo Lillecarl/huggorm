@@ -41,3 +41,12 @@ huggorm's tap raises `msg` for `logEI`; nanopynix's `LogEvent.error_info`
 answers for an `error` action, with the dict as `args[2]`. The adapter's
 `_callback_args` would map a record that carries info to `error`, with
 the dict `error_detail` already builds.
+
+## Decision, 2026-09-29
+
+Carl chose the records header and a wire part: emit each module's
+records into a header of their own, have a unit include the headers of
+the records it names, and let `LogRecord` hold
+`std::optional<huggorm::ErrorInfo>`, so `cpp/logging.hpp` includes a
+generated header. The info then crosses huggorm's wire typed, as an
+error's does.

@@ -28,7 +28,21 @@ sites at TALKATIVE or CHATTY in GC, file transfer, substitution and the
 builders, so a CHATTY pin would echo those when the daemon does that
 work. The `setOptions` patch removes that.
 
-## Open questions for the work
+## Decisions, 2026-09-29
+
+Carl answered both open questions:
+
+- **Above the pin:** an import-time ceiling, as nanopynix-bindings has.
+  `HUGGORM_LOG_CEILING` at import picks the pin, default CHATTY. A
+  subscription above it gets nothing above it, and `process_verbosity`
+  says what the pin is. huggorm's widening test from `tasks/089`
+  becomes "up to the ceiling".
+- **The daemon:** the Nix patch makes `setOptions` send a separate,
+  atomic level, and `VerbosityDemand` keeps that at the widest level a
+  subscription asks for (INFO when none). So a DEBUG subscriber still
+  gets daemon DEBUG lines, as now, and no pin reaches the daemon.
+
+## Open questions for the work, now answered above
 
 - What a subscription above CHATTY gets. With the gate pinned, Nix
   drops a DEBUG record before any logger runs. nanopynix-bindings reads
