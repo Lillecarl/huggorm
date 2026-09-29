@@ -59,16 +59,17 @@ def _arguments(leading: list[ast.arg], params: list[Proto],
     args = list(leading)
     defaults: list[ast.expr] = []
     for p, type_str in zip(params, types, strict=True):
-        if p["default"] == "None":
+        annotation = _ann(type_str, f"{where}:{p['name']}")
+        if p["default"] == "None" and not _admits_none(annotation):
             # A parameter that may be omitted is spelled `T | None`.
             # `output: str = None` is implicit Optional, which strict
             # typecheckers reject and which misdescribes the default
             # the emitter itself writes. Here rather than at each call
             # site: the four surfaces spell the TYPE differently and
             # none of them spells this differently.
-            type_str = f"{type_str} | None"
-        args.append(ast.arg(arg=p["name"],
-                            annotation=_ann(type_str, f"{where}:{p['name']}")))
+            annotation = ast.BinOp(left=annotation, op=ast.BitOr(),
+                                   right=ast.Constant(value=None))
+        args.append(ast.arg(arg=p["name"], annotation=annotation))
         if p["default"] is not None:
             defaults.append(_ann(p["default"], f"{where}:{p['name']}="))
         elif defaults:
@@ -192,6 +193,15 @@ def emitter_union_names(unions: dict[str, list[str]]) -> None:
     _UNION_NAMES.update(unions)
     _UNION_ARMS.clear()
     _UNION_ARMS.update(unions)
+
+
+def _admits_none(annotation: ast.expr) -> bool:
+    """Whether a union arm of `annotation` is already None."""
+    if isinstance(annotation, ast.Constant):
+        return annotation.value is None
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return _admits_none(annotation.left) or _admits_none(annotation.right)
+    return False
 
 
 def _written_out(name: str) -> ast.expr:
