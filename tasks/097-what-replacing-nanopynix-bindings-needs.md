@@ -1,5 +1,44 @@
 # What replacing nanopynix-bindings needs
 
+## The drop, 2026-09-29
+
+Carl: "drop it and remove any compatibility shit". Asked how far, he
+chose to dissolve the adapter too, not only delete the bindings.
+
+**Stage 1, in nanopynix's working copy (not landed).** Every scope
+builds on `huggorm-bindings` (sanitizers through `overrideAttrs`, a
+no-GC scope passes no libgc), the wheel is gone for good (Carl: not
+worth the effort; nanopynix#311 closed), `_engine.py` imports the adapter alone, the `nix_engine`
+marker and the bindings-only tests are deleted, and the workflows are
+re-rendered. It cannot land alone: `checks.types` reports 902 errors,
+because pyright typed `_core` through the bindings' stubs and the
+adapter's namespaces are untyped. 763 of them are in `_core/_objects.py`,
+`inproc/_impl.py` and `_core/_nix_core.py`: the adapter's callers.
+
+**Stage 2 is what makes it land.** `_engine.py` re-exports huggorm's
+real names, which pyright types through `huggorm_bindings-stubs`, and
+callers move onto them one area at a time, deleting the adapter code
+each area orphans:
+
+1. `_core/_objects.py` and `_core/_nix_core.py`: Value and EvalState.
+2. `inproc/_impl.py` and `rpc/worker/_worker_store.py`: Store.
+3. The remaining areas: flake, fetchers, registry, logging, settings.
+
+Lane part A after each area; one land at the end, with easykubenix's
+`nanopynix-bindings` passthru changed in the same land.
+
+Carl's calls on the features the adapter could not serve:
+
+- `register_store_implementation` and `nanopynix.store_impl`: PORT.
+  Needs a declared Store subclass that calls into Python, which is
+  `tasks/084`'s gap (a declaration cannot implement a virtual). The
+  deleted `test_store_backend_registration.py` is the target to bring
+  back.
+- `eval_counters_enabled` / `set_eval_counters_enabled`: PORT. huggorm
+  declares them over the `count-calls` option nanopynix's patch adds,
+  so huggorm's own Nix needs that patch per version.
+- `process_connection`: DROP.
+
 **OPEN.** The board for one goal: nanopynix's Python layer runs on
 `huggorm_bindings` instead of its hand-written `nanopynix_bindings`.
 Measured 2026-09-25 against nanopynix `ce5ff758` and huggorm
