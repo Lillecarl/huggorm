@@ -544,7 +544,9 @@ def returned_module(proto: Proto,
     mod = ast.Module(body=[], type_ignores=[])
     annotations = _emitted_annotations(proto, async_types, bound_policies, twins)
     defaults = _emitted_defaults(proto)
-    used = _annotation_names(annotations) | _annotation_names(defaults)
+    # The constructor takes the produced object, typed as what it is.
+    used = (_annotation_names(annotations) | _annotation_names(defaults)
+            | {svc})
     mod.body.append(
         ast.Expr(
             value=ast.Constant(
@@ -556,7 +558,6 @@ def returned_module(proto: Proto,
         )
     )
     typing_names = {"Any"} if "Any" in used else set()
-    typing_names.add("Any")  # the constructor takes the produced object
     if any(m["return_type"] != "None" for m in proto["methods"]):
         typing_names.add("cast")
     mod.body.append(ast.ImportFrom(
@@ -601,7 +602,7 @@ def returned_module(proto: Proto,
             args=ast.arguments(
                 posonlyargs=[],
                 args=[ast.arg(arg="self"),
-                      ast.arg(arg="obj", annotation=_ann("Any", f"{svc}.__init__")),
+                      ast.arg(arg="obj", annotation=_ann(svc, f"{svc}.__init__")),
                       ast.arg(arg="runner",
                               annotation=_ann("BaseRunner", f"{svc}.__init__"))],
                 vararg=None,
