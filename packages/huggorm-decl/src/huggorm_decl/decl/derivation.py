@@ -212,12 +212,18 @@ class Derivation:
     def env(self) -> dict[str, Str]:
         """The builder's environment."""
 
-    # Nix 2.36 gathers both into `inputs`.
+    # Nix 2.36 holds one `std::set<SingleDerivedPath>` in `inputs`.
+    # `FullInputs::fromSet` is upstream's own split back into the two,
+    # the one it uses to write the ATerm.
     if NIX_2_36:
-        @reads("inputs.srcs")
+        @needs("nix/store/derivation/full-inputs.hh")
         def input_srcs(self) -> list[StorePath]:
             """Store paths the build reads that no derivation makes."""
+            Cxx("""
+return as_list(nix::derivation::FullInputs::fromSet(self.inputs).srcs);
+            """)
 
+        @needs("nix/store/derivation/full-inputs.hh")
         def input_drvs(self) -> dict[str, InputDrvNode]:
             """The derivations the build needs, by `.drv` base name, and
             which of their outputs.
@@ -226,7 +232,7 @@ class Derivation:
             wire."""
             Cxx("""
 std::map<std::string, nix::DerivedPathMap<std::set<nix::OutputName, std::less<>>>::ChildNode> out;
-for (auto & [path, node] : self.inputs.drvs.map)
+for (auto & [path, node] : nix::derivation::FullInputs::fromSet(self.inputs).drvs.map)
     out.emplace(std::string(path.to_string()), node);
 return out;
             """)
