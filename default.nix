@@ -141,7 +141,10 @@ rec {
     pyproject = true;
     src = ./packages/huggorm-gen;
     build-system = [ pkgs.python3Packages.setuptools ];
-    dependencies = [ huggorm-dsl huggorm-decl ];
+    dependencies = [
+      huggorm-dsl
+      huggorm-decl
+    ];
     pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
   # The interpreter the emitters run under, with them on its path.
@@ -343,61 +346,61 @@ rec {
       ourPython
     ];
     text = ''
-      pkg="${huggorm-generated}/lib/python3.14/site-packages"
-      gen="$pkg/huggorm_generated"
-      case "''${1:-files}" in
-        files)
-          echo "generated package: $gen"
-          ls -1 "$gen"
-          echo
-          echo "binding stubs: $pkg/huggorm_bindings-stubs"
-          ls -1 "$pkg/huggorm_bindings-stubs"
-          ;;
-        manifest)
-          # Derived, not read: there is no manifest.json any more
-          # (065). This calls the same function the emitters do.
-          #
-          # stdout is captured because the derivation narrates its
-          # progress there - useful in a build log, and not JSON.
-          python3 -c 'import contextlib, io, json
-from huggorm_gen.pygen.generate import build_manifest
-with contextlib.redirect_stdout(io.StringIO()):
-    m = build_manifest()
-print(json.dumps(m, indent=2))' | jq .
-          ;;
-        proto)
-          # Every service and every message, as .proto text. The names
-          # come from the descriptor set itself, so nothing here has a
-          # list to keep in step.
-          names=$(python3 -c "
-      import sys
-      from google.protobuf import descriptor_pb2
-      fds = descriptor_pb2.FileDescriptorSet()
-      fds.ParseFromString(open(sys.argv[1], 'rb').read())
-      for f in fds.file:
-          for m in f.message_type:
-              print(f'{f.package}.{m.name}')
-          for s in f.service:
-              print(f'{f.package}.{s.name}')
-      " "$gen/grpc_schema.pb")
-          # One symbol per call: grpcurl describes one at a time.
-          for name in $names; do
-            grpcurl -protoset "$gen/grpc_schema.pb" describe "$name"
-            echo
-          done
-          ;;
-        surface)
-          for f in "$gen"/async_*.py "$gen"/protocols.py "$gen"/rpc.py \
-                   "$gen"/free_functions.py; do
-            echo "=== $f ==="
-            cat "$f"
-          done
-          ;;
-        *)
-          echo "usage: show [files|manifest|proto|surface]" >&2
-          exit 2
-          ;;
-      esac
+            pkg="${huggorm-generated}/lib/python3.14/site-packages"
+            gen="$pkg/huggorm_generated"
+            case "''${1:-files}" in
+              files)
+                echo "generated package: $gen"
+                ls -1 "$gen"
+                echo
+                echo "binding stubs: $pkg/huggorm_bindings-stubs"
+                ls -1 "$pkg/huggorm_bindings-stubs"
+                ;;
+              manifest)
+                # Derived, not read: there is no manifest.json any more
+                # (065). This calls the same function the emitters do.
+                #
+                # stdout is captured because the derivation narrates its
+                # progress there - useful in a build log, and not JSON.
+                python3 -c 'import contextlib, io, json
+      from huggorm_gen.pygen.generate import build_manifest
+      with contextlib.redirect_stdout(io.StringIO()):
+          m = build_manifest()
+      print(json.dumps(m, indent=2))' | jq .
+                ;;
+              proto)
+                # Every service and every message, as .proto text. The names
+                # come from the descriptor set itself, so nothing here has a
+                # list to keep in step.
+                names=$(python3 -c "
+            import sys
+            from google.protobuf import descriptor_pb2
+            fds = descriptor_pb2.FileDescriptorSet()
+            fds.ParseFromString(open(sys.argv[1], 'rb').read())
+            for f in fds.file:
+                for m in f.message_type:
+                    print(f'{f.package}.{m.name}')
+                for s in f.service:
+                    print(f'{f.package}.{s.name}')
+            " "$gen/grpc_schema.pb")
+                # One symbol per call: grpcurl describes one at a time.
+                for name in $names; do
+                  grpcurl -protoset "$gen/grpc_schema.pb" describe "$name"
+                  echo
+                done
+                ;;
+              surface)
+                for f in "$gen"/async_*.py "$gen"/protocols.py "$gen"/rpc.py \
+                         "$gen"/free_functions.py; do
+                  echo "=== $f ==="
+                  cat "$f"
+                done
+                ;;
+              *)
+                echo "usage: show [files|manifest|proto|surface]" >&2
+                exit 2
+                ;;
+            esac
     '';
   };
 
@@ -412,18 +415,21 @@ print(json.dumps(m, indent=2))' | jq .
   #
   # It runs the same emitter the leaf runs, with the same argument, so
   # this cannot show something the build did not produce.
-  bindings-src = pkgs.runCommand "huggorm-bindings-src" {
-    nativeBuildInputs = [
-      (pkgs.python3.withPackages (_: [
-        huggorm-gen
-        huggorm-decl
-        huggorm-dsl
-      ]))
-    ];
-  } ''
-    mkdir -p "$out"
-    python3 -m huggorm_gen.cppgen.generate "$out"
-  '';
+  bindings-src =
+    pkgs.runCommand "huggorm-bindings-src"
+      {
+        nativeBuildInputs = [
+          (pkgs.python3.withPackages (_: [
+            huggorm-gen
+            huggorm-decl
+            huggorm-dsl
+          ]))
+        ];
+      }
+      ''
+        mkdir -p "$out"
+        python3 -m huggorm_gen.cppgen.generate "$out"
+      '';
 
   shell = pkgs.mkShell {
     packages = [
@@ -432,8 +438,8 @@ print(json.dumps(m, indent=2))' | jq .
       pkgs.grpcurl
     ];
     shellHook = # bash
-    ''
-      export PYBIN="${lib.getExe ourPython}"
-    '';
+      ''
+        export PYBIN="${lib.getExe ourPython}"
+      '';
   };
 }
