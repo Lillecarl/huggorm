@@ -1130,6 +1130,10 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 105 (a Nix without the collector) is DONE. Every Boehm call sits
+  behind `NIX_USE_BOEHMGC`; a question only the collector answers
+  raises `UnimplementedError`; `nixVersions.nix_2_34-nogc` builds and
+  passes the suite.
 - 104 (typing holds everywhere) is DONE. `mypy.ini` names every tree
   and `check` runs it, strict, with one override: declaration bodies
   may be empty. The declarations, reader, examples and setup scripts
