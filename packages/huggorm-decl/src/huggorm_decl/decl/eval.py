@@ -2004,6 +2004,18 @@ if (auto fingerprint = lockedFlake.getFingerprint(store, self.state().fetchSetti
 return j.dump();
         """)
 
+    def statistics_json(self) -> Str:
+        """The report `NIX_SHOW_STATS` prints, as a JSON document.
+
+        `statisticsJSON`, which huggorm's count-calls patch splits out
+        of `printStatistics`: upstream writes the report to stderr or to
+        a file, and an embedding caller can read neither. The counted
+        fields read zero until `set_eval_counters_enabled(True)`, and
+        the call tables stay empty unless `count-calls` is set."""
+        Cxx("""
+return self.state().statisticsJSON();
+        """)
+
 
 # --- free functions ------------------------------------------------
 
@@ -2560,6 +2572,32 @@ def nix_version() -> Str:
     prints it."""
     Cxx("""
 return nix::nixVersion;
+    """)
+
+
+@needs("nix/expr/counter.hh")
+def eval_counters_enabled() -> Bint:
+    """Whether Nix counts evaluation work: values, environments, calls.
+
+    `nix::Counter::enabled`, one static for the process. Nix sets it
+    from `NIX_SHOW_STATS` when libexpr loads. Every increment tests it,
+    so Nix keeps one static rather than a field per evaluator, and the
+    switch belongs to every evaluator at once."""
+    Cxx("""
+return nix::Counter::enabled;
+    """)
+
+
+@needs("nix/expr/counter.hh")
+def set_eval_counters_enabled(enabled: Bint) -> None:
+    """Turn Nix's evaluation counters on or off, for every evaluator.
+
+    The counters back the numeric fields of
+    `EvalState.statistics_json`. Nix leaves them off unless
+    `NIX_SHOW_STATS` is set, because each increment is an atomic
+    write."""
+    Cxx("""
+nix::Counter::enabled = enabled;
     """)
 
 

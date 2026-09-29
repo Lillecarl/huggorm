@@ -60,6 +60,13 @@ rec {
   # The fourth lets `setOptions` send a daemon a level other than
   # `nix::verbosity`, which huggorm pins at import (tasks/102).
   #
+  # The fifth gives an embedding caller the evaluator's statistics:
+  # `statisticsJSON` returns the report `printStatistics` writes,
+  # `count-calls` becomes a setting, and the call-count maps become
+  # concurrent. One file per version, because the context differs; the
+  # 2.36 file covers git. Taken from nanopynix, which now takes it from
+  # here.
+  #
   # The collector carries one patch too. huggorm starts Boehm at import
   # and runs `nix::initGC` at the first evaluator, so importing starts
   # no marker thread. `initGC` then switches interior pointers after
@@ -75,10 +82,11 @@ rec {
     (base.appendPatches (
       [ ./nix/patches/nix-base-env-size.patch ]
       ++ lib.optional (lib.versionOlder base.version "2.35") ./nix/patches/nix-interrupted-thunk-recovers.patch
-      ++ libstorePatches
+      ++ nixPatchesFor base.version
     )).overrideScope
       (
-        final: prev: {
+        final: prev:
+        {
           # Not in `prev`: the components take it from nixDependencies.
           boehmgc = pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
             patches = (old.patches or [ ]) ++ bdwgcPatches;
@@ -92,10 +100,36 @@ rec {
   # for these bindings, as nanopynix does, needs the same patches. The
   # other two Nix patches are nanopynix's own already.
   bdwgcPatches = [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
-  libstorePatches = [
-    ./nix/patches/nix-temp-roots-per-store.patch
-    ./nix/patches/nix-remote-verbosity.patch
-  ];
+  /**
+    The Nix patches these bindings need, for a Nix version string: the
+    temp-roots, remote-verbosity and count-calls patches. A version with
+    no files of its own, such as git's `2.36pre...`, takes the newest,
+    which git's changed `setOptions` and `EvalState` constructor need.
+  */
+  nixPatchesFor =
+    version:
+    let
+      newest = {
+        verbosity = ./nix/patches/nix-2.36-remote-verbosity.patch;
+        countCalls = ./nix/patches/nix-2.36-count-calls.patch;
+      };
+      byVersion = {
+        "2.34" = {
+          verbosity = ./nix/patches/nix-remote-verbosity.patch;
+          countCalls = ./nix/patches/nix-2.34-count-calls.patch;
+        };
+        "2.35" = {
+          verbosity = ./nix/patches/nix-remote-verbosity.patch;
+          countCalls = ./nix/patches/nix-2.35-count-calls.patch;
+        };
+      };
+      files = byVersion.${lib.versions.majorMinor version} or newest;
+    in
+    [
+      ./nix/patches/nix-temp-roots-per-store.patch
+      files.verbosity
+      files.countCalls
+    ];
   # The LANGUAGE a declaration is written in, and the reader that
   # parses one. No declaration and no emitter is in here, which is
   # what lets the two below depend on it without depending on each
@@ -146,8 +180,7 @@ rec {
   # the surface generated for them and the library over both describe
   # the Nix `base` is, and `HUGGORM_NIX_VERSION` carries that to every
   # declaration's `NIX_VERSION` branch.
-  forNix =
-    base: forNixWith { inherit base; };
+  forNix = base: forNixWith { inherit base; };
   forNixWith =
     {
       base,

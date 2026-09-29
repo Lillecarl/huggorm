@@ -8,7 +8,9 @@ The state runs against a chroot store, because reading `drvPath` and
 copying a path both write to it.
 """
 
+import json
 import pathlib
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -334,3 +336,58 @@ def test_realised_json_names_what_the_context_holds(state: Any) -> None:
     added = state.eval_expr('builtins.toFile "note" "hi"')
     assert added.realise_json() == added.to_json()
     assert added.string_context()
+
+
+# 50 multiplications, and a fold over the 50 results.
+COUNTED = "builtins.foldl' (a: b: a + b) 0 (builtins.genList (i: i * 2) 50)"
+
+
+@pytest.fixture
+def counting() -> Iterator[None]:
+    """The evaluation counters on for one test, and put back after.
+
+    The switch belongs to the process, so a value left behind would
+    change every later test."""
+    from huggorm_bindings import eval_counters_enabled, set_eval_counters_enabled
+
+    before = eval_counters_enabled()
+    set_eval_counters_enabled(True)
+    try:
+        yield
+    finally:
+        set_eval_counters_enabled(before)
+
+
+def test_the_counters_switch_reads_back() -> None:
+    from huggorm_bindings import eval_counters_enabled, set_eval_counters_enabled
+
+    before = eval_counters_enabled()
+    try:
+        set_eval_counters_enabled(not before)
+        assert eval_counters_enabled() is (not before)
+    finally:
+        set_eval_counters_enabled(before)
+
+
+def test_statistics_count_an_evaluation(state: Any, counting: None) -> None:
+    """The numeric fields move with the work, once the counters are on."""
+    del counting
+    before = json.loads(state.statistics_json())
+    assert state.eval_expr(COUNTED).integer() == 2450
+    after = json.loads(state.statistics_json())
+    assert after["nrFunctionCalls"] > before["nrFunctionCalls"]
+    assert after["values"]["number"] > before["values"]["number"]
+
+
+def test_the_call_tables_need_count_calls(tmp_path: pathlib.Path) -> None:
+    """`count-calls` fills the tables, and without it they are absent."""
+    from huggorm_bindings import EvalState, Store
+
+    store = Store(str(tmp_path))
+    plain = EvalState(store)
+    plain.eval_expr(COUNTED)
+    assert "primops" not in json.loads(plain.statistics_json())
+
+    counted = EvalState(store, {"count-calls": "true"})
+    counted.eval_expr(COUNTED)
+    assert json.loads(counted.statistics_json())["primops"]["mul"] == 50
