@@ -64,6 +64,12 @@ python3Packages.buildPythonPackage {
 
   propagatedBuildInputs = nixLibs;
 
+  # The Nix a declaration's `NIX_VERSION` branch picks an arm for
+  # (tasks/055). Exported, so every build that emits a surface for
+  # these bindings describes the same Nix.
+  env.HUGGORM_NIX_VERSION = nix-store.version;
+  passthru.nixVersion = nix-store.version;
+
   # Nix's own `src/nix/get-env.sh`, which `nix develop` runs as a
   # builder. Nix compiles it into the `nix` binary and no library
   # carries it, so the package that links the libraries carries the

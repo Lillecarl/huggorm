@@ -43,6 +43,9 @@ python3Packages.buildPythonPackage {
   # emitted module imports anyio (tasks/040).
   propagatedBuildInputs = [ huggorm-bindings python3Packages.anyio ];
 
+  # The surface describes the Nix the bindings link (tasks/055).
+  env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
+
   # The emitted package and the stubs, checked as a pair. This is the
   # claim tasks/017 and tasks/027 make - that a consumer can be
   # typechecked against the generated protocols - so it is worth

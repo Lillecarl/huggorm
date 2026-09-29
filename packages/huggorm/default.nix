@@ -11,6 +11,17 @@
   zuban,
   ...
 }:
+let
+  # The suite branches on `NIX_2_35` and `NIX_2_36`, and a type checker
+  # holds a name constant only when told to. `majorMinor`, because
+  # `2.36pre...` sorts BEFORE `2.36` in `versionAtLeast` (tasks/055).
+  nixVersion = lib.versions.majorMinor huggorm-bindings.nixVersion;
+  versionFlags = lib.concatMapStringsSep " " (
+    at:
+    (if lib.versionAtLeast nixVersion at then "--always-true" else "--always-false")
+    + " NIX_${lib.replaceStrings [ "." ] [ "_" ] at}"
+  ) [ "2.35" "2.36" ];
+in
 python3Packages.buildPythonPackage {
   pname = "huggorm";
   version = "0.1.0";
@@ -44,6 +55,10 @@ python3Packages.buildPythonPackage {
   # what let it beat watchdog - Carl ruled Darwin out for now, so
   # cross-platform bought nothing and cost a thread pool. It
   # propagates nothing but python3 itself.
+  # The front door and the suite read the declarations for the Nix the
+  # bindings link (tasks/055).
+  env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
+
   propagatedBuildInputs = [
     huggorm-bindings
     huggorm-generated
@@ -97,6 +112,7 @@ python3Packages.buildPythonPackage {
     echo "--- typecheck ---"
     zuban mypy --strict \
       --python-executable ${python3Packages.python.interpreter} \
+      ${versionFlags} \
       huggorm tests
     echo "--- pytest (hermetic only) ---"
     # -m "not live": a build sandbox has no daemon, no db and no

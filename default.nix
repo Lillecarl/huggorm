@@ -39,20 +39,11 @@ rec {
   # it was forcing rethrowing "interrupted by the user" for the life
   # of the state (tasks/097). Carl's call, 2026-09-25: patch Nix, not
   # abandon the state. It is upstream's own fix, 5c4f498d3, released
-  # in 2.35.0, so it goes when `pkgs.nix` reaches 2.35.
+  # in 2.35.0, so only 2.34 carries it.
   #
-  # One version, and nanopynix's shape is deliberately
-  # not copied. It keys a patch table by `majorMinor` and builds a
-  # scope per version, because it supports 2.34 through git. This
-  # repository binds the nix that `pkgs.nix` is, and Carl put it this
-  # way on the same day: nanopynix is production ready, "this is still
-  # an elaborate spike". A version matrix is a cost that buys nothing
-  # until there is a second version to serve.
-  #
-  # The patch header says the three hunks have identical context in
-  # 2.31, 2.34 and 2.35, so a version bump moves line numbers and
-  # nothing else. If it ever stops applying, that failure is the
-  # signal to read it again - not to add a matrix.
+  # The patch header says the base-environment hunks have identical
+  # context in 2.31, 2.34 and 2.35, so a version bump moves line
+  # numbers and nothing else.
   #
   # It raises both sizes to 512 and makes the two base-environment
   # writes TEST the bound, so a consumer that still exceeds it reads
@@ -71,12 +62,11 @@ rec {
   # no marker thread. `initGC` then switches interior pointers after
   # `GC_init`, and bdwgc's setter drops offset 0 when it does. The
   # patch header has the detail (tasks/101).
-  nix =
-    (pkgs.nix.appendPatches (
-      [
-        ./nix/patches/nix-base-env-size.patch
-        ./nix/patches/nix-interrupted-thunk-recovers.patch
-      ]
+  patchNix =
+    base:
+    (base.appendPatches (
+      [ ./nix/patches/nix-base-env-size.patch ]
+      ++ lib.optional (lib.versionOlder base.version "2.35") ./nix/patches/nix-interrupted-thunk-recovers.patch
       ++ libstorePatches
     )).overrideScope
       (
@@ -95,12 +85,6 @@ rec {
     ./nix/patches/nix-temp-roots-per-store.patch
     ./nix/patches/nix-remote-verbosity.patch
   ];
-  # The libgc libnixexpr links. The bindings link the same one, because
-  # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
-  # process ran libnixexpr on a libgc built without its large config.
-  boehmgc = lib.findFirst (
-    p: (p.pname or "") == "boehm-gc"
-  ) (throw "libnixexpr links no boehmgc") nix.libs.nix-expr.propagatedBuildInputs;
   # The LANGUAGE a declaration is written in, and the reader that
   # parses one. No declaration and no emitter is in here, which is
   # what lets the two below depend on it without depending on each
@@ -147,39 +131,74 @@ rec {
     ];
     pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
-  # The interpreter the emitters run under, with them on its path.
-  # The bindings. Every module is a nanobind extension whose C++ its
-  # own setup.py writes from a declaration, before setuptools is told
-  # the sources exist.
-  huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
-    inherit
-      huggorm-gen
-      huggorm-decl
-      huggorm-dsl
-      boehmgc
-      ;
-    inherit (nix.libs)
-      nix-util
-      nix-store
-      nix-expr
-      nix-fetchers
-      nix-flake
-      nix-cmd
-      ;
+  # Everything that links a Nix, for one Nix (tasks/055). The bindings,
+  # the surface generated for them and the library over both describe
+  # the Nix `base` is, and `HUGGORM_NIX_VERSION` carries that to every
+  # declaration's `NIX_VERSION` branch.
+  forNix =
+    base:
+    let
+      nix = patchNix base;
+      # The libgc libnixexpr links. The bindings link the same one, because
+      # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
+      # process ran libnixexpr on a libgc built without its large config.
+      boehmgc = lib.findFirst (
+        p: (p.pname or "") == "boehm-gc"
+      ) (throw "libnixexpr links no boehmgc") nix.libs.nix-expr.propagatedBuildInputs;
+      unversioned-src = bindings-src;
+    in
+    rec {
+      inherit nix boehmgc;
+      # The emitted C++ for this Nix, for reading.
+      bindings-src = unversioned-src.overrideAttrs { HUGGORM_NIX_VERSION = nix.version; };
+      # The bindings. Every module is a nanobind extension whose C++ its
+      # own setup.py writes from a declaration, before setuptools is told
+      # the sources exist.
+      huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
+        inherit
+          huggorm-gen
+          huggorm-decl
+          huggorm-dsl
+          boehmgc
+          ;
+        inherit (nix.libs)
+          nix-util
+          nix-store
+          nix-expr
+          nix-fetchers
+          nix-flake
+          nix-cmd
+          ;
+      };
+      # this is a Python library that uses huggorm-bindings
+      huggorm = pkgs.callPackage ./packages/huggorm {
+        inherit huggorm-bindings;
+        inherit huggorm-generated;
+        inherit huggorm-gen huggorm-decl huggorm-dsl;
+      };
+      # AST codegen layer between bindings and python: the declarations
+      # -> async wrappers, protocols, an RPC client, a wire schema and
+      # the binding stubs.
+      huggorm-generated = pkgs.callPackage ./packages/huggorm-generated {
+        inherit huggorm-bindings;
+        inherit huggorm-gen huggorm-decl huggorm-dsl;
+      };
+    };
+
+  # The versions nanopynix's CI covers. 2.34 is the default below.
+  nixVersions = {
+    nix_2_34 = forNix pkgs.nixVersions.nix_2_34;
+    nix_2_35 = forNix pkgs.nixVersions.nix_2_35;
+    git = forNix pkgs.nixVersions.git;
   };
-  # this is a Python library that uses huggorm-bindings
-  huggorm = pkgs.callPackage ./packages/huggorm {
-    inherit huggorm-bindings;
-    inherit huggorm-generated;
-    inherit huggorm-gen huggorm-decl huggorm-dsl;
-  };
-  # AST codegen layer between bindings and python: the declarations
-  # -> async wrappers, protocols, an RPC client, a wire schema and
-  # the binding stubs.
-  huggorm-generated = pkgs.callPackage ./packages/huggorm-generated {
-    inherit huggorm-bindings;
-    inherit huggorm-gen huggorm-decl huggorm-dsl;
-  };
+  inherit (nixVersions.nix_2_34)
+    nix
+    boehmgc
+    huggorm-bindings
+    huggorm
+    huggorm-generated
+    ;
+
   # nix run --file . python -- $args
   # to be able to run Python commands
   python = pkgs.python3;
@@ -257,6 +276,17 @@ rec {
       # own run under the same configuration.
       echo "--- typecheck: every tree mypy.ini names ---"
       zuban mypy --python-executable "${ourPython}/bin/python3"
+      # The declarations branch on `NIX_2_35` and `NIX_2_36`, and
+      # `mypy.ini` holds both false, so each later Nix gets a run of
+      # its own. The suite and the generated surface need no such run
+      # here: each version's own build typechecks them (tasks/055).
+      echo "--- typecheck: the declarations, for 2.35 and 2.36 ---"
+      zuban mypy --python-executable "${ourPython}/bin/python3" \
+        --always-true NIX_2_35 --always-false NIX_2_36 \
+        packages/huggorm-dsl/src/huggorm_dsl packages/huggorm-decl/src/huggorm_decl
+      zuban mypy --python-executable "${ourPython}/bin/python3" \
+        --always-true NIX_2_35 --always-true NIX_2_36 \
+        packages/huggorm-dsl/src/huggorm_dsl packages/huggorm-decl/src/huggorm_decl
       echo "--- typecheck: the setup scripts ---"
       zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-bindings/setup.py
       zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-generated/setup.py

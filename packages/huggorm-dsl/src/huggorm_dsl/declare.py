@@ -23,7 +23,9 @@ is a fact about the boundary rather than about nix::StorePath.
 """
 
 import datetime
+import os
 import pathlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypeVar, get_args, get_origin
@@ -81,10 +83,32 @@ class Async:
 # declaration is imported as well as parsed: the interpreter is
 # already there and it is better at this than we would be.
 #
-# The default is what a bare `import huggorm_decl.decl.store` sees -
-# a reader, an editor, a typechecker - so it must be a real version
-# rather than a sentinel that makes every comparison false.
-NIX_VERSION: tuple[int, ...] = (2, 34)
+# A build sets `HUGGORM_NIX_VERSION` to the version of the Nix it
+# links (`2.35.2`, `2.36.0pre20260101_abcdef`), and only the major and
+# minor count: a patch release changes no API. A value with no
+# `major.minor` refuses the import, because a wrong arm is a binding
+# that does not compile or, worse, one that does.
+#
+# Unset, it is what a bare `import huggorm_decl.decl.store` sees - a
+# reader, an editor, a typechecker - so it is a real version rather
+# than a sentinel that makes every comparison false.
+def _nix_version() -> tuple[int, int]:
+    raw = os.environ.get("HUGGORM_NIX_VERSION", "")
+    if not raw:
+        return (2, 34)
+    found = re.match(r"(\d+)\.(\d+)", raw)
+    if found is None:
+        raise ValueError(f"HUGGORM_NIX_VERSION is {raw!r}, and it needs major.minor")
+    return (int(found[1]), int(found[2]))
+
+
+NIX_VERSION: tuple[int, int] = _nix_version()
+
+# The same fact as names, because a type checker holds a NAME constant
+# (`--always-true NIX_2_35`) and never a comparison. The declarations
+# and the suite branch on these, so each is typechecked once per Nix.
+NIX_2_35: bool = NIX_VERSION >= (2, 35)
+NIX_2_36: bool = NIX_VERSION >= (2, 36)
 
 
 def twins() -> dict[str, str]:
