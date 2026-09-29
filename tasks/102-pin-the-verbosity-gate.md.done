@@ -1,6 +1,6 @@
 # Pin the verbosity gate, and tell the daemon something else
 
-**OPEN.** Found by the nanopynix port (`tasks/097`), 2026-09-29.
+**DONE.** Found by the nanopynix port (`tasks/097`), 2026-09-29.
 
 ## Decision
 
@@ -81,3 +81,27 @@ no movement.
   that watched `process_verbosity()` move now watch it, and two new
   gates pin `process_verbosity()` at CHATTY through subscriptions at
   7 and refuse a record above CHATTY to a subscription at 7.
+
+### Proved by breaking it
+
+Two rounds, each break restored after (`test_logs.py`):
+
+- `log_ceiling` defaulting to VOMIT fails the pin test, the
+  `HUGGORM_LOG_CEILING=""` probe, and the test that a subscription at
+  7 gets nothing above CHATTY.
+- `reconcile` starting `widest` at VOMIT fails
+  `test_nothing_asks_nix_for_everything` and the four gates that watch
+  the daemon level go back down.
+- `reconcile` writing `nix::verbosity` too fails the pin test.
+- `install_log_tap` telling the daemon VOMIT fails every
+  `HUGGORM_LOG_CEILING` probe: the daemon starts at 7.
+
+WRONG FIRST: the test that a subscription at 7 gets nothing above
+CHATTY evaluated a file, and passed with the ceiling at VOMIT. That
+evaluation raises nothing above TALKATIVE, so the test tested
+nothing. It now calls `builtins.findFile` on a fresh search path
+element, which Nix narrates with `debug()` (`eval.cc:3285`), and the
+same break fails it.
+
+nanopynix's `test_nix_filters_at_a_pinned_ceiling_that_no_call_moves`
+passes on the huggorm lane.

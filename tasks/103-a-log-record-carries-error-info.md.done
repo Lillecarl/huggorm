@@ -1,6 +1,6 @@
 # A log record carries Nix's ErrorInfo
 
-**OPEN.** Found by the nanopynix port (`tasks/097`), 2026-09-29.
+**DONE.** Found by the nanopynix port (`tasks/097`), 2026-09-29.
 
 ## Problem
 
@@ -82,3 +82,8 @@ bind functions, not by a struct, so it stays in the unit.
   The action stays `"msg"`, as Nix's `JSONLogger` writes it.
 - nanopynix's `_callback_args` maps a `"msg"` that carries `info` to
   `("error", level, info.msg(), dict)`, the other engine's shape.
+
+Proved by breaking it: `logEI` without `.info` fails
+`test_a_warning_takes_the_other_path`. nanopynix's
+`test_an_error_event_carries_the_same_payload_on_both_engines` passes
+on the huggorm lane, on both its inproc and rpc sessions.

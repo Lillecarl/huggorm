@@ -1130,13 +1130,15 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
-- 103 (a log record carries ErrorInfo) is OPEN. Needs records visible
-  across units, and a choice about `LogRecord`'s rebuild; the file has
-  both.
-- 102 (pin the verbosity gate) is OPEN. Carl chose a pin at CHATTY at
-  import, and a Nix patch so `setOptions` does not send the pin to the
-  daemon. Two questions remain before the work: what a subscription
-  above CHATTY gets, and what the daemon is told.
+- 103 (a log record carries ErrorInfo) is DONE. Each module's records
+  go into `<module>_records.hpp`, and a unit includes the header of
+  every module whose records it names. `LogRecord.info` holds what
+  `logEI` was given, and `cpp/logging.hpp` includes `path`'s header.
+- 102 (pin the verbosity gate) is DONE. `nix::verbosity` is written
+  once, at import, from `HUGGORM_LOG_CEILING` (CHATTY when unset). A
+  Nix patch adds `nix::remoteVerbosity`, which `setOptions` sends and
+  `VerbosityDemand` keeps at the widest subscription (INFO when none);
+  `daemon_verbosity()` reads it.
 - 101 (importing starts no thread) is DONE. `GC_INIT` runs at import,
   on the importing thread; `nix::initGC`, which starts the markers,
   at the first evaluator. bdwgc's late interior-pointer setter drops
