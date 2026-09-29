@@ -32,6 +32,7 @@ from huggorm_decl.decl.store import Store
 from huggorm_dsl.declare import (
     F64,
     I64,
+    NIX_2_35,
     Bint,
     Cxx,
     PyFunc,
@@ -1205,18 +1206,33 @@ if (!node)
 return huggorm::LockedInput{node->lockedRef, node->originalRef, node->isFlake};
         """)
 
-    @blocks
-    def write_lock_file(self) -> None:
-        """Write `flake.lock` beside `flake.nix`, as `nix flake lock`
-        does, whatever `lock_flake` was told."""
-        Cxx("""
+    # Nix 2.35 drops the cache of the whole accessor, not of a path.
+    if NIX_2_35:
+        @blocks
+        def write_lock_file(self) -> None:
+            """Write `flake.lock` beside `flake.nix`, as `nix flake
+            lock` does, whatever `lock_flake` was told."""
+            Cxx("""
+auto & flake = self.locked.flake;
+auto [text, keys] = self.locked.lockFile.to_string();
+auto & subdir = flake.originalRef.subdir;
+auto relative = (subdir.empty() ? "" : subdir + "/") + "flake.lock";
+flake.originalRef.input.putFile(nix::CanonPath(relative), text + "\\n", std::nullopt);
+flake.lockFilePath().accessor->invalidateCache();
+            """)
+    else:
+        @blocks
+        def write_lock_file(self) -> None:
+            """Write `flake.lock` beside `flake.nix`, as `nix flake
+            lock` does, whatever `lock_flake` was told."""
+            Cxx("""
 auto & flake = self.locked.flake;
 auto [text, keys] = self.locked.lockFile.to_string();
 auto & subdir = flake.originalRef.subdir;
 auto relative = (subdir.empty() ? "" : subdir + "/") + "flake.lock";
 flake.originalRef.input.putFile(nix::CanonPath(relative), text + "\\n", std::nullopt);
 flake.lockFilePath().invalidateCache();
-        """)
+            """)
 
 
 @produced(by="Repl.select")

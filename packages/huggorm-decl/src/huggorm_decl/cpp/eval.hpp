@@ -872,19 +872,37 @@ inline std::string primop_failure(const nb::python_error & e)
     return message.empty() ? kind : kind + ": " + message;
 }
 
+/** Where a primop was called: 2.35 passes the position, 2.36 a
+ * `CallSite` that holds it. */
+inline nix::PosIdx call_position(nix::PosIdx pos)
+{
+    return pos;
+}
+
+template <typename Site>
+    requires requires(const Site & site) { site.pos; }
+nix::PosIdx call_position(const Site & site)
+{
+    return site.pos;
+}
+
 /**
  * The body of a primop implemented in Python: `register_primop` and
  * `make_primop` both call it. `label` names the function in its
  * errors.
+ *
+ * GENERIC in the call site and the argument array, because Nix 2.36
+ * changed both types of `PrimOpFun` (tasks/055).
  */
 inline nix::fun<nix::PrimOpFun> primop_impl(
     std::weak_ptr<EvalCore> weak, std::size_t slot, std::size_t arity,
     std::string label)
 {
     return [weak, slot, arity, label](nix::EvalState & state,
-                                      const nix::PosIdx pos,
-                                      nix::Value ** args,
+                                      auto site,
+                                      auto args,
                                       nix::Value & out) {
+        const nix::PosIdx pos = call_position(site);
         auto held = weak.lock();
         if (!held)
             state.error<nix::EvalError>("the evaluator is gone")

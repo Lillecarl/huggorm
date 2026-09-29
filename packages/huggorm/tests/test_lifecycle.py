@@ -20,9 +20,9 @@ from typing import Any
 import anyio
 import pytest
 from conftest import HOST, SHORT_TTL, Server
+from nixversion import MISSING_FILE, MissingFileError
 
 from huggorm import remote
-from huggorm_bindings.errors import SysError
 
 
 async def wrapper_error(coro: Any) -> dict[str, str]:
@@ -425,15 +425,15 @@ async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
         assert await warm.integer() == 42, "the claimed state still has it"
 
         cold = await heir.acquire("EvalState", await heir.acquire("Store", "dummy://"))
-        # `SysError`, not the wrapper: a declared Nix error crosses as
+        # Nix's own error class, not the wrapper: a declared Nix error crosses as
         # ITSELF (tasks/066), so `wrapper_error` - which catches only
         # InternalError - does not see this one. Measured by writing it
-        # that way first and watching the SysError go straight through.
-        with pytest.raises(SysError) as caught:
+        # that way first and watching the error go straight through.
+        with pytest.raises(MissingFileError) as caught:
             await cold.eval_file(swept.warm_file)
-        # "opening file" is the cold state SAYING it went to disk, which is
-        # the half the claimed state is claimed not to do.
-        assert "opening file" in str(caught.value)
+        # Nix's words for a missing file are the cold state SAYING it went
+        # to disk, which is the half the claimed state is claimed not to do.
+        assert MISSING_FILE in str(caught.value)
         assert "answer.nix" in str(caught.value)
 
 

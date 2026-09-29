@@ -28,6 +28,7 @@ import inspect
 from typing import Any
 
 import pytest
+from nixversion import MISSING_FILE
 
 # The store every surface opens. In-memory, so nothing here touches
 # the machine.
@@ -325,14 +326,12 @@ async def test_a_file_evaluated_twice_is_read_once(
     cold = await open_state(surface, client)
     with pytest.raises(Exception) as caught:
         await call(cold, "eval_file", str(src))
-    # "opening file", not merely the name: it is the cold state SAYING
-    # it went to disk, which is the half the warm call is claimed not
-    # to do. Measured identical on all three surfaces -
-    #   SysError: error: opening file '.../answer.nix':
-    #   No such file or directory
-    # - so this is also where the RPC translation of a libutil error
-    # would stop agreeing.
-    assert "opening file" in str(caught.value)
+    # Nix's words for a missing file, not merely the name: it is the
+    # cold state SAYING it went to disk, which is the half the warm
+    # call is claimed not to do. Measured identical on all three
+    # surfaces, so this is also where the RPC translation of a libutil
+    # error would stop agreeing.
+    assert MISSING_FILE in str(caught.value)
     assert "answer.nix" in str(caught.value)
 
 

@@ -14,6 +14,7 @@ import sys
 from typing import Any, cast
 
 import pytest
+from nixversion import built_output, drv_output, drv_output_parts, paths_of, some_paths
 
 from huggorm_bindings import (
     AttrDoc,
@@ -29,7 +30,6 @@ from huggorm_bindings import (
     DerivationOutputInputAddressed,
     DerivedPathBuilt,
     Doc,
-    DrvOutput,
     ErrorInfo,
     FlakeRef,
     GCAction,
@@ -74,6 +74,10 @@ from huggorm_bindings.errors import (
     Unsupported,
     UsageError,
 )
+from huggorm_dsl.declare import NIX_2_35
+
+if NIX_2_35:
+    from huggorm_bindings import GCSpecificPaths, GCWholeStore, UnkeyedRealisation
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
 
@@ -1155,38 +1159,48 @@ def test_a_store_with_no_ca_derivations_realises_nothing(
 
     Asked with a real key, not a null one: the point is that a
     well-formed question gets None, not that a malformed one does."""
-    key = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out")
+    key = drv_output(0, "out")
     assert chroot.query_realisation(key) is None
 
 
 def test_a_realisation_key_is_two_facts_and_a_rendering() -> None:
     """DrvOutput is the key a caller BUILDS, so it is constructible.
 
-    The hash is a `Hash` rather than a string, which is what lets a
-    caller ask for the algorithm instead of splitting `to_string` on a
-    colon - and `to_string` is upstream's own `<hash>!<output>`, with
-    the hash base16 and prefixed, which is what `DrvOutput::parse`
-    reads back."""
-    key = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(range(32))), "dev")
-
-    assert key.drv_hash().algorithm() == HashAlgorithm.SHA256
+    It compares as its C++ does, over exactly the two members the wire
+    carries - so equal keys hash alike and a set of them deduplicates.
+    `to_string` is upstream's own `<derivation>!<output>`."""
+    key = drv_output(1, "dev")
     assert key.output_name() == "dev"
 
-    # Upstream's spelling, and the two halves are visible in it. The
-    # hash carries its algorithm here where `Hash.base16()` does not:
-    # `DrvOutput::to_string` calls `strHash()`, which is base16 WITH
-    # the prefix, because `DrvOutput::parse` reads it back.
-    assert str(key) == f"sha256:{key.drv_hash().base16()}!dev"
-    assert str(key).startswith("sha256:000102")
-    assert str(key).endswith("!dev")
-
-    # It compares as its C++ does, over exactly the two members the
-    # wire carries - so equal keys hash alike and a set of them
-    # deduplicates.
-    same = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(range(32))), "dev")
+    same = drv_output(1, "dev")
     assert key == same and hash(key) == hash(same)
     assert len({key, same}) == 1
-    assert key != DrvOutput(Hash(HashAlgorithm.SHA256, bytes(range(32))), "out")
+    assert key != drv_output(1, "out")
+
+
+if NIX_2_35:
+
+    def test_a_key_names_its_derivation_by_path() -> None:
+        """Nix 2.35 keys a realisation on the derivation's store path,
+        and renders its base name."""
+        key = drv_output(1, "dev")
+        assert key.drv_path().to_string() == f"{'1' * 32}-sample.drv"
+        assert str(key) == f"{'1' * 32}-sample.drv^dev"
+
+else:
+
+    def test_a_key_names_its_derivation_by_hash() -> None:
+        """Nix 2.34 keys a realisation on the hash modulo.
+
+        The hash is a `Hash` rather than a string, which is what lets
+        a caller ask for the algorithm instead of splitting `to_string`
+        on a colon. `DrvOutput::to_string` calls `strHash()`, base16
+        WITH the prefix, because `DrvOutput::parse` reads it back."""
+        key = drv_output(1, "dev")
+        assert key.drv_hash().algorithm() == HashAlgorithm.SHA256
+        assert str(key) == f"sha256:{key.drv_hash().base16()}!dev"
+        assert str(key).endswith("!dev")
+        assert str(key).startswith("sha256:0101")
 
 
 def test_a_realisation_compares_on_its_signatures_where_nix_does_not(
@@ -1205,7 +1219,7 @@ def test_a_realisation_compares_on_its_signatures_where_nix_does_not(
     invariant Python asks of a value. Equality is over the parts here,
     and this is the case where that shows."""
     held = chroot.add_to_store("realised", b"x", CA.NAR, HashAlgorithm.SHA256)
-    key = DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out")
+    key = drv_output(0, "out")
 
     bare = _rebuild(Realisation, key, held, [])
     signed = _rebuild(Realisation, key, held, [Signature("k", bytes(64))])
@@ -1748,14 +1762,10 @@ def test_every_wire_value_survives_its_own_round_trip(
         # because `ca-derivations` is off and there is no mapping to
         # consult - so nothing here can produce a real one, and the
         # live test says so rather than this pretending.
-        "DrvOutput": (DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out"),
-                      [(Hash(HashAlgorithm.SHA1, bytes(20)), "dev")]),
+        "DrvOutput": (drv_output(0, "out"), [drv_output_parts(1, "dev")]),
         "Realisation": (
-            _rebuild(Realisation,
-                     DrvOutput(Hash(HashAlgorithm.SHA256, bytes(32)), "out"),
-                     held, []),
-            [(DrvOutput(Hash(HashAlgorithm.SHA1, bytes(20)), "dev"),
-              other, [Signature("k", bytes(64))])]),
+            _rebuild(Realisation, drv_output(0, "out"), held, []),
+            [(drv_output(1, "dev"), other, [Signature("k", bytes(64))])]),
         # The SUM types. `drv_path` is a union, so the second case
         # takes the OTHER arm - and for the Single one that arm is
         # another SingleDerivedPathBuilt, which is the recursion.
@@ -1785,11 +1795,7 @@ def test_every_wire_value_survives_its_own_round_trip(
         # `ca-derivations`, which is off.
         "BuildSuccess": (
             _rebuild(BuildSuccess, BuildSuccessStatus.BUILT, {}),
-            [(BuildSuccessStatus.SUBSTITUTED,
-              {"out": _rebuild(Realisation,
-                               DrvOutput(Hash(HashAlgorithm.SHA256,
-                                              bytes(32)), "out"),
-                               held, [])})]),
+            [(BuildSuccessStatus.SUBSTITUTED, {"out": built_output(held)})]),
         # The two ARMS, one case each, because a result holds exactly
         # one of them and a single case would leave the other dark.
         #
@@ -1819,8 +1825,8 @@ def test_every_wire_value_survives_its_own_round_trip(
         # holds is what has to survive.
         "GCOptions": (
             GCOptions(GCAction.DELETE_SPECIFIC, True,
-                      sorted([held, other]), 1 << 30),
-            [(GCAction.RETURN_LIVE, False, [held], 4096)]),
+                      some_paths(sorted([held, other])), 1 << 30),
+            [(GCAction.RETURN_LIVE, False, some_paths([held]), 4096)]),
         # Strings, not store paths - the field is a `StringSet`
         # upstream, because a root can be a path outside the store.
         # Sorted, because the set's order is what comes back.
@@ -1948,6 +1954,18 @@ def test_every_wire_value_survives_its_own_round_trip(
             [("start", 3, 7, 2, 105, 41, "copying '/tmp/x' to the store",
               [_rebuild(LogField, False, 0, "/tmp/x")], None)]),
     }
+
+    if NIX_2_35:
+        # What 2.35 declares and 2.34 does not: the key-less realisation
+        # a build answers with, and the two places a collection looks.
+        samples.update({
+            "UnkeyedRealisation": (
+                _rebuild(UnkeyedRealisation, held, []),
+                [(other, [Signature("k", bytes(64))])]),
+            "GCWholeStore": (GCWholeStore(), []),
+            "GCSpecificPaths": (GCSpecificPaths([held]),
+                                [([held, other], True)]),
+        })
 
     declared = _wire_values()
     missing = sorted(set(declared) - set(samples))
@@ -2113,7 +2131,10 @@ def test_gc_options_take_every_default_from_upstream() -> None:
     options = GCOptions()
     assert options.action() == GCAction.DELETE_DEAD
     assert options.ignore_liveness() is False
-    assert options.paths_to_delete() == []
+    if NIX_2_35:
+        assert isinstance(options.paths_to_delete(), GCWholeStore)
+    else:
+        assert options.paths_to_delete() == []
     assert options.max_freed() is None
 
 
@@ -2125,12 +2146,11 @@ def test_gc_options_read_back_what_was_asked_for() -> None:
     path = StorePath("00000000000000000000000000000000-a")
     options = GCOptions(action=GCAction.DELETE_SPECIFIC,
                         ignore_liveness=True,
-                        paths_to_delete=[path],
+                        paths_to_delete=some_paths([path]),
                         max_freed=1 << 30)
     assert options.action() == GCAction.DELETE_SPECIFIC
     assert options.ignore_liveness() is True
-    assert [p.to_string() for p in options.paths_to_delete()] == \
-        [path.to_string()]
+    assert [p.to_string() for p in paths_of(options)] == [path.to_string()]
     assert options.max_freed() == 1 << 30
 
 
@@ -2225,7 +2245,13 @@ def test_censoring_hides_which_process_holds_a_temp_root(
     root's name says so unless censored."""
     held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
 
-    assert (f"{{temp:{os.getpid()}}}", held) in _roots(chroot, False)
+    # 2.35 names the root by its file, which huggorm's Nix patch names
+    # `<pid>-<n>`; 2.34 names it by the pid alone.
+    names = [name for name, path in _roots(chroot, False) if path == held]
+    if NIX_2_35:
+        assert any(name.startswith(f"{{temp:{os.getpid()}-") for name in names), names
+    else:
+        assert f"{{temp:{os.getpid()}}}" in names, names
     assert ("{censored}", held) in _roots(chroot, True)
 
 
@@ -2315,7 +2341,7 @@ def test_deleting_a_path_this_process_holds_is_refused(chroot: Store) -> None:
         chroot.collect_garbage(GCOptions(
             action=GCAction.DELETE_SPECIFIC,
             ignore_liveness=True,
-            paths_to_delete=[path]))
+            paths_to_delete=some_paths([path])))
     assert chroot.is_valid_path(path)
 
 

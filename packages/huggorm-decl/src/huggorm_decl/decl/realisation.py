@@ -15,6 +15,7 @@ from huggorm_decl.decl.hash import Hash
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.signature import Signature
 from huggorm_dsl.declare import (
+    NIX_2_35,
     Cxx,
     Str,
     binding,
@@ -46,29 +47,37 @@ from huggorm_dsl.declare import (
 class DrvOutput:
     """Which output of which derivation - the KEY of a realisation.
 
-    Not a store path. A derivation is named here by its "hash modulo",
-    which is what lets two derivations that differ only in something
-    irrelevant share an output: the hash is computed from the
-    derivation for most kinds, and from the fixed content address for
-    a fixed-output one.
+    Nix 2.34 names the derivation by its "hash modulo", which lets two
+    derivations that differ only in something irrelevant share an
+    output. Nix 2.35 names it by its store path.
 
     Constructible, because a caller builds one to ASK. That is the
     whole of its job.
     """
 
-    def __init__(self, drv_hash: Hash, output_name: Str) -> None:
-        """Name an output of a derivation, by the derivation's hash
-        modulo and the output's name."""
-        Cxx("new (self) nix::DrvOutput{drv_hash, output_name};")
-
     # WIRE ORDER: the two facts, in the order the rendering states them.
 
-    @reads("drvHash")
-    def drv_hash(self) -> Hash:
-        """The derivation's hash modulo.
+    if NIX_2_35:
+        def __init__(self, drv_path: StorePath, output_name: Str) -> None:
+            """Name an output of a derivation, by the derivation's
+            store path and the output's name."""
+            Cxx("new (self) nix::DrvOutput{drv_path, output_name};")
 
-        A `Hash`, so its algorithm is a field rather than a prefix on
-        a string."""
+        @reads("drvPath")
+        def drv_path(self) -> StorePath:
+            """The derivation's store path."""
+    else:
+        def __init__(self, drv_hash: Hash, output_name: Str) -> None:
+            """Name an output of a derivation, by the derivation's hash
+            modulo and the output's name."""
+            Cxx("new (self) nix::DrvOutput{drv_hash, output_name};")
+
+        @reads("drvHash")
+        def drv_hash(self) -> Hash:
+            """The derivation's hash modulo.
+
+            A `Hash`, so its algorithm is a field rather than a prefix
+            on a string."""
 
     @reads("outputName")
     def output_name(self) -> Str:
@@ -77,10 +86,9 @@ class DrvOutput:
     @local
     @instant
     def to_string(self) -> Str:
-        """`<hash>!<output-name>`, upstream's own spelling.
-
-        The hash is base16 WITH its algorithm, which is what
-        `DrvOutput::parse` reads back."""
+        """`<derivation>!<output-name>`, upstream's own spelling: the
+        hash in base16 with its algorithm on 2.34, the derivation's
+        base name on 2.35."""
 
 
 @produced(by="Store.query_realisation")
@@ -169,3 +177,39 @@ class Realisation:
 return nix::Realisation{
     {out_path, as_set<std::set<nix::Signature>>(signatures)}, id};
         """)
+
+
+if NIX_2_35:
+    @produced(by="BuildSuccess.built_outputs")
+    @header("nix/store/realisation.hh")
+    @binding(
+        cxx="nix::UnkeyedRealisation",
+        threading="pool",
+        blocking=False,
+    )
+    @wire_value(
+        # PARTS, for `Realisation`'s reason: upstream compares on
+        # `outPath` alone.
+        compare="parts",
+    )
+    class UnkeyedRealisation:
+        """What one output of a build turned out to be, without the key.
+
+        Nix 2.35 answers a build with these, keyed by output name,
+        because the caller already holds the derivation."""
+
+        @reads("outPath")
+        def out_path(self) -> StorePath:
+            """The store path that output turned out to be."""
+
+        @reads("signatures")
+        def signatures(self) -> list[Signature]:
+            """Who vouched for it. Sorted, as Nix's set keeps them."""
+
+        @staticmethod
+        def _from_parts() -> UnkeyedRealisation:
+            """Rebuild one from the parts that crossed."""
+            Cxx("""
+return nix::UnkeyedRealisation{
+    out_path, as_set<std::set<nix::Signature>>(signatures)};
+            """)

@@ -24,6 +24,7 @@ from huggorm_decl.decl.words import (
     TrustedFlag,
 )
 from huggorm_dsl.declare import (
+    NIX_2_36,
     U64,
     Bint,
     Bytes,
@@ -284,18 +285,13 @@ return self.addToStoreFromDump(
     hash_algo,
     as_set<nix::StorePathSet>(references));
         """)
-    @needs("nix/util/posix-source-accessor.hh")
+    @needs("nix/util/source-accessor.hh")
     def add_path_to_store(
         self,
         name: Str,
         path: Str,
         method: ContentAddressMethod = ContentAddressMethod.NAR,
         hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
-        # The implicit Optional is the SURFACE exactly, and the
-        # generated protocol above already spells it
-        # `list[StorePath] | None`. Writing the wider type here would
-        # say nothing new to a caller, so the rule is silenced rather
-        # than followed.
         references: list[StorePath] | None = None,
     ) -> StorePath:
         """Add a file or a directory from the filesystem to the store.
@@ -329,8 +325,11 @@ return self.addToStoreFromDump(
         same thing, which is what lets the wire carry absence as a
         repeated field with nothing in it."""
         Cxx("""
-auto source = nix::PosixSourceAccessor::createAtRoot(
-    std::filesystem::weakly_canonical(std::filesystem::path{path}));
+// The root filesystem's accessor, which every Nix from 2.34 has;
+// 2.35 removed `PosixSourceAccessor::createAtRoot`.
+nix::SourcePath source{
+    nix::getFSSourceAccessor(),
+    nix::CanonPath{std::filesystem::weakly_canonical(std::filesystem::path{path}).string()}};
 return self.addToStore(
     name,
     source,
@@ -339,7 +338,7 @@ return self.addToStore(
     as_set<nix::StorePathSet>(references));
         """)
 
-    @needs("nix/util/posix-source-accessor.hh")
+    @needs("nix/util/source-accessor.hh")
     def compute_store_path(
         self,
         name: Str,
@@ -354,8 +353,11 @@ return self.addToStore(
         file is hashed where the store is, and the store is not
         written. What `nix store add --dry-run` answers."""
         Cxx("""
-auto source = nix::PosixSourceAccessor::createAtRoot(
-    std::filesystem::weakly_canonical(std::filesystem::path{path}));
+// The root filesystem's accessor, which every Nix from 2.34 has;
+// 2.35 removed `PosixSourceAccessor::createAtRoot`.
+nix::SourcePath source{
+    nix::getFSSourceAccessor(),
+    nix::CanonPath{std::filesystem::weakly_canonical(std::filesystem::path{path}).string()}};
 return self.computeStorePath(
     name,
     source,
@@ -713,6 +715,7 @@ return nix::Realisation{*found, id};
     # The pair is upstream's own, and it is why the union exists
     # (tasks/059): both take the same list, and only one of them
     # changes the store.
+    @needs("huggorm_decl/cpp/build.hpp")
     def build_paths(self, targets: list[DerivedPath],
                     mode: BuildMode = BuildMode.NORMAL,
                     eval_store: Store | None = None) -> None:
@@ -742,10 +745,12 @@ return nix::Realisation{*found, id};
         `eval_store` is where the `.drv` files are, when that is not
         this store: `nix --eval-store A --store B` builds in B from
         derivations A holds. None reads them from this store."""
-        Cxx("self.buildPaths(targets, mode, eval_store.value_or(nullptr));")
+        if NIX_2_36:
+            Cxx("self.getBuilder(eval_store.value_or(nullptr))->buildPaths(targets, mode);")
+        else:
+            Cxx("self.buildPaths(targets, mode, eval_store.value_or(nullptr));")
 
-    @needs("nix/store/build-result.hh")
-    @cxx_name("buildPathsWithResults")
+    @needs("nix/store/build-result.hh", "huggorm_decl/cpp/build.hpp")
     def build_paths_with_results(
             self, targets: list[DerivedPath],
             mode: BuildMode = BuildMode.NORMAL,
@@ -771,8 +776,14 @@ return nix::Realisation{*found, id};
         not for a caller who asked something incoherent.
 
         `eval_store` is `build_paths`' own."""
-        Cxx("return self.buildPathsWithResults(targets, mode, eval_store.value_or(nullptr));")
-    @cxx_name("ensurePath")
+        if NIX_2_36:
+            Cxx("""
+return self.getBuilder(eval_store.value_or(nullptr))
+    ->buildPathsWithResults(targets, mode);
+            """)
+        else:
+            Cxx("return self.buildPathsWithResults(targets, mode, eval_store.value_or(nullptr));")
+    @needs("huggorm_decl/cpp/build.hpp")
     def ensure_path(self, path: StorePath) -> None:
         """Make this path valid, by substituting it if it is not.
 
@@ -784,6 +795,10 @@ return nix::Realisation{*found, id};
 
         Already valid is a no-op. Nothing to substitute from raises,
         in libstore's own words."""
+        if NIX_2_36:
+            Cxx("self.getBuilder()->ensurePath(path);")
+        else:
+            Cxx("self.ensurePath(path);")
     @cxx_name("addTempRoot")
     def add_temp_root(self, path: StorePath) -> None:
         """Keep this path from the collector while the store is open.
@@ -848,10 +863,16 @@ return nix::Realisation{*found, id};
         invariants, and `writeDerivation` stores it. So a caller can
         take `Derivation.to_json()`, change it, and write the result
         without computing a hash itself."""
-        Cxx("""
+        if NIX_2_36:
+            Cxx("""
+auto drv = nix::derivation::parseJsonAndValidate(self, nlohmann::json::parse(json));
+return self.writeDerivation(drv);
+            """)
+        else:
+            Cxx("""
 auto drv = nix::Derivation::parseJsonAndValidate(self, nlohmann::json::parse(json));
 return self.writeDerivation(drv);
-        """)
+            """)
     @needs("nix/store/log-store.hh", "nix/store/store-cast.hh")
     def get_build_log(self, path: StorePath) -> Str | None:
         """The log of the build that made this path, or None.

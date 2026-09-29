@@ -20,6 +20,7 @@ make this repo restate four defaults that upstream already states
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.words import GCAction
 from huggorm_dsl.declare import (
+    NIX_2_35,
     U64,
     Bint,
     Cxx,
@@ -31,6 +32,65 @@ from huggorm_dsl.declare import (
     reads,
     wire_value,
 )
+
+if NIX_2_35:
+    from typing import Annotated
+
+    from huggorm_dsl.declare import Variant
+
+    @header("nix/store/gc-store.hh")
+    @binding(
+        cxx="nix::GCOptions::WholeStore",
+        threading="pool",
+        blocking=False,
+    )
+    @wire_value(unit=True)
+    class GCWholeStore:
+        """Collect across the whole store."""
+
+        def __init__(self) -> None:
+            """Nothing to say: the arm is the whole fact."""
+            Cxx("new (self) nix::GCOptions::WholeStore{};")
+
+    @header("nix/store/gc-store.hh")
+    @binding(
+        cxx="nix::GCOptions::SpecificPaths",
+        threading="pool",
+        blocking=False,
+    )
+    @wire_value()
+    class GCSpecificPaths:
+        """Collect within these paths only.
+
+        An empty set collects nothing: upstream returns before it
+        reads a root."""
+
+        def __init__(self, paths: list[StorePath],
+                     delete_referrers: Bint = False) -> None:
+            """The paths, and whether their dead referrers may go too."""
+            Cxx("""
+new (self) nix::GCOptions::SpecificPaths{
+    as_set<nix::StorePathSet>(paths), delete_referrers};
+            """)
+
+        @reads("paths")
+        def paths(self) -> list[StorePath]:
+            """The paths. Sorted, as Nix's set keeps them."""
+
+        @reads("deleteReferrers")
+        def delete_referrers(self) -> Bint:
+            """Whether a dead referrer of one of the paths may go too."""
+
+    GCPaths = Annotated[
+        GCWholeStore | GCSpecificPaths,
+        Variant(
+            "nix::GCOptions::GCPaths",
+            header="nix/store/gc-store.hh",
+            # `std::variant<WholeStore, SpecificPaths>`, in that order.
+            bare=True,
+        ),
+    ]
+    """Where a collection looks: the whole store, or some paths."""
 
 
 @header("nix/store/gc-store.hh")
@@ -54,28 +114,48 @@ class GCOptions:
     libstore made and Python reads.
     """
 
-    def __init__(self, action: GCAction = GCAction.DELETE_DEAD,
-                 ignore_liveness: Bint = False,
-                 paths_to_delete: list[StorePath] | None = None,
-                 max_freed: U64 | None = None) -> None:
-        """Say what to collect. Every answer has an upstream default.
+    if NIX_2_35:
+        def __init__(self, action: GCAction = GCAction.DELETE_DEAD,
+                     ignore_liveness: Bint = False,
+                     paths_to_delete: GCPaths | None = None,
+                     max_freed: U64 | None = None) -> None:
+            """Say what to collect. Every answer has an upstream default.
 
-        `max_freed` is None rather than a number, and that is not a
-        convenience: upstream's default is
-        `std::numeric_limits<uint64_t>::max()`, which has no Python
-        literal a declaration could carry. None leaves the member
-        alone, so the default stays the one the struct declares and
-        this file does not restate it.
-        """
-        Cxx("""
+            `paths_to_delete` None leaves upstream's default, the whole
+            store, and `max_freed` None leaves no limit: neither default
+            has a Python literal a declaration could carry.
+            """
+            Cxx("""
+new (self) nix::GCOptions{};
+self->action = action;
+self->ignoreLiveness = ignore_liveness;
+if (paths_to_delete)
+    self->pathsToDelete = *paths_to_delete;
+if (max_freed)
+    self->maxFreed = *max_freed;
+            """)
+    else:
+        def __init__(self, action: GCAction = GCAction.DELETE_DEAD,
+                     ignore_liveness: Bint = False,
+                     paths_to_delete: list[StorePath] | None = None,
+                     max_freed: U64 | None = None) -> None:
+            """Say what to collect. Every answer has an upstream default.
+
+            `max_freed` is None rather than a number, and that is not a
+            convenience: upstream's default is
+            `std::numeric_limits<uint64_t>::max()`, which has no Python
+            literal a declaration could carry. None leaves the member
+            alone, so the default stays the one the struct declares and
+            this file does not restate it.
+            """
+            Cxx("""
 new (self) nix::GCOptions{};
 self->action = action;
 self->ignoreLiveness = ignore_liveness;
 self->pathsToDelete = as_set<nix::StorePathSet>(paths_to_delete);
 if (max_freed)
     self->maxFreed = *max_freed;
-        """)
-
+            """)
     @reads("action")
     def action(self) -> GCAction:
         """Which of the four operations to run."""
@@ -88,13 +168,17 @@ if (max_freed)
         when another store path depends on it, so this drops the ROOT
         half of the check and keeps the reference half."""
 
-    @reads("pathsToDelete")
-    def paths_to_delete(self) -> list[StorePath]:
-        """The paths `DELETE_SPECIFIC` should try to delete.
+    if NIX_2_35:
+        @reads("pathsToDelete")
+        def paths_to_delete(self) -> GCPaths:
+            """Where the collection looks: the whole store, or some paths."""
+    else:
+        @reads("pathsToDelete")
+        def paths_to_delete(self) -> list[StorePath]:
+            """The paths `DELETE_SPECIFIC` should try to delete.
 
-        Read by no other action. Sorted, because Nix keeps them in a
-        set and the order is that set's."""
-
+            Read by no other action. Sorted, because Nix keeps them in a
+            set and the order is that set's."""
     def max_freed(self) -> U64 | None:
         """Stop once this many bytes have been freed, or None for no
         limit.

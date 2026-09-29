@@ -11,6 +11,7 @@ from typing import Any
 
 import anyio
 import pytest
+from nixversion import drv_output
 
 import huggorm_bindings
 import huggorm_generated.async_store
@@ -703,10 +704,7 @@ async def test_a_NESTED_value_crosses_as_an_argument(
     builds and accepts the nested message at all, which is the part
     that gate cannot see."""
     store = await client.acquire("Store", str(tmp_path / "store"))
-    key = huggorm_bindings.DrvOutput(
-        huggorm_bindings.Hash(
-            huggorm_bindings.HashAlgorithm.SHA256, bytes(range(32))),
-        "out")
+    key = drv_output(1, "out")
 
     assert await store.query_realisation(key) is None
     await store.aclose()

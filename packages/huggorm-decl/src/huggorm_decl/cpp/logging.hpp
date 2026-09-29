@@ -22,10 +22,13 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -616,6 +619,30 @@ inline bool route(LogRecord && r)
     return false;
 }
 
+namespace detail {
+
+template <typename L>
+struct logger_fields
+{
+    using type = std::span<const typename L::Field>;
+};
+
+template <typename L>
+    requires requires { typename L::Fields; }
+struct logger_fields<L>
+{
+    using type = const typename L::Fields &;
+};
+
+}  // namespace detail
+
+/**
+ * How `nix::Logger` hands an override an activity's fields: a
+ * `const Fields &` to 2.35, a `std::span` of variants from 2.36. An
+ * override must spell its base's parameter exactly (tasks/055).
+ */
+using LoggerFields = detail::logger_fields<nix::Logger>::type;
+
 /**
  * The `nix::Logger` that fills the queues.
  *
@@ -657,7 +684,7 @@ public:
      * a start that never arrives leaves a node in the reader's tree
      * that nothing closes.
      */
-    void log(nix::Verbosity lvl, std::string_view s) override
+    void log(nix::Verbosity lvl, std::string_view s) noexcept override
     {
         if (lvl > effective_verbosity())
             return;
@@ -667,7 +694,7 @@ public:
             fallback().log(lvl, s);
     }
 
-    void logEI(const nix::ErrorInfo & ei) override
+    void logEI(const nix::ErrorInfo & ei) noexcept override
     {
         // RENDERED, the way JSONLogger renders it (logging.cc:283),
         // and the parts beside it in the record a failed call crosses
@@ -685,7 +712,7 @@ public:
 
     void startActivity(nix::ActivityId act, nix::Verbosity lvl,
                        nix::ActivityType type, const std::string & s,
-                       const Fields & fields, nix::ActivityId parent) override
+                       LoggerFields fields, nix::ActivityId parent) noexcept override
     {
         if (!route({.action = "start",
                     .level = static_cast<uint64_t>(lvl),
@@ -697,14 +724,14 @@ public:
             fallback().startActivity(act, lvl, type, s, fields, parent);
     }
 
-    void stopActivity(nix::ActivityId act) override
+    void stopActivity(nix::ActivityId act) noexcept override
     {
         if (!route({.action = "stop", .id = act}))
             fallback().stopActivity(act);  // no level to gate on
     }
 
     void result(nix::ActivityId act, nix::ResultType type,
-                const Fields & fields) override
+                LoggerFields fields) noexcept override
     {
         if (!route({.action = "result",
                     .id = act,
@@ -753,14 +780,28 @@ public:
     }
 
 private:
+    // Templates, because a 2.35 `Field` carries a tag and a 2.36 one
+    // is a variant, and only a template discards the other spelling.
+    template <typename Field>
+    static LogField field_of(const Field & f)
+    {
+        if constexpr (requires { f.type; }) {
+            return f.type == Field::tInt ? LogField{.is_int = true, .integer = f.i}
+                                         : LogField{.is_int = false, .text = f.s};
+        } else {
+            if (const auto * i = std::get_if<uint64_t>(&f))
+                return LogField{.is_int = true, .integer = *i};
+            return LogField{.is_int = false, .text = std::get<std::string>(f)};
+        }
+    }
+
+    template <typename Fields>
     static std::vector<LogField> convert(const Fields & fields)
     {
         std::vector<LogField> out;
         out.reserve(fields.size());
         for (const auto & f : fields)
-            out.push_back(f.type == nix::Logger::Field::tInt
-                              ? LogField{.is_int = true, .integer = f.i}
-                              : LogField{.is_int = false, .text = f.s});
+            out.push_back(field_of(f));
         return out;
     }
 
@@ -850,6 +891,21 @@ inline nix::Verbosity log_ceiling()
         + "', and it takes a level name (error to vomit) or 0 to 7");
 }
 
+/**
+ * Put `tap` in Nix's logger slot, whatever the slot holds: a
+ * `unique_ptr` to 2.34, a raw pointer from 2.35. The raw one owns
+ * nothing, and the tap lives for the process either way. A template,
+ * because `if constexpr` discards the other branch only there.
+ */
+template <typename Slot>
+void set_logger(Slot & slot, std::unique_ptr<nix::Logger> tap)
+{
+    if constexpr (std::is_pointer_v<Slot>)
+        slot = tap.release();
+    else
+        slot = std::move(tap);
+}
+
 inline void install_log_tap()
 {
     // The one write to `nix::verbosity`. This runs at import, before
@@ -861,7 +917,7 @@ inline void install_log_tap()
     // reach stderr as errors.
     nix::verbosity = log_ceiling();
     nix::remoteVerbosity.store(nix::lvlInfo, std::memory_order_relaxed);
-    nix::logger = std::make_unique<LogTap>();
+    set_logger(nix::logger, std::make_unique<LogTap>());
 }
 
 /**
