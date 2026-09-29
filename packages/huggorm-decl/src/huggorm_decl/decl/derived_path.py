@@ -66,7 +66,7 @@ class OutputsSpec:
     """
 
     def __init__(self, all: Bint = False,
-                 names: list[Str] = None) -> None:  # noqa: RUF013
+                 names: list[Str] | None = None) -> None:
         """`OutputsSpec(names=["out", "dev"])` names them.
         `OutputsSpec(all=True)` is every output.
 

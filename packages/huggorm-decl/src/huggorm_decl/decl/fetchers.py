@@ -67,6 +67,7 @@ class Input:
         BLOCKS: a path input hashes its tree to answer."""
         Cxx("return self.getFingerprint(store);")
 
+    @staticmethod
     @needs("huggorm_decl/cpp/call_settings.hpp",
            "nix/fetchers/fetch-settings.hh")
     def _from_parts() -> Input:

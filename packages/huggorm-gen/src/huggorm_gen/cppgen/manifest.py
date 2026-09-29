@@ -189,8 +189,18 @@ def _param(p: Param) -> dict[str, Any]:
     writes it into a signature: rendered here from the value the
     declaration's import holds. A vocabulary member is written as the
     member and not as its value, because `'nar'` in a signature says
-    nothing about which vocabulary it came from."""
-    return {"name": p.name, "type": _type(p.type), "default": _source(p)}
+    nothing about which vocabulary it came from.
+
+    A LIST that defaults to None is carried as the list. An absent list
+    IS an empty one - the C++ unwrap says so, and a repeated field has
+    no presence to say otherwise - and every surface writes `| None`
+    beside a None default itself. Carried as `list[X] | None`,
+    `grpc_schema` refuses it and the method loses its rpc in silence
+    (tasks/104)."""
+    declared = p.type
+    if p.has_default and p.default is None and declared.required.origin == "list":
+        declared = declared.required
+    return {"name": p.name, "type": _type(declared), "default": _source(p)}
 
 
 def _source(p: Param) -> str | None:

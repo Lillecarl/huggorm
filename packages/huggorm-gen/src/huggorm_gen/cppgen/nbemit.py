@@ -1061,7 +1061,7 @@ def _signature(cls: Class, m: Method,
         if not absent(pr, known):
             args += f", {spelled} {pr.name}"
             continue
-        held, _ = _cxx(pr.type, known)
+        held, _ = _cxx(pr.type.required, known)
         args += f", const std::optional<{held}> & {pr.name}_"
         opening.append(f"{INDENT * 4}const {held} {pr.name} = "
                        f"{pr.name}_.value_or({held}{{}});")

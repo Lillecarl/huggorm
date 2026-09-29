@@ -75,6 +75,7 @@ class BuildSuccess:
         and an input-addressed output's path is known before the
         build so nothing has to report it."""
 
+    @staticmethod
     def _from_parts() -> BuildSuccess:
         """Rebuild one from the parts that crossed.
 
@@ -191,6 +192,7 @@ return huggorm::as_error(huggorm::errors_module, "BuildError", *arm,
 
         The other half of `cpu_user`, under the same rule."""
 
+    @staticmethod
     @spells("BuildFailureStatus")
     def _from_parts() -> KeyedBuildResult:
         """Rebuild one from the parts that crossed.

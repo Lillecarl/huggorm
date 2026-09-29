@@ -61,6 +61,7 @@ class FlakeRef:
         """The input's attributes, with the subdirectory as `dir`."""
         Cxx("return self.toAttrs();")
 
+    @staticmethod
     @needs("huggorm_decl/cpp/call_settings.hpp",
            "nix/fetchers/fetch-settings.hh")
     def _from_parts() -> FlakeRef:

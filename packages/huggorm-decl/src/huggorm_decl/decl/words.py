@@ -22,6 +22,8 @@ SPELLING, where before this the list was two people reading two
 repositories.
 """
 
+from enum import StrEnum
+
 from huggorm_dsl.declare import Enumerated, Wrap, header, words
 
 
@@ -50,7 +52,7 @@ from huggorm_dsl.declare import Enumerated, Wrap, header, words
            # one answers the struct.
            wrapped=Wrap("nix::ContentAddressMethod", holds="raw"),
        ))
-class ContentAddressMethod:
+class ContentAddressMethod(StrEnum):
     """How the hash that names a store path is computed.
 
     A StrEnum, so a member IS the string libstore parses. Passing
@@ -83,7 +85,7 @@ class ContentAddressMethod:
 @header("nix/util/hash.hh")
 @words(parsed_by="nix::parseHashAlgo",
        enumerated=Enumerated("nix::HashAlgorithm"))
-class HashAlgorithm:
+class HashAlgorithm(StrEnum):
     """The digest used to content-address a store object.
 
     Lives beside ContentAddressMethod rather than in a module of its
@@ -118,7 +120,7 @@ class HashAlgorithm:
                  "CHECK": "bmCheck"},
     ),
 )
-class BuildMode:
+class BuildMode(StrEnum):
     """What a build is FOR, beyond making the outputs valid.
 
     A vocabulary rather than a flag, because upstream is an enum and
@@ -168,7 +170,7 @@ class BuildMode:
         },
     ),
 )
-class BuildSuccessStatus:
+class BuildSuccessStatus(StrEnum):
     """How a target came to be valid.
 
     Four ways, and they are not degrees of the same thing: one of
@@ -215,7 +217,7 @@ class BuildSuccessStatus:
         },
     ),
 )
-class BuildFailureStatus:
+class BuildFailureStatus(StrEnum):
     """Why a target did not become valid.
 
     Separate from BuildSuccessStatus rather than one list of sixteen
@@ -298,7 +300,7 @@ class BuildFailureStatus:
         spelled={"TRUSTED": "Trusted", "NOT_TRUSTED": "NotTrusted"},
     ),
 )
-class TrustedFlag:
+class TrustedFlag(StrEnum):
     """Whether a store trusts the client talking to it.
 
     Upstream's own note is worth repeating, because the name reads the
@@ -349,7 +351,7 @@ class TrustedFlag:
         },
     ),
 )
-class GCAction:
+class GCAction(StrEnum):
     """What a garbage collection should DO.
 
     Four answers, and only two of them delete anything. That is the
@@ -403,7 +405,7 @@ class GCAction:
                  "GLOBAL": "Global", "CUSTOM": "Custom"},
     ),
 )
-class RegistryType:
+class RegistryType(StrEnum):
     """Which layer of the flake registry an entry comes from.
 
     Nix consults them in this order, and the first match wins."""

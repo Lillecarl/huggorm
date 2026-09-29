@@ -985,8 +985,22 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
     kind separately.
     Reading a free function as a method silently drops its first
     parameter, which is how `open_store(uri)` first emitted without
-    the `"uri"_a` that makes the parameter usable by keyword."""
+    the `"uri"_a` that makes the parameter usable by keyword.
+
+    A class member with no self says so with `@staticmethod`, and
+    must: without it a type checker reads the first parameter as
+    self, which is the same mistake from the other side."""
+    static = not bound and bound_kind
+    marked = any(isinstance(d, ast.Name) and d.id == "staticmethod"
+                 for d in node.decorator_list)
+    if static and not marked:
+        raise DeclarationError(
+            node, f"{node.name}: a class member with no self is a "
+                  f"@staticmethod. Say so, or a type checker reads its "
+                  f"first parameter as self.")
     for d in node.decorator_list:
+        if static and isinstance(d, ast.Name) and d.id == "staticmethod":
+            continue
         if isinstance(d, ast.Name) and d.id in DESCRIPTORS:
             # `@staticmethod` and `@classmethod` say the first
             # parameter is not `self`, and this reads a bound method
@@ -1033,7 +1047,14 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                 arg, f"{node.name}({arg.arg}): every parameter states its "
                      f"type.")
         default = signature.parameters[arg.arg].default
-        params.append(Param(arg.arg, type_of(anns[arg.arg], arg, fn),
+        declared = type_of(anns[arg.arg], arg, fn)
+        if default is None and not declared.optional:
+            # An implicit Optional: every surface but the C++ then says
+            # `| None` where the declaration did not (tasks/104).
+            raise DeclarationError(
+                arg, f"{node.name}({arg.arg}): a default of None needs "
+                     f"`| None` in the type.")
+        params.append(Param(arg.arg, declared,
                             default, _member(anns[arg.arg], default)))
 
     ret: Type | None = None
@@ -1139,7 +1160,16 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     #
     # Found by Carl asking why it was ever an annotation, and by ruff
     # answering first: `@derives("Store")` left the import unused.
-    if node.bases:
+    # A vocabulary IS a StrEnum, in the declaration as in the emitted
+    # module, so a default such as `HashAlgorithm.SHA256` types as the
+    # word and not as `str` (tasks/104). The base is Python's, not a
+    # declared class, so it is checked here and never becomes `base`.
+    if decl.kind == "words":
+        if [ast.unparse(b) for b in node.bases] != ["StrEnum"]:
+            raise DeclarationError(
+                node, f"{node.name}: a vocabulary is a StrEnum. Write "
+                      f"`class {node.name}(StrEnum)`.")
+    elif node.bases:
         if len(node.bases) > 1:
             raise DeclarationError(
                 node, f"{node.name}: one base. Every hierarchy this binds "

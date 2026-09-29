@@ -166,6 +166,7 @@ return static_cast<std::int64_t>(self.registrationTime);
     # `local-keys.hh` for Signature::parse. path-info.hh reaches it
     # through signer.hh today, and a body that leans on somebody
     # else's include is a body that breaks on an upstream tidy-up.
+    @staticmethod
     @needs("nix/util/signature/local-keys.hh")
     def _from_parts() -> PathInfo:
         """Rebuild one from the parts that crossed.

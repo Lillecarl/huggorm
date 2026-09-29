@@ -56,7 +56,7 @@ class GCOptions:
 
     def __init__(self, action: GCAction = GCAction.DELETE_DEAD,
                  ignore_liveness: Bint = False,
-                 paths_to_delete: list[StorePath] = None,  # noqa: RUF013
+                 paths_to_delete: list[StorePath] | None = None,
                  max_freed: U64 | None = None) -> None:
         """Say what to collect. Every answer has an upstream default.
 

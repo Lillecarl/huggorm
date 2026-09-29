@@ -236,12 +236,7 @@ if (auto * remote = dynamic_cast<nix::RemoteStore *>(&self))
         data: Bytes,
         method: ContentAddressMethod = ContentAddressMethod.NAR,
         hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
-        # The implicit Optional is the SURFACE exactly, and the
-        # generated protocol above already spells it
-        # `list[StorePath] | None`. Writing the wider type here would
-        # say nothing new to a caller, so the rule is silenced rather
-        # than followed.
-        references: list[StorePath] = None,  # noqa: RUF013
+        references: list[StorePath] | None = None,
     ) -> StorePath:
         """Add one file's contents to the store, and name the result.
 
@@ -301,7 +296,7 @@ return self.addToStoreFromDump(
         # `list[StorePath] | None`. Writing the wider type here would
         # say nothing new to a caller, so the rule is silenced rather
         # than followed.
-        references: list[StorePath] = None,  # noqa: RUF013
+        references: list[StorePath] | None = None,
     ) -> StorePath:
         """Add a file or a directory from the filesystem to the store.
 
@@ -351,7 +346,7 @@ return self.addToStore(
         path: Str,
         method: ContentAddressMethod = ContentAddressMethod.NAR,
         hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
-        references: list[StorePath] = None,  # noqa: RUF013 -- as add_path_to_store
+        references: list[StorePath] | None = None,
     ) -> StorePath:
         """The path `add_path_to_store` would give, without adding.
 

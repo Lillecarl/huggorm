@@ -152,6 +152,7 @@ class Realisation:
         Sorted, because Nix keeps them in a set and the order is that
         set's."""
 
+    @staticmethod
     def _from_parts() -> Realisation:
         """Rebuild one from the parts that crossed.
 

@@ -55,8 +55,8 @@ class NixError(Exception):
     # same thing - the parts this object can be rebuilt from - though
     # an error travels in the gRPC status details rather than as a
     # response message of its own (tasks/036).
-    _wire_fields = (("message", "str"), ("colored", "str"),
-                    ("info", "ErrorInfo?"))
+    _wire_fields: tuple[tuple[str, str], ...] = (
+        ("message", "str"), ("colored", "str"), ("info", "ErrorInfo?"))
 
     def __init__(self, message: str, colored: str | None = None,
                  info: ErrorInfo | None = None) -> None:

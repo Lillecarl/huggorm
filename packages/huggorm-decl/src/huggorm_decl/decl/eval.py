@@ -1848,7 +1848,7 @@ huggorm::unsubscribe_logs();
         """A forced float value."""
 
     def make_string(self, value: Str,
-                    context: list[Str] = None,  # noqa: RUF013 -- as add_path_to_store
+                    context: list[Str] | None = None,
                     ) -> Value:
         """A forced string value, carrying `context`: elements as
         `string_context` names them.
@@ -1905,7 +1905,7 @@ return self.wrap_builder(made);
 
     @needs("huggorm_decl/cpp/call_settings.hpp", "nix/flake/settings.hh")
     def lock_flake(self, ref: FlakeRef, recreate: Bint = False,
-                   update: list[Str] = None,  # noqa: RUF013 -- an absent list is an empty one
+                   update: list[Str] | None = None,
                    write_lock_file: Bint = True,
                    settings: dict[str, Str] | None = None) -> LockedFlake:
         """Lock a flake, as `nix flake lock` does.
