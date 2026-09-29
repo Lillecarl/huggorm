@@ -308,3 +308,29 @@ def test_the_state_shares_its_store() -> None:
     assert EvalState(store).eval_expr(probe).string_value() == full
     with pytest.raises(NixError, match="no substituter"):
         EvalState(Store(uri)).eval_expr(probe)
+
+
+def test_a_derivation_s_output_is_in_the_string_s_context(state: Any) -> None:
+    """`"${drv}"` owes the store that derivation's output, and every
+    string that holds it, however deep, shares the debt."""
+    value = state.eval_expr(f'{{ a = [ "x${{{DRV}}}" ]; b = "plain"; }}')
+    context = value.string_context()
+    assert len(context) == 1
+    # Nix's encoding: the output, then the derivation's base name.
+    assert context[0].startswith("!out!")
+    assert context[0].endswith("-joined.drv")
+
+
+def test_a_string_made_with_a_context_keeps_it(state: Any) -> None:
+    held = state.eval_expr(f'"${{{DRV}}}"').string_context()
+    made = state.make_string("anything", held)
+    assert made.string_context() == held
+    assert state.make_string("anything").string_context() == []
+
+
+def test_realised_json_names_what_the_context_holds(state: Any) -> None:
+    """Nothing to build here, so the JSON is `to_json`'s; the context
+    of a path already in the store realises to itself."""
+    added = state.eval_expr('builtins.toFile "note" "hi"')
+    assert added.realise_json() == added.to_json()
+    assert added.string_context()

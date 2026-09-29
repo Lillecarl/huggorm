@@ -326,6 +326,65 @@ return nix::printValueAsJSON(
         """)
 
     @blocks
+    @needs("nix/expr/value-to-json.hh", "nlohmann/json.hpp")
+    def realise_json(self, copy_to_store: Bint = False) -> Str:
+        """`to_json`, with every store path its strings name built.
+
+        The paths a string's context names may not exist yet; this
+        builds or substitutes them, as `realise_string` does, and
+        rewrites a content-addressed placeholder to the path it
+        became. So a caller can read what the JSON names.
+
+        BLOCKS: it forces every value it reaches, and it may build."""
+        Cxx("""
+huggorm::gc_register_thread();
+nix::NixStringContext context;
+auto text = nix::printValueAsJSON(
+    self.state(), true, *self.get(), nix::noPos, context, copy_to_store).dump();
+auto rewrites = self.state().realiseContext(context, nullptr, false);
+return nix::rewriteStrings(text, rewrites);
+        """)
+
+    @blocks
+    @needs("functional")
+    def string_context(self) -> list[Str]:
+        """The string context of every string this value holds, each
+        element in Nix's own encoding (`NixStringContextElem`), sorted.
+
+        One set for the whole value, forced all the way down. The
+        context is what a string owes the store: a derivation output
+        it names, or a path it was built from.
+
+        BLOCKS: it forces every value it reaches."""
+        Cxx("""
+huggorm::gc_register_thread();
+nix::NixStringContext context;
+std::function<void(nix::Value &)> walk = [&](nix::Value & value) {
+    self.state().forceValue(value, nix::noPos);
+    switch (value.type()) {
+    case nix::nString:
+        nix::copyContext(value, context);
+        break;
+    case nix::nList:
+        for (auto * element : value.listView())
+            walk(*element);
+        break;
+    case nix::nAttrs:
+        for (auto & attr : *value.attrs())
+            walk(*attr.value);
+        break;
+    default:
+        break;
+    }
+};
+walk(*self.get());
+std::vector<std::string> out;
+for (auto & element : context)
+    out.push_back(element.to_string());
+return out;
+        """)
+
+    @blocks
     def realise_string(self) -> Str:
         """This value as a string, with everything it names built.
 
@@ -1784,15 +1843,21 @@ huggorm::unsubscribe_logs();
     def make_float(self, value: F64) -> Value:
         """A forced float value."""
 
-    def make_string(self, value: Str) -> Value:
-        """A forced string value, with no string context.
+    def make_string(self, value: Str,
+                    context: list[Str] = None,  # noqa: RUF013 -- as add_path_to_store
+                    ) -> Value:
+        """A forced string value, carrying `context`: elements as
+        `string_context` names them.
 
         Not a `@produces`: `mkString` takes the state's allocator as a
         second argument, so the call is not "the initialiser with the
         declared arguments"."""
         Cxx("""
+nix::NixStringContext parsed;
+for (auto & element : context)
+    parsed.insert(nix::NixStringContextElem::parse(element));
 auto * made = self.alloc();
-made->mkString(value, self.state().mem);
+made->mkString(value, parsed, self.state().mem);
 return self.wrap(made);
         """)
 
