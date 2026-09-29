@@ -957,3 +957,15 @@ So query work costs nothing at CHATTY. Libstore holds 24 sites at
 TALKATIVE or CHATTY, in GC, file transfer, substitution and the
 builders; on a daemon those would reach a caller's stderr as errors
 when the daemon does that work. Not measured.
+
+## Lane after the temp-roots patch
+
+Part A: 2293 passed, 6 failed, all on the open list above. Part B, the
+first time: 16 failed, all pynix search tests, on `opening file
+'/nix/store/...-source/nix/wire.nix': No such file or directory` inside
+the test store, and 32 skipped. The failures did not come back: the
+search tests alone passed on the patched build and on the one before
+it (131 each), and a second full part B gave 899 passed and 0 failed.
+Not explained. The 32 skips are the pynix-lsp tests, which skip when
+they cannot fetch a schema; `lillecarl.cachix.org` answered that a NAR
+it lists does not exist.

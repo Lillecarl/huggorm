@@ -1130,6 +1130,9 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 103 (a log record carries ErrorInfo) is OPEN. Needs records visible
+  across units, and a choice about `LogRecord`'s rebuild; the file has
+  both.
 - 102 (pin the verbosity gate) is OPEN. Carl chose a pin at CHATTY at
   import, and a Nix patch so `setOptions` does not send the pin to the
   daemon. Two questions remain before the work: what a subscription
