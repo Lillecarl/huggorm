@@ -912,6 +912,76 @@ def _check_markers(decorators: list[ast.expr], kind: str) -> None:
 
 # -- methods --------------------------------------------------------------
 
+# What a version test may use: `NIX_VERSION`, the `NIX_2_35` names,
+# tuples of integers, and comparisons joined by `and`, `or` and `not`. Anything else in the
+# test of a body's `if` is a declaration pretending to be a program.
+_VERSION_TEST_NODES = (ast.Expression, ast.Compare, ast.BoolOp, ast.UnaryOp,
+                       ast.Name, ast.Load, ast.Tuple, ast.Constant,
+                       ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq,
+                       ast.And, ast.Or, ast.Not)
+
+
+_VERSION_NAMES = ("NIX_VERSION", "NIX_2_35", "NIX_2_36")
+
+
+def _version_holds(node: ast.FunctionDef, test: ast.expr) -> bool:
+    """Evaluate the test of a body's `if` against this build's Nix."""
+    tree = ast.Expression(test)
+    for n in ast.walk(tree):
+        if not isinstance(n, _VERSION_TEST_NODES) or (
+                isinstance(n, ast.Name) and n.id not in _VERSION_NAMES) or (
+                isinstance(n, ast.Constant) and not isinstance(n.value, int)):
+            raise DeclarationError(
+                test, f"{node.name}: a body's `if` tests NIX_VERSION "
+                      f"against tuples of integers, and nothing else. "
+                      f"{ast.unparse(test)!r} is more.")
+    code = compile(tree, "<version test>", "eval")
+    # The walk above admits NIX_VERSION, integer tuples and comparisons.
+    return bool(eval(code, {"__builtins__": {}},
+                     {name: getattr(declare, name) for name in _VERSION_NAMES}))
+
+
+def _cxx_call(node: ast.FunctionDef, stmt: ast.stmt) -> str | None:
+    """The C++ of one `Cxx("...")` statement, or None for another kind."""
+    if not isinstance(stmt, ast.Expr):
+        return None
+    value = stmt.value
+    if not (isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "Cxx"):
+        return None
+    if len(value.args) != 1 or not isinstance(value.args[0], ast.Constant):
+        raise DeclarationError(
+            stmt, f"{node.name}: Cxx() takes one string "
+                  f"literal. The C++ is carried, not built.")
+    return str(value.args[0].value)
+
+
+def _arm(node: ast.FunctionDef, stmts: list[ast.stmt]) -> str:
+    """The C++ of one arm of a body's `if`: one `Cxx(...)`, or a
+    further `if`."""
+    if len(stmts) == 1:
+        if (cxx := _cxx_call(node, stmts[0])) is not None:
+            return cxx
+        if isinstance(stmts[0], ast.If):
+            return _versioned(node, stmts[0])
+    raise DeclarationError(
+        stmts[0], f"{node.name}: each arm of a body's `if` is one "
+                  f"Cxx(...), or another `if`.")
+
+
+def _versioned(node: ast.FunctionDef, stmt: ast.If) -> str:
+    """The C++ of the arm this build's Nix takes."""
+    if not stmt.orelse:
+        raise DeclarationError(
+            stmt, f"{node.name}: a body's `if` needs an `else`, or one "
+                  f"Nix gets no body and the binding is derived in "
+                  f"silence.")
+    if _version_holds(node, stmt.test):
+        return _arm(node, stmt.body)
+    return _arm(node, stmt.orelse)
+
+
 def _body(node: ast.FunctionDef) -> str:
     """The C++ this method carries, read from its BODY.
 
@@ -932,6 +1002,11 @@ def _body(node: ast.FunctionDef) -> str:
     else. Anything more is a declaration pretending to be a program,
     and the emitter has no way to render it.
 
+    The one `Cxx(...)` may sit in an `if NIX_VERSION ...` with an
+    `else`, when one Nix spells the same call differently and nothing
+    above the binding can tell (tasks/055). The arm is chosen here,
+    against the same `NIX_VERSION` the import used.
+
     An empty body is what says the emitter DERIVES the whole binding,
     which is fourteen of the thirty-eight. Presence of `Cxx` is the
     whole distinction, and unlike a decorator it cannot be
@@ -939,27 +1014,23 @@ def _body(node: ast.FunctionDef) -> str:
     body, or the body and forget the marker."""
     seen = ""
     for i, stmt in enumerate(node.body):
-        if isinstance(stmt, ast.Expr):
-            value = stmt.value
-            if i == 0 and isinstance(value, ast.Constant) and isinstance(
-                    value.value, str):
-                continue                       # the docstring
-            if (isinstance(value, ast.Call)
-                    and isinstance(value.func, ast.Name)
-                    and value.func.id == "Cxx"):
-                if seen:
-                    raise DeclarationError(
-                        stmt, f"{node.name}: one Cxx(...) per body. Two "
-                              f"bodies is two bindings.")
-                if len(value.args) != 1 or not isinstance(
-                        value.args[0], ast.Constant):
-                    raise DeclarationError(
-                        stmt, f"{node.name}: Cxx() takes one string "
-                              f"literal. The C++ is carried, not built.")
-                seen = str(value.args[0].value)
-                continue
-            if isinstance(value, ast.Constant) and value.value is Ellipsis:
-                continue                       # `...`, an empty body
+        if (i == 0 and isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)):
+            continue                           # the docstring
+        cxx = _cxx_call(node, stmt)
+        if cxx is None and isinstance(stmt, ast.If):
+            cxx = _versioned(node, stmt)
+        if cxx is not None:
+            if seen:
+                raise DeclarationError(
+                    stmt, f"{node.name}: one Cxx(...) per body. Two "
+                          f"bodies is two bindings.")
+            seen = cxx
+            continue
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+                and stmt.value.value is Ellipsis):
+            continue                           # `...`, an empty body
         raise DeclarationError(
             stmt, f"{node.name}: a declaration body is a docstring, then "
                   f"at most one Cxx(...). {ast.unparse(stmt)!r} is "

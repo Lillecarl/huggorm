@@ -15,6 +15,7 @@ in this repo branches today, so nothing real can hold the fix.
 import ast
 import dataclasses
 import pathlib
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -1028,6 +1029,71 @@ def test_a_branch_arm_that_lost_is_not_a_missing_definition(
     mod = have.module("digest.py")
     kept = {m.name for m in mod.classes[0].methods}
     assert kept == {"base16", "here"}, "the import chose an arm"
+
+
+
+def _versioned_body(body: str) -> str:
+    """A one-method declaration whose body is `body`, indented."""
+    inner = "\n".join("        " + line for line in body.strip().splitlines())
+    return f'''"""One bound class whose body branches on the version."""
+
+from huggorm_dsl.declare import NIX_VERSION, Cxx, Str, binding, header
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    def text(self) -> Str:
+        """The digest as text."""
+{inner}
+'''
+
+
+def test_a_body_takes_the_arm_its_nix_takes(tmp_path: pathlib.Path) -> None:
+    """One body, two spellings of one call (tasks/055).
+
+    The arm is picked with the `NIX_VERSION` the import used, so the
+    emitted C++ holds one call and nothing above the binding changes."""
+    have = _one_file_corpus(tmp_path, _versioned_body('''
+if NIX_VERSION >= (99, 0):
+    Cxx("return self.future();")
+elif NIX_VERSION >= (2, 0):
+    Cxx("return self.now();")
+else:
+    Cxx("return self.past();")
+'''))
+    [method] = have.module("digest.py").classes[0].methods
+    assert method.cxx_body.strip() == "return self.now();"
+
+
+@pytest.mark.parametrize(("body", "refusal"), [
+    ('''
+if NIX_VERSION >= (2, 0):
+    Cxx("return self.now();")
+''', "needs an `else`"),
+    ('''
+if len("x") > 0:
+    Cxx("return self.now();")
+else:
+    Cxx("return self.past();")
+''', "tests NIX_VERSION"),
+    ('''
+if NIX_VERSION >= (2, 0):
+    x = 1
+else:
+    Cxx("return self.past();")
+''', "one Cxx"),
+])
+def test_a_versioned_body_that_says_more_is_refused(
+        tmp_path: pathlib.Path, body: str, refusal: str) -> None:
+    """An `if` with no `else` would leave one Nix a derived binding in
+    silence; any other test would be a declaration that runs code."""
+    from huggorm_dsl.read import DeclarationError
+
+    with pytest.raises(DeclarationError, match=re.escape(refusal)):
+        _one_file_corpus(tmp_path, _versioned_body(body)).module("digest.py")
 
 
 def test_the_census_notices_a_definition_the_reader_dropped(
