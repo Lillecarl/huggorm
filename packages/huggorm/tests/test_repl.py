@@ -5,6 +5,7 @@ import threading
 from typing import Any
 
 import pytest
+from nixversion import needs_collector
 
 from huggorm_bindings import (
     EvalState,
@@ -167,6 +168,7 @@ def _collected_after_churn(state: EvalState) -> int:
     return gc_stats()["scopes_collected"]
 
 
+@needs_collector
 def test_a_held_scope_is_never_collected(state: EvalState) -> None:
     """Reading a binding back cannot show this: a freed block keeps its
     contents until it is handed out again. The count of finalized

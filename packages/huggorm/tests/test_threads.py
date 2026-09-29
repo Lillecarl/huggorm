@@ -7,6 +7,8 @@ an evaluator and so already runs the collector's markers.
 import subprocess
 import sys
 
+from nixversion import needs_collector
+
 PROBE = """
 import os
 
@@ -22,6 +24,7 @@ print(threads())
 """
 
 
+@needs_collector
 def test_nothing_runs_until_there_is_an_evaluator() -> None:
     """Import and a store start no thread; the evaluator starts the
     collector's markers.
@@ -44,6 +47,7 @@ print(len(os.listdir("/proc/self/task")))
 """
 
 
+@needs_collector
 def test_a_caller_can_start_the_collector_before_an_evaluator() -> None:
     """For a caller that reads `nix-path` first: `start_collector` is
     where Nix copies `NIX_PATH` into it."""
@@ -62,6 +66,7 @@ def test_the_collector_s_owner_is_the_importing_thread() -> None:
     assert collector_owner_thread() == threading.main_thread().native_id
 
 
+@needs_collector
 def test_a_held_root_shows_in_the_uncollectable_bytes() -> None:
     """Every root is one uncollectable block, so `non_gc_bytes` moves
     with the roots a caller holds and falls back when it drops them."""

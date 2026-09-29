@@ -73,8 +73,6 @@ namespace nb = nanobind;
 #include "nix/store/store-api.hh"
 #include "nix/store/store-open.hh"
 
-#include <gc/gc.h>
-
 // The log tap and the collector, each in a file of its own. Carl:
 // "there's no point in limiting the amount of files, separate as
 // appropriate."
@@ -739,7 +737,14 @@ public:
     }
 
     /** Whether this value sits inside a GC-allocated block. */
-    bool is_gc_managed() const { return GC_base(*root_) != nullptr; }
+    bool is_gc_managed() const
+    {
+#if NIX_USE_BOEHMGC
+        return GC_base(*root_) != nullptr;
+#else
+        return false;
+#endif
+    }
 
     // -- reading ---------------------------------------------------
     //

@@ -11,7 +11,7 @@ from typing import Any
 
 import anyio
 import pytest
-from nixversion import drv_output
+from nixversion import drv_output, needs_collector
 
 import huggorm_bindings
 import huggorm_generated.async_store
@@ -107,6 +107,7 @@ async def test_backfilled_any_params_call_over_the_wire(client: Any) -> None:
     await state.aclose()
 
 
+@needs_collector
 async def test_thunks_force_remotely(client: Any) -> None:
     state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
     thunk = await state.parse_expr("42")
@@ -231,6 +232,7 @@ async def test_a_produced_class_refuses_remote_construction(
 
 # -- free functions --------------------------------------------------------
 
+@needs_collector
 async def test_a_free_function_crosses(client: Any) -> None:
     """No handle: a module-level function has no instance."""
     assert await client.call_function("collect_garbage") is None
@@ -272,6 +274,7 @@ async def test_a_proxy_argument_resolves_against_another_object(
     await state.aclose()
 
 
+@needs_collector
 async def test_a_dict_return_crosses_as_a_map(client: Any) -> None:
     """Nix attribute names are always strings, so map<string, V> covers
     every dict this API returns; the value type comes from the

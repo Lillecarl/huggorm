@@ -14,7 +14,14 @@ import sys
 from typing import Any, cast
 
 import pytest
-from nixversion import built_output, drv_output, drv_output_parts, paths_of, some_paths
+from nixversion import (
+    built_output,
+    drv_output,
+    drv_output_parts,
+    needs_collector,
+    paths_of,
+    some_paths,
+)
 
 from huggorm_bindings import (
     AttrDoc,
@@ -1429,6 +1436,7 @@ def test_a_map_return_is_a_dict(chroot: Store) -> None:
     assert isinstance(answer, dict)
 
 
+@needs_collector
 def test_a_map_of_ints_crosses_with_its_values(chroot: Store) -> None:
     """The same `std::map` crossing, non-empty, in process.
 

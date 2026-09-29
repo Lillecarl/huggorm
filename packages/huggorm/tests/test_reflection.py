@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from conftest import Server, run_tool
+from nixversion import needs_collector
 
 
 @pytest.fixture(scope="session")
@@ -53,6 +54,7 @@ async def test_acquire_is_a_typed_rpc(grpcurl: str, server: Server,
     assert len(json.loads(out).get("id", "")) == 32, out[:200]
 
 
+@needs_collector
 async def test_a_free_function_is_reachable(grpcurl: str, server: Server,
                                             pkg: str) -> None:
     """The descriptor name and the dispatch path must agree, which they
@@ -62,6 +64,7 @@ async def test_a_free_function_is_reachable(grpcurl: str, server: Server,
     assert rc == 0, f"rc={rc} out={out[:120]!r} err={err[:200]!r}"
 
 
+@needs_collector
 async def test_a_map_return_reads(grpcurl: str, server: Server,
                                   pkg: str) -> None:
     """proto3 spells a map as a repeated entry message, so a wrong

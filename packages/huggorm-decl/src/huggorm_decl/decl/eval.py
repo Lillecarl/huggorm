@@ -2014,8 +2014,13 @@ def gc_stats() -> dict[str, I64]:
     """Live collector counters, bound straight from gc.h.
 
     These prove the collector is ACTIVE: a no-op integration cannot
-    fake them."""
+    fake them. A Nix built without the collector raises
+    `UnimplementedError`, because a map of zeros would read as a
+    measurement."""
     Cxx("""
+#if !NIX_USE_BOEHMGC
+huggorm::no_collector("read the collector's counters");
+#else
 return {
     {"heap_size", static_cast<std::int64_t>(GC_get_heap_size())},
     {"total_bytes", static_cast<std::int64_t>(GC_get_total_bytes())},
@@ -2034,6 +2039,7 @@ return {
     // count here, and nothing else can tell.
     {"scopes_collected", huggorm::scopes_collected().load()},
 };
+#endif
     """)
 
 

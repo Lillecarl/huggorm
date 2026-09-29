@@ -606,6 +606,16 @@ async def test_behavior() -> None:
     # user until nix::copyPaths or the libexpr EvalState brings one
     # back. Said here rather than left as a silent hole.
     import huggorm_generated as flg
+    from huggorm_bindings.errors import UnimplementedError
+
+    # A Nix built without the collector refuses, by name, every question
+    # only the collector can answer, and the checks that need one run
+    # where it exists (tasks/105).
+    has_gc = huggorm_bindings.boehm_gc()
+
+    async def collect() -> None:
+        if has_gc:
+            await flg.collect_garbage()
 
     # An untouched affine wrapper constructs on its OWN thread, on the
     # first call. ensure() refuses to build a dedicated-thread object
@@ -675,8 +685,16 @@ async def test_behavior() -> None:
     # constantly". Nothing caught it because every existing aclose
     # happened after the last collection. Two affine wrappers were
     # closed just above, so collect here.
-    await flg.collect_garbage()
-    assert huggorm_bindings.gc_stats()["heap_size"] > 0
+    await collect()
+    if has_gc:
+        assert huggorm_bindings.gc_stats()["heap_size"] > 0
+    else:
+        for refused in (huggorm_bindings.gc_stats, huggorm_bindings.collect_garbage):
+            try:
+                refused()
+            except UnimplementedError:
+                continue
+            raise AssertionError(f"{refused.__name__} answered with no collector")
 
     # ---- collections ------------------------------------------------
     # An attribute set is BUILT, not parsed: the expression language
@@ -719,11 +737,11 @@ async def test_behavior() -> None:
     # block would be handed out again - and read the tree back.
     del xs
     gc.collect()
-    await flg.collect_garbage()
+    await collect()
     churn = [await builder.make_int(i) for i in range(500)]
     del churn
     gc.collect()
-    await flg.collect_garbage()
+    await collect()
     assert await attrs.size() == 4
     assert await (await attrs.get("apple")).integer() == 99
     assert await (await (await attrs.get("xs")).at(0)).string_value() == "one"
@@ -766,19 +784,22 @@ async def test_behavior() -> None:
     # from gc.h prove the collector is ACTIVE and that this exact value
     # lives inside a GC-allocated block. A no-op integration could not
     # produce either fact.
-    stats = huggorm_bindings.gc_stats()
-    assert stats["heap_size"] > 0 and stats["total_bytes"] > 0
-    assert await v.is_gc_managed()
-    assert await thunk.is_gc_managed()
+    if has_gc:
+        stats = huggorm_bindings.gc_stats()
+        assert stats["heap_size"] > 0 and stats["total_bytes"] > 0
+        assert await v.is_gc_managed()
+        assert await thunk.is_gc_managed()
 
-    # Second layer: survival. Collection is a blocking global operation,
-    # so it is dispatched off the loop thread - which also exercises
-    # thread registration from a fresh pool thread.
-    collections_before = stats["collections"]
-    await flg.collect_garbage()
-    assert huggorm_bindings.gc_stats()["collections"] >= collections_before + 2
-    assert await v.string_value() == "hello nix"
-    await flg.collect_garbage()
+        # Second layer: survival. Collection is a blocking global operation,
+        # so it is dispatched off the loop thread - which also exercises
+        # thread registration from a fresh pool thread.
+        collections_before = stats["collections"]
+        await collect()
+        assert huggorm_bindings.gc_stats()["collections"] >= collections_before + 2
+        assert await v.string_value() == "hello nix"
+        await collect()
+    else:
+        assert not await v.is_gc_managed(), "nothing is GC-managed with no collector"
     # Forced state persists through collection...
     assert await thunk.type_name() == "int"
     assert await thunk.integer() == 42
@@ -801,16 +822,17 @@ async def test_behavior() -> None:
     # A leaked root is a real bug class and nothing else can see it.
     # It keeps its value alive forever, and the heap only ever says
     # the heap grew.
-    roots_before = huggorm_bindings.gc_stats()["live_roots"]
-    kept = [await state.make_string(f'{"p" * 200}-{i}') for i in range(200)]
-    assert huggorm_bindings.gc_stats()["live_roots"] >= roots_before + 200
+    if has_gc:
+        roots_before = huggorm_bindings.gc_stats()["live_roots"]
+        kept = [await state.make_string(f'{"p" * 200}-{i}') for i in range(200)]
+        assert huggorm_bindings.gc_stats()["live_roots"] >= roots_before + 200
 
-    del kept
-    await flg.collect_garbage()
-    assert huggorm_bindings.gc_stats()["live_roots"] == roots_before, (
-        f"dropped values must release their roots: "
-        f"{roots_before} -> {huggorm_bindings.gc_stats()['live_roots']}"
-    )
+        del kept
+        await collect()
+        assert huggorm_bindings.gc_stats()["live_roots"] == roots_before, (
+            f"dropped values must release their roots: "
+            f"{roots_before} -> {huggorm_bindings.gc_stats()['live_roots']}"
+        )
 
     assert v._runner.workers_seen == state._runner.workers_seen, (
         "value ops must run on the producer's thread"

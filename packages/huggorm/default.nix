@@ -58,6 +58,7 @@ python3Packages.buildPythonPackage {
   # The front door and the suite read the declarations for the Nix the
   # bindings link (tasks/055).
   env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
+  env.HUGGORM_NIX_GC = if huggorm-bindings.hasCollector then "1" else "0";
 
   propagatedBuildInputs = [
     huggorm-bindings

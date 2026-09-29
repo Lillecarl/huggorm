@@ -8,7 +8,10 @@ constant for each build, so every branch is checked against its own stubs.
 
 from __future__ import annotations
 
+import os
 from typing import Any, cast
+
+import pytest
 
 from huggorm_bindings import DrvOutput, GCOptions, Hash, HashAlgorithm, StorePath
 from huggorm_bindings.errors import NixError, SysError
@@ -87,3 +90,13 @@ if NIX_2_35:
 else:
     MISSING_FILE = "opening file"
     MissingFileError = SysError
+
+
+# Whether this build's libexpr has the collector, as the BUILD says:
+# `boehm_gc()` is the binding under test and cannot vouch for itself.
+HAS_COLLECTOR = os.environ.get("HUGGORM_NIX_GC", "1") == "1"
+
+#: For a test of the collector itself; a build without one refuses its
+#: questions by name, and `test_settings` holds that.
+needs_collector = pytest.mark.skipif(
+    not HAS_COLLECTOR, reason="this Nix was built without the collector")

@@ -57,10 +57,11 @@ python3Packages.buildPythonPackage {
   nativeBuildInputs = [ pkg-config ];
 
   # boehmgc headers must be visible when compiling the extension.
-  # `huggorm_decl/cpp/eval.hpp` calls GC_register_my_thread and GC_gcollect
+  # `huggorm_decl/cpp/gc.hpp` calls GC_register_my_thread and GC_gcollect
   # directly - libexpr exposes no thread-registration API, so that half
-  # of the integration is this repo's.
-  buildInputs = [ boehmgc ] ++ nixLibs;
+  # of the integration is this repo's. null for a libexpr built without
+  # the collector, and then nothing here names a Boehm symbol.
+  buildInputs = lib.optional (boehmgc != null) boehmgc ++ nixLibs;
 
   propagatedBuildInputs = nixLibs;
 
@@ -69,6 +70,9 @@ python3Packages.buildPythonPackage {
   # these bindings describes the same Nix.
   env.HUGGORM_NIX_VERSION = nix-store.version;
   passthru.nixVersion = nix-store.version;
+  # Whether libexpr allocates through the collector: its tests ask
+  # the build, never the binding they test.
+  passthru.hasCollector = boehmgc != null;
 
   # Nix's own `src/nix/get-env.sh`, which `nix develop` runs as a
   # builder. Nix compiles it into the `nix` binary and no library

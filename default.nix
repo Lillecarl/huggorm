@@ -63,7 +63,12 @@ rec {
   # `GC_init`, and bdwgc's setter drops offset 0 when it does. The
   # patch header has the detail (tasks/101).
   patchNix =
-    base:
+    {
+      base,
+      # False builds libexpr with `-Dgc=disabled`, as nanopynix's `-nogc`
+      # and `-asan` lanes do. huggorm then makes no collector call.
+      gc ? true,
+    }:
     (base.appendPatches (
       [ ./nix/patches/nix-base-env-size.patch ]
       ++ lib.optional (lib.versionOlder base.version "2.35") ./nix/patches/nix-interrupted-thunk-recovers.patch
@@ -75,6 +80,9 @@ rec {
           boehmgc = pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
             patches = (old.patches or [ ]) ++ bdwgcPatches;
           });
+        }
+        // lib.optionalAttrs (!gc) {
+          nix-expr = prev.nix-expr.override { enableGC = false; };
         }
       );
   # Exported: a consumer that builds its own collector and its own Nix
@@ -136,15 +144,21 @@ rec {
   # the Nix `base` is, and `HUGGORM_NIX_VERSION` carries that to every
   # declaration's `NIX_VERSION` branch.
   forNix =
-    base:
+    base: forNixWith { inherit base; };
+  forNixWith =
+    {
+      base,
+      gc ? true,
+    }:
     let
-      nix = patchNix base;
+      nix = patchNix { inherit base gc; };
       # The libgc libnixexpr links. The bindings link the same one, because
       # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
       # process ran libnixexpr on a libgc built without its large config.
+      # null when libexpr is built without the collector.
       boehmgc = lib.findFirst (
         p: (p.pname or "") == "boehm-gc"
-      ) (throw "libnixexpr links no boehmgc") nix.libs.nix-expr.propagatedBuildInputs;
+      ) null nix.libs.nix-expr.propagatedBuildInputs;
       unversioned-src = bindings-src;
     in
     rec {
@@ -190,6 +204,11 @@ rec {
     nix_2_34 = forNix pkgs.nixVersions.nix_2_34;
     nix_2_35 = forNix pkgs.nixVersions.nix_2_35;
     git = forNix pkgs.nixVersions.git;
+    # No collector: what nanopynix's `-nogc` and `-asan` lanes run.
+    nix_2_34-nogc = forNixWith {
+      base = pkgs.nixVersions.nix_2_34;
+      gc = false;
+    };
   };
   inherit (nixVersions.nix_2_34)
     nix

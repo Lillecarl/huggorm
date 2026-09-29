@@ -17,6 +17,7 @@ import sys
 from collections.abc import Callable, Iterator
 
 import pytest
+from nixversion import HAS_COLLECTOR
 
 PROBE = """
 import sys
@@ -311,11 +312,24 @@ def test_the_version_is_the_evaluator_s_own() -> None:
     assert nix_version() == answered.string_value()
 
 
-def test_this_build_has_the_collector() -> None:
-    """`default.nix` builds libexpr with Boehm, as nixpkgs does."""
+def test_the_collector_probe_agrees_with_the_build() -> None:
+    """`boehm_gc()` says what the build linked: Boehm, as nixpkgs
+    builds it, or no collector for `nixVersions.nix_2_34-nogc`."""
     from huggorm_bindings import boehm_gc
 
-    assert boehm_gc() is True
+    assert boehm_gc() is HAS_COLLECTOR
+
+
+@pytest.mark.skipif(HAS_COLLECTOR, reason="this Nix has the collector")
+def test_a_build_without_the_collector_refuses_by_name() -> None:
+    """A question only the collector can answer raises, rather than
+    answering zeros that would read as a measurement (tasks/105)."""
+    from huggorm_bindings import collect_garbage, gc_stats
+    from huggorm_bindings.errors import UnimplementedError
+
+    for refused in (collect_garbage, gc_stats):
+        with pytest.raises(UnimplementedError, match="without the Boehm collector"):
+            refused()
 
 
 def test_reset_forgets_the_mark_and_keeps_the_value(

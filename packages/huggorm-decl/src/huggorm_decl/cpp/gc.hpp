@@ -12,6 +12,12 @@
  * because it answers a question about the same subject: a root that is
  * never dropped keeps its value alive forever, and no heap counter can
  * tell that from a heap that simply grew.
+ *
+ * A libexpr built with `-Dgc=disabled` has no collector, and
+ * `NIX_USE_BOEHMGC` says so. Registration then has nothing to do, and
+ * a question only the collector can answer raises
+ * `UnimplementedError`: an
+ * empty answer would read as a measurement.
  */
 
 #include <atomic>
@@ -21,11 +27,18 @@
 
 #include <unistd.h>
 
-#include <gc/gc.h>
-
+// `NIX_USE_BOEHMGC`, and `gc.h` with `GC_THREADS` when it is set.
 #include "nix/expr/eval-gc.hh"
+#include "nix/util/error.hh"
 
 namespace huggorm {
+
+/** Refuse a request only the collector can answer. */
+[[noreturn]] inline void no_collector(const char * what)
+{
+    throw nix::UnimplementedError(
+        "cannot %s: this Nix was built without the Boehm collector", what);
+}
 
 // ---- the collector's start -----------------------------------------
 
@@ -59,9 +72,11 @@ inline std::atomic<std::int64_t> & gc_owner()
  */
 inline void gc_boot()
 {
+#if NIX_USE_BOEHMGC
     GC_set_all_interior_pointers(0);
     GC_set_no_dls(1);
     GC_INIT();
+#endif
 #ifdef __linux__
     gc_owner().store(::gettid(), std::memory_order_release);
 #endif
@@ -155,10 +170,12 @@ struct ThreadExit
 {
     ~ThreadExit()
     {
+#if NIX_USE_BOEHMGC
         if (gc_owns_registration()) {
             GC_unregister_my_thread();
             gc_owns_registration() = false;
         }
+#endif
     }
 };
 
@@ -168,6 +185,7 @@ inline void gc_register_thread()
         return;
     gc_start();
     gc_asked() = true;
+#if NIX_USE_BOEHMGC
     struct GC_stack_base sb;
     GC_get_stack_base(&sb);
     // GC_SUCCESS means WE registered it, so we are the ones who must
@@ -179,6 +197,7 @@ inline void gc_register_thread()
         static thread_local ThreadExit at_exit;
         (void) at_exit;
     }
+#endif
 }
 
 /**
@@ -196,17 +215,23 @@ inline void gc_unregister_thread()
 {
     if (!gc_owns_registration())
         return;
+#if NIX_USE_BOEHMGC
     GC_unregister_my_thread();
+#endif
     gc_owns_registration() = false;
     gc_asked() = false;
 }
 
 inline void gc_collect()
 {
+#if NIX_USE_BOEHMGC
     // Two cycles: finalizers and frees lag one behind.
     gc_register_thread();
     GC_gcollect();
     GC_gcollect();
+#else
+    no_collector("collect");
+#endif
 }
 
 /**
@@ -246,11 +271,14 @@ inline std::atomic<std::size_t> & scopes_collected()
     return count;
 }
 
-inline void count_when_collected(void * block)
+/** Without a collector nothing is ever freed, so nothing counts. */
+inline void count_when_collected([[maybe_unused]] void * block)
 {
+#if NIX_USE_BOEHMGC
     GC_register_finalizer_no_order(
         block,
         [](void *, void *) { scopes_collected().fetch_add(1, std::memory_order_relaxed); },
         nullptr, nullptr, nullptr);
+#endif
 }
 }  // namespace huggorm
