@@ -919,16 +919,17 @@ the test cannot apply.
 
 Still open, from the lane:
 
-- A primop argument with string context: nanopynix-bindings realises it
-  and carries the context onto the returned string. huggorm's bridge
-  does neither.
+- DONE: a primop argument with string context. huggorm has
+  `realise_json`, `string_context` and `make_string(value, context)`,
+  and the bridge builds what an argument names and gives every
+  returned string the input's context, as nanopynix-bindings does.
 - `fetchers.Input` (`input_from_url`, `input_from_attrs`).
-- `list_store_types_json`, which the store-model tests read.
-- Two handles on one local store share one temp-roots file on
-  nanopynix-bindings; huggorm opens two.
-- The error event of the log stream carries no structured payload.
-- The verbosity ceiling test: the default is CHATTY where INFO is
-  expected.
+- DONE: `list_store_types_json` is `store_types_json`.
+- DONE: two stores on one directory each keep their own temp-roots
+  file, by a Nix patch (Carl's choice over a per-URI cache).
+- The error event of the log stream carries no structured payload:
+  `tasks/103`.
+- The verbosity ceiling: `tasks/102`.
 - The settings-leak guard fires where a pynix test and a nanopynix test
   meet. That may come from the lane's two-part split; not proven.
 

@@ -38,6 +38,7 @@ from huggorm_bindings import (
     GcRoot,
     Hash,
     HashAlgorithm,
+    Input,
     InputDrvNode,
     KeyedBuildResult,
     LockedInput,
@@ -1836,6 +1837,9 @@ def test_every_wire_value_survives_its_own_round_trip(
         "FlakeRef": (
             _rebuild(FlakeRef, {"type": "github", "owner": "o", "repo": "r",
                                 "dir": "sub"}),
+            [({"type": "path", "path": "/x", "lastModified": 5},)]),
+        "Input": (
+            _rebuild(Input, {"type": "github", "owner": "o", "repo": "r"}),
             [({"type": "path", "path": "/x", "lastModified": 5},)]),
         # Two references and a flag, each different in the second case.
         "LockedInput": (
