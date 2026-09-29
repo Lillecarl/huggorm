@@ -82,7 +82,7 @@ BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
 # reads a definition's `co_firstlineno`, `_reconcile` checks that the
 # tree has a node there, and `_resolve` keeps the arm the import
 # chose. A reader short one of the three arms drops an `async def`
-# out of one reading and not the other (tasks/088).
+# out of one reading and not the other (huggorm#88).
 DEFINITIONS = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 
 
@@ -112,7 +112,7 @@ FROM_PARTS = "_from_parts"
 # declaration this one imports - `decl/store.py` pulls in five - so an
 # error is routinely raised while reading a file that is not the one
 # the caller asked for. The old message said "line 183" and left a
-# reader to work out which of nine files that was (tasks/061).
+# reader to work out which of nine files that was (huggorm#61).
 #
 # A plain list, not a ContextVar. Nothing here runs concurrently: the
 # generator reads the corpus on one thread, and a ContextVar would buy
@@ -349,7 +349,7 @@ class Type:
         `uint` means the unsigned one, and the C++ spelling the alias
         already carries is what says which. Above the boundary both
         are still `int`; only the crossing knows the width
-        (tasks/079).
+        (huggorm#79).
 
         The name `uint` is `wiretypes.SCALAR_NAMES`', restated here
         because this package may not import the generator's payload -
@@ -372,7 +372,7 @@ class Type:
                 raise TypeError(
                     f"'{inner}' holds a {leaf.cxx.spelling}, and a "
                     f"container of a width has no wire spelling yet. "
-                    f"See tasks/079.")
+                    f"See huggorm#79.")
             inner = WIDTHS[leaf.cxx.spelling]
         return f"{inner}?" if self.optional else inner
 
@@ -431,7 +431,7 @@ class Method:
     #
     # NO EMITTER HONOURS IT YET. `nbemit` refuses a bound class that
     # sets it, because the stub, `_parts` and the wire all call an
-    # accessor and a binding alone cannot change that (tasks/076).
+    # accessor and a binding alone cannot change that (huggorm#76).
     # The word stays because the reader is where it is read and the
     # refusal is what reads it.
     prop: bool = False
@@ -575,7 +575,7 @@ class Class:
 
         The DERIVED question, computed once here because three layers
         used to ask it and all three asked `abstract` instead
-        (tasks/061). `@abstract` states a fact about C++: the type has
+        (huggorm#61). `@abstract` states a fact about C++: the type has
         pure virtuals. Whether a caller can write `Store(uri)` is a
         different question, and conflating them meant the declaration
         could not state the true fact about nix::Store without
@@ -1004,7 +1004,7 @@ def _body(node: ast.FunctionDef) -> str:
 
     The one `Cxx(...)` may sit in an `if NIX_VERSION ...` with an
     `else`, when one Nix spells the same call differently and nothing
-    above the binding can tell (tasks/055). The arm is chosen here,
+    above the binding can tell (huggorm#55). The arm is chosen here,
     against the same `NIX_VERSION` the import used.
 
     An empty body is what says the emitter DERIVES the whole binding,
@@ -1040,7 +1040,7 @@ def _body(node: ast.FunctionDef) -> str:
 
 # The descriptors a declaration may not write. `property` is not
 # here: it IS read, into `Method.prop`, and refused by the emitter
-# that would have to honour it (tasks/075). These two carry no word
+# that would have to honour it (huggorm#75). These two carry no word
 # at all.
 DESCRIPTORS = ("staticmethod", "classmethod")
 
@@ -1086,16 +1086,16 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
             # a classmethod not at all, the stub would need the same
             # decorator, and `_parts` fetches an accessor off an
             # INSTANCE. That is four outputs for a shape no
-            # declaration wants yet (tasks/076).
+            # declaration wants yet (huggorm#76).
             #
             # Reachable only since `_live` learnt to look through a
             # descriptor: before that a `@staticmethod` named no live
-            # line and was dropped whole, in silence (tasks/075).
+            # line and was dropped whole, in silence (huggorm#75).
             raise DeclarationError(
                 node, f"{node.name}: @{d.id} has no meaning in a "
                       f"declaration yet, and this reads a method as one "
                       f"that takes self - so its first parameter would "
-                      f"be dropped. See tasks/076.")
+                      f"be dropped. See huggorm#76.")
     args = node.args
     if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         raise DeclarationError(
@@ -1121,7 +1121,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         declared = type_of(anns[arg.arg], arg, fn)
         if default is None and not declared.optional:
             # An implicit Optional: every surface but the C++ then says
-            # `| None` where the declaration did not (tasks/104).
+            # `| None` where the declaration did not (huggorm#104).
             raise DeclarationError(
                 arg, f"{node.name}({arg.arg}): a default of None needs "
                      f"`| None` in the type.")
@@ -1233,7 +1233,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     # answering first: `@derives("Store")` left the import unused.
     # A vocabulary IS a StrEnum, in the declaration as in the emitted
     # module, so a default such as `HashAlgorithm.SHA256` types as the
-    # word and not as `str` (tasks/104). The base is Python's, not a
+    # word and not as `str` (huggorm#104). The base is Python's, not a
     # declared class, so it is checked here and never becomes `base`.
     if decl.kind == "words":
         if [ast.unparse(b) for b in node.bases] != ["StrEnum"]:
@@ -1284,7 +1284,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             # cause: the import keeps the function, so it named a live
             # line, and `_reconcile` saw a line the tree reader had no
             # node for. The message blamed `co_firstlineno` and never
-            # said "async" (tasks/088). `DEFINITIONS` closed that,
+            # said "async" (huggorm#88). `DEFINITIONS` closed that,
             # which is what makes this refusal reachable.
             _survive(DeclarationError(
                 item,
@@ -1338,7 +1338,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             # `def __call__` got no binding, no stub line, no manifest
             # entry and no diagnostic - and a skip is
             # indistinguishable from an absence, which is this repo's
-            # named failure mode (tasks/088).
+            # named failure mode (huggorm#88).
             #
             # `__init__` is the one exception and it is handled above.
             # The value dunders are DERIVED rather than declared:
@@ -1361,7 +1361,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                 f"@wire_value writes them, and its `order=` and "
                 f"`text=` decide which - so do not "
                 f"declare one. Anything else needs the emitters taught "
-                f"(tasks/088); declare it under a plain name until "
+                f"(huggorm#88); declare it under a plain name until "
                 f"then."))
         else:
             # Definition order, which is the order a reader of the
@@ -1402,7 +1402,7 @@ def _mentions(cls: Class, node: ast.AST) -> None:
     then crosses the wire losing a field in silence.
 
     This does not prove the body USES a field correctly - only the
-    round-trip test can, and it does (tasks/056). It catches the
+    round-trip test can, and it does (huggorm#56). It catches the
     forgetting, which is the failure that costs nothing to catch here
     and a debugging session to catch there.
 
@@ -1451,7 +1451,7 @@ def load(path: str) -> ModuleType:
     tree-only - as did every file importing from it. The tree read is
     not obviously wrong: a declaration with no `NIX_VERSION` branch
     keeps exactly the same nodes either way, so nothing anywhere
-    said a word (tasks/082).
+    said a word (huggorm#82).
 
     Nothing wanted the fallback. Every declaration in `decl/`
     imports, and the one emitter that already asked - `pyerrors` -
@@ -1501,7 +1501,7 @@ def load(path: str) -> ModuleType:
 # reaches `_method`'s own refusal instead - which already names the
 # real problem, that a static method's first parameter would be
 # dropped. The two arms were text that could never run, claiming a
-# coverage this hint does not have (`tasks/075`).
+# coverage this hint does not have (huggorm#75).
 _ON_DESCRIPTOR = re.compile(
     r"'(property)' object has no attribute '_(\w+)'")
 
@@ -1510,7 +1510,7 @@ def _descriptor_hint(exc: BaseException) -> str:
     """The one-line fix, when the import failed for the known reason.
 
     `@property` and a marker on one accessor is legal, and the ORDER
-    decides whether it imports. Measured both ways (`tasks/076`):
+    decides whether it imports. Measured both ways (huggorm#76):
 
         @instant                  AttributeError, at import
         @property                 - a property takes no attribute
@@ -1534,7 +1534,7 @@ def _descriptor_hint(exc: BaseException) -> str:
     the only builtin descriptor that refuses an attribute. That is
     measured, and the regex comment holds the measurement.
 
-    `tasks/076` asked for this to be said in a REFUSAL rather than in
+    huggorm#76 asked for this to be said in a REFUSAL rather than in
     a comment, because a comment is not where a reader who hit it is
     looking. The comment above is now the second copy, and the
     refusal is the one that reaches them.
@@ -1545,14 +1545,14 @@ def _descriptor_hint(exc: BaseException) -> str:
     descriptor, marker = m.group(1), m.group(2)
     # HONEST ABOUT WHAT THE ORDER BUYS. It fixes the IMPORT and
     # nothing else: the emitter still refuses a `@property` accessor
-    # (`tasks/076`). A hint that stopped at the order would send a
+    # (huggorm#76). A hint that stopped at the order would send a
     # reader to a second refusal with no warning that it was coming,
     # which is worse than the raw AttributeError it replaces.
     return (f"\nWrite @{descriptor} OUTERMOST, above @{marker}. A marker "
             f"sets `_{marker}` on what it is handed, and a {descriptor} "
             f"object takes no attribute - so the marker has to reach the "
             f"function underneath it. That fixes the IMPORT. An emitter "
-            f"still refuses a @{descriptor} accessor - see tasks/076 - so "
+            f"still refuses a @{descriptor} accessor - see huggorm#76 - so "
             f"declare it as a plain method until that changes.")
 
 
@@ -1571,7 +1571,7 @@ def _live(path: str) -> set[int]:
 
     Always a set. `load` refuses a file that will not import, so
     "the import kept nothing because there was no import" is no
-    longer one of the answers (tasks/082)."""
+    longer one of the answers (huggorm#82)."""
     # `_definitions`' walk, so the two cannot disagree about what a
     # definition is.
     return set(_definitions(path))
@@ -1596,7 +1596,7 @@ def _definitions(path: str) -> dict[int, Any]:
         # A DESCRIPTOR holds the function rather than being one, so
         # the function is asked for it. Without this a `@property`
         # accessor named no line and vanished from the binding in
-        # silence (tasks/075).
+        # silence (huggorm#75).
         fn = getattr(obj, "fget", None) or getattr(obj, "__func__", obj)
         if not isinstance(fn, types.FunctionType):
             return
@@ -1643,7 +1643,7 @@ def _reconcile(tree: ast.Module, live: set[int], path: str) -> None:
     `__code__` and a descriptor has none. That is `nodes - live`, and
     nothing here would have seen it: a `@property` accessor was
     dropped in silence until `_live` learnt to look through the
-    descriptor (tasks/075). The direction is still not worth a gate -
+    descriptor (huggorm#75). The direction is still not worth a gate -
     a dead `if` arm is exactly `nodes - live` and is not an error -
     so the fix belongs in `_live` rather than here."""
     if not live:
@@ -1676,7 +1676,7 @@ def _resolve(body: list[ast.stmt], live: set[int]) -> list[ast.stmt]:
     it was neither - a declaration with no `if` in it keeps exactly
     the same nodes that way, so a file that did not import read as a
     file that did. `load` refuses one now, so `live` is always known
-    (tasks/082)."""
+    (huggorm#82)."""
     out: list[ast.stmt] = []
 
     def walk(nodes: list[ast.stmt]) -> None:
@@ -1728,7 +1728,7 @@ def resolved(path: str) -> ast.Module:
     exception declaration IS its own output. It read `tree.body` and
     so saw neither arm of a branch, while the module transform copied
     both through - three holes at once, and none of them loud
-    (tasks/073)."""
+    (huggorm#73)."""
     with reading(path):
         return _chosen(path)[0]
 
@@ -1975,7 +1975,7 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
             raise DeclarationError(
                 node, f"{cls.name}: '{arm}' crosses as a {other.decl.wire or 'proxy'}, "
                       f"not as a value. An arm that granted a lease would "
-                      f"make every union a bulk-lease problem (tasks/031).")
+                      f"make every union a bulk-lease problem (huggorm#31).")
 
 
 def _errors(body: list[ast.stmt], stem: str) -> tuple[Class, ...]:

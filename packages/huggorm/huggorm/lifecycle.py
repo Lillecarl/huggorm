@@ -4,7 +4,7 @@ Handle lifecycle core: leased graph with connection-backed holders.
 Transport-agnostic by design - grpclib, SSH, stdio or multiprocessing
 shims all surface just two things: a request token and periodic pings.
 
-Model (tasks/002):
+Model (huggorm#2):
 - Holders are CONNECTIONS identified by a token. Every handle crossing
   the wire (Acquire, proxy-typed returns) grants one lease to the
   caller's connection. The handle ID remains the access capability;
@@ -126,7 +126,7 @@ class HandleTable:
         a miss - so a client the sweeper had already reaped got an
         empty connection back under its old token and a cheerful
         ok=True, then discovered its death later as "unknown handle"
-        on some unrelated call (tasks/049).
+        on some unrelated call (huggorm#49).
 
         Public, because Ping is not lifecycle's own code and had no
         business reaching an underscore."""

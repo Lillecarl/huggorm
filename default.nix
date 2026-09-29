@@ -16,7 +16,7 @@ rec {
   # under `builtins`, so a stock evaluator has NINE slots left and the
   # tenth registered primop writes past the end of the block.
   #
-  # `tasks/033` measured the headroom here; the patch header measures
+  # huggorm#33 measured the headroom here; the patch header measures
   # the overflow, under AddressSanitizer, and explains why the size is
   # a constant at all. Two things in it are worth knowing before
   # reading the diff:
@@ -40,7 +40,7 @@ rec {
   # caches every non-recoverable error in the thunk it came from, and
   # `nix::Interrupted` is one, so a cancelled call left every value
   # it was forcing rethrowing "interrupted by the user" for the life
-  # of the state (tasks/097). Carl's call, 2026-09-25: patch Nix, not
+  # of the state (huggorm#97). Carl's call, 2026-09-25: patch Nix, not
   # abandon the state. It is upstream's own fix, 5c4f498d3, released
   # in 2.35.0, so only 2.34 carries it.
   #
@@ -58,7 +58,7 @@ rec {
   # Carl's call, 2026-09-29: patch Nix rather than cache stores per URI.
   #
   # The fourth lets `setOptions` send a daemon a level other than
-  # `nix::verbosity`, which huggorm pins at import (tasks/102).
+  # `nix::verbosity`, which huggorm pins at import (huggorm#102).
   #
   # The fifth gives an embedding caller the evaluator's statistics:
   # `statisticsJSON` returns the report `printStatistics` writes,
@@ -71,7 +71,7 @@ rec {
   # and runs `nix::initGC` at the first evaluator, so importing starts
   # no marker thread. `initGC` then switches interior pointers after
   # `GC_init`, and bdwgc's setter drops offset 0 when it does. The
-  # patch header has the detail (tasks/101).
+  # patch header has the detail (huggorm#101).
   patchNix =
     {
       base,
@@ -176,7 +176,7 @@ rec {
     ];
     pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
-  # Everything that links a Nix, for one Nix (tasks/055). The bindings,
+  # Everything that links a Nix, for one Nix (huggorm#55). The bindings,
   # the surface generated for them and the library over both describe
   # the Nix `base` is, and `HUGGORM_NIX_VERSION` carries that to every
   # declaration's `NIX_VERSION` branch.
@@ -286,7 +286,7 @@ rec {
   );
   # The emitted front door, into the working tree.
   #
-  # `huggorm/__init__.py` is generated (tasks/064) and the tree keeps
+  # `huggorm/__init__.py` is generated (huggorm#64) and the tree keeps
   # none of it, so `packages/huggorm/huggorm/` is a NAMESPACE portion.
   # Python's finder - and zuban's - prefer a regular package found
   # LATER on the path, so without this the tree's `huggorm` is not the
@@ -312,7 +312,7 @@ rec {
   # without a rebuild. zuban needs an interpreter rather than a search
   # path: a PEP 561 <pkg>-stubs package is found only through one, and
   # without it every binding type reads as Any and the check passes
-  # while proving nothing (tasks/027).
+  # while proving nothing (huggorm#27).
   check = pkgs.writeShellApplication {
     name = "check";
     runtimeInputs = [
@@ -334,7 +334,7 @@ rec {
       # The declarations branch on `NIX_2_35` and `NIX_2_36`, and
       # `mypy.ini` holds both false, so each later Nix gets a run of
       # its own. The suite and the generated surface need no such run
-      # here: each version's own build typechecks them (tasks/055).
+      # here: each version's own build typechecks them (huggorm#55).
       echo "--- typecheck: the declarations, for 2.35 and 2.36 ---"
       zuban mypy --python-executable "${ourPython}/bin/python3" \
         --always-true NIX_2_35 --always-false NIX_2_36 \
@@ -356,7 +356,7 @@ rec {
   #
   # The WHOLE suite, outside the sandbox. A build has no daemon, no db
   # and no writable store, so anything that touches a real store cannot
-  # be a build check - and that half will only grow (tasks/037). The
+  # be a build check - and that half will only grow (huggorm#37). The
   # build runs `pytest -m "not live"`; this runs everything.
   #
   # PYTHONPATH puts the working tree's huggorm ahead of the installed
@@ -368,7 +368,7 @@ rec {
   # and the store's package wins the whole directory. See its comment.
   #
   # PYTEST_DEBUG_TEMPROOT gives this suite its OWN basedir, and that
-  # is `tasks/062`. pytest's default is `$TMPDIR/pytest-of-$USER`,
+  # is huggorm#62. pytest's default is `$TMPDIR/pytest-of-$USER`,
   # keyed by USER and not by project, so every pytest on this machine
   # shares one directory. Three consequences, all measured:
   #

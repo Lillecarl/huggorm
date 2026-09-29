@@ -171,7 +171,7 @@ class Realisation:
 
         No parsing. Every part arrives as itself - a StorePath, a
         DrvOutput, a list of Signature - because all three are their
-        own messages (tasks/057). This body would have had three
+        own messages (huggorm#57). This body would have had three
         parses a year ago and has none."""
         Cxx("""
 return nix::Realisation{

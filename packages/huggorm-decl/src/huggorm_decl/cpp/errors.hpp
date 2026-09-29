@@ -29,7 +29,7 @@
 // `nix::BadStorePathName` and their kind. That was a fact about
 // generated code, stated in a hand-written helper. The emitter writes
 // them now, from `header = "nix/..."` beside each `cxx` in
-// `decl/errors.py` (`tasks/090`).
+// `decl/errors.py` (huggorm#90).
 #include "nix/util/terminal.hh"
 
 namespace huggorm {
@@ -40,7 +40,7 @@ namespace huggorm {
  * Two callers want different halves of the same work. The translator
  * below wants the exception RAISED. A binding that answers with one -
  * a BuildResult carries a nix::BuildError as a value, and reading a
- * failed result is not an exception (tasks/071) - wants the OBJECT.
+ * failed result is not an exception (huggorm#71) - wants the OBJECT.
  * So the object is what this makes, and raising it is one line.
  *
  * The module is a PARAMETER. It used to be the literal
@@ -49,7 +49,7 @@ namespace huggorm {
  * declaration's stem, `_policy.ERROR_MODULE`, and the emitted file
  * name. Renaming the declaration left this one behind, and the only
  * symptom was every nix error quietly arriving as a RuntimeError
- * through the fallback below (tasks/063).
+ * through the fallback below (huggorm#63).
  *
  * `extra` is whatever parts the class takes beyond the two strings.
  * A BuildError takes its failure word and upstream's non-determinism

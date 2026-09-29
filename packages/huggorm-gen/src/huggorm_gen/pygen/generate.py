@@ -256,7 +256,7 @@ def build_manifest() -> Proto:
 
     # Which classes get an async wrapper at all. A pool class whose
     # methods cannot block gets nothing from one, so it crosses every
-    # layer as the sync binding object itself (tasks/025).
+    # layer as the sync binding object itself (huggorm#25).
     complaints = check_wrap_contract(protos + returned_protos)
     if complaints:
         for c in complaints:
@@ -369,11 +369,11 @@ def build_manifest() -> Proto:
     unions = declared_unions()
     # The exception hierarchy, from the module the C++ emitter writes
     # it into. An error crosses the wire as a NAME, and this is the set
-    # that makes a name safe to construct (tasks/036).
+    # that makes a name safe to construct (huggorm#36).
     #
     # Read before the contract check rather than after it: an error
     # class is a legal FIELD type now, so the check has to know the
-    # names (tasks/071).
+    # names (huggorm#71).
     errors = declared_errors()
     complaints = check_wire_contract(
         protos + returned_protos, enum_names, set(unions),
@@ -464,7 +464,7 @@ def main(argv: list[str] | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     # Every refusal this build can see, before it derives anything
-    # (tasks/061).
+    # (huggorm#61).
     corpus().read_all()
     manifest = build_manifest()
     protos = list(manifest["wrappers"].values())
@@ -532,7 +532,7 @@ def main(argv: list[str] | None = None) -> None:
     (out / "__init__.py").write_text(
         ast.unparse(init_module(all_names, free_names)) + "\n")
 
-    # Type stubs for the bindings themselves (tasks/027). The bindings
+    # Type stubs for the bindings themselves (huggorm#27). The bindings
     # are compiled extensions, so a typechecker reads no signatures out
     # of them and every binding type resolves to Any - which made the
     # generated protocols name types that check nothing. Everything

@@ -47,7 +47,7 @@ FILE = "huggorm/v1/api.proto"
 # `int` is sint64 and `uint` is uint64, which is the whole of what the
 # two widths are for. sint64 zigzags, so a Unix time before the epoch
 # costs one byte rather than ten; uint64 is the only proto type that
-# holds the top half of a uint64_t at all (tasks/079).
+# holds the top half of a uint64_t at all (huggorm#79).
 SCALARS = {"str": "string", "int": "sint64", "uint": "uint64",
            "float": "double", "bool": "bool", "bytes": "bytes"}
 assert set(SCALARS) == set(SCALAR_NAMES), "scalar tables disagree"
@@ -79,11 +79,11 @@ def _with_presence(msg: Any, f: Any) -> Any:
     This is the thing whose absence several refusals used to cite. The
     sentence "proto3 gives a scalar field no presence" described what
     this builder emitted, not what proto3 can express - and the
-    difference is one flag and one oneof entry (tasks/048).
+    difference is one flag and one oneof entry (huggorm#48).
 
     A message field needs none of it: it has presence already. A
     repeated field can take none of it, and needs none - an absent
-    repeated field IS an empty one (tasks/041).
+    repeated field IS an empty one (huggorm#41).
 
     Synthetic oneofs must follow every real one in oneof_decl. Nothing
     built through here declares a real oneof; the one message that
@@ -232,7 +232,7 @@ NOT_DATA = {
         "registering one would make the evaluator call BACK over the "
         "socket, on its own evaluation thread, once per invocation - "
         "a distributed call in a hot loop. In-process only, by "
-        "decision rather than omission (tasks/033)."),
+        "decision rather than omission (huggorm#33)."),
 }
 
 
@@ -261,7 +261,7 @@ def wire_blocker(type_str: str, kinds: dict[str, str],
     # already holds the object". LogStream is unwrapped - pool, and no
     # method of it can block - and a proxy, which made that sentence
     # false and published `EvalState.subscribe_logs` answering a
-    # handle with no service behind it (tasks/032).
+    # handle with no service behind it (huggorm#32).
     if served is not None and type_str not in served \
             and kinds.get(type_str) == "proxy":
         return (f"{type_str} is a proxy with no service: it crosses as a "
@@ -291,7 +291,7 @@ def wire_blocker(type_str: str, kinds: dict[str, str],
         if kinds.get(element) == "proxy":
             return (f"{type_str}: a container of proxies would grant one "
                     f"lease per element, and nothing grants leases in bulk "
-                    f"(tasks/031)")
+                    f"(huggorm#31)")
         type_str = element
     try:
         _msg_arg_type(type_str, kinds)
@@ -301,7 +301,7 @@ def wire_blocker(type_str: str, kinds: dict[str, str],
                     f"field is a scalar, a message, a map or a repeated one")
         return (f"{type_str} is not in the manifest, so it has no wire "
                 f"policy (an excluded base class, most likely - see "
-                f"tasks/018)")
+                f"huggorm#18)")
     return None
 
 
@@ -424,7 +424,7 @@ def _wire_kinds(manifest: Proto) -> dict[str, str]:
     out.update({name: UNION for name in manifest.get("unions", {})})
     # An EXCEPTION class, which is a declared name and not a class in
     # the groups either. It already has a message - the fault detail
-    # every typed error crosses in (tasks/036) - so a field of one
+    # every typed error crosses in (huggorm#36) - so a field of one
     # points at that rather than inventing a second shape.
     out.update({name: ERROR
                 for name in (manifest.get("errors") or {}).get("classes", {})})
@@ -520,7 +520,7 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
             for n, (fname, ftype) in enumerate(proto["wire_fields"], start=1):
                 # "?" reaches the schema now. It used to be a codec
                 # concern only, and the codec answered it by reading
-                # an empty string as absent (tasks/048).
+                # an empty string as absent (huggorm#48).
                 _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
                            optional=ftype.endswith("?"))
 
@@ -532,7 +532,7 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
     # means all outputs - and both work only because the alternatives
     # happen not to collide. A oneof is a real tag, and protobuf lets
     # a message hold itself, so the recursive arm needs nothing said
-    # about it here (tasks/059).
+    # about it here (huggorm#59).
     for alias, arms in manifest.get("unions", {}).items():
         m = file_dp.message_type.add()
         m.name = union_msg_name(alias)
@@ -595,7 +595,7 @@ def _add_session(f: Any, kinds: dict[str, str]) -> None:
     # and handle lifetime. Construction moved onto each class's own
     # service, where it can carry typed arguments.
 
-    # Connection lifecycle (tasks/002). The connection token travels in
+    # Connection lifecycle (huggorm#2). The connection token travels in
     # gRPC metadata on every request; these rpcs manage it.
     conn_resp = f.message_type.add()
     conn_resp.name = "ConnResp"
@@ -615,7 +615,7 @@ def _add_session(f: Any, kinds: dict[str, str]) -> None:
     # No token field: it rides in the x-huggorm-conn metadata like
     # every other rpc's does. An empty request message is the right
     # shape for a probe whose only question is "am I still bound"
-    # (tasks/049).
+    # (huggorm#49).
     ping_req = f.message_type.add()
     ping_req.name = "PingReq"
     png = sess.method.add()
@@ -648,7 +648,7 @@ def _add_session(f: Any, kinds: dict[str, str]) -> None:
     rel.output_type = f".{PKG}.{HANDLE}"
 
     # Batched release, for handles the client dropped rather than
-    # closed (tasks/028). A garbage collector frees many objects at
+    # closed (huggorm#28). A garbage collector frees many objects at
     # once, so one rpc per flush beats one per handle. Failures are
     # per-handle: a client cannot know whether a queued id was already
     # released by something else, and one stale id must not sink the
@@ -767,7 +767,7 @@ def _options(req: Any, kinds: dict[str, str], first: int) -> None:
     are not the same question. Level 0 is lvlError, which is a
     subscription somebody means - "errors only" - so an unset field
     and a zero one have to differ. Capacity 0 is not a queue at all,
-    so zero is free to mean "the binding's own default" (tasks/048).
+    so zero is free to mean "the binding's own default" (huggorm#48).
     """
     _add_field(req, "capacity", first, "int", kinds)
     _add_field(req, "level", first + 1, "int", kinds, optional=True)
@@ -777,7 +777,7 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     """The one rpc that travels the other way, unsolicited.
 
     Hand-written, like the rest of Session, and for the reason
-    `tasks/032` gives: a log stream is PROTOCOL. Every other rpc came
+    huggorm#32 gives: a log stream is PROTOCOL. Every other rpc came
     out of a binding declaration, because every other rpc is a call
     someone made. This one answers records nobody asked for one at a
     time, so there is no method for it to be the wire form of.
@@ -815,7 +815,7 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     # The same subscription with nothing to name. The process-wide
     # sink takes records no subscribed thread claimed, so there is no
     # handle to address and the message is the options alone
-    # (`tasks/085`).
+    # (huggorm#85).
     #
     # Numbered from 1 rather than leaving a hole where the handle
     # would be. They are two messages, not one message with a field

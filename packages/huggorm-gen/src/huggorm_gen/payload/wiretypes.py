@@ -21,7 +21,7 @@ from collections.abc import Collection, Mapping
 # manifest would be wrong rather than merely missing something. The
 # generator stamps it and every reader checks it: client and server are
 # built together today, so they always agree with each other and would
-# agree just as happily on yesterday's shape (tasks/022).
+# agree just as happily on yesterday's shape (huggorm#22).
 # `MANIFEST_SCHEMA` and `check_manifest` stood here. The manifest was
 # a dispatch table three modules read on every call, so a file from
 # another generator was a real hazard: it did not fail on load, it
@@ -49,7 +49,7 @@ from collections.abc import Collection, Mapping
 #
 # Found by `GCOptions.max_freed`, whose upstream default is the
 # largest uint64_t: sending the default options object raised
-# `ValueError: Value out of range: 18446744073709551615` (tasks/079).
+# `ValueError: Value out of range: 18446744073709551615` (huggorm#79).
 SCALAR_NAMES = ("str", "int", "uint", "float", "bool", "bytes")
 
 # A declared type that is not a builtin and still goes in a field as
@@ -58,7 +58,7 @@ SCALAR_NAMES = ("str", "int", "uint", "float", "bool", "bytes")
 # `datetime.timedelta` is the only one, and it is what a DURATION is
 # above every boundary: nanobind's own chrono caster hands a
 # `std::chrono::microseconds` over as one, so the in-process surface
-# needs nothing of ours (tasks/071).
+# needs nothing of ours (huggorm#71).
 #
 # It crosses as an int of MICROSECONDS. Carl's decision, and the two
 # reasons agree: a timedelta's own finest unit IS the microsecond, so
@@ -93,7 +93,7 @@ def python_spelling(type_str: str) -> str:
 
 # Every Nix attribute name is a string, so a map key is always one.
 # That is what makes an attribute set representable as a protobuf map
-# at all (tasks/030).
+# at all (huggorm#30).
 MAP_KEY = "str"
 
 # The containers a protobuf field can be. A map is `map<K, V>`, a list
@@ -220,7 +220,7 @@ def map_value(type_str: str) -> str | None:
     if (inner := head(value)) in CONTAINERS:
         raise TypeError(
             f"{type_str}: proto3 cannot put a {inner} inside a map. A nested "
-            f"attribute set needs the recursive value message (tasks/030)")
+            f"attribute set needs the recursive value message (huggorm#30)")
     return value
 
 
@@ -241,7 +241,7 @@ def list_value(type_str: str) -> str | None:
     if (inner := head(item)) in CONTAINERS:
         raise TypeError(
             f"{type_str}: proto3 cannot repeat a {inner}. A list of them "
-            f"needs the recursive value message (tasks/030)")
+            f"needs the recursive value message (huggorm#30)")
     return item
 
 

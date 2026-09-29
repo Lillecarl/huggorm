@@ -1,7 +1,7 @@
 """
 The part that decides WHEN to forget.
 
-`tasks/016` built the mechanism and left the policy: `cached_files`
+huggorm#16 built the mechanism and left the policy: `cached_files`
 says what an evaluation cached, `forget_file` drops one entry without
 dropping the rest, and nothing NOTICED a change. This is what notices.
 
@@ -21,9 +21,9 @@ Written against `EvalStateLike`, so one watcher serves an in-process
 
 ## Why a SNAPSHOT and not the closure
 
-`tasks/016` said a root's closure is the `cached_files` diff around
+huggorm#16 said a root's closure is the `cached_files` diff around
 its `eval_file`. That is wrong for a file two roots share, and
-`tasks/083` holds the measurement: the diff says what an evaluation
+huggorm#83 holds the measurement: the diff says what an evaluation
 newly CACHED, not what it READ, so the second root to import a shared
 file gets a diff that does not mention it. Forgetting that diff leaves
 the root answering its old value, SILENTLY.
@@ -34,7 +34,7 @@ is a superset of the closure and cannot miss.
 
 It over-forgets, and the amount is not small: a root registered after
 some file was already cached is implicated by a change to that file
-even if it never read it. `tasks/083` measures this. The trade is
+even if it never read it. huggorm#83 measures this. The trade is
 deliberate - the alternative is not cheaper, it is wrong - and at
 worst it degenerates to forgetting the whole evaluation cache, which
 still keeps the fetched flake inputs that `resetFileCache()` drops.
@@ -164,7 +164,7 @@ class Watcher:
         A failed evaluation still caches the files it read, and the
         cache is what answers next time - so the corrected file is
         never re-read and the root raises the OLD error forever.
-        Measured in `tasks/087`: a file fixed after a syntax error
+        Measured in huggorm#87: a file fixed after a syntax error
         raises that same syntax error until something forgets it, and
         nothing did.
 

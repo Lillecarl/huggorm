@@ -2,7 +2,7 @@
 
 The second of the two front doors, and the one that had a reason to
 wait. `cppgen/pyinit.py` writes the bindings' own; this writes the
-one a caller actually types `import huggorm` for (tasks/064).
+one a caller actually types `import huggorm` for (huggorm#64).
 
 Forty-odd `from huggorm_bindings import Hash as Hash` lines that had
 to follow every declaration in the repo, and a test that said so
@@ -116,7 +116,7 @@ work happens rather than what it does.
 - **Remote** - `async with connect() as client:` gives objects that
   satisfy the same protocols (`StoreLike`) and run on another
   process's store. A CONTEXT MANAGER, because the client pings in the
-  background and the scope is what stops the loop (`tasks/035`).
+  background and the scope is what stops the loop (huggorm#35).
 
 A protocol is what both async surfaces promise, so code written
 against `StoreLike` runs either way.
@@ -124,10 +124,10 @@ against `StoreLike` runs either way.
 ## What is NOT here
 
 Nothing, now. The `Mock*` classes were the last exception and they are
-gone (tasks/060). Every name the two packages behind this one export
+gone (huggorm#60). Every name the two packages behind this one export
 reaches this front door - and it is derived from them now rather than
 listed by hand, so a new binding arrives here without anyone
-noticing (tasks/064).
+noticing (huggorm#64).
 
 `RPC_CLASSES` is the one name held back. It is a registry the remote
 client reads to turn a handle into an object, so it is plumbing

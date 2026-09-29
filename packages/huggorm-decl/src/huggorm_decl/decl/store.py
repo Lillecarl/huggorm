@@ -1,5 +1,5 @@
 """
-The real nix::Store (tasks/015).
+The real nix::Store (huggorm#15).
 
 Abstract in C++, and its implementation is chosen by a URI, so the
 binding is constructed through openStore rather than a constructor.
@@ -503,7 +503,7 @@ return self.makeValidityRegistration(as_set<nix::StorePathSet>(paths),
         libstore's own refusal rather than one invented here.
 
         The answer is for the machine the store runs on. In process
-        that is here; over RPC it is the server's (tasks/040)."""
+        that is here; over RPC it is the server's (huggorm#40)."""
         Cxx("""
 auto * fs = dynamic_cast<nix::LocalFSStore *>(&self);
 if (fs == nullptr)
@@ -572,7 +572,7 @@ if (local == nullptr)
 return local->config->getBuildDir().string();
         """)
     # Nothing about PathInfo is here any more, and that is the whole
-    # of tasks/056. It binds nix::ValidPathInfo, in `decl/pathinfo.py`
+    # of huggorm#56. It binds nix::ValidPathInfo, in `decl/pathinfo.py`
     # beside the header it comes from, and this file IMPORTS it. What
     # is left is the call.
     #
@@ -662,7 +662,7 @@ if (!found)
 return nix::Realisation{*found, id};
         """)
     # The first method taking a UNION, and the reason the union
-    # mechanism exists (tasks/059). A target is a path to fetch or
+    # mechanism exists (huggorm#59). A target is a path to fetch or
     # outputs to build, and upstream says so with a std::variant.
     #
     # READ-ONLY, which is why this is the first consumer rather than
@@ -713,7 +713,7 @@ return nix::Realisation{*found, id};
 
     # `query_missing` says what building these WOULD do; this does it.
     # The pair is upstream's own, and it is why the union exists
-    # (tasks/059): both take the same list, and only one of them
+    # (huggorm#59): both take the same list, and only one of them
     # changes the store.
     @needs("huggorm_decl/cpp/build.hpp")
     def build_paths(self, targets: list[DerivedPath],
@@ -1233,7 +1233,7 @@ def open_store(uri: Str = "auto") -> Store:
     # This was three lines in `cpp/libstore.hpp` because a factory
     # had to be a NAMED C++ symbol. It does not any more, so the one
     # call lives beside the declaration that describes it
-    # (tasks/063).
+    # (huggorm#63).
     Cxx("return nix::openStore(uri);")
 
 # --- what the module does before a caller exists -------------------

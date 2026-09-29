@@ -21,7 +21,7 @@ in the module without inventing one.
 
 Every class in this module reaches the wire. An error crosses as a
 NAME checked against a declared set, which is what keeps a status
-message from naming any importable class (tasks/036). The set is
+message from naming any importable class (huggorm#36). The set is
 this file: the emitter writes the module and knows where it put it.
 """
 
@@ -39,7 +39,7 @@ class NixError(Exception):
 
     `e.info` is the `ErrorInfo` behind the message: the position, the
     evaluation trace and the suggestions. C++ is the only place that
-    holds them. None when Python built the error (tasks/100)."""
+    holds them. None when Python built the error (huggorm#100)."""
 
     cxx = "nix::Error"
     header = "nix/util/error.hh"
@@ -54,7 +54,7 @@ class NixError(Exception):
     # strings. The same word as a wire value's declaration, meaning the
     # same thing - the parts this object can be rebuilt from - though
     # an error travels in the gRPC status details rather than as a
-    # response message of its own (tasks/036).
+    # response message of its own (huggorm#36).
     _wire_fields: tuple[tuple[str, str], ...] = (
         ("message", "str"), ("colored", "str"), ("info", "ErrorInfo?"))
 
@@ -74,7 +74,7 @@ class NixError(Exception):
         `to_dict`, and reads `code` off it. A declared Nix error had
         neither, so every one of them reached an async or rpc caller
         as somebody else's cause and `except BadStorePath` worked
-        against the compiled binding alone (tasks/066).
+        against the compiled binding alone (huggorm#66).
 
         The class NAME, because that is already the identity the wire
         uses: an error crosses as a message type named for its class,
@@ -102,7 +102,7 @@ class NixError(Exception):
         It became load-bearing when a VALUE gained an error field. A
         KeyedBuildResult's `__eq__` is over its parts, and one of its
         parts is an exception - so without this, two results reporting
-        the same failure compare unequal (tasks/071).
+        the same failure compare unequal (huggorm#71).
 
         Same CLASS, not a subclass: BadStorePathName is not a
         BadStorePath carrying the same message, and `except` is the
@@ -126,7 +126,7 @@ class NixError(Exception):
         The duck-type the runtime looks for. It is emitted beside the
         wrappers and must not know which library it wraps, so it asks
         an error whether it can describe itself rather than testing
-        it against a class (tasks/036).
+        it against a class (huggorm#36).
 
         Derived from `_wire_fields` rather than naming `message` and
         `colored`: a subclass that declares more parts gets them here
@@ -346,7 +346,7 @@ class BuildError(NixError):
     No `cxx`, which means no catch clause, which means `build_paths`
     still raises a plain NixError today. That is deliberate: adding a
     catch here would change what an existing method raises, and this
-    task is about the method that does not raise at all (tasks/071).
+    task is about the method that does not raise at all (huggorm#71).
     The class exists so a RESULT can carry one.
 
     Carries two parts more than a NixError. `status` says which of

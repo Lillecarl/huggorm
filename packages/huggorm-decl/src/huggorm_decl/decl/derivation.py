@@ -8,7 +8,7 @@ derivation show` and `nix derivation add`.
 
 An output is a SUM type upstream, `variant<InputAddressed, CAFixed,
 CAFloating, Deferred, Impure>`, and it crosses as one: five arms, each
-a value, tagged on the wire as `DerivedPath` is (tasks/059).
+a value, tagged on the wire as `DerivedPath` is (huggorm#59).
 
 A derivation is read, not rewritten, here. A caller that wants a
 modified one - `nix develop` does - edits `to_json()` and hands the

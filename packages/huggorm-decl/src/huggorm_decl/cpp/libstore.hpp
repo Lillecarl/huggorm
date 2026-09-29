@@ -13,7 +13,7 @@
  * shared_ptr, which is a CONVERSION and so a mapping. It was here
  * only because a factory had to be a named C++ symbol; the emitter
  * writes the lambda now, and `decl/store.py` carries the one call
- * (tasks/063).
+ * (huggorm#63).
  */
 
 // initLibStore lives in globals.hh.

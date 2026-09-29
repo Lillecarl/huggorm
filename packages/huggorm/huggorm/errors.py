@@ -3,7 +3,7 @@ The exception hierarchy, re-exported at the front door.
 
 `huggorm_bindings.errors` is where these are declared - the bindings
 own them, because libstore is what raises them and the class names
-cross the wire against that declared set (tasks/036). This module
+cross the wire against that declared set (huggorm#36). This module
 exists so a caller writes `huggorm.errors.InvalidPath` and never has
 to learn which of the three build packages holds it.
 

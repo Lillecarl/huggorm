@@ -99,7 +99,7 @@ def test_a_missing_attribute_carries_its_suggestions(state: Any) -> None:
 
 
 def test_an_error_carries_its_position(state: Any) -> None:
-    """C++ is the only place that holds where an error is (tasks/100)."""
+    """C++ is the only place that holds where an error is (huggorm#100)."""
     from huggorm_bindings.errors import EvalError
 
     with pytest.raises(EvalError) as caught:

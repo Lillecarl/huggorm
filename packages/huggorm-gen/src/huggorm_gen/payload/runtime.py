@@ -79,7 +79,7 @@ class WrapperError(Exception):
     # version that lived here approximated the cause from a hard-coded
     # map of five builtins - a list of library knowledge in the one
     # module that is emitted beside the wrappers and must not know
-    # which library it wraps (tasks/036).
+    # which library it wraps (huggorm#36).
 
 
 class InternalError(WrapperError):
@@ -287,7 +287,7 @@ def _check_isolation(callee: Any, args: Iterable[Any]) -> None:
             # skips those. It stays because it is the rule rather than
             # an optimisation - the day an affine class returns a wire
             # value, refusing the copy would be wrong. Said here so it
-            # is not read as covered (`tasks/075`'s lesson).
+            # is not read as covered (huggorm#75's lesson).
             continue
         _refuse_foreign(callee, r, x)
 

@@ -67,7 +67,7 @@ generate(["--out", str(PKG_DIR)])
 assert "huggorm_bindings" not in sys.modules, (
     "the generator imported huggorm_bindings. Every Python surface is "
     "derived from the declarations; reflecting on the compiled package "
-    "puts them all behind a C++ compiler again (tasks/065).")
+    "puts them all behind a C++ compiler again (huggorm#65).")
 
 smoke(["--out", str(PKG_DIR)])
 

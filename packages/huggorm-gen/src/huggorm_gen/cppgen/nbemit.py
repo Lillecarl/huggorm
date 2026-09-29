@@ -249,7 +249,7 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
     if other is not None and other.decl.kind == "error":
         # A live Python EXCEPTION, handed over rather than raised. A
         # BuildResult's failure arm is a nix::BuildError, and reading
-        # a failed result is not an exception (tasks/071) - so what
+        # a failed result is not an exception (huggorm#71) - so what
         # crosses is the object.
         #
         # `nb::object` whether or not the declaration wrote `| None`,
@@ -412,7 +412,7 @@ def _sites(classes: Sequence[Class],
 #
 # A body is TEXT the declaration carries, so which headers it needs is
 # DERIVED here rather than carried by a hand-written one on the
-# emitted file's behalf. That was the arrangement `tasks/090` found:
+# emitted file's behalf. That was the arrangement huggorm#90 found:
 # `eval.hpp` held a `<stdexcept>` it never used, for bodies that throw
 # `std::invalid_argument` 54 times - a fact about generated code,
 # living in a file a person maintains.
@@ -538,7 +538,7 @@ def includes(classes: Sequence[Class],
     # chain is emitted, so the includes it needs are emitted too - the
     # three of them lived in `cpp/errors.hpp` until now, which is a
     # fact about generated code stated in a hand-written helper
-    # (`tasks/090`). `decl/errors.py` says which header each class is
+    # (huggorm#90). `decl/errors.py` says which header each class is
     # in, beside the `cxx` that names the class.
     out += [f'#include "{h}"' for h in errors]
     # Each class's header, then whatever the bodies reach past it.
@@ -1293,20 +1293,20 @@ def _attribute(cls: Class, m: Method) -> TypeError:
 
     So a binding that honoured the word alone would disagree with its
     own stub and drop the value off the wire. Refusing says that in
-    one place, at the declaration that asked (tasks/076).
+    one place, at the declaration that asked (huggorm#76).
 
     This used to be an `_accessor` function that emitted `def_ro` and
     `def_prop_ro`, and no declaration ever reached it. It carried its
     own two-row table of optional return spellings, keyed by the
     literal annotation, where `_returns` derives the same answer for
     every type the emitter knows - so the dead path was also the
-    wrong one (tasks/075)."""
+    wrong one (huggorm#75)."""
     return TypeError(
         f"{cls.name}.{m.name}: @property makes this accessor an ATTRIBUTE, "
         f"and every reader of this class calls it - the emitted "
         f"`_parts`, the stub and the wire all spell "
         f"`obj.{m.name}()`. Drop the @property and declare a plain "
-        f"accessor, or teach all four (tasks/076).")
+        f"accessor, or teach all four (huggorm#76).")
 
 
 def record_fields(cls: Class,
@@ -1411,7 +1411,7 @@ def records_header(mod: Module, package: str) -> str | None:
 
     A HEADER, not the unit, because a record is a C++ type another unit
     can name: `eval`'s `LogRecord` holds `path`'s `ErrorInfo`. A struct
-    emitted into its own unit is visible nowhere else (`tasks/103`)."""
+    emitted into its own unit is visible nowhere else (huggorm#103)."""
     values = [c for c in bindable(mod) if c.is_value]
     if not values:
         return None
@@ -1529,7 +1529,7 @@ def words_conversion(cls: Class) -> list[str]:
     the compiler refuses to build the day upstream adds an
     enumerator, and naming `nix::HashAlgorithm::MD5` refuses the day
     upstream removes or renames one. Both were measured before this
-    was written (`tasks/070`).
+    was written (huggorm#70).
 
     Not upstream's own `printHashAlgo`. It would render correctly and
     check nothing, and the words this repo publishes would drift from
@@ -1580,7 +1580,7 @@ def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
     declaration carries - the union's C++ type, how to reach the
     std::variant inside it, and which arm the variant wraps.
 
-    It was a hand-written header (tasks/063). Two unions wrote the
+    It was a hand-written header (huggorm#63). Two unions wrote the
     same visit four times, and the two `drv_path` bodies that called
     it were identical text in two classes that differ in nothing the
     line touches. One declared fact answers all of it.
@@ -1768,7 +1768,7 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     # the refusal is the ARGUMENT's, not the caster's. Measured: a
     # KeyedBuildResult with no failure arm could not be rebuilt at
     # all, and the message named every parameter as compatible
-    # (tasks/071).
+    # (huggorm#71).
     args = "".join(f', "{name}"_a' + (".none()" if spelling == "nb::object"
                                       else "")
                    for name, spelling in fields)
@@ -1848,7 +1848,7 @@ def _factory(cls: Class, functions: Sequence[Method],
     # whose construction needed one line of adaptation had to put a
     # helper in `cpp/`. That is how `huggorm::open_store` came to
     # exist: three lines wrapping one call, because the emitter could
-    # not write it (tasks/063).
+    # not write it (huggorm#63).
     extras = _extras(cls, made, known)
     doc = _doc(cls.ctor.doc) if cls.ctor.doc else ""
     if not made.cxx_body:
@@ -2006,7 +2006,7 @@ def _from_parts(cls: Class, known: dict[str, Class] | None = None
     # refusal is the argument's rather than the caster's. Measured: a
     # KeyedBuildResult with no failure arm could not be rebuilt at
     # all, and the message listed every parameter as compatible
-    # (tasks/071).
+    # (huggorm#71).
     keywords = "".join(f', "{n}"_a' + (".none()" if t == "nb::object" else "")
                        for (n, _, _), t in zip(fields, types, strict=True))
     written = cls.from_parts
@@ -2182,7 +2182,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     # nothing here to derive, because a traversal is a function over a
     # member no declaration describes. Without it a class that stores
     # a callable leaks itself as soon as that callable closes over it
-    # (`tasks/093`).
+    # (huggorm#93).
     slots = (f", nb::type_slots({decl.gc_slots})"
              if decl.gc_slots else "")
     lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
@@ -2228,12 +2228,12 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         # The DOOR, not the C++ fact. `nix::Store` is abstract AND
         # opened by a factory, so it takes the branch below - reading
         # `decl.abstract` here sent it to this one instead and
-        # `Store("dummy://")` stopped existing (tasks/061).
+        # `Store("dummy://")` stopped existing (huggorm#61).
         #
         # It used to be a `pointer_and_handle` guard, which refused a
         # direct call and let a SUBCLASS through - because a Python
         # class deriving from this one was instantiated as the
-        # trampoline. There are no trampolines any more (tasks/060),
+        # trampoline. There are no trampolines any more (huggorm#60),
         # so there is no door to hold open and no reason for the
         # binding to know what `nb_inst_python_derived` is.
         # The sentence says WHICH way the door is shut, because the
@@ -2426,7 +2426,7 @@ def _errors_used(classes: Sequence[Class],
 
     One site is enough. A unit that answers with an exception has to
     look the Python class up by module and name, and the module name
-    is not a literal any declaration may write - `tasks/063` is the
+    is not a literal any declaration may write - huggorm#63 is the
     day a stale copy of it turned every nix error into a
     RuntimeError. So the emitter states it once per unit that needs
     it, and the declaration's body reads it by name."""

@@ -1,5 +1,5 @@
 """
-The first REAL Nix type (tasks/015).
+The first REAL Nix type (huggorm#15).
 
 nix::StorePath is the smallest thing that proves the chain end to end:
 pkg-config linkage against the split nix-store component, a namespaced
@@ -122,7 +122,7 @@ def test_a_value_compares_hashes_and_prints() -> None:
     Without this, two paths naming the same store object were never
     equal, a set of them deduplicated nothing, and repr() showed an
     address instead of the one string the object carries - so every
-    caller compared .to_string() by hand (tasks/046).
+    caller compared .to_string() by hand (huggorm#46).
 
     The comparison is C++'s. nix::StorePath defaults operator== and
     operator<=>, so the binding declares them rather than
@@ -179,7 +179,7 @@ def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
     HasField answers exactly.
 
     Asked of the CODEC rather than of a type, and that is a change
-    forced by the mock going away (tasks/060). It used to drive
+    forced by the mock going away (huggorm#60). It used to drive
     SingleDerivedPathBuilt's `output`, which is `str?` and whose "" and None
     mean different things. Real Nix has no such field: its optional
     scalars are `PathInfo.registration_time`, where upstream spells

@@ -1,7 +1,7 @@
 """
 A Nix function's shape, as `inspect.Signature`.
 
-`tasks/034` asks which Python type is right for introspecting a Nix
+huggorm#34 asks which Python type is right for introspecting a Nix
 function, and this is the answer: the one Python's own tooling already
 understands. `help()`, `inspect.signature()` and an IDE's call hints
 all read a `Signature`, so a Nix lambda described as one costs a

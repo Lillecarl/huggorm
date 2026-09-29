@@ -55,7 +55,7 @@ namespace huggorm {
 // The one part no declaration can carry today is `LogTap` itself.
 // `nix::Logger` is ABSTRACT, so a tap is a SUBCLASS, and the DSL can
 // say "Python may not construct one of these" (`@abstract`) but
-// cannot say "implement these virtuals". `tasks/084` is that gap.
+// cannot say "implement these virtuals". huggorm#84 is that gap.
 
 /**
  * One field of one record.
@@ -78,7 +78,7 @@ struct LogField
  * The field names are `JSONLogger`'s (logging.cc:272-333), because a
  * client that already reads `--log-format internal-json` should not
  * have to learn a second spelling of the same record. Not the same
- * MECHANISM - see `tasks/032` for why the JSON logger was rejected -
+ * MECHANISM - see huggorm#32 for why the JSON logger was rejected -
  * but the same shape.
  *
  * `level`, `type` and `id` cross as integers. They ARE integers:
@@ -132,7 +132,7 @@ struct LogRecord
  * test written the other way round would have made it droppable in
  * silence.
  *
- * A QUEUE NO LONGER FILTERS BY LEVEL, and that is `tasks/089` step 4
+ * A QUEUE NO LONGER FILTERS BY LEVEL, and that is huggorm#89 step 4
  * removing a duplicate rather than a feature. It held a `level_` and
  * refused a "msg" above it, which was the only gate a subscriber had
  * while `nix::verbosity` decided everything else.
@@ -264,7 +264,7 @@ inline std::shared_ptr<LogQueue> & thread_queue()
  * (`worker-protocol-connection.cc:75`) and ERASES its level, so a
  * daemon `debug()` arrives as lvlError and passes every gate there
  * is. Sent the pin, every daemon narrates CHATTY lines onto an
- * unsubscribed caller's stderr (`tasks/095`, `tasks/102`).
+ * unsubscribed caller's stderr (huggorm#95, huggorm#102).
  *
  * So this keeps the daemon level at the WIDEST level any live
  * subscription asks for, and at lvlInfo when none does. The pin does
@@ -278,7 +278,7 @@ inline std::shared_ptr<LogQueue> & thread_queue()
  * ONE THING THIS CANNOT REACH: a daemon connection already open.
  * `setOptions` runs once, at handshake, so a `Store` opened while a
  * vomit subscription was live keeps receiving vomit until it is
- * closed (`tasks/096`).
+ * closed (huggorm#96).
  */
 class VerbosityDemand
 {
@@ -424,7 +424,7 @@ inline void set_default_verbosity(nix::Verbosity level)
  *
  * A CLASS, and NOT ASSIGNABLE, and that is a fix rather than a
  * style. This was a plain aggregate with two public fields until
- * `tasks/096` gave it a destructor - so that a thread exiting while
+ * huggorm#96 gave it a destructor - so that a thread exiting while
  * still subscribed gives its level back. The two call sites then
  * read:
  *
@@ -476,7 +476,7 @@ public:
      * while still subscribed - one nix started and this binding
      * never sees. Without it that thread's level would hold nix's
      * gate up for the life of the process, which is the defect
-     * `tasks/096` removes.
+     * huggorm#96 removes.
      */
     ~ThreadLevel()
     {
@@ -505,7 +505,7 @@ inline ThreadLevel & thread_level()
 /**
  * The level that decides what this thread's records are worth.
  *
- * The only gate ON THIS SIDE, which is the whole of `tasks/089` step
+ * The only gate ON THIS SIDE, which is the whole of huggorm#89 step
  * 4. Nix produces everything up to the pin, and this decides who
  * keeps it - per thread, so one caller asking for talkative does not
  * put every other logger in the process on stderr.
@@ -549,7 +549,7 @@ inline uint64_t & thread_request()
  * The gap `thread_queue` names, closed. A fetcher thread, a
  * file-transfer thread and a build's own output all raise records on
  * threads no `EvalState` owns, so no `thread_local` reaches them - and
- * a build's log is what a Nix user most wants to see (`tasks/085`).
+ * a build's log is what a Nix user most wants to see (huggorm#85).
  *
  * A MUTEX here, where `thread_queue` needs none, and the reason the
  * thread_local's rationale does not transfer: that slot is read and
@@ -595,7 +595,7 @@ inline std::shared_ptr<LogQueue> process_queue()
  * `server.py` now has.
  *
  * FREE rather than a private static of `LogTap`, which is where it
- * lived until `tasks/089`. `end_request` pushes the finalized marker
+ * lived until huggorm#89. `end_request` pushes the finalized marker
  * through it, and that marker has to land in the same queue the
  * call's records did - so the choice of queue cannot belong to the
  * logger.
@@ -639,7 +639,7 @@ struct logger_fields<L>
 /**
  * How `nix::Logger` hands an override an activity's fields: a
  * `const Fields &` to 2.35, a `std::span` of variants from 2.36. An
- * override must spell its base's parameter exactly (tasks/055).
+ * override must spell its base's parameter exactly (huggorm#55).
  */
 using LoggerFields = detail::logger_fields<nix::Logger>::type;
 
@@ -698,7 +698,7 @@ public:
     {
         // RENDERED, the way JSONLogger renders it (logging.cc:283),
         // and the parts beside it in the record a failed call crosses
-        // with, so the two error shapes are one (`tasks/103`).
+        // with, so the two error shapes are one (huggorm#103).
         if (ei.level > effective_verbosity())
             return;
         std::ostringstream rendered;
@@ -744,7 +744,7 @@ public:
      * Descriptor 1 is the protocol's, never a log's.
      *
      * `Logger::writeToStdout` writes descriptor 1 directly
-     * (logging.cc:42), and `tasks/014` wants this protocol to run
+     * (logging.cc:42), and huggorm#14 wants this protocol to run
      * over stdin/stdout. One stray line there is a corrupt frame,
      * not a stray line. So the tap sends it where every other record
      * goes.
@@ -819,10 +819,10 @@ private:
      * (worker-protocol-connection.cc:75). That ERASES the daemon's
      * level: the line arrives as lvlError, passes every gate here
      * and every gate above, and lands on stderr. `VerbosityDemand`
-     * keeps that level at what a subscriber asked for (`tasks/095`).
+     * keeps that level at what a subscriber asked for (huggorm#95).
      *
      * NO SECOND CEILING. A `level <= lvlWarn` cut was written into
-     * `tasks/089` first, on the argument that a library must not
+     * huggorm#89 first, on the argument that a library must not
      * narrate uninvited. The probe refuted it: at the default
      * verbosity nothing above `lvlWarn` reaches stderr anyway, so
      * the cut's only live effect is to silence a caller who asked
@@ -935,7 +935,7 @@ inline std::shared_ptr<LogQueue> subscribe_logs(std::size_t capacity,
     // to narrate at that level.
     //
     // `set` owns the pairing of the two demands, because doing it
-    // here by hand is exactly what `tasks/096` got wrong.
+    // here by hand is exactly what huggorm#96 got wrong.
     thread_level().set(static_cast<nix::Verbosity>(level));
     auto & slot = thread_queue();
     if (slot)
@@ -968,7 +968,7 @@ inline void unsubscribe_logs()
  * with nothing to take it back. Replacing self-heals.
  *
  * That leaves one shared stream with no owner, which is the scoping
- * question `tasks/032` opened. It is answered ABOVE this layer: the
+ * question huggorm#32 opened. It is answered ABOVE this layer: the
  * rpc admits one process-logs stream at a time and refuses a second
  * with FAILED_PRECONDITION, the way `Session/Logs` already refuses a
  * second reader of one state.
@@ -1009,7 +1009,7 @@ inline void unsubscribe_process_logs()
     // no level of its own sees what it saw before anyone subscribed.
     //
     // The daemon level drops to what the per-thread subscriptions
-    // still need. `tasks/095` measured what leaving it up cost: 1052
+    // still need. huggorm#95 measured what leaving it up cost: 1052
     // daemon debug lines on an unsubscribed caller's stderr.
     default_verbosity().store(std::to_underlying(nix::lvlInfo), std::memory_order_relaxed);
     set_process_demand(-1);

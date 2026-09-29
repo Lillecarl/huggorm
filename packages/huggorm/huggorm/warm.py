@@ -1,12 +1,12 @@
 """
 Evaluating before anyone asks.
 
-The last third of `tasks/016` and the last piece of the destination in
+The last third of huggorm#16 and the last piece of the destination in
 `CLAUDE.md`: registered expressions evaluated eagerly in the
 background, so a user-triggered evaluation is already in progress or
 already done.
 
-It needed `tasks/083` first, and only that. Re-evaluating eagerly is
+It needed huggorm#83 first, and only that. Re-evaluating eagerly is
 useful once something knows the old answer is stale, and the watcher
 knows: `Watcher.changed()` deletes a forgotten root's snapshot, so a
 registered root with no snapshot is a root whose answer is gone. This
@@ -18,7 +18,7 @@ module adds no bookkeeping of its own to work that out.
     Notifier     notices a path changed, without being asked
     Warmer       re-evaluates the registered roots that were forgotten
 
-The split that matters here is the same one `tasks/083` made, one
+The split that matters here is the same one huggorm#83 made, one
 level up.
 
 - **What to refresh** is `stale()`, and **refreshing** is `refresh()`.
@@ -48,7 +48,7 @@ which is exactly what lets the straggler through. Take the drain out
 and that gate fails with two evaluations for one save.
 
 So the window stays, and it is measured now rather than assumed.
-`tasks/086` records both the wrong measurement and the gate that
+huggorm#86 records both the wrong measurement and the gate that
 refuted it.
 
 ## What it does not do
@@ -101,7 +101,7 @@ class ChangeSource(Protocol):
 
     `Notifier` is the one that exists. Declared as a protocol rather
     than imported, because this module has no opinion about where a
-    change comes from - the same separation `tasks/083` made one layer
+    change comes from - the same separation huggorm#83 made one layer
     down, so a second source is a second implementer and not an edit
     here.
     """

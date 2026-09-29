@@ -1,4 +1,4 @@
-"""The facts a test states that each Nix spells its own way (tasks/055).
+"""The facts a test states that each Nix spells its own way (huggorm#55).
 
 A test builds a derivation-output key or asks a collection to look at some
 paths, and 2.34 and 2.35 take different types for both. Each helper takes the

@@ -23,12 +23,12 @@ decorator test. That is what an error declaration is: `cxx =
 mark. A `declared()` helper stood here that read `Module.classes`
 instead - the reader's DECORATED classes - so it answered `[]` for
 this file from the day it was written, and nothing ever called it.
-Deleted rather than fixed (tasks/072), because there is nothing left
+Deleted rather than fixed (huggorm#72), because there is nothing left
 for it to check: the module and the chain come from ONE reading of
 one file, so they cannot disagree.
 
 The BODY is `read.resolved`, not a raw parse, and the difference is
-`tasks/073`. A raw `tree.body` holds neither arm of an `if
+huggorm#73. A raw `tree.body` holds neither arm of an `if
 NIX_VERSION >= ...` - the classes are nested one level down - so a
 branched error class reached no manifest entry and no catch clause,
 while `module()` copied the whole branch through into the emitted
@@ -115,7 +115,7 @@ def _header_of(node: ast.ClassDef) -> str:
     the headers that declare them. Those three includes sat in
     `cpp/errors.hpp` instead - a fact about generated code, stated in
     a hand-written helper, which is the wrong place for it
-    (`tasks/090`)."""
+    (huggorm#90)."""
     return _assigned(node, HEADER)
 
 
@@ -148,7 +148,7 @@ def headers(tree: ast.Module) -> list[str]:
                       f"translator catches this type, and nothing says "
                       f"which header declares it. Add `header = \"nix/...\"` "
                       f"beside it, or the emitted file reaches the type "
-                      f"only through somebody else's include (tasks/090).")
+                      f"only through somebody else's include (huggorm#90).")
         if header and not cxx:
             raise DeclarationError(
                 node, f"{node.name}: `header` with no `cxx`. Only a class "
@@ -166,7 +166,7 @@ def _body(tree: ast.Module) -> list[ast.stmt]:
     Every reading here goes through this, so all three see one list.
     They each walked `tree.body` on their own, which is how they came
     to disagree: two read the top level and the third copied the whole
-    document (tasks/073).
+    document (huggorm#73).
 
     An `ast.If` means the caller passed a RAW parse. `read.resolved`
     flattens every branch - Python already chose an arm during the
@@ -240,7 +240,7 @@ def entries(tree: ast.Module,
     place that asked. `load` refuses a declaration that will not
     import now, for every reader rather than this one, and says the
     reason Python gave rather than only that there was one
-    (tasks/082).
+    (huggorm#82).
     """
     declared = [n.name for n in _body(tree) if isinstance(n, ast.ClassDef)]
     here = mod.__name__
@@ -297,7 +297,7 @@ def chain(tree: ast.Module, mod: ModuleType, raise_as: str, module: str,
     literal inside the helper, which made it a copy of a name the
     build derives three other ways - and a copy that no gate could
     see, because a stale one fails at RUNTIME by falling back to
-    RuntimeError (tasks/063). Passed from here, the helper names no
+    RuntimeError (huggorm#63). Passed from here, the helper names no
     part of the library it raises into, and both strings in the call
     come from the same declaration.
 
@@ -379,7 +379,7 @@ def module(tree: ast.Module, doc: str, package: str = "") -> str:
             # It worked only because `generate.py` happens to call
             # `error_chain` before this. Found on 2026-09-05 by
             # `headers` being added and reading []; recorded in
-            # `tasks/090`.
+            # huggorm#90.
             cls = copy.deepcopy(node)
             cls.body = [item for item in cls.body
                         if not (isinstance(item, ast.Assign)

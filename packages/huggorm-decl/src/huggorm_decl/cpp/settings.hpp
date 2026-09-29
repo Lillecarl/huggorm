@@ -7,7 +7,7 @@
  * `nix::flakeSettings`, which `common-eval-args.cc` registers on
  * `globalConfig` when the library loads, as the `nix` CLI has them.
  * Each `Evaluator` copies what the file set onto its own eval and
- * fetcher pair (tasks/097).
+ * fetcher pair (huggorm#97).
  *
  * NOT a second registered copy. `GlobalConfig::set` stops at the first
  * registered object that takes a name, so a copy registered after

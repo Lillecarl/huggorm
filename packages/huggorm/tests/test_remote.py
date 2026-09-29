@@ -148,7 +148,7 @@ async def test_a_nix_error_keeps_its_type_and_its_colour(client: Any) -> None:
     against a map of five builtins, so a BadStorePath arrived as a
     plain Exception; then it crossed as its declared parts but under
     an InternalError, so `except BadStorePath` still caught nothing
-    (tasks/036, tasks/066).
+    (huggorm#36, huggorm#66).
 
     The colour survives either way, which is the field that exists
     for the caller's terminal - and the caller with a terminal is
@@ -215,7 +215,7 @@ async def test_a_produced_class_refuses_remote_construction(
     that only says no is one somebody has to debug - and `match=` on
     the class name alone passed for a message that said nothing else.
 
-    `tasks/012` lists "unknown CLASS on Acquire" as a blind spot and
+    huggorm#12 lists "unknown CLASS on Acquire" as a blind spot and
     describes a check that is no longer there: `Session/Acquire` took
     a class NAME and the server looked it up. Construction moved onto
     each class's own service, so an unknown class is now an unknown
@@ -239,7 +239,7 @@ async def test_a_free_function_crosses(client: Any) -> None:
 
 
 # Two properties lost their only exercise when the store mock went,
-# and both come back with the libexpr EvalState (tasks/060):
+# and both come back with the libexpr EvalState (huggorm#60):
 #
 # - a FREE FUNCTION taking a bound handle. No real free function this
 #   repo binds takes one. nix::copyPaths is the obvious first;
@@ -279,7 +279,7 @@ async def test_a_dict_return_crosses_as_a_map(client: Any) -> None:
     """Nix attribute names are always strings, so map<string, V> covers
     every dict this API returns; the value type comes from the
     declaration, which is the same annotation the typechecker reads
-    (tasks/030)."""
+    (huggorm#30)."""
     stats = await client.call_function("gc_stats")
     assert isinstance(stats, dict) and stats["heap_size"] > 0, stats
     assert all(isinstance(k, str) for k in stats), stats
@@ -482,7 +482,7 @@ async def test_a_path_info_crosses_as_a_value(
     # its own, because assigning even [] to a repeated field raises.
     # An optional SCALAR field, across the wire, on the arm that has
     # a value. proto3 gives it presence through a synthetic oneof, so
-    # this is exact rather than a guess from truthiness (tasks/048).
+    # this is exact rather than a guess from truthiness (huggorm#48).
     # ...and it is a MESSAGE with a message inside it, so this is
     # also the first nested wire-value to cross: a ContentAddress
     # holding a Hash holding an algorithm and raw digest bytes.

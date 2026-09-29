@@ -54,7 +54,7 @@ class ConnectionExpired(RuntimeError):
     when the sweeper ran - so the client stops rather than re-binding:
     a fresh bind would hand back a live-looking client whose every
     handle fails, which is the late, confusing failure this replaces
-    (tasks/049).
+    (huggorm#49).
 
     Recovery is `bind()` plus re-acquiring, and that is the caller's
     decision because only the caller knows what it was holding."""
@@ -77,7 +77,7 @@ class NixClient:
         self.codec = WireCodec()
         # Rebuilds a declared error from the status details, so a
         # remote failure has the same shape as an in-process one: an
-        # InternalError whose __cause__ is the real error (tasks/036).
+        # InternalError whose __cause__ is the real error (huggorm#36).
         self.faults = FaultCodec(self.pool)
         self.channel = grpclib.client.Channel(
             host, port, status_details_codec=SchemaStatusDetails(self.pool))
@@ -93,7 +93,7 @@ class NixClient:
         # handles have lost their last one. A finalizer runs on
         # whichever thread dropped the reference - possibly during
         # interpreter shutdown - and cannot await, so it only takes the
-        # lock and appends; the flush does the rpc (tasks/028).
+        # lock and appends; the flush does the rpc (huggorm#28).
         self._refs: dict[str, int] = {}
         self._dropped: list[str] = []
         self._ref_lock = threading.Lock()
@@ -217,7 +217,7 @@ class NixClient:
         A client PINGS, and a ping loop is a task, and anyio starts a
         task only inside a task group - so the client has to own one.
         That is what makes `async with` mandatory rather than
-        decorative (`tasks/035`).
+        decorative (huggorm#35).
 
         The group is entered here and exited in `__aexit__`, which
         anyio requires to be the SAME task. That rules out the shape
@@ -298,7 +298,7 @@ class NixClient:
                     # Swept. Say so once, loudly, and stop - the next
                     # call raises ConnectionExpired rather than
                     # failing later as "unknown handle" on something
-                    # unrelated (tasks/049).
+                    # unrelated (huggorm#49).
                     self._expired = True
                     logger.warning(
                         "connection %r was swept by the server; its handles "
@@ -445,7 +445,7 @@ class NixClient:
         MANY readers per state. A second subscription would replace
         the first on that state's thread, so the server opens ONE and
         fans it out - each stream gets its own view, its own capacity
-        and its own level (`tasks/085`). This was a refusal until
+        and its own level (huggorm#85). This was a refusal until
         2026-09-04.
 
         The FIRST batch is always empty, and it means the subscription
@@ -469,7 +469,7 @@ class NixClient:
         because the tap routes by THREAD and an EvalState owns one;
         this takes what a fetcher thread, a file-transfer thread or a
         build raised, and none of those belongs to a state
-        (`tasks/085`). A build's log is the one this exists for.
+        (huggorm#85). A build's log is the one this exists for.
 
         NO handle, so a connection with no state at all can open it -
         which is right, because the records it carries are the ones no
@@ -627,7 +627,7 @@ async def connect(host: str = "127.0.0.1", port: int = 50051,
     task, and anyio starts a task only inside a task group - so
     something has to hold the scope open, and the client is the only
     thing with the right lifetime. `CLAUDE.md` says to take the break
-    when the shape is better (`tasks/035`).
+    when the shape is better (huggorm#35).
 
     What it buys beyond spelling: the loop cannot outlive the client
     and cannot be forgotten. `stop_pinging()` was a call a caller had

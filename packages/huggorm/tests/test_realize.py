@@ -4,7 +4,7 @@ Collections over the wire, and the whole tree in one round trip.
 Every element of a value is a value in its own right, so walking an
 attribute set from a client is a chain of handles - a round trip and a
 thread handover per node. Realize walks it once, on the value's own
-thread, and answers with the shape (tasks/030).
+thread, and answers with the shape (huggorm#30).
 """
 
 from typing import Any

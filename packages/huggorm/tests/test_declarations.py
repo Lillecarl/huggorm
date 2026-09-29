@@ -8,7 +8,7 @@ have, and does not have to invent one there.
 
 A version branch is that case. `read.py` imports every declaration so
 Python resolves `if NIX_VERSION >= ...`, and the errors emitter parsed
-the file a second time and saw neither arm (tasks/073). No declaration
+the file a second time and saw neither arm (huggorm#73). No declaration
 in this repo branches today, so nothing real can hold the fix.
 """
 
@@ -235,7 +235,7 @@ def test_a_declaration_that_does_not_branch_reads_the_same_either_way(
 # Python's own and the reader keeps it (`Method.prop`); no emitter
 # honours it. Written here because no declaration in the corpus uses
 # it, which is how the emitter path behind it went unread from the day
-# it was written until it was deleted (tasks/075).
+# it was written until it was deleted (huggorm#75).
 ATTRIBUTE = '''"""One bound class whose accessor is a @property."""
 
 from huggorm_dsl.declare import Cxx, Str, binding, header
@@ -286,7 +286,7 @@ def test_the_reader_sees_an_accessor_the_import_kept_as_a_descriptor(
 
 # One bound class that declares a dunder. `__call__` because that is
 # the one a declaration actually wants - `await f.apply(x)` is what
-# `tasks/034` shipped, and `await f(x)` is what it could not say.
+# huggorm#34 shipped, and `await f(x)` is what it could not say.
 CALLABLE = '''"""One bound class that declares __call__."""
 
 from huggorm_dsl.declare import Cxx, Str, binding, header
@@ -311,7 +311,7 @@ def test_a_declared_dunder_is_refused_rather_than_dropped(
     are not `__`-prefixed and skipped the rest, so a declared dunder
     reached no binding, no stub line and no manifest entry, with no
     diagnostic anywhere - and a skip is indistinguishable from an
-    absence, which is this repo's named failure mode (tasks/088).
+    absence, which is this repo's named failure mode (huggorm#88).
 
     Measured before the refusal, on a probe declaring `__call__` and
     `__len__` beside one plain accessor:
@@ -320,13 +320,13 @@ def test_a_declared_dunder_is_refused_rather_than_dropped(
 
     Two declared methods gone, and the read reported success.
 
-    The message points at `tasks/088` rather than describing what a
+    The message points at huggorm#88 rather than describing what a
     dunder would take, because the answer for a caller today is to
     declare a plain name. `Value.apply` is that name."""
     from huggorm_dsl.read import DeclarationError, read
 
     path = _declaration(tmp_path, CALLABLE)
-    with pytest.raises(DeclarationError, match="tasks/088") as caught:
+    with pytest.raises(DeclarationError, match="huggorm#88") as caught:
         read(path)
     # The LINE, because a refusal whose answer is "rename this" has to
     # say which one. `__call__` is the eleventh line of the fixture.
@@ -336,7 +336,7 @@ def test_a_declared_dunder_is_refused_rather_than_dropped(
 
 # One declaration with an `async def` in each of the three places it
 # can sit: a method, a decorated free function, and an undecorated
-# helper. The answers differ, which is the point (tasks/088).
+# helper. The answers differ, which is the point (huggorm#88).
 #
 # ONE async at a time, and the three tests below each turn on the one
 # they are about. Written with all three async first, and that gate
@@ -455,7 +455,7 @@ def test_an_undecorated_async_helper_is_left_alone(
 
 # One value carrying both 64-bit widths. Written here because the
 # corpus has each width but never both on one class, and the fact
-# under test is the DIFFERENCE between them (tasks/079).
+# under test is the DIFFERENCE between them (huggorm#79).
 WIDTHS = '''"""One value that carries both 64-bit widths."""
 
 from huggorm_dsl.declare import (
@@ -572,7 +572,7 @@ def test_a_container_of_a_width_is_refused_rather_than_guessed(
 
     cls = read(_declaration(tmp_path, HELD)).classes[0]
     # Refused where the wire spelling is rendered, which is the manifest.
-    with pytest.raises(TypeError, match="tasks/079"):
+    with pytest.raises(TypeError, match="huggorm#79"):
         manifest.entry(cls, "pkg", "mod")
 
 
@@ -596,7 +596,7 @@ def test_a_service_refuses_a_parameter_whose_width_it_cannot_spell(
 
     cls = read(_declaration(tmp_path, TAKES)).classes[0]
     assert not cls.decl.wire, "a plain @binding is a proxy"
-    with pytest.raises(TypeError, match="tasks/079"):
+    with pytest.raises(TypeError, match="huggorm#79"):
         manifest.entry(cls, "pkg", "mod")
 
 
@@ -613,7 +613,7 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
     The refusal replaced an `_accessor` function that emitted exactly
     that, and that no declaration had ever reached - which is why its
     two-row table of optional return spellings was never seen to be
-    wrong (tasks/075)."""
+    wrong (huggorm#75)."""
     from huggorm_dsl.read import read
     from huggorm_gen.cppgen import nbemit
 
@@ -644,7 +644,7 @@ def test_a_declaration_in_no_list_fails_the_build(
     `decl/gc.py` was written, was well-formed, imported, parsed and
     emitted nothing at all: `nix build bindings-src` succeeded and
     wrote no `gc.cpp`, because the name was not in `NANOBIND`
-    (tasks/074). The failure looked exactly like a declaration with
+    (huggorm#74). The failure looked exactly like a declaration with
     no classes in it.
 
     Third silent drop in three tasks, after a version-branched class
@@ -780,7 +780,7 @@ def test_a_declaration_that_will_not_import_is_refused(
     with no `NIX_VERSION` branch in it, which is all of them: the
     same nodes survive either way, so nothing said a word - and
     nothing said it about the files importing from it either
-    (tasks/082).
+    (huggorm#82).
 
     The cause is carried because it is one line to fix and impossible
     to guess at. `@instant` over `@property` sets an attribute on a
@@ -872,7 +872,7 @@ def test_a_marker_over_a_descriptor_says_which_order_to_write(
     the attribute and stops, so a reader has to work out on their own
     that the two decorators can simply be swapped.
 
-    `tasks/076` asked for the answer to be in a REFUSAL rather than
+    huggorm#76 asked for the answer to be in a REFUSAL rather than
     in a comment, and this is it. The answer was MEASURED both ways
     rather than reasoned about - see the second assertion, which is
     the one that says the advice is true.
@@ -894,7 +894,7 @@ def test_a_marker_over_a_descriptor_says_which_order_to_write(
     said = str(caught.value)
     assert "@property OUTERMOST" in said, said
     assert "@instant" in said, "it names the marker it read, not a list"
-    assert "tasks/076" in said, "and where the path ends"
+    assert "huggorm#76" in said, "and where the path ends"
 
     # THE ADVICE IS TRUE, measured rather than asserted. Written the
     # way the refusal says, the file imports AND both facts survive:
@@ -922,7 +922,7 @@ def test_a_marker_over_a_descriptor_says_which_order_to_write(
     # 3.14.7: only a property refuses an attribute, so a marker over
     # a `@staticmethod` IMPORTS and reaches `_method`'s own refusal -
     # which already names the real problem. Those two arms were text
-    # that could never run (tasks/075), and this is what says so.
+    # that could never run (huggorm#75), and this is what says so.
     static = tmp_path / "static"
     static.mkdir()
     marked = STATIC.replace("    @staticmethod",
@@ -948,8 +948,8 @@ def test_an_accessor_declared_static_is_refused(
 
     Reachable only since `_live` learnt to look through a descriptor.
     Before that a `@staticmethod` carried no `__code__`, named no live
-    line, and was dropped whole in silence (tasks/075). The behaviour
-    changed there and no gate held it; this is that gate (tasks/076)."""
+    line, and was dropped whole in silence (huggorm#75). The behaviour
+    changed there and no gate held it; this is that gate (huggorm#76)."""
     from huggorm_dsl.read import DeclarationError, read
 
     with pytest.raises(DeclarationError, match="@staticmethod"):
@@ -966,7 +966,7 @@ def test_an_accessor_declared_static_is_refused(
 
 # A bound class with one accessor behind a version branch. The corpus
 # has no branch at all, so the one exemption the read census makes is
-# written here or it is never read (tasks/081).
+# written here or it is never read (huggorm#81).
 BRANCHED_ACCESSOR = '''"""One bound class whose accessor is behind a version."""
 
 from huggorm_dsl.declare import NIX_VERSION, Cxx, Str, binding, header
@@ -1020,7 +1020,7 @@ def test_a_branch_arm_that_lost_is_not_a_missing_definition(
     Written here because the corpus has no branch: `read.py` imports
     every declaration for exactly this reason and no declaration in
     this repo uses it, which is how the errors emitter came to see
-    neither arm and say nothing (tasks/073)."""
+    neither arm and say nothing (huggorm#73)."""
     from huggorm_gen.cppgen import generate
 
     have = _one_file_corpus(tmp_path, BRANCHED_ACCESSOR)
@@ -1052,7 +1052,7 @@ class Digest:
 
 
 def test_a_body_takes_the_arm_its_nix_takes(tmp_path: pathlib.Path) -> None:
-    """One body, two spellings of one call (tasks/055).
+    """One body, two spellings of one call (huggorm#55).
 
     The arm is picked with the `NIX_VERSION` the import used, so the
     emitted C++ holds one call and nothing above the binding changes."""
@@ -1100,7 +1100,7 @@ def test_the_census_notices_a_definition_the_reader_dropped(
         tmp_path: pathlib.Path) -> None:
     """A method in the file and not in the reader's output fails.
 
-    This is `tasks/075` in one assertion. A `@property` accessor named
+    This is huggorm#75 in one assertion. A `@property` accessor named
     no live line, `_resolve` dropped its node, and it vanished from
     the binding, from `_parts`, from `__repr__`, from `__hash__` and
     from `_wire_fields` - with the only complaint coming from a
@@ -1150,7 +1150,7 @@ def test_the_codegen_runs_the_read_census(
     catch: something that stopped happening and said nothing.
 
     The same argument as `test_the_census_runs_when_the_corpus_is_built`
-    above, for the other census (tasks/078)."""
+    above, for the other census (huggorm#78)."""
     from huggorm_gen.cppgen import generate
 
     ran = []
@@ -1235,7 +1235,7 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
     `nix::BadStorePathName` and their kind. Until 2026-09-05 the three
     headers that declare them sat in `cpp/errors.hpp`, which every
     emitted file includes - a fact about generated code, written into
-    a file a person maintains (`tasks/090`).
+    a file a person maintains (huggorm#90).
 
     `decl/errors.py` now says `header = "nix/..."` beside each `cxx`,
     and the emitter writes the include beside the chain.
@@ -1368,7 +1368,7 @@ def test_a_body_brings_its_own_standard_header() -> None:
     `eval.py`'s bodies throw `std::invalid_argument` 54 times, and
     the emitted `eval.cpp` includes `<stdexcept>` because of that -
     not because a hand-written header carries one on its behalf.
-    That was the arrangement `tasks/090` found: `eval.hpp` held a
+    That was the arrangement huggorm#90 found: `eval.hpp` held a
     `<stdexcept>` it never used, a fact about generated code living
     in a file a person maintains.
 

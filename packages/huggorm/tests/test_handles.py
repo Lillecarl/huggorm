@@ -1,5 +1,5 @@
 """
-HandleTable unit tests (tasks/002, tasks/031).
+HandleTable unit tests (huggorm#2, huggorm#31).
 
 The lifecycle suite drives the table through a real gRPC server, which
 is what proves the transport. It cannot reach the cases that only the

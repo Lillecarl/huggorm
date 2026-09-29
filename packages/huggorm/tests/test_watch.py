@@ -2,7 +2,7 @@
 
 Driven by explicit steps rather than by events. `changed()` says a
 path moved and `rescan()` stats for itself, so nothing here sleeps,
-polls or waits on a timer - the same reason every gate in `tasks/016`
+polls or waits on a timer - the same reason every gate in huggorm#16
 avoided counters.
 
 In-process only. The watcher is written against `EvalStateLike`, and
@@ -33,7 +33,7 @@ def write(path: Any, text: str) -> str:
 
 async def test_a_root_is_forgotten_when_its_import_changes(
         state: Any, tmp_path: Any) -> None:
-    """The base case, and the one `tasks/016` already gated.
+    """The base case, and the one huggorm#16 already gated.
 
     Here it runs through the watcher instead of by hand, so what is
     tested is that the bookkeeping picks the right files - not that
@@ -54,7 +54,7 @@ async def test_a_shared_import_forgets_both_roots(
         state: Any, tmp_path: Any) -> None:
     """The case the DIFF model got wrong, which is why this exists.
 
-    `tasks/083` measured it: the second root to import a shared file
+    huggorm#83 measured it: the second root to import a shared file
     gets a `cached_files` diff that does not mention it, because the
     first root already cached it. A watcher built on diffs answers 42
     here - silently, which is this repo's named failure mode.
@@ -198,7 +198,7 @@ async def test_a_failed_evaluation_does_not_wedge_the_root(
 
     libexpr caches what a FAILED evaluation read, and the cache is
     what answers next time - so a file fixed after a bad save raises
-    the OLD error, forever. Measured in `tasks/087`.
+    the OLD error, forever. Measured in huggorm#87.
 
     Nothing else could catch it. A failed evaluation records no
     snapshot, so `changed()` can never implicate that root again: the

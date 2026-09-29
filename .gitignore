@@ -29,7 +29,7 @@ venv/
 # untracked generated file that the build quietly depends on is a bug
 # this repo has already had once.
 # EVERY file, with no exception left. `__init__.py` was the one
-# hand-written thing in here and it is emitted now (tasks/064), so
+# hand-written thing in here and it is emitted now (huggorm#64), so
 # the directory is empty in the checkout and `generate.main` makes it.
 packages/huggorm-bindings/huggorm_bindings/*
 packages/huggorm-generated/huggorm_generated/

@@ -9,7 +9,7 @@
   # package. `nix` is the CLI and drags its whole closure; a binding
   # needs libnixstore and libnixexpr and the two they rest on. Each
   # ships its own pkg-config file, which is what setup.py reads
-  # (tasks/015). Separate arguments, so a caller with a component
+  # (huggorm#15). Separate arguments, so a caller with a component
   # scope of its own (nanopynix builds one per Nix version) passes
   # that scope's libraries.
   nix-util,
@@ -53,7 +53,7 @@ python3Packages.buildPythonPackage {
 
   # pkg-config finds real Nix. It is how nix ships its build interface:
   # nix-store.pc carries -std=c++23 and a Requires chain that a
-  # hand-written include path would have to reconstruct (tasks/015).
+  # hand-written include path would have to reconstruct (huggorm#15).
   nativeBuildInputs = [ pkg-config ];
 
   # boehmgc headers must be visible when compiling the extension.
@@ -66,7 +66,7 @@ python3Packages.buildPythonPackage {
   propagatedBuildInputs = nixLibs;
 
   # The Nix a declaration's `NIX_VERSION` branch picks an arm for
-  # (tasks/055). Exported, so every build that emits a surface for
+  # (huggorm#55). Exported, so every build that emits a surface for
   # these bindings describes the same Nix.
   env.HUGGORM_NIX_VERSION = nix-store.version;
   passthru.nixVersion = nix-store.version;

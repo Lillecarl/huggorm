@@ -3,7 +3,7 @@
 `cancel_request` marks a request cancelled, and the hook
 `begin_request` installs makes Nix's next `checkInterrupt` on that
 thread raise `Interrupted`. The async runtime calls it when the
-awaiting task is cancelled (tasks/097).
+awaiting task is cancelled (huggorm#97).
 
 The slow work is a Python primop that sleeps, reached once per list
 element, so how long the uncancelled work takes is a number here and

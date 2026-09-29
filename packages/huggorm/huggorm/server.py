@@ -58,7 +58,7 @@ DEFAULT_BUDGET = 1000
 # How long a log reader waits when the queue answered nothing. A drain
 # is a mutex and a move, so polling costs almost nothing - and the
 # alternative is a condition variable in C++, which would buy latency
-# and cost a hand-written wait (tasks/032). After a NON-empty drain the
+# and cost a hand-written wait (huggorm#32). After a NON-empty drain the
 # loop reads again at once, so a burst leaves at full speed and only a
 # quiet stream pays this.
 LOG_POLL = 0.05
@@ -159,7 +159,7 @@ async def _drop_subscription(target: Any) -> None:
     fan-out landed, and the reason it cannot be any more is the
     fan-out itself: the next `join` must not open a subscription
     while this one is still being dropped, because `unsubscribe`
-    clears the slot whatever is in it (`tasks/085`).
+    clears the slot whatever is in it (huggorm#85).
 
     Failures go nowhere on purpose: the stream this belonged to is
     already over, and the queue is closed either way."""
@@ -191,12 +191,12 @@ LOG_LEVEL = 3
 # go. Not a constant 7: a subscription raises the level
 # `RemoteStore::setOptions` sends to the daemon, so subscribing at 7
 # asks every daemon connection this server opens to narrate at vomit
-# down the socket, whether or not any client wants it (`tasks/102`).
+# down the socket, whether or not any client wants it (huggorm#102).
 #
 # The arrival-order problem that constant solved is still solved: a
 # reader that wants more REOPENS the subscription at its level rather
 # than being refused, so a warnings-only reader arriving first cannot
-# shut out the CLI listener `tasks/085` exists for.
+# shut out the CLI listener huggorm#85 exists for.
 def _widest(readers: Any) -> int:
     return max((r.level for r in readers), default=LOG_LEVEL)
 
@@ -270,7 +270,7 @@ class _Reader:
 class _Fanout:
     """One subscription in the binding, many readers over it.
 
-    `tasks/085`'s third gap. The binding REPLACES a subscription, so
+    huggorm#85's third gap. The binding REPLACES a subscription, so
     two `subscribe_logs` calls on one thread leave the first queue
     orphaned - which is why both log rpcs used to refuse a second
     reader. Carl named the reader that makes the refusal wrong:
@@ -311,7 +311,7 @@ class _Fanout:
         # way out. A TASK GROUP hands back no task handle, so this is
         # how `leave` says stop and then waits to be told it stopped -
         # and that ordering is what keeps the unsubscribe after the
-        # last drain (`tasks/035`).
+        # last drain (huggorm#35).
         self._scope: Any = None
         self._stopped: Any = None
         self._readers: set[_Reader] = set()
@@ -324,7 +324,7 @@ class _Fanout:
         A reader that wants MORE than the live subscription reopens
         it. That costs the records in flight during the swap, which a
         joining reader was never going to see anyway - it is the
-        price of not subscribing at vomit by default, and `tasks/089`
+        price of not subscribing at vomit by default, and huggorm#89
         step 4 says why that default had to go.
         """
         reader = _Reader(self, capacity, level)
@@ -382,7 +382,7 @@ class _Fanout:
         subscription stays installed and the next `join` reuses it.
 
         Cancellation is not observed in either handler - two
-        perturbations in `tasks/032` failed to produce it - so this
+        perturbations in huggorm#32 failed to produce it - so this
         is a defence and not a measured need."""
         self._readers.discard(reader)
         async with self._lock:
@@ -460,7 +460,7 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
     matters. `table.alive` would refresh the connection, and a log
     stream that kept a connection alive would disable the sweeper for
     as long as it was open. Liveness is the ping loop's job
-    (`tasks/049`) and stays there.
+    (huggorm#49) and stays there.
     """
     await stream.send_message(resp_cls())
     while True:
@@ -490,7 +490,7 @@ class Dispatcher:
         # Two task groups, and which one a task goes in is decided
         # by whether it ENDS. `serve` explains the split; both OWN
         # their children, so nothing here retains a set of tasks by
-        # hand any more (`tasks/035`).
+        # hand any more (huggorm#35).
         #
         # `tasks` finishes what it holds: a runner shutdown releases
         # an affine thread from the collector's list, and cancelling
@@ -522,7 +522,7 @@ class Dispatcher:
                                        _drop_process_subscription)
         # A failure crosses the same way a value does: as messages, by
         # what the bindings declare, never by a type this file names
-        # (tasks/036).
+        # (huggorm#36).
         self.faults = FaultCodec(schema.load_pool())
         self.mapping: dict[str, grpclib.const.Handler] = {}
         self._session()
@@ -558,7 +558,7 @@ class Dispatcher:
         and this is the path that shuts an affine thread down, which
         is also where that thread leaves the collector's list. Losing
         it silently cost both, and a hand-kept set of tasks was the
-        old defence (`tasks/035`).
+        old defence (huggorm#35).
 
         `start_soon` is a plain method, not a coroutine, so a
         callback the sweep calls synchronously can still use it."""
@@ -622,8 +622,8 @@ class Dispatcher:
         far side rebuilds the class rather than approximating it by
         name. That is what makes the remote shape the same as the
         in-process one, for a declared Nix error and for the
-        InternalError that carries a genuine bug alike (tasks/036,
-        tasks/066).
+        InternalError that carries a genuine bug alike (huggorm#36,
+        huggorm#66).
 
         The test is `to_dict`, not `isinstance(e, WrapperError)`. It
         is the same duck-type the runtime applies one layer down, and
@@ -914,7 +914,7 @@ class Dispatcher:
             here answers a question; this answers records nobody asked
             for one at a time, so it is server-streaming and it is
             HAND-WRITTEN. No binding declares it, because there is no
-            method it is the wire form of (tasks/032).
+            method it is the wire form of (huggorm#32).
 
             The subscription belongs to the state's THREAD, so the
             request names an EvalState and the subscribe hops onto
@@ -924,7 +924,7 @@ class Dispatcher:
             reporting on is still running. That is the whole reason
             the queue is a class rather than a method on EvalState.
 
-            MANY readers on one state, which is `tasks/085`'s third
+            MANY readers on one state, which is huggorm#85's third
             gap closed. It used to be one: a second subscribe
             REPLACES the first in the C++, so a second reader would
             have left the first connected and empty. The subscription
@@ -986,7 +986,7 @@ class Dispatcher:
             because the tap routes by THREAD and an EvalState owns
             one; this one takes what a fetcher thread, a
             file-transfer thread or a build raised, and none of those
-            belongs to a state (`tasks/085`).
+            belongs to a state (huggorm#85).
 
             So it holds NO lease and refreshes nothing. A caller with
             no handle at all can open it, which is right: the records
@@ -1060,7 +1060,7 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     orders the two: the loops stop first, and anything they started
     is still awaited by `work` afterwards.
 
-    That split is the trap `tasks/035` names first: a task group does
+    That split is the trap huggorm#35 names first: a task group does
     not cancel its children on exit, it waits for them."""
     pool = schema.load_pool()
 
@@ -1073,7 +1073,7 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
 
         # Connection liveness: transports never report death; the
         # sweeper notices silence past the TTL and releases what
-        # the dead connection held (tasks/002).
+        # the dead connection held (huggorm#2).
         async def sweeper() -> None:
             interval = max(0.5, min(lease_ttl / 4 if lease_ttl else 5, 5))
             while True:
@@ -1115,7 +1115,7 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
         # Typed failures ride in grpc-status-details-bin, resolved
         # against this pool rather than protobuf's default symbol
         # database - these descriptors were built at import from
-        # grpc_schema.pb and are in no global registry (tasks/036).
+        # grpc_schema.pb and are in no global registry (huggorm#36).
         server = grpclib.server.Server(
             reflected, status_details_codec=SchemaStatusDetails(pool))
         await server.start(host, port)

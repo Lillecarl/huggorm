@@ -439,7 +439,7 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
             # gets no such class emitted - so reading the key alone
             # put 'LogStream': 'AsyncLogStream' in this table with
             # nothing behind it, and `server.adopt` would have raised
-            # AttributeError on the first handle (tasks/032).
+            # AttributeError on the first handle (huggorm#32).
             if proto["wrapped"] and "async_class" in proto:
                 async_of.append((name,
                                  ast.Constant(value=proto["async_class"])))
@@ -875,7 +875,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
         # No runner and no target: there is no way in, so there is
         # nothing to construct lazily. Keyed on the DOOR rather than on
         # `abstract`, which is the C++ fact - nix::Store is abstract and
-        # still constructs, through its factory (tasks/061).
+        # still constructs, through its factory (huggorm#61).
         cls.body.append(ast.FunctionDef(
             name="__init__",
             args=ast.arguments(
@@ -1034,7 +1034,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
 
     Methods with a proxy parameter are absent, and the manifest says
     why for each of them (see surface.protocol_blockers). Everything
-    else is here, including every method whose types tasks/025 made
+    else is here, including every method whose types huggorm#25 made
     identical on both sides."""
     from huggorm_gen.pygen.surface import ACLOSE, protocol_name
 
@@ -1538,7 +1538,7 @@ def _stub_dunders(proto: Proto) -> list[ast.stmt]:
     skip every `_`-prefixed name - which is right for the manifest and
     wrong here. Without these, a typechecker reads object's __eq__ and
     calls `a < b` an error on a class that supports it, and
-    `sorted(paths)` an error on a list of them (tasks/046).
+    `sorted(paths)` an error on a list of them (huggorm#46).
 
     Which ones exist is reflected, not assumed: ordering and __str__
     are per-class, because a store path has a natural order and a
@@ -1569,7 +1569,7 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     a .so, so without this every binding type is Any - which is why a
     protocol-typed consumer could catch a call to a method that does
     not exist and NOT catch a str passed where a StorePath is declared
-    (tasks/027).
+    (huggorm#27).
 
     Everything here already exists in the protocol dicts: every
     method signature and every constructor signature, as the
@@ -1776,7 +1776,7 @@ def package_exports(all_names: list[str],
 
     Apart from `init_module` because a second file needs the same
     list: `huggorm.__init__` re-exports this package whole, and the
-    front door is emitted too (tasks/064). Computing it there as well
+    front door is emitted too (huggorm#64). Computing it there as well
     would be one list stated twice, which is exactly the thing that
     front door existed as.
 

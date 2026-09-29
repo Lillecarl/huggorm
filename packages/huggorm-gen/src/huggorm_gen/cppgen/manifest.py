@@ -83,7 +83,7 @@ PYTHON = {
     # is a reference to a Python object, so the Python spelling is
     # what the caller already had - nothing is marshalled in either
     # direction, and the binding holds the reference to call back
-    # through (tasks/033).
+    # through (huggorm#33).
     "nb::object": "object",
 }
 
@@ -151,7 +151,7 @@ def _type(t: Type | None) -> str:
 # The alternative is a second key beside `type`, which `model.py`
 # cannot reflect off a compiled class - so `check.py` would diff the
 # manifest against a shape reflection has no way to produce. Adding
-# that for zero callers buys a bug, not a feature (tasks/079).
+# that for zero callers buys a bug, not a feature (huggorm#79).
 #
 # This RAISES, so everything here is a GAP rather than a decision: a
 # width is something the manifest could learn to say. A type that
@@ -160,12 +160,12 @@ def _type(t: Type | None) -> str:
 # only the rpc, which is the shape `Store.real_path` already has.
 #
 # `nb::object` went here first and stopped the whole build, which is
-# the wrong answer for something deliberate (tasks/033).
+# the wrong answer for something deliberate (huggorm#33).
 UNCROSSABLE = {
     "uint64_t": (
         "a service's message carries no width: every int parameter "
         "crosses as sint64, which holds half of one. Teach the "
-        "manifest to spell a parameter's wire type - see tasks/079."),
+        "manifest to spell a parameter's wire type - see huggorm#79."),
 }
 
 
@@ -196,7 +196,7 @@ def _param(p: Param) -> dict[str, Any]:
     no presence to say otherwise - and every surface writes `| None`
     beside a None default itself. Carried as `list[X] | None`,
     `grpc_schema` refuses it and the method loses its rpc in silence
-    (tasks/104)."""
+    (huggorm#104)."""
     declared = p.type
     if p.has_default and p.default is None and declared.required.origin == "list":
         declared = declared.required
@@ -413,7 +413,7 @@ def entry(cls: Class, package: str, module: str,
         # ...and the DERIVED question every layer above actually asks:
         # is there a door. They each read `abstract` and meant this,
         # which is why nix::Store could not state the true fact about
-        # itself without losing its factory (tasks/061). Computed once,
+        # itself without losing its factory (huggorm#61). Computed once,
         # on the class, so the binding and the wrappers cannot disagree.
         "constructs": cls.constructs,
         # PRODUCED: nothing a caller writes builds one, so a stub

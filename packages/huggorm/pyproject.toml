@@ -33,7 +33,7 @@ addopts = "-q --strict-markers --strict-config"
 # test drops out of the build gate and nobody finds out.
 #
 # So a bare `pytest` runs everything, which is what a devshell wants,
-# and the sandboxed build passes `-m "not live"` (tasks/037).
+# and the sandboxed build passes `-m "not live"` (huggorm#37).
 markers = [
     "live: needs the machine's own Nix store - a daemon, a db, or a path that exists. Cannot run in a build sandbox",
 ]

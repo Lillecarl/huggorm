@@ -12,7 +12,7 @@ It also decides which methods a protocol may carry at all.
 
 The two implementations agree on everything except proxies. A scalar
 is a scalar and a wire-value is the same binding object on both sides
-- that is what tasks/025 bought by not wrapping them. A proxy differs:
+- that is what huggorm#25 bought by not wrapping them. A proxy differs:
 in process it is a wrapper holding a runner, remotely it is a class
 holding a handle.
 

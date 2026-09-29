@@ -16,8 +16,9 @@ call - so a declaration can name a C++ type this machine has never
 compiled, and no surface above the bindings waits on a compiler.
 
 This file is how to DRIVE the repo. `docs/quickstart.md` is how to USE
-the library. `tasks/README.md` is what the design is and why, and each
-`tasks/NNN-*.md` is one decision with the alternatives it rejected.
+the library. The [issues](https://github.com/Lillecarl/huggorm/issues) are what the design is and why: each
+one is a decision with the alternatives it rejected, and #106 is the
+board they grew from.
 
 ## Commands
 
@@ -80,7 +81,6 @@ comment about an upstream behaviour that was read rather than assumed.
       huggorm/            the hand-written layer: server, client, codec
     examples/             runnable demos - not shipped in the package
     docs/                 user-facing; quickstart.md is the front door
-    tasks/                one file per decision, NNN-name.md[.done]
 
 Three things are easy to confuse and are kept apart. The LANGUAGE is
 `declare.py`. A DECLARATION is a document written in it. An EMITTER
@@ -149,7 +149,7 @@ about them compiles.
 
 Every `*.py` in `decl/` is in exactly one of the three lists, and
 `corpus()` refuses the build when it is not. A file nobody lists used
-to emit nothing and say nothing (`tasks/078`).
+to emit nothing and say nothing (#78).
 
 ### huggorm-bindings
 
@@ -167,7 +167,7 @@ are `huggorm_decl/cpp/`, with the declarations that name them.
 
 One pkg-config line names the libraries, not a table per module.
 There is one library set - nix-store and nix-expr - so a table would
-say the same word nine times (tasks/060).
+say the same word nine times (#60).
 
 ### huggorm-generated
 
@@ -256,7 +256,7 @@ to make one of these fail early:
 - an emitted module that imports something it does not use
 - the three Python surfaces disagreeing on any signature
 
-Each has a `tasks/` file naming the bug it prevents.
+Each has an issue naming the bug it prevents.
 
 The C++ compiler is a gate too, and it is the one the emitter leans
 on. An emitter that spells a type wrong does not write a bad binding
@@ -266,7 +266,7 @@ that imports; it fails to compile.
 
 - **Tests are perturbation-verified.** A gate that has not been seen
   to FAIL is not known to hold. The habit is: break the thing on
-  purpose, watch the named test fail, put it back. Most `tasks/` files
+  purpose, watch the named test fail, put it back. Most closed issues
   record which perturbation was run.
 - **Hermetic by default.** A test that needs the machine's real store
   carries `@pytest.mark.live`. The build sandbox has no daemon and no
@@ -279,7 +279,7 @@ that imports; it fails to compile.
 ## The mock is gone
 
 `fake-library/` was a C++ stand-in this repo grew before real Nix was
-linked. It is deleted (tasks/060). Every binding here names libstore
+linked. It is deleted (#60). Every binding here names libstore
 or libexpr.
 
 libstore is `Store` (`nix::Store`), `StorePath`, `PathInfo`
@@ -297,9 +297,8 @@ declaration could not derive is one nobody has to go looking for.
 
 ## Where to start reading
 
-For the DESIGN: `tasks/README.md`, then the newest `tasks/` files -
-they are the current thinking, and the older ones record how it got
-there.
+For the DESIGN: #106, then the newest [issues](https://github.com/Lillecarl/huggorm/issues) - they are the
+current thinking, and the older ones record how it got there.
 
 For the CODE: `packages/huggorm-decl/src/huggorm_decl/decl/path.py`, then
 `nbemit.py` beside it, then `huggorm/huggorm/wire.py`.

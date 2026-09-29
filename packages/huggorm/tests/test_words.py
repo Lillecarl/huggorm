@@ -1,5 +1,5 @@
 """
-A vocabulary, checked against the C++ enum it stands for (tasks/070).
+A vocabulary, checked against the C++ enum it stands for (huggorm#70).
 
 Two halves, and neither one covers the other.
 
@@ -150,7 +150,7 @@ def test_the_two_build_statuses_keep_upstream_disjoint() -> None:
     `BuildResultSuccessStatus` and `BuildResultFailureStatus` each
     carry the comment "Names must be disjoint with" the other. That
     disjointness is the licence to publish one Python vocabulary of
-    sixteen words over two C++ switches, and tasks/071 declined it -
+    sixteen words over two C++ switches, and huggorm#71 declined it -
     two vocabularies, because `Enumerated` names one C++ enum and the
     arms carry different things.
 

@@ -4,7 +4,7 @@ Fixtures for the huggorm suites.
 anyio, not asyncio: anyio's pytest plugin is the runner, and the
 harness here uses anyio primitives throughout. The library below it is
 still on asyncio - grpclib is - and that is a separate migration
-(tasks/035).
+(huggorm#35).
 
 Three fixtures matter, and each exists because something here is
 expensive or slow to set up:
@@ -60,7 +60,7 @@ def ambient_store() -> Any:
 
     "auto" is whatever the ambient configuration says - usually the
     daemon. A build sandbox has none of that, which is the whole
-    reason the marker exists (tasks/037). Session-scoped: opening a
+    reason the marker exists (huggorm#37). Session-scoped: opening a
     store is a connection, and one is enough."""
     from huggorm_bindings import Store
 
@@ -177,7 +177,7 @@ async def client(server: Server) -> AsyncIterator[Any]:
     the group entered and exited by ONE task, and a fixture body is
     one task across its yield; a test is not the same task, which is
     why this cannot be an `AsyncExitStack` a test adds clients to
-    (measured, `tasks/035`)."""
+    (measured, huggorm#35)."""
     from huggorm import remote
 
     # Entered and left by hand rather than with one `async with`,

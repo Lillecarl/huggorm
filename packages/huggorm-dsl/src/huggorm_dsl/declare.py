@@ -186,7 +186,7 @@ Duration = Annotated[datetime.timedelta, Cxx("microseconds")]
 # That is not a gap to fill later: a remote client registering a
 # primop would make the evaluator call BACK over the socket, on its
 # own evaluation thread, once per invocation - a distributed call in
-# a hot loop. `tasks/033` records it as a decision rather than an
+# a hot loop. huggorm#33 records it as a decision rather than an
 # omission.
 #
 # `object` and not `Callable[..., Any]`, and the reflection gate is
@@ -237,7 +237,7 @@ class Enumerated:
     upstream - by the word's own name. A word not named here is
     `{cxx}::{word}`, which is every word in the usual case.
 
-    Not an `nb::enum_`. Measured (`tasks/070`): a chain of
+    Not an `nb::enum_`. Measured (huggorm#70): a chain of
     `.value("MD5", ...)` calls with an enumerator left out compiles
     silently, because `.value` is a runtime call and there is nothing
     for the compiler to check it against. A switch is the whole
@@ -441,7 +441,7 @@ class Decl:
 #
 # Where a marker is legal, how many times, and what it conflicts with.
 # One table, read by `read.py` so a rule is CHECKED rather than
-# restated in a docstring and enforced nowhere (tasks/061).
+# restated in a docstring and enforced nowhere (huggorm#61).
 #
 # Before this, `read.py` carried 28 hand-written raises and the rules
 # below were prose. The ones that were never written stayed unchecked:
@@ -656,7 +656,7 @@ def gc_slots(table: str) -> Callable[[type], type]:
 
     A class that stores a Python callable and does NOT say this leaks
     itself whenever that callable closes over it, which is the normal
-    way to write one (`tasks/093`). Nothing detects the omission
+    way to write one (huggorm#93). Nothing detects the omission
     today."""
     def apply(cls: type) -> type:
         _decl(cls).gc_slots = table

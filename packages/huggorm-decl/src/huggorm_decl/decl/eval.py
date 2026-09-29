@@ -98,7 +98,7 @@ from huggorm_dsl.declare import (
 )
 # How a value TREE is walked, read by the RPC layer so that no layer
 # above this declaration knows what a Value is or which of its methods
-# do what (tasks/030). `kind` names the accessor that says what this
+# do what (huggorm#30). `kind` names the accessor that says what this
 # node is; its answer selects one of the branches below. A kind named
 # nowhere here crosses as a proxy - and real Nix has five of those:
 # thunk, function, external, failed and path. Laziness the wire cannot
@@ -208,7 +208,7 @@ class Value:
     #
     # A list[Value] or dict[str, Value] accessor is deliberately
     # absent. It needs a collection of PROXIES, which is the recursive
-    # value message (tasks/030), not another loop here.
+    # value message (huggorm#30), not another loop here.
 
     def size(self) -> I64:
         """Elements in a list, or attributes in an attribute set.
@@ -807,7 +807,7 @@ return self.get()->primOp()->args;
         `Pos::getSource`, which calls `path.readFile()`
         (position.cc:49). So reading a lambda's documentation OPENS
         ITS SOURCE FILE. An accessor that looks cheap and does I/O is
-        `tasks/067`'s class of surprise, so it says so.
+        huggorm#67's class of surprise, so it says so.
 
         A source file that has GONE AWAY raises, and the message
         says so rather than letting upstream's own out-of-range
@@ -1019,7 +1019,7 @@ class LogRecord:
 
     The names are Nix's own, from the `internal-json` log format
     (`logging.cc:272`), so a client that already reads that format
-    reads this one. The mechanism is different and `tasks/032` says
+    reads this one. The mechanism is different and huggorm#32 says
     why.
 
     `level`, `type` and `id` are integers because that is what they
@@ -1407,7 +1407,7 @@ return huggorm::ReplSelection{std::string(state.symbols[name]), self.wrap(attrs)
 # and the natural way to write one closes over the state itself,
 # because the result comes from `state.make_int`. That is a cycle
 # Python's collector cannot see through, so the class says how to
-# traverse it (`tasks/093`).
+# traverse it (huggorm#93).
 @gc_slots("huggorm::evaluator_slots")
 @binding(
     cxx="huggorm::Evaluator",
@@ -1448,7 +1448,7 @@ class EvalState:
     below the async layer checks, and nothing should: the C++ here is
     exactly as permissive as libexpr, which has no such rule of its
     own, and goal 1 asks a binding not to be MORE permissive than
-    what it binds. Carl decided this; `tasks/085` records it.
+    what it binds. Carl decided this; huggorm#85 records it.
     """
 
     def __init__(self, store: Store,
@@ -1578,7 +1578,7 @@ return self.wrap(made);
     def cached_files(self) -> list[Str]:
         """Every file whose evaluation this state has cached.
 
-        What a watcher watches. `tasks/016` wants a change to a file an
+        What a watcher watches. huggorm#16 wants a change to a file an
         evaluation read to invalidate the warm state rather than throw
         it away, and this is the set that change would touch.
 
@@ -1620,7 +1620,7 @@ return self.wrap(made);
         file costs a re-download.
 
         FORGET THE CLOSURE, NOT THE FILE. Measured, and written up in
-        `tasks/016`: an importer does not notice its import changing.
+        huggorm#16: an importer does not notice its import changing.
         `outer.nix` that says `import ./inner.nix` stays cached at its
         old answer after `inner.nix` is edited and forgotten, because
         the cache holds no edge between the two - both files are
@@ -1631,7 +1631,7 @@ return self.wrap(made);
         the evaluation newly CACHED, not by what it read - so the
         second root to import a shared file gets a diff that does not
         mention it, and forgetting that diff leaves the root stale.
-        Measured in `tasks/083`.
+        Measured in huggorm#83.
 
         What is sound is the SNAPSHOT: everything cached when a root
         finished is a superset of what that root read. `huggorm.Watcher`
@@ -1676,13 +1676,13 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         inside evaluation, so it must not await and must not hop
         threads. That is the exact inverse of every wrapper this repo
         emits, which exist to get OFF the calling thread - and it is
-        why `tasks/034`, a Nix function called FROM Python, cannot
+        why huggorm#34, a Nix function called FROM Python, cannot
         borrow this shape.
 
         IN-PROCESS ONLY. No rpc surface exists and the manifest
         refuses to build one, because a remote registration would make
         the evaluator call back over the socket once per invocation,
-        on its evaluation thread. A decision, in `tasks/033`, rather
+        on its evaluation thread. A decision, in huggorm#33, rather
         than something not written yet.
 
         PERMANENT for this STATE's life, and not for the process's.
@@ -1692,7 +1692,7 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         add later; upstream has nowhere to put one.
 
         CLOSING OVER THE STATE IS FINE, and this paragraph said the
-        opposite until `tasks/093`. It said a callable capturing the
+        opposite until huggorm#93. It said a callable capturing the
         state pinned it forever, and told a caller to capture what the
         callable needs instead - which is not advice anybody can take,
         because a primop builds its result with `state.make_int`.
@@ -1771,7 +1771,7 @@ return self.make_primop(name, static_cast<std::size_t>(arity), fn);
         as narrow, UP TO THE CEILING. `nix::verbosity` is pinned at
         import at `HUGGORM_LOG_CEILING` (CHATTY when unset), and nix
         produces nothing above it, so a subscription at `6` gets no
-        debug records under the default (`tasks/102`). The level is
+        debug records under the default (huggorm#102). The level is
         per THREAD, so what a caller KEEPS costs no other caller
         anything.
 
@@ -1780,12 +1780,12 @@ return self.make_primop(name, static_cast<std::size_t>(arity), fn);
 
         The global then goes back DOWN when this subscription ends -
         to what the remaining subscriptions still need, never past
-        them. `tasks/095` measured what leaving it up cost: the
+        them. huggorm#95 measured what leaving it up cost: the
         daemon narrating on an unsubscribed caller's stderr, for the
         life of the process.
 
         It does not say "pinned wide open", which an earlier draft of
-        this docstring did. There has been no pin since `tasks/089`
+        this docstring did. There has been no pin since huggorm#89
         step 4 removed it, and a pin is exactly what costs the daemon.
 
         What it still does NOT see is a record raised on a fetcher or
@@ -1818,7 +1818,7 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
         level any subscription that is still live needs - never below one, because that
         would drop a still-subscribed thread's records with nothing
         said. A thread that exits without calling this gives its
-        level back anyway (`tasks/096`).
+        level back anyway (huggorm#96).
 
         It CROSSES the wire and `subscribe_logs` does not, which looks
         like an accident and is not. `subscribe_logs` answers a
@@ -2627,7 +2627,7 @@ def subscribe_process_logs(capacity: I64 = 1024,
     What it sees is what `EvalState.subscribe_logs` names and cannot
     reach: a record raised on a fetcher thread, a file-transfer
     thread, or a build. A build's log is the one a Nix user most
-    wants (`tasks/085`).
+    wants (huggorm#85).
 
     NOT "everything in this process". A thread that subscribed CLAIMS
     its records, so an evaluation with its own subscriber does not
@@ -2635,7 +2635,7 @@ def subscribe_process_logs(capacity: I64 = 1024,
     it was rejected: a caller holding both subscriptions would see
     every evaluation record twice, with nothing on a record to
     deduplicate by. One reader over one subscription is the shape
-    that answers the other question, and it is `tasks/085`'s third
+    that answers the other question, and it is huggorm#85's third
     gap.
 
     `level` RAISES THE PROCESS DEFAULT, and it has to. The records
@@ -2650,7 +2650,7 @@ def subscribe_process_logs(capacity: I64 = 1024,
     (`nix-remote-verbosity.patch`), which then narrates every worker
     op back over the socket. `unsubscribe_process_logs` gives it back. A
     daemon connection ALREADY OPEN keeps what the handshake gave it,
-    which is the one thing giving it back cannot reach (`tasks/096`).
+    which is the one thing giving it back cannot reach (huggorm#96).
 
     REPLACES any process-wide subscription, and closes it. Refusing
     was the other answer: an in-process caller that drops its
@@ -2687,7 +2687,7 @@ def unsubscribe_process_logs() -> None:
 
     It puts BOTH levels back: the process default returns to nix's
     own `lvlInfo`, and the daemon level drops to the widest level any
-    per-thread subscription still holds. `tasks/095` measured what
+    per-thread subscription still holds. huggorm#95 measured what
     the second one cost while it was missing - 1052 daemon debug
     lines on an unsubscribed caller's stderr.
 
@@ -2715,7 +2715,7 @@ def _log_tap_init() -> None:
     and replacing it while another thread reads it is a race with no
     lock to take.
 
-    A REPLACEMENT, and it was a tee until `tasks/089`. A tee kept the
+    A REPLACEMENT, and it was a tee until huggorm#89. A tee kept the
     logger that was already there as the MAIN one, so every record
     reached stderr whether a subscriber took it or not - and a client
     reading this protocol over stdin/stdout cannot have that.

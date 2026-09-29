@@ -194,7 +194,7 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     A scalar is allowed, and used not to be. proto3 has had explicit
     `optional` since 3.15 - a synthetic oneof gives a scalar field
     real presence - so the old refusal described what this schema
-    builder emitted rather than what proto3 can say (tasks/048).
+    builder emitted rather than what proto3 can say (huggorm#48).
 
     A WRAPPED T is allowed too. A Handle is a message, so the wire has
     presence already, and every layer adopts T when it is there and
@@ -357,7 +357,7 @@ async def test_behavior() -> None:
     assert elapsed < 0.18, f"expected overlapped adds, took {elapsed:.2f}s"
     # StorePath is pool AND non-blocking, so it has no wrapper: an
     # awaited store method hands back the binding object itself, and
-    # reading it is a plain call (tasks/025).
+    # reading it is a plain call (huggorm#25).
     assert type(p1) is StorePath
     assert len({p1.to_string(), p2.to_string()}) == 2
     assert await local.is_valid_path(p1) is True
@@ -547,7 +547,7 @@ async def test_behavior() -> None:
     # wrap when the object needs a home thread (affine) or its methods
     # can block. StorePath and PathInfo are pool and declare
     # _blocking = False, so they cross every layer as themselves -
-    # no await in front of a substring read (tasks/025).
+    # no await in front of a substring read (huggorm#25).
     import huggorm_generated as flg_names
     for name in ("StorePath", "PathInfo"):
         proto = proto_of(name)
@@ -601,7 +601,7 @@ async def test_behavior() -> None:
     # coroutines on the shared pool.
     #
     # NONE OF THEM TAKES A BOUND HANDLE. `describe(obj: MockStore)`
-    # was the only one, and it went with the mock (tasks/060), so the
+    # was the only one, and it went with the mock (huggorm#60), so the
     # emitter's parameter-unwrapping path for a free function has no
     # user until nix::copyPaths or the libexpr EvalState brings one
     # back. Said here rather than left as a silent hole.
@@ -610,7 +610,7 @@ async def test_behavior() -> None:
 
     # A Nix built without the collector refuses, by name, every question
     # only the collector can answer, and the checks that need one run
-    # where it exists (tasks/105).
+    # where it exists (huggorm#105).
     has_gc = huggorm_bindings.boehm_gc()
 
     async def collect() -> None:
@@ -648,7 +648,7 @@ async def test_behavior() -> None:
     # ...and each one records whether the wire can carry it, with the
     # reason when it cannot. gc_stats returns dict[str, int], which is
     # a protobuf map now that the declaration says what the entries
-    # hold (tasks/030).
+    # hold (huggorm#30).
     assert not free["collect_garbage"]["wire_blockers"]
     assert not free["gc_stats"]["wire_blockers"], free["gc_stats"]["wire_blockers"]
     assert free["gc_stats"]["return_type"] == "dict[str, int]"
@@ -767,7 +767,7 @@ async def test_behavior() -> None:
     await builder.aclose()
 
     # THE HIERARCHY IS GONE, AND SO ARE THE THREE PROPERTIES IT WAS
-    # THE ONLY EXERCISE FOR (tasks/060):
+    # THE ONLY EXERCISE FOR (huggorm#60):
     #
     # - a generated base whose subclasses share one wire service;
     # - the pool policy DROPPING an affine-returning method from a
@@ -855,7 +855,7 @@ async def test_behavior() -> None:
     #
     # A nix::Error is DECLARED, so it reaches the caller as itself and
     # `except NixError` works here exactly as it does against the sync
-    # binding (tasks/066). It describes itself through `to_dict`, which
+    # binding (huggorm#66). It describes itself through `to_dict`, which
     # is what the runtime tests before deciding to wrap anything.
     #
     # Anything else is not declared, carries no parts, and arrives as
@@ -865,7 +865,7 @@ async def test_behavior() -> None:
     # fixed fact in this file, but the errors submodule is named after
     # the declaration - so writing `.errors` here would have been a
     # copy of a name the build computes, and renaming the declaration
-    # proved it (tasks/063).
+    # proved it (huggorm#63).
     from huggorm_generated._policy import ERROR_MODULE
 
     NixError = importlib.import_module(ERROR_MODULE).NixError
@@ -1137,7 +1137,7 @@ def test_conformance(out: pathlib.Path) -> None:
       - the protocol offers those minus the ones the manifest blocked,
         and blocks nothing else;
       - parameter names and annotations are identical in all three
-        (which is what tasks/025 bought: after it, a method on the
+        (which is what huggorm#25 bought: after it, a method on the
         protocol mentions no type that differs by location);
       - a return is identical in all three, unless the protocol names
         another protocol - then each implementation must return ITS
@@ -1499,7 +1499,7 @@ def _same(spelling: str) -> str:
     one, because the only duration parameters are `_from_parts`'s and
     an `_`-prefixed name reaches no stub. A collapse of the input
     spelling was written here, passed, and was removed when taking it
-    out changed nothing (tasks/071)."""
+    out changed nothing (huggorm#71)."""
     from huggorm_gen.payload.wiretypes import python_spelling
 
     out = re.sub(r"huggorm_bindings\.\w+\.", "", spelling)

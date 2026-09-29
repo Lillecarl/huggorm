@@ -13,7 +13,7 @@ sync binding directly is on their own: the C++ is exactly as
 permissive as libexpr, which has no such rule of its own, and the
 failure there is a wrong answer rather than an exception.
 
-`tasks/085`'s second gap and `tasks/034`'s cross-state residue are
+huggorm#85's second gap and huggorm#34's cross-state residue are
 both this file.
 """
 
@@ -62,7 +62,7 @@ async def test_two_states_never_share_a_thread() -> None:
 
 
 async def test_a_value_from_another_state_is_refused() -> None:
-    """The gap `tasks/034` named and left open.
+    """The gap huggorm#34 named and left open.
 
     A `nix::Value` is not self-describing: an attribute name is a
     `Symbol`, an index into the producing state's own table. Handing
@@ -95,7 +95,7 @@ async def test_a_value_from_this_state_is_not_refused() -> None:
 
 
 async def test_applying_a_foreign_function_is_refused() -> None:
-    """`tasks/034` listed `apply` beside `force`, and one check covers
+    """huggorm#34 listed `apply` beside `force`, and one check covers
     both.
 
     Derived rather than restated: the refusal lives in `unwrap_arg`,

@@ -60,7 +60,7 @@ async def test_it_watches_the_directory_and_not_the_file(
     A watch on the parent sees that rename as MOVED_TO.
 
     So the assertion is that the directories are watched and the files
-    are not, which is what `tasks/083` said to build and what a
+    are not, which is what huggorm#83 said to build and what a
     reasonable-looking implementation gets wrong."""
     inner = write(tmp_path / "inner.nix", "40 + 2\n")
     outer = write(tmp_path / "outer.nix", f"import {inner}\n")
@@ -99,7 +99,7 @@ async def test_the_watch_set_follows_the_roots(
         # `a` is forgotten, so nothing depends on `one` any more.
         # `b`'s snapshot holds `a.nix` as well - a snapshot is a
         # superset of the closure - so it goes too, and this is the
-        # over-forgetting `tasks/083` measured rather than a bug.
+        # over-forgetting huggorm#83 measured rather than a bug.
         await w.changed(a)
         await source.sync()
         assert source.directories() == []

@@ -25,7 +25,7 @@ def test_no_hardcoded_domain_types(manifest: dict[str, Any]) -> None:
     # Exception classes are domain types too, and the same rule holds
     # for the same reason: which errors exist is the bindings' to
     # declare, so no layer above them may carry a list of them
-    # (tasks/036). The builtins this layer raises ITSELF - KeyError for
+    # (huggorm#36). The builtins this layer raises ITSELF - KeyError for
     # an unknown handle - are not in that set and are not the subject.
     domain |= set((manifest.get("errors") or {}).get("classes", {}))
     here = pathlib.Path(__file__).resolve().parent.parent / "huggorm"
@@ -48,7 +48,7 @@ def test_a_declared_error_crosses_as_its_own_message(
     the far side resolves it in the schema pool, and a name it cannot
     resolve resolves to nothing. Nothing has to decide whether a class
     name is safe to construct, because no class name crosses on its
-    own (tasks/036).
+    own (huggorm#36).
 
     Needs no server: this is what the server would put on the wire."""
     from huggorm.faults import FaultCodec
@@ -73,7 +73,7 @@ def test_an_error_s_info_survives_the_wire() -> None:
     """The record part crosses as a message, and comes back equal.
 
     Not `str()` of each part: that is a record's repr, and a proto
-    message field refuses a string (tasks/100)."""
+    message field refuses a string (huggorm#100)."""
     from huggorm.faults import FaultCodec
     from huggorm.grpc_pb import load_pool
     from huggorm_bindings import EvalState, Store
@@ -180,7 +180,7 @@ def test_the_front_door_covers_the_surface() -> None:
 
     `import huggorm` used to export two mock DEMO classes, so a user
     faced three packages and no guidance on which to import - the
-    build topology as the first thing to learn (tasks/051).
+    build topology as the first thing to learn (huggorm#51).
 
     Derived rather than listed twice: this asks the two packages what
     they export and requires the front door to carry all of it. A new
@@ -189,7 +189,7 @@ def test_the_front_door_covers_the_surface() -> None:
 
 Everything behind the front door
     has to reach it, with no exception left: the Mock* classes were the
-    last one, and they are gone (tasks/060)."""
+    last one, and they are gone (huggorm#60)."""
     import huggorm
     import huggorm_bindings
     import huggorm_generated
@@ -211,7 +211,7 @@ Everything behind the front door
     # is a decision - plumbing is not surface - and the front door is
     # emitted now, so without this line the emitter could publish it
     # and nothing would say so. Found by trying: dropping the filter
-    # passed every gate (tasks/064).
+    # passed every gate (huggorm#64).
     assert "RPC_CLASSES" not in huggorm.__all__, (
         "RPC_CLASSES is a registry the remote client reads, not "
         "something to call. It has no place on the front door.")
@@ -283,7 +283,7 @@ def _probe_message() -> Any:
 
     Built here rather than borrowed from the real schema, because no
     binding declares an enum container yet - which is the point of
-    tasks/047. The two field shapes are the ones the schema builder
+    huggorm#47. The two field shapes are the ones the schema builder
     gives an enum, since an enum crosses as a string.
 
     Hand-built the way grpc_schema builds one: a map is not a type
@@ -440,7 +440,7 @@ def test_a_declared_order_is_an_order_that_works(
     `__eq__` and no ordering, the class gets all six comparison slots
     anyway, and reflection read the slots back as implemented
     comparisons. `sorted(infos)` passed the typechecker and raised
-    TypeError (tasks/052).
+    TypeError (huggorm#52).
 
     Reflection cannot answer this - it measures what the compiler
     emitted, not what the source said - so the fix was to take
@@ -504,7 +504,7 @@ def test_the_stubs_promise_the_same_order_the_manifest_does(
         manifest: dict[str, Any]) -> None:
     """The stubs are what a caller's typechecker reads.
 
-    tasks/052 was a complaint about the STUBS, and fixing the manifest
+    huggorm#52 was a complaint about the STUBS, and fixing the manifest
     did not fix them: they were re-extracted by reflection on a second
     route that never saw the declaration, so `manifest.json` stopped
     claiming PathInfo has an ordering while `store.pyi` went on
@@ -558,14 +558,14 @@ def test_a_class_with_no_door_refuses_to_be_built(
     the trampoline, and `MockStore()` succeeded. The failure moved to
     the first call, as "tried to call a pure virtual function", which
     is a worse place to learn about it. There are no trampolines now
-    (tasks/060) and the binding simply declares no constructor, but
+    (huggorm#60) and the binding simply declares no constructor, but
     the guard this test drives is the same one.
 
     This asked `abstract` and slept for it. Nothing had carried
     `@abstract` since the mock went, so the loop ran zero times and
     said so in a comment. `constructs` is the question it always
     meant - "is there a door" - and it separates the two things
-    `@abstract` used to say (tasks/061). nix::Store now states the
+    `@abstract` used to say (huggorm#61). nix::Store now states the
     true C++ fact about itself and still constructs, through its
     factory, so it is correctly NOT a subject here; the five produced
     types are.
@@ -596,7 +596,7 @@ def test_every_declared_constructor_default_reaches_the_binding() -> None:
     `for n, _ in params` never sees a default. The `nb::init` path was
     written that way, and `EvalState(store_uri, settings=None)` bound
     `settings` as required, while the stub said it was optional
-    (tasks/097). Only a constructor with a C++ body wrote defaults.
+    (huggorm#97). Only a constructor with a C++ body wrote defaults.
 
     nanobind keeps a signature's defaults as the third item of
     `__nb_signature__`, so the count is read off the compiled class."""
@@ -662,7 +662,7 @@ def test_each_64_bit_width_reaches_its_own_proto_type(
     The half it drops is not hypothetical. Upstream spells "no limit"
     as the largest uint64_t, and sending `GCOptions()` raised
     `ValueError: Value out of range: 18446744073709551615` -
-    the default options object could not cross an RPC (tasks/079).
+    the default options object could not cross an RPC (huggorm#79).
 
     Derived from the manifest, so a field that changes width is
     checked by the same run that emits it. Both counts are asserted:

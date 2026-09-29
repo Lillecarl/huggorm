@@ -4,7 +4,7 @@ nix::ValidPathInfo, and everything about it, in one file.
 One Nix class, one declaration, named after its header. `decl/store.py`
 IMPORTS this to learn the shape rather than restating it, which is what
 the old `@cxx_parts` field map did - nine keyword entries, in a second
-vocabulary, on the method that happens to return one (tasks/056).
+vocabulary, on the method that happens to return one (huggorm#56).
 
 The C++ lives in bodies. The only strings here are C++.
 """
@@ -70,7 +70,7 @@ class PathInfo:
     # StorePath member called `path`, so this is a member read and
     # nothing else. Rendering it against a store directory is a
     # separate act with an answer already: `store.print_store_path(p)`
-    # (tasks/040, tasks/042).
+    # (huggorm#40, huggorm#42).
     @reads("path")
     def path(self) -> StorePath:
         """The path this describes."""
@@ -135,7 +135,7 @@ return static_cast<std::int64_t>(self.registrationTime);
         address by.
 
         None rather than an empty one: the two are different answers,
-        and the wire carries them both across (tasks/048)."""
+        and the wire carries them both across (huggorm#48)."""
 
     @reads("references")
     def references(self) -> list[StorePath]:
@@ -180,7 +180,7 @@ return static_cast<std::int64_t>(self.registrationTime);
         record's `_from_parts` was aggregate initialisation and could
         not miss a field; this is a bijection a person wrote, and one
         that never assigns `ultimate` compiles and zero-initialises it
-        (tasks/056).
+        (huggorm#56).
 
         Two things make it longer than an aggregate.
         nix::ValidPathInfo has a virtual base, so it is not an

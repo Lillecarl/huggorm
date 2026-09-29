@@ -3,7 +3,7 @@
 `EvalSettings` is not a libstore object, so nothing registers it on
 `globalConfig` unless this repo does - `nix` does it from libcmd,
 which is not linked. Unregistered, `pure-eval` in the file is parked
-as an unknown setting and never read, with no warning (tasks/097).
+as an unknown setting and never read, with no warning (huggorm#97).
 
 A fresh interpreter per case, because the file is read once, at
 import, and the process keeps what it read.
@@ -323,7 +323,7 @@ def test_the_collector_probe_agrees_with_the_build() -> None:
 @pytest.mark.skipif(HAS_COLLECTOR, reason="this Nix has the collector")
 def test_a_build_without_the_collector_refuses_by_name() -> None:
     """A question only the collector can answer raises, rather than
-    answering zeros that would read as a measurement (tasks/105)."""
+    answering zeros that would read as a measurement (huggorm#105)."""
     from huggorm_bindings import collect_garbage, gc_stats
     from huggorm_bindings.errors import UnimplementedError
 

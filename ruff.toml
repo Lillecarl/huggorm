@@ -10,7 +10,7 @@
 
 # One generated file DOES sit inside a hand-written package, and it is
 # excluded here for the same reason. `huggorm/__init__.py` is the
-# library's front door, emitted from the declarations (tasks/064); the
+# library's front door, emitted from the declarations (huggorm#64); the
 # gate on it is `test_the_front_door_covers_the_surface`, which asks
 # whether it re-exports everything behind it - a question a linter
 # cannot ask. `ast.unparse` writes one long line per import group and

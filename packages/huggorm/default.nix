@@ -14,7 +14,7 @@
 let
   # The suite branches on `NIX_2_35` and `NIX_2_36`, and a type checker
   # holds a name constant only when told to. `majorMinor`, because
-  # `2.36pre...` sorts BEFORE `2.36` in `versionAtLeast` (tasks/055).
+  # `2.36pre...` sorts BEFORE `2.36` in `versionAtLeast` (huggorm#55).
   nixVersion = lib.versions.majorMinor huggorm-bindings.nixVersion;
   versionFlags = lib.concatMapStringsSep " " (
     at:
@@ -31,7 +31,7 @@ python3Packages.buildPythonPackage {
   # The generator too, because `setup.py` writes `huggorm/__init__.py`
   # before setuptools resolves the package list. The front door is a
   # mapping of Python names onto the two packages behind it, so it is
-  # derived rather than tracked by hand (tasks/064).
+  # derived rather than tracked by hand (huggorm#64).
   #
   # protobuf comes with it: `build_manifest()` reaches the schema
   # builder, which builds a FileDescriptorSet.
@@ -49,14 +49,14 @@ python3Packages.buildPythonPackage {
   # runtime feeds the manifest-built descriptor schema.
   # googleapis-common-protos: google.rpc.Status, which is the message
   # gRPC puts in grpc-status-details-bin - the only place a FAILED
-  # call can carry a typed answer (tasks/036).
+  # call can carry a typed answer (huggorm#36).
   # asyncinotify: the kernel telling the watcher a file moved, instead
-  # of the watcher stat-ing for it (tasks/083). Linux only, which is
+  # of the watcher stat-ing for it (huggorm#83). Linux only, which is
   # what let it beat watchdog - Carl ruled Darwin out for now, so
   # cross-platform bought nothing and cost a thread pool. It
   # propagates nothing but python3 itself.
   # The front door and the suite read the declarations for the Nix the
-  # bindings link (tasks/055).
+  # bindings link (huggorm#55).
   env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
   env.HUGGORM_NIX_GC = if huggorm-bindings.hasCollector then "1" else "0";
 
@@ -86,7 +86,7 @@ python3Packages.buildPythonPackage {
   # --python-executable, not MYPYPATH: a PEP 561 <pkg>-stubs package is
   # only found through an interpreter's search path, never through
   # MYPYPATH. Without it every binding type reads as Any and the check
-  # passes while proving nothing (tasks/027).
+  # passes while proving nothing (huggorm#27).
   nativeCheckInputs = [
     grpcurl
     ruff
@@ -120,7 +120,7 @@ python3Packages.buildPythonPackage {
     # writable store, so a test that needs one cannot run here. The
     # rest of the suite runs on every build, as it always has. The
     # live half runs from the devshell: nix run --file . test
-    # (tasks/037).
+    # (huggorm#37).
     pytest -m "not live"
     runHook postCheck
   '';

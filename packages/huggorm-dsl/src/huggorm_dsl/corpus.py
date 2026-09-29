@@ -119,7 +119,7 @@ class Corpus:
 
         For an emitter whose OUTPUT is the tree. `pyerrors` copies an
         exception declaration through, so a branch it does not resolve
-        reaches the emitted module unresolved (tasks/073)."""
+        reaches the emitted module unresolved (huggorm#73)."""
         if name not in self._chosen:
             self._chosen[name] = resolve_tree(str(self.path(name)))
         return self._chosen[name]
@@ -143,7 +143,7 @@ class Corpus:
         used to fall back to the tree alone - which read a
         non-importing declaration as a working one for every file
         with no `NIX_VERSION` branch in it, which is all of them
-        (tasks/082)."""
+        (huggorm#82)."""
         return load(str(self.path(name)))
 
     # -- the three groups ------------------------------------------

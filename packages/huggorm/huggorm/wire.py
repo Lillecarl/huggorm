@@ -57,7 +57,7 @@ from huggorm_generated._wiretypes import (
 # answer for file contents whose hash names a store path.
 # `int` and `uint` are both Python's int. The two differ only in the
 # proto type the field has, which is the schema's business and not
-# this table's (tasks/079).
+# this table's (huggorm#79).
 _SCALARS: dict[str, Callable[[Any], Any]] = {
     "str": str, "int": int, "uint": int, "float": float, "bool": bool,
     "bytes": bytes}
@@ -136,7 +136,7 @@ class WireCodec:
         self.fields: dict[str, tuple[Arg, ...]] = WIRE_FIELDS
         # EXCEPTION classes, and what each is rebuilt from. A value
         # may hold one: a KeyedBuildResult's failure arm IS a declared
-        # error, answered rather than raised (tasks/071). Same table
+        # error, answered rather than raised (huggorm#71). Same table
         # the fault codec reads, because it is the same message.
         self.errors: dict[str, tuple[Arg, ...]] = ERROR_FIELDS
         self.error_module: str = ERROR_MODULE
@@ -274,7 +274,7 @@ class WireCodec:
         The class comes from the emitted error module and from
         nowhere else. A name off the wire never selects an importable
         class: it selects an entry in a table this build wrote
-        (tasks/036)."""
+        (huggorm#36)."""
         kls = getattr(importlib.import_module(self.error_module), type_str)
         return kls(*self.error_parts(type_str, msg))
 
@@ -290,7 +290,7 @@ class WireCodec:
 
     # -- maps -------------------------------------------------------------
     # An attribute set has string keys, always, so `map<string, V>`
-    # covers every dict this API returns (tasks/030). The value type
+    # covers every dict this API returns (huggorm#30). The value type
     # comes from the declaration - `dict[str, int]`, not a bare `dict`
     # - which is the same annotation the typechecker reads.
     def map_to_msg(self, type_str: str, obj: dict[str, Any], msg: Any) -> None:
@@ -307,7 +307,7 @@ class WireCodec:
             # and its constructor is the enum CLASS, which that table
             # does not hold. Indexing it directly raised KeyError on
             # the first dict[str, HashAlgorithm] to be encoded - a
-            # declaration the schema accepts (tasks/047).
+            # declaration the schema accepts (huggorm#47).
             cast = self.to_wire(vtype)
             for key, val in obj.items():
                 msg[key] = cast(val)
@@ -376,7 +376,7 @@ class WireCodec:
     # declaration: the shape is recursive and its arms are the wire
     # KINDS themselves. What this module does NOT know is how to walk
     # one - that comes from a declaration next to the binding, through
-    # the manifest, and arrives here already walked (tasks/030).
+    # the manifest, and arrives here already walked (huggorm#30).
     #
     # The plain shape both sides speak:
     #   ("scalar", "int", 5)     a leaf, by declared type
@@ -462,7 +462,7 @@ class WireCodec:
     # A oneof, which is a real tag - unlike either encoding upstream
     # uses. The daemon sends a DerivedPath as a string and parses it
     # back; Nix's JSON tags the arms by shape. Here the arm is named
-    # in the message and neither side guesses (tasks/059).
+    # in the message and neither side guesses (huggorm#59).
     def union_to_msg(self, type_str: str, obj: Any, msg: Any,
                      depth: int = 0) -> None:
         """Fill msg's oneof from whichever arm `obj` is.
@@ -487,7 +487,7 @@ class WireCodec:
                 self.value_to_msg(arm, held, sub, depth + 1)
                 # A unit arm writes no field, and protobuf sets a oneof
                 # only when its message is written: `GCWholeStore`
-                # arrived with no arm set (tasks/055).
+                # arrived with no arm set (huggorm#55).
                 sub.SetInParent()
                 return
         raise TypeError(
@@ -551,7 +551,7 @@ class WireCodec:
             # None. A container parameter defaults to None and a
             # repeated field has no presence - writing nothing IS
             # writing an empty one, which is what None means for a
-            # container (tasks/041).
+            # container (huggorm#41).
             return
         if kind == "scalar":
             # str() of a StrEnum member is its value, so an enum needs
@@ -582,7 +582,7 @@ class WireCodec:
         as its default, and it is EXACT for every kind. A message field
         has presence in proto3; a scalar one gets it from the synthetic
         oneof the schema builder emits for a declared optional
-        (tasks/048). So HasField answers both.
+        (huggorm#48). So HasField answers both.
 
         It did not always. A scalar read back as `None if not raw`,
         which cannot tell an unset string from an empty one someone

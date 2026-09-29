@@ -14,7 +14,7 @@ caller BUILDS one and hands it down. That is a class rather than four
 keyword parameters on the method, because a struct that names a
 concept Python has no word for is a class - and flattening it would
 make this repo restate four defaults that upstream already states
-(tasks/074).
+(huggorm#74).
 """
 
 from huggorm_decl.decl.path import StorePath
@@ -198,7 +198,7 @@ if (max_freed)
         is signed, so `GCOptions()` - the DEFAULT - could not cross an
         RPC at all. Carrying the absence instead fixes it at the
         declaration, where the sentinel is already a lie. The width
-        question underneath is real and is not this: `tasks/079`."""
+        question underneath is real and is not this: huggorm#79."""
         Cxx("""
 if (self.maxFreed == std::numeric_limits<std::uint64_t>::max())
     return std::nullopt;

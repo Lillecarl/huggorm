@@ -5,7 +5,7 @@ The part that NOTICES, without being asked.
 `Watcher.rescan()` finds a change by stat-ing every watched file. This
 is the other change source: the kernel tells us instead.
 
-It is a thin adapter and that is the whole design. `tasks/083` kept
+It is a thin adapter and that is the whole design. huggorm#83 kept
 noticing separate from bookkeeping so a third caller of
 `Watcher.changed()` would be an addition rather than a rewrite, and
 this is that third caller. Nothing here decides what a change MEANS.
@@ -28,7 +28,7 @@ them.
 ## Linux only
 
 inotify is a Linux interface. `asyncinotify` is the binding, chosen in
-`tasks/083`: it is asyncio-native, so an adapter is a task that
+huggorm#83: it is asyncio-native, so an adapter is a task that
 iterates events, and it propagates nothing but `python3`. Darwin was
 ruled out by Carl for the project's stage, which is what let a
 cross-platform library lose to a smaller one.

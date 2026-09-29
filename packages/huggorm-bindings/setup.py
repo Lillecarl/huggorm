@@ -33,7 +33,7 @@ def pkg_config(*packages: str) -> dict[str, list[str]]:
     Nix ships nix-store.pc, nix-expr.pc and friends, which carry
     -std=c++23, a Requires chain into nix-util and nlohmann_json, and
     a private link line nobody should be reconstructing by hand
-    (tasks/015)."""
+    (huggorm#15)."""
     def run(flag: str) -> list[str]:
         out = subprocess.run(["pkg-config", flag, *packages],
                              capture_output=True, text=True, check=True)
@@ -61,12 +61,12 @@ def pkg_config(*packages: str) -> dict[str, list[str]]:
 # sits above nix-expr, so nix-expr's chain does not bring it; the
 # chain does bring nix-fetchers. pkg-config resolves the Requires
 # chain, so nix-util and nlohmann_json arrive without being named
-# (tasks/015).
+# (huggorm#15).
 #
 # One line for both, not one per module. There used to be a LIBRARY
 # table saying which of the two libraries each module linked, because
 # some of them linked a mock. There is one library now, so the table
-# said the same word nine times (tasks/060).
+# said the same word nine times (huggorm#60).
 _nix = pkg_config("nix-store", "nix-expr", "nix-flake", "nix-cmd")
 # ...plus huggorm-decl, for the headers a DECLARATION names. They
 # live with the declarations because that is where the hand-written
@@ -75,7 +75,7 @@ _nix = pkg_config("nix-store", "nix-expr", "nix-flake", "nix-cmd")
 #
 # ...and this directory, for the records headers the emitter writes:
 # `huggorm_bindings/path_records.hpp`, which `cpp/logging.hpp`
-# includes as well as the units do (tasks/103).
+# includes as well as the units do (huggorm#103).
 _nix["include_dirs"] = [huggorm_decl.include_dir(), HERE] + _nix["include_dirs"]
 
 # Every module in the package, through nanobind.

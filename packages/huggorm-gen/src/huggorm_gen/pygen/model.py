@@ -35,7 +35,7 @@ from huggorm_gen.payload.wiretypes import (
 # One class or function, reflected into the plain dict every layer
 # above reads. Named rather than spelled dict[str, Any] everywhere:
 # it is the contract between the sources and the emitter, and the one
-# place to tighten if it becomes a TypedDict (tasks/029).
+# place to tighten if it becomes a TypedDict (huggorm#29).
 Proto = dict[str, Any]
 
 # The package the bindings live in. A type declared there is spelled
@@ -55,7 +55,7 @@ _PRIMITIVES = {
     # Real Nix returns views into an object's own storage. A binding
     # copies before anything reaches Python - a view outliving its
     # owner is a dangling pointer, not an exception - so by the time a
-    # type reaches this table it is a str (tasks/015).
+    # type reaches this table it is a str (huggorm#15).
     "string_view": "str",
     "int": "int",
     "long": "int",
@@ -226,7 +226,7 @@ def check_wire_contract(protos: list[Proto],
     # manifest's groups, so it has to be handed in. Without it a
     # _wire_fields entry of enum type failed as "unknown field type" -
     # refused here while the rpc layer accepted the same declaration
-    # anywhere a scalar goes (tasks/047).
+    # anywhere a scalar goes (huggorm#47).
     # A UNION is neither a class in the groups nor an enum, and it is
     # a legal field type: `DerivedPathBuilt.drv_path` is a
     # SingleDerivedPath, which is an alias over two arms. The arms
@@ -235,7 +235,7 @@ def check_wire_contract(protos: list[Proto],
     # name reaches here, being a union is enough.
     # An ERROR class is a legal field type too, and the last of the
     # three that is not a class in the groups. A KeyedBuildResult's
-    # failure arm IS a declared exception (tasks/071), and one
+    # failure arm IS a declared exception (huggorm#71), and one
     # already has a message of its own - the fault detail every typed
     # error crosses in - so the field points at that.
     known = ({p["name"] for p in protos} | (enums or set())
@@ -307,7 +307,7 @@ def check_wire_contract(protos: list[Proto],
                 # the thing that has no object on the far side. Nesting
                 # one here produces a type that only its own process can
                 # reconstruct. Say so at build time rather than at the
-                # first call that touches the field (tasks/031).
+                # first call that touches the field (huggorm#31).
                 bad.append(
                     f"{name}._wire_fields {fname!r}: {ftype} is a proxy, so "
                     f"_from_parts has nothing to rebuild it from on the far "
@@ -412,7 +412,7 @@ def check_collection_contract(protos: list[Proto]) -> list[str]:
     _wire_fields had. It is not an oversight either: a collection of
     remote objects is a value TREE, which is what Realize answers, and
     that is protocol rather than something a return annotation can ask
-    for (tasks/030).
+    for (huggorm#30).
 
     Returns a list of complaints; empty means the contract holds."""
     wrapped = {p["name"] for p in protos if p["wrapped"]}
@@ -428,5 +428,5 @@ def check_collection_contract(protos: list[Proto]) -> list[str]:
                     f"holding {named}. Nothing attaches a runner to the "
                     f"elements of a container. Return the container's owner "
                     f"and let the caller walk it, or realize it as a value "
-                    f"tree (tasks/030).")
+                    f"tree (huggorm#30).")
     return bad

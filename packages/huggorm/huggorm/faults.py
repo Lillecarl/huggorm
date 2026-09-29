@@ -150,7 +150,7 @@ class FaultCodec:
         already the thing the caller asked about. Anything else
         travels as an InternalError, whose cause is approximated by
         name and carried as its own parts when it happens to be
-        declared (tasks/066)."""
+        declared (huggorm#66)."""
         fault = self._msg(FAULT)()
         fault.code = wrapper.code
         fault.message = wrapper.message
@@ -200,7 +200,7 @@ class FaultCodec:
         The mirror of `details`, and it reads the same field to tell
         the two shapes apart. No cause_type means the error IS what
         the declared message says, so it comes back as that class and
-        `except BadStorePath` works over the wire (tasks/066). A
+        `except BadStorePath` works over the wire (huggorm#66). A
         cause_type means an InternalError carrying something else."""
         from huggorm_generated._runtime import InternalError, WrapperError
 

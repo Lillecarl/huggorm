@@ -1,5 +1,5 @@
 """
-Handle lifetime over real gRPC (tasks/002, 028, 031, 016).
+Handle lifetime over real gRPC (huggorm#2, 028, 031, 016).
 
 Every path a handle can take between processes: bind and claim, leases
 and capability, producer pinning with cascading reaps, share as copy
@@ -77,7 +77,7 @@ async def test_a_handle_is_a_capability(ttl_server: Server) -> None:
 async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     """Two processes share one object by passing its id between them
     however they like: the second calls, and the object stays alive for
-    it without the first arranging anything (tasks/031)."""
+    it without the first arranging anything (huggorm#31)."""
     async with (remote.connect(HOST, ttl_server.port) as a,
                 remote.connect(HOST, ttl_server.port) as b):
         shared = await a.acquire("Store", "dummy://")
@@ -205,7 +205,7 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
     the four have nothing to do with each other and nesting them says
     they do. It works HERE and not in a fixture a test adds to: anyio
     needs one task to enter and leave a client's scope, and a fixture
-    body is one task across its yield (`tasks/035`).
+    body is one task across its yield (huggorm#35).
 
     The `stop_pinging()` calls that survive are the POINT rather than
     cleanup - each one makes a connection go silent so the sweeper
@@ -239,7 +239,7 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
         # ...and a FILE, which is the only warm thing libexpr keeps by
         # itself. `evalFile` caches by resolved path, so deleting the file
         # here leaves the cache as the only way to answer for it
-        # (eval.cc:1118, and tasks/016).
+        # (eval.cc:1118, and huggorm#16).
         warm_file = tmp_path_factory.mktemp("warm") / "answer.nix"
         warm_file.write_text("40 + 2\n")
         assert await (await warm.eval_file(str(warm_file))).integer() == 42
@@ -279,7 +279,7 @@ async def test_ping_reports_a_swept_connection(swept: Swept) -> None:
     connection back under its old token and a cheerful ok=True. It
     kept pinging happily and discovered its death later, as "unknown
     handle" on some unrelated call - the one moment nobody is looking
-    for a lifecycle bug (tasks/049).
+    for a lifecycle bug (huggorm#49).
 
     A fresh connection still works, which is what says the server
     refused this token rather than the service."""
@@ -302,7 +302,7 @@ async def test_binding_outside_the_context_refuses(ttl_server: Server) -> None:
     only inside a task group - so a `NixClient` built by hand and
     bound without `async with` has nowhere to put it. The old code
     reached for `asyncio.create_task` here, which worked and left a
-    task nothing owned (`tasks/035`).
+    task nothing owned (huggorm#35).
 
     Refused rather than tolerated, and the message names the fix.
     Drop the check and this passes while leaking a loop that pings a
@@ -386,7 +386,7 @@ async def test_a_claimed_lease_is_a_normal_lease(swept: Swept) -> None:
 
 
 async def test_the_evaluator_outlives_its_creator(swept: Swept) -> None:
-    """The vision the whole lifecycle exists for (tasks/016): one
+    """The vision the whole lifecycle exists for (huggorm#16): one
     EvalState serving many connections over time."""
     async with remote.connect(HOST, swept.port, claim=swept.maker_token) as heir:
         assert heir.token == swept.maker_token, "the successor adopts the identity"
@@ -426,7 +426,7 @@ async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
 
         cold = await heir.acquire("EvalState", await heir.acquire("Store", "dummy://"))
         # Nix's own error class, not the wrapper: a declared Nix error crosses as
-        # ITSELF (tasks/066), so `wrapper_error` - which catches only
+        # ITSELF (huggorm#66), so `wrapper_error` - which catches only
         # InternalError - does not see this one. Measured by writing it
         # that way first and watching the error go straight through.
         with pytest.raises(MissingFileError) as caught:
@@ -437,7 +437,7 @@ async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
         assert "answer.nix" in str(caught.value)
 
 
-# -- a dropped client object releases its lease (tasks/028) ----------------
+# -- a dropped client object releases its lease (huggorm#28) ----------------
 # These need no sweep: a pinging connection is immune to the sweeper,
 # which is exactly why they matter. Before this, the only way such a
 # connection ever gave a handle back was an explicit release, so every

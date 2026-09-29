@@ -15,7 +15,7 @@ and has no extension to live in, so a file named after either header
 would have been the wrong home for the other's.
 
 A C++ enum IS behind both of these, and `enumerated=` says which
-(tasks/070). That does not make either one a binding - the type
+(huggorm#70). That does not make either one a binding - the type
 Python sees is still a StrEnum and the wire still carries the string.
 What it buys is that the compiler holds the LIST and a test holds the
 SPELLING, where before this the list was two people reading two
@@ -221,7 +221,7 @@ class BuildFailureStatus(StrEnum):
     """Why a target did not become valid.
 
     Separate from BuildSuccessStatus rather than one list of sixteen
-    words, and that is a decision (tasks/071). Upstream's own comment
+    words, and that is a decision (huggorm#71). Upstream's own comment
     on both enums says "Names must be disjoint with" the other, which
     WOULD license one Python vocabulary over two C++ switches. Two
     reasons not to take it. `Enumerated` names one C++ enum, so a

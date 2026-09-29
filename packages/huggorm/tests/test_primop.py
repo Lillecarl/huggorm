@@ -258,7 +258,7 @@ def test_every_registered_name_is_findable(state: Any) -> None:
 
 # ---- the cycle a stored callable makes -----------------------------
 #
-# `tasks/093`. A primop's callable normally closes over the state that
+# huggorm#93. A primop's callable normally closes over the state that
 # registered it, because the result comes from `state.make_int`. The
 # state then reaches the callable through nix's base env, and the
 # callable reaches the state through its closure cell - a cycle whose
@@ -290,7 +290,7 @@ def test_a_primop_closing_over_its_state_does_not_leak_it() -> None:
     to drop a reference and is not: the lambda closes over the same
     binding through a cell, so deleting it EMPTIES the cell and breaks
     the cycle by hand. A probe that did it read "no leak" as "no
-    cycle" and was wrong (`tasks/093`).
+    cycle" and was wrong (huggorm#93).
 
     So the reference goes out of scope on its own, and the collector
     is asked.

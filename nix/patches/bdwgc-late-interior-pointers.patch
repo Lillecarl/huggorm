@@ -10,7 +10,7 @@ huggorm calls GC_INIT at import and nix::initGC at the first
 evaluator, so that importing starts no marker thread. nix::initGC
 calls GC_set_all_interior_pointers(0), and without offset 0 the
 collector freed `builtins` under a live evaluator: "attribute 'length'
-missing", then a segfault (huggorm tasks/101).
+missing", then a segfault (huggorm huggorm#101).
 
 bdwgc master (2026-09-28) has the same code.
 

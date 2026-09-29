@@ -158,5 +158,5 @@ field rather than printed at you.
 ## Where to look next
 
 `README.md` is contributor-facing: how the four layers are built, what
-the build refuses, and how to add a binding. `tasks/` holds one file
-per design decision.
+the build refuses, and how to add a binding. The
+[issues](https://github.com/Lillecarl/huggorm/issues) hold one design decision each.

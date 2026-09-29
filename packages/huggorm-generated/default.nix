@@ -40,20 +40,20 @@ python3Packages.buildPythonPackage {
   # anyio because a generated wrapper hands back the async spelling of
   # a type when the bindings declare one: Store.real_path returns a
   # pathlib.Path in process and an anyio.Path from the wrapper, so the
-  # emitted module imports anyio (tasks/040).
+  # emitted module imports anyio (huggorm#40).
   propagatedBuildInputs = [ huggorm-bindings python3Packages.anyio ];
 
-  # The surface describes the Nix the bindings link (tasks/055).
+  # The surface describes the Nix the bindings link (huggorm#55).
   env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
 
   # The emitted package and the stubs, checked as a pair. This is the
-  # claim tasks/017 and tasks/027 make - that a consumer can be
+  # claim huggorm#17 and huggorm#27 make - that a consumer can be
   # typechecked against the generated protocols - so it is worth
   # holding rather than asserting.
   #
   # PYTHONPATH carries the build directory because the stub package is
   # not installed yet, and a PEP 561 <pkg>-stubs directory is found
-  # only through an interpreter's search path (tasks/027).
+  # only through an interpreter's search path (huggorm#27).
   nativeCheckInputs = [ zuban ];
 
   checkPhase = ''

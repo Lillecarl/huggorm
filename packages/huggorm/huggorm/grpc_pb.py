@@ -35,7 +35,7 @@ def load_pool() -> descriptor_pool.DescriptorPool:
 # The protobuf package every message and service sits in. DERIVED,
 # not written here: grpc_schema decides it, so a rename reaches this
 # file the way it reaches every other consumer. It used to be a second
-# copy of the string, and a rename had to find it (tasks/045).
+# copy of the string, and a rename had to find it (huggorm#45).
 #
 # Re-exported rather than imported at each use site, because this
 # module is where every caller already looks for schema facts. It came

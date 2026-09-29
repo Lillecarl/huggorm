@@ -17,7 +17,7 @@ user-triggered eval is already in progress or already done.
 That is what the RPC layer is for. Not other languages - the
 evaluator has to outlive the process that asked for it, and a socket
 is how a later client finds the state an earlier one left warm.
-`tasks/016` holds the detail and the lifecycle contract.
+#16 holds the detail and the lifecycle contract.
 
 The binding exists because that service needs Nix in-process. The
 codegen exists because that service needs six surfaces to agree, and a
@@ -45,7 +45,7 @@ codebase better, make it.
 makes a breaking change expensive", about the third audience above.
 It is deleted rather than softened, because it was steering: it is
 what turned `NixClient`'s asyncio spawn into a question for Carl
-instead of a change to make (`tasks/035`).
+instead of a change to make (#35).
 
 What DOES still stop and ask is unchanged and is a different thing: an
 action that is irreversible outside this repository, and a choice
@@ -70,8 +70,8 @@ In order:
 1. A defect that can corrupt a value, or drop one silently. This
    repo's named failure mode is the SILENT SKIP - an emitter skips
    what it does not recognise, and a skip is indistinguishable from an
-   absence. Seven found so far: `tasks/073`, `075`, `078`, `082`,
-   `087`, `088`, `090`.
+   absence. Seven found so far: #73, #75, #78, #82, #87, #88,
+   #90.
 
    The seventh has a different shape and the same outcome. An emitter
    ERASED what a later reader needed: `pyerrors.module` stripped the
@@ -81,9 +81,9 @@ In order:
    "skips what it does not recognise" - it is anything that leaves an
    emitter with less than the declaration said, quietly.
 2. Whatever the destination above needs next and does not have.
-3. A task that is outstanding and blocks nothing.
+3. An issue that is outstanding and blocks nothing.
 
-`tasks/README.md` is the board.
+The open issues are the board.
 
 # Goals
 
@@ -167,10 +167,10 @@ One source, many outputs. A fact stated twice will disagree once.
 - Derive, do not restate. A rule applied identically in twelve places
   belongs in the emitter, not in twelve places.
 - Comments say WHY, and name the alternative that was rejected.
-- Record decisions in `tasks/`, including the ones that turned out
+- Record decisions in the issues, including the ones that turned out
   wrong.
 
-When 1 and 2 conflict, 1 wins - and the conflict is a task.
+When 1 and 2 conflict, 1 wins - and the conflict is an issue.
 
 # anyio, not asyncio
 
@@ -202,7 +202,7 @@ CHURNING pool - `_asyncio.py` pops an idle worker off a deque and
 expires any that idled past `MAX_IDLE_TIME` - so it cannot name a
 thread. An `EvalState` is affine and must be touched from ONE thread,
 and `_refuse_foreign` compares executor IDENTITY to enforce the
-isolation Carl ruled on. `tasks/035` holds the reading and the
+isolation Carl ruled on. #35 holds the reading and the
 alternative that was rejected.
 
 Anything new that needs a thread asks first. Anything else is anyio.
@@ -222,11 +222,11 @@ Most emitter changes are proved by DIFFING the emitted C++ against
 the previous store path. Compile only when the C++ changed shape.
 1792 dead build outputs and 1.8 GB were sitting in the store when
 this was measured, and the disk filling is a failure this repo has
-already had (`tasks/062`, `tasks/068`).
+already had (#62, #68).
 
 The exception is anything nanobind resolves at compile or run time
 rather than in the text. A missing type_caster emits fine and
-compiles fine, and fails a gate later (`tasks/067`).
+compiles fine, and fails a gate later (#67).
 
 **The build's own reports are in the DERIVATION LOG, not on your
 terminal.** A cached derivation prints nothing, and `nix run` does
@@ -242,45 +242,40 @@ here first, and it did not run.)
 
 `census_cpp`'s `hand-written C++ in cpp/: N lines` lives there, and
 so does the orphan list. Claimed absent three times in one session
-and present every time (`tasks/091`).
+and present every time (#91).
 
-# Maintain `tasks/` as you work
+# Maintain the issues as you work
 
-Goal 3 says to record decisions in `tasks/`, including the ones that
-turned out wrong. That is not a step at the end. `tasks/README.md`
-holds the conventions; this is the part an agent forgets.
+The tracker is GitHub issues on `Lillecarl/huggorm`. Issue #N is the
+old `tasks/NNN` file for every N up to 105, so a `tasks/NNN` in a
+commit message means #N. #106 holds the old board, `tasks/README.md`.
+Refer to an issue as `#N` in Markdown, and as `huggorm#N` in code, in
+comments and in error messages.
 
-**Update the task while the work happens.** Write the measurement when
-you take it, not from memory afterwards. A number recalled at the end
-is a number you did not check.
+Goal 3 says to record decisions in the issues, including the ones that
+turned out wrong. That is not a step at the end.
+
+**Update the issue while the work happens.** Comment with the
+measurement when you take it, not from memory afterwards. A number
+recalled at the end is a number you did not check.
 
 **Record what you got WRONG, and say what refuted it.** A rationale
 that turned out false, a gate that turned out not to hold, a shape you
 argued for and then measured against - none of that is anywhere else
-in the repo. Two of the last three tasks found a claim written into a
-comment that the compiler refuted; both are recorded, and both would
-have been believed forever otherwise.
+in the repo. Two claims written into comments were refuted by the
+compiler; both are recorded, and both would have been believed forever
+otherwise.
 
-**Three things must agree, and drift silently when they do not:**
+**Close an issue from the commit that finishes it**, with `Closes #N`
+on its own line in the body. A decision that ends without code gets a
+closing comment that says what was decided.
 
-1. the `.done` suffix on the filename,
-2. the bold status word on the file's first line,
-3. what `tasks/README.md` says about that number.
+**Open an issue for work you name and do not do.** A next step
+described in a reply is lost when the session ends. If you would say
+"this is worth doing next", it is worth an issue.
 
-Change all three in the same commit. Check them before you stop:
-
-```bash
-cd tasks && for f in [0-9]*.md*; do
-  case "$f" in *.done) a=done;; *) a=open;; esac
-  w=$(sed -n 1,12p "$f" | grep -m1 -oE '\*\*(OPEN|DONE|MOSTLY DONE|PARKED|CLOSED)' | tr -d '*')
-  case "$w" in DONE|CLOSED) b=done;; *) b=open;; esac
-  [ "$a" = "$b" ] || echo "MISMATCH $f file=$a line=${w:-none}"
-done
-```
-
-**Open a task for work you name and do not do.** A next step described
-in a reply is lost when the session ends. If you would say "this is
-worth doing next", it is worth a file.
+Every issue or comment body ends with `---` and then
+`Assisted-By: <model>`.
 
 # Scratchpad
 use .scratchpad as the scratchpad directory which is gitignored and easily accessible to be inspected by the user.

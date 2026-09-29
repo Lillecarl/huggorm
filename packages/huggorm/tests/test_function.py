@@ -17,7 +17,7 @@ upstream's own FIXME beside it. Only a builtin declares one.
 A sub-guard by PERTURBATION. Removing one produces undefined
 behaviour - reading a lambda payload off a builtin - so the failure is
 a crash or a wrong number rather than one clean assertion, and it
-takes the suite with it. `tasks/034` says so rather than this file
+takes the suite with it. huggorm#34 says so rather than this file
 running it.
 """
 
@@ -463,7 +463,7 @@ def test_a_required_argument_with_no_value_raises_nix(state: Any) -> None:
 # -- the two duals, composed -----------------------------------------------
 
 def test_python_calls_nix_calling_python(state: Any) -> None:
-    """The collision point of `tasks/033` and `tasks/034`.
+    """The collision point of huggorm#33 and huggorm#34.
 
     Those two are duals with OPPOSITE threading. A primop implemented
     in Python is SYNC - it runs inside evaluation and cannot await -

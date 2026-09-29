@@ -83,7 +83,7 @@ def census(root: pathlib.Path,
     A declaration in none of the lists is SKIPPED, and a skip reads
     as an absence: `decl/gc.py` was written, imported, parsed and
     emitted nothing, and `nix build bindings-src` succeeded without
-    writing `gc.cpp` (tasks/074). The lists are right and stay - what
+    writing `gc.cpp` (huggorm#74). The lists are right and stay - what
     was missing is the check that the directory agrees with them.
 
     Three disagreements, and they are different mistakes: a file

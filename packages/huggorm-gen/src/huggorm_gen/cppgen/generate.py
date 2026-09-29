@@ -210,7 +210,7 @@ def error_headers() -> list[str]:
     A catch and the include that makes its type nameable are one
     fact, and this is the emitter learning it rather than
     `cpp/errors.hpp` carrying it on the emitted files' behalf
-    (`tasks/090`)."""
+    (huggorm#90)."""
     have = corpus()
     if not have.errors:
         return []
@@ -234,7 +234,7 @@ def declared_errors() -> dict[str, Any]:
     # Named, so a refusal from `entries` carries the file it is about
     # rather than `<declaration>`. The reader does this for itself;
     # an emitter reading a tree the corpus already parsed has to say
-    # so (tasks/061).
+    # so (huggorm#61).
     with reading(str(have.path(have.errors))):
         return {"module": errors_module(),
                 "classes": pyerrors.entries(have.resolved(have.errors),
@@ -325,7 +325,7 @@ BOUND_NAME = re.compile(r'def\("([^"]+)"')
 def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
     """Every method the reader kept is a name the emitter wrote.
 
-    The SECOND of the two seams `tasks/081` names. `census_read` asks
+    The SECOND of the two seams huggorm#81 names. `census_read` asks
     whether the reader kept what the declaration wrote; this asks
     whether the emitter wrote what the reader kept.
 
@@ -368,7 +368,7 @@ def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
         raise TypeError(
             f"{mod.name}.py: the reader kept {', '.join(bad)} and the "
             f"emitted C++ binds no such name. An emitter dropped it, and "
-            f"a drop reads as an absence - see tasks/081.")
+            f"a drop reads as an absence - see huggorm#81.")
 
 
 def emit_module(mod: Module, dotted: str, out: str,
@@ -465,7 +465,7 @@ def _under_a_branch(node: ast.AST, target: ast.AST) -> bool:
     RESOLVED tree, which is what `_resolve` already produced - and
     that is exactly the blind spot this gate exists to cover. A reader
     that drops a node wrongly drops it from the resolved tree too, so
-    the two agree and the gate says nothing. `tasks/075` is that bug:
+    the two agree and the gate says nothing. huggorm#75 is that bug:
     a `@property` accessor named no live line and vanished from every
     output in silence."""
     for parent in ast.walk(node):
@@ -480,16 +480,16 @@ def _under_a_branch(node: ast.AST, target: ast.AST) -> bool:
 def census_read(have: Any) -> None:
     """Every definition a declaration writes reaches the reader.
 
-    The gate `tasks/081` was opened for, at the first of the two seams
+    The gate huggorm#81 was opened for, at the first of the two seams
     it names. A declaration is read twice - parsed, and imported - and
     the reader keeps what BOTH readings agree on. When they stop
     agreeing it keeps less, and a definition that reaches nothing is
     indistinguishable from one nobody wrote.
 
     Three instances, none of them found by a check: a version-branched
-    class the errors emitter never saw (`tasks/073`), a `@property`
-    accessor `_live` could not name (`tasks/075`), and a whole file in
-    none of the lists (`tasks/078`, which the census beside this one
+    class the errors emitter never saw (huggorm#73), a `@property`
+    accessor `_live` could not name (huggorm#75), and a whole file in
+    none of the lists (huggorm#78, which the census beside this one
     now catches at file grain).
 
     Read from the RAW parse, which is the whole design. Everything
@@ -558,12 +558,12 @@ def _errors_read(have: Any) -> list[str]:
     seam: `resolved` is parse, then `_live`, then `_reconcile`, then
     `_resolve`, so a `_live` regression drops `to_dict` out of the
     emitted errors module exactly the way it dropped
-    `registration_time` out of PathInfo (`tasks/075`). Comparing the
+    `registration_time` out of PathInfo (huggorm#75). Comparing the
     emitted module against the resolved tree would compare two things
     built from one read and agree with itself.
 
     `pyerrors` already refuses a tree it cannot resolve, which is the
-    VERSION-BRANCH half (`tasks/073`). This is the other half, and the
+    VERSION-BRANCH half (huggorm#73). This is the other half, and the
     two are different failures: one is a branch nobody chose, the
     other is a definition the reader lost.
 
@@ -649,7 +649,7 @@ def census_markers(have: Any) -> None:
 
     `@abstract` is why this exists. It has a table entry, three
     emitter branches and a smoke-test assertion, and no declaration
-    has carried it since the mock went (tasks/060). The smoke test
+    has carried it since the mock went (huggorm#60). The smoke test
     says so in a comment, where a person finds it only by reading the
     branch that never fires - so the build says it now.
 
@@ -659,7 +659,7 @@ def census_markers(have: Any) -> None:
     that no longer name themselves.
 
     Printed rather than raised. A marker waiting for its user is a
-    real state - `@abstract` is waiting for the split tasks/061
+    real state - `@abstract` is waiting for the split huggorm#61
     describes - and failing the build would only get it deleted."""
     used: set[str] = set()
     names = [*have.module_names, *have.vocabularies]
@@ -717,7 +717,7 @@ def census_gc_slots(have: Any) -> None:
     """Every helper that stores a Python object, and whether anything
     declared over it says how to traverse one.
 
-    `tasks/093` is why. A bound class that holds an `nb::object` and
+    huggorm#93 is why. A bound class that holds an `nb::object` and
     carries no `@gc_slots` leaks itself the moment that object closes
     over it - which is the NORMAL way to write the one case this repo
     has, because a primop builds its result with `state.make_int`.
@@ -774,7 +774,7 @@ def census_gc_slots(have: Any) -> None:
             continue
         print(f"  {f.name}: stores a Python object and NO declaration "
               f"over it carries @gc_slots - such a class leaks itself "
-              f"whenever that object closes over it (tasks/093)")
+              f"whenever that object closes over it (huggorm#93)")
         for line in members:
             print(f"    {line}")
 
@@ -782,13 +782,13 @@ def census_gc_slots(have: Any) -> None:
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     # The package directory is EMPTY in the checkout - every file in
-    # it is written here, `__init__.py` included (tasks/064) - so an
+    # it is written here, `__init__.py` included (huggorm#64) - so an
     # empty directory is not something git can carry.
     out.mkdir(parents=True, exist_ok=True)
     have = corpus()
     # Read everything first, so a build reports every refusal it can
     # see rather than the first one. Emission below then runs against
-    # a corpus known to be sound (tasks/061).
+    # a corpus known to be sound (huggorm#61).
     have.read_all()
     chain = error_chain()
     headers = error_headers()
@@ -823,7 +823,7 @@ def main(out_dir: str) -> int:
     census_gc_slots(have)
     # LAST of the three, and the only one that raises. It reads the
     # RAW parse, so it is the one check no earlier stage can have
-    # already agreed with (tasks/081).
+    # already agreed with (huggorm#81).
     census_read(have)
     return 0
 

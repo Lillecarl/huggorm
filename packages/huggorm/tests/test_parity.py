@@ -183,7 +183,7 @@ async def test_a_value_that_crossed_still_compares_and_hashes(
 # against neither generated surface: both wrapped it in an
 # InternalError and kept it as __cause__. This suite found that on its
 # first run and pinned it with a helper that asserted BOTH shapes; the
-# helper is gone because there is now one shape (tasks/066).
+# helper is gone because there is now one shape (huggorm#66).
 #
 # So these are written the way a CALLER writes them. That is the
 # claim: an exception type is part of a result, and `StoreLike` makes
@@ -308,7 +308,7 @@ async def test_a_file_evaluated_twice_is_read_once(
     complete there would leave a thunk that might still want the
     file - which would make a failure mean the wrong thing.
 
-    The third part is why this matters to `tasks/016`: the cache
+    The third part is why this matters to huggorm#16: the cache
     belongs to the STATE. A fresh evaluator has to read, so a state
     that dies takes the warm work with it - which is what makes "the
     same state, claimed later" the milestone rather than a
@@ -339,7 +339,7 @@ async def test_a_file_reached_by_import_is_in_the_cache_too(
         state: Any, tmp_path: Any) -> None:
     """What a watcher would watch, and why it is not our own boundary.
 
-    `tasks/016` wants a change to a file an evaluation read to
+    huggorm#16 wants a change to a file an evaluation read to
     invalidate the warm state. Our binding sees ONE path - the one
     handed to `eval_file` - and an evaluation reads many: `import`
     goes through `evalFile` too, so the file it names is cached
@@ -396,7 +396,7 @@ async def test_forgetting_a_closure_picks_up_an_edited_import(
     and it also drops the fetched flake inputs - re-downloading every
     input because one local file changed.
 
-    The CLOSURE, not the file, and `tasks/016` records the
+    The CLOSURE, not the file, and huggorm#16 records the
     measurement that says so: the cache holds no edge from an importer
     to its import, so forgetting `inner` alone leaves `outer`
     answering its old value. The negative control below is that

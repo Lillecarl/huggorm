@@ -1,5 +1,5 @@
 """
-The first binding of a REAL Nix type (tasks/015).
+The first binding of a REAL Nix type (huggorm#15).
 
 nix::StorePath is the smallest thing that proves the whole chain:
 pkg-config linkage against libnixstore, a namespaced C++ class, a
