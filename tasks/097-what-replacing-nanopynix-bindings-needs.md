@@ -923,15 +923,17 @@ Still open, from the lane:
   `realise_json`, `string_context` and `make_string(value, context)`,
   and the bridge builds what an argument names and gives every
   returned string the input's context, as nanopynix-bindings does.
-- `fetchers.Input` (`input_from_url`, `input_from_attrs`).
+- DONE: `fetchers.Input`: huggorm binds `nix::fetchers::Input`, in
+  `FlakeRef`'s shape.
 - DONE: `list_store_types_json` is `store_types_json`.
 - DONE: two stores on one directory each keep their own temp-roots
   file, by a Nix patch (Carl's choice over a per-URI cache).
 - The error event of the log stream carries no structured payload:
   `tasks/103`.
 - The verbosity ceiling: `tasks/102`.
-- The settings-leak guard fires where a pynix test and a nanopynix test
-  meet. That may come from the lane's two-part split; not proven.
+- The settings-leak guard stopped firing once `start_collector` put
+  `NIX_PATH` into `nix-path` at session start; no run since has shown
+  it.
 
 ## The verbosity ceiling: measured at CHATTY
 
