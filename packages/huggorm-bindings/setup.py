@@ -130,9 +130,12 @@ def nanobind_extension(module: str) -> Extension:
         # silently rendering it as something else. It is an error
         # rather than a warning because a warning in a build that
         # prints thousands of lines is a warning nobody reads.
-        extra_compile_args=[*flags.pop("extra_compile_args", []),
+        extra_compile_args=[*flags["extra_compile_args"],
                             "-fvisibility=hidden", "-Werror=switch"],
-        **flags,
+        include_dirs=flags["include_dirs"],
+        library_dirs=flags["library_dirs"],
+        libraries=flags["libraries"],
+        extra_link_args=flags["extra_link_args"],
     )
 
 

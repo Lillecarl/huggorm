@@ -1130,6 +1130,10 @@ which was superseded rather than fixed.
   `census_markers` says nothing carries it, this says which file
   needs it - and both are kept, because either alone reads as noise
   and together they name the fix.
+- 104 (typing holds everywhere) is DONE. `mypy.ini` names every tree
+  and `check` runs it, strict, with one override: declaration bodies
+  may be empty. The declarations, reader, examples and setup scripts
+  type-check, and nbcheck with its two declarations is gone.
 - 103 (a log record carries ErrorInfo) is DONE. Each module's records
   go into `<module>_records.hpp`, and a unit includes the header of
   every module whose records it names. `LogRecord.info` holds what

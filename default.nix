@@ -203,6 +203,8 @@ rec {
       # huggorm, so the interpreter check and test run against needs
       # it too.
       asyncinotify
+      # For `check`, which types the two `setup.py` files too.
+      types-setuptools
     ]
   );
   # The emitted front door, into the working tree.
@@ -245,17 +247,18 @@ rec {
       cd "''${1:-.}"
       ${frontDoor}
       echo "--- lint ---"
-      ruff check --no-cache packages
-      echo "--- typecheck: the generator ---"
-      zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
-        --exclude 'smoke_test\.py$' \
-        packages/huggorm-gen/src/huggorm_gen
-      echo "--- typecheck: the hand-written layer and the suites ---"
-      ( cd packages/huggorm \
-        && zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
-             huggorm tests )
+      ruff check --no-cache packages examples
+      # `mypy.ini` names every tree, so an editor and this read one
+      # configuration. The two setup scripts are both module `setup`,
+      # and the emitted package lives in the store, so each is its
+      # own run under the same configuration.
+      echo "--- typecheck: every tree mypy.ini names ---"
+      zuban mypy --python-executable "${ourPython}/bin/python3"
+      echo "--- typecheck: the setup scripts ---"
+      zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-bindings/setup.py
+      zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-generated/setup.py
       echo "--- typecheck: the emitted package ---"
-      zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
+      zuban mypy --python-executable "${ourPython}/bin/python3" \
         "${huggorm-generated}/lib/python3.14/site-packages/huggorm_generated"
       echo "all checks passed"
     '';
