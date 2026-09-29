@@ -995,7 +995,7 @@ class Digest:
 
 
 def _one_file_corpus(tmp_path: pathlib.Path, source: str) -> Any:
-    """A `Corpus` over one declaration, the way `nbcheck` builds one.
+    """A `Corpus` over one declaration.
 
     The real set is `huggorm_decl.corpus()`, and it is cached and
     global. A test that wants a declaration the corpus does not have

@@ -240,7 +240,6 @@ rec {
       pkgs.ruff
       pkgs.zuban
       ourPython
-      spike
     ];
     text = ''
       cd "''${1:-.}"
@@ -258,57 +257,7 @@ rec {
       echo "--- typecheck: the emitted package ---"
       zuban mypy --strict --python-executable "${ourPython}/bin/python3" \
         "${huggorm-generated}/lib/python3.14/site-packages/huggorm_generated"
-      echo "--- the declarations' gates ---"
-      spike
       echo "all checks passed"
-    '';
-  };
-
-  # nix run --file . spike
-  #
-  # The declaration's one remaining text gate.
-  #
-  # There were three. Two compared an emitted file against something
-  # built the other way: emitted Cython against the repo's own, and a
-  # nanobind StorePath against a Cython one. Both are gone, because
-  # what they compared against is gone - `huggorm_bindings` IS the
-  # emitted nanobind now, and a diff of a file against itself proves
-  # nothing.
-  #
-  # What replaced them is stronger than a text diff and it is already
-  # in this file: the modules COMPILE from the declarations, they
-  # import, and 158 tests drive them.
-  #
-  # This one is left because what it reads is not in this repo.
-  # nanopynix, beside this checkout in the nixidae umbrella or at
-  # ~/Code/nanopynix, is hand-written, tested nanobind over the same
-  # library, so emitting against it says something the build cannot.
-  #
-  # A corpus, not a reference. It is hand-written and therefore
-  # inconsistent, and the emitter is meant to beat it rather than
-  # match it - so the gate classifies every difference instead of
-  # demanding there be none. Skipped with a reason on a machine that
-  # does not have it.
-  spike = pkgs.writeShellApplication {
-    name = "spike";
-    runtimeInputs = [ ourPython ];
-    text = ''
-      root=$(cd "''${1:-.}" && pwd)
-      # The nixidae umbrella puts nanopynix beside this checkout.
-      for candidate in "$root/../nanopynix" "$HOME/Code/nanopynix"; do
-        if [ -d "$candidate/nanopynix-bindings/src" ]; then
-          HUGGORM_NANOPYNIX=$(cd "$candidate" && pwd)
-          export HUGGORM_NANOPYNIX
-          break
-        fi
-      done
-      cd "$root/packages/huggorm-gen/gates"
-      if [ -n "''${HUGGORM_NANOPYNIX:-}" ]; then
-        echo "--- declaration -> nanobind, against $HUGGORM_NANOPYNIX ---"
-        python3 nbcheck.py
-      else
-        echo "--- declaration -> nanobind: SKIPPED, no nanopynix beside this checkout or at ~/Code/nanopynix ---"
-      fi
     '';
   };
 

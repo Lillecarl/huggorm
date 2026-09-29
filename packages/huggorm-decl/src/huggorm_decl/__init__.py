@@ -75,23 +75,6 @@ VOCABULARIES = (
 # module a caller catches, and the C++ catch chain that raises it.
 ERRORS = "errors.py"
 
-# Declarations the BUILD does not read at all. `gates/nbcheck.py`
-# reads these two and nothing else does: they declare what
-# `~/Code/nanopynix` binds by hand, so the gate can put the emitter's
-# answer beside a person's. That corpus is one to beat rather than a
-# reference to match, and the gate is skipped on a machine without
-# it.
-#
-# Listed here even though no emitter is handed them, because the
-# census below has to account for every file in the directory. A
-# fourth group is the honest way to say "read by a gate": leaving
-# them out would mean the census could not be exhaustive, and an
-# exhaustive census is the whole point (tasks/078).
-GATES = (
-    "nixstore.py",
-    "storefns.py",
-)
-
 
 def census(root: pathlib.Path,
            listed: tuple[tuple[str, tuple[str, ...]], ...]) -> None:
@@ -154,21 +137,15 @@ def corpus() -> Corpus:
     Cached for the life of the process, and that is safe because
     these documents are inputs to a build rather than state it
     changes. A caller that wants a fresh read builds its own
-    `Corpus` - `gates/nbcheck.py` already reads declarations that
-    are not in this set at all."""
+    `Corpus`."""
     # Here rather than inside Corpus, and the reason is corpus.py's
     # own: "WHICH documents make up the set is a different fact, and
     # that one stays with the documents." A Corpus is handed a set.
     # This is where the set is decided, so this is where it has to
     # answer for the directory it came from.
-    #
-    # `GATES` is not passed on. It is not a build group - no emitter
-    # is handed one - and it exists only so the census can account
-    # for every file.
     census(DECLARATIONS, (("NANOBIND", NANOBIND),
                           ("VOCABULARIES", VOCABULARIES),
-                          ("ERRORS", (ERRORS,)),
-                          ("GATES", GATES)))
+                          ("ERRORS", (ERRORS,))))
     return Corpus(DECLARATIONS, nanobind=NANOBIND,
                   vocabularies=VOCABULARIES, errors=ERRORS)
 
