@@ -7,7 +7,7 @@ name = "huggorm-generated"
 version = "0.1.0"
 description = "The emitted API surface: async wrappers, protocols, RPC client"
 requires-python = ">=3.11"
-dependencies = ["huggorm-bindings"]
+dependencies = ["huggorm-bindings", "anyio>=4"]
 
 # The generator writes `huggorm_generated/` before `setup()` is
 # called (see setup.py), so an ordinary find collects a real package.
