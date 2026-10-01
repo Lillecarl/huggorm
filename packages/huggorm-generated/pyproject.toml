@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "huggorm-generated"
 version = "0.1.0"
 description = "The emitted API surface: async wrappers, protocols, RPC client"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["huggorm-bindings"]
 
 # The generator writes `huggorm_generated/` before `setup()` is

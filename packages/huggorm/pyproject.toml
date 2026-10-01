@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "huggorm"
 version = "0.1.0"
 description = "Python library over the generated Nix bindings"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["huggorm-bindings", "huggorm-generated"]
 
 [tool.setuptools.packages.find]
