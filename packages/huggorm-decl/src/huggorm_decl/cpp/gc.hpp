@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <mutex>
 
+#include <sys/syscall.h>
 #include <unistd.h>
 
 // `NIX_USE_BOEHMGC`, and `gc.h` with `GC_THREADS` when it is set.
@@ -78,7 +79,9 @@ inline void gc_boot()
     GC_INIT();
 #endif
 #ifdef __linux__
-    gc_owner().store(::gettid(), std::memory_order_release);
+    // The syscall, not `::gettid`: glibc wraps it from 2.30, and the
+    // manylinux wheel builds against 2.28.
+    gc_owner().store(::syscall(SYS_gettid), std::memory_order_release);
 #endif
 }
 
