@@ -254,6 +254,12 @@ rec {
     huggorm-generated
     ;
 
+  # nix build --file . manylinux.wheel
+  manylinux = import ./nix/manylinux {
+    inherit pkgs lib huggorm-gen;
+    inherit (nixVersions.nix_2_34) nix boehmgc huggorm;
+  };
+
   # nix run --file . python -- $args
   # to be able to run Python commands
   python = pkgs.python3;
