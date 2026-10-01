@@ -6,11 +6,8 @@ import subprocess
 import nanobind
 from setuptools import Extension, setup
 
-import huggorm_decl
-from huggorm_gen.cppgen.generate import main as emit
-from huggorm_gen.cppgen.generate import nanobind_modules
-
 HERE = os.path.dirname(os.path.abspath(__file__))
+PACKAGE = os.path.join(HERE, "huggorm_bindings")
 
 # The sources, written before setuptools is told about them.
 #
@@ -24,7 +21,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # does it here: setuptools resolves its package list while it builds
 # metadata, which is before any command runs. A file that does not
 # exist then is a file it will not ship.
-emit(os.path.join(HERE, "huggorm_bindings"))
+#
+# HUGGORM_BINDINGS_EMITTED names a tree the emitter already wrote. The
+# emitter needs Python 3.14, so a wheel for 3.10 to 3.13 compiles the
+# tree a 3.14 run wrote (huggorm#107). Its module list is the `.cpp`
+# files in it, one per module, which is what the emitter writes. The
+# imports stay inside the branch: the generator cannot import there.
+EMITTED = os.environ.get("HUGGORM_BINDINGS_EMITTED")
+if EMITTED:
+    # copyfile, not copytree: copytree gives the package directory the
+    # mode of a read-only source, and nb_runtime() writes into it.
+    os.makedirs(PACKAGE, exist_ok=True)
+    for name in os.listdir(EMITTED):
+        shutil.copyfile(os.path.join(EMITTED, name), os.path.join(PACKAGE, name))
+    MODULES = tuple(sorted(name.removesuffix(".cpp")
+                           for name in os.listdir(EMITTED)
+                           if name.endswith(".cpp")))
+    DECL_INCLUDE = os.environ["HUGGORM_DECL_INCLUDE"]
+else:
+    import huggorm_decl
+    from huggorm_gen.cppgen.generate import main as emit
+    from huggorm_gen.cppgen.generate import nanobind_modules
+
+    emit(PACKAGE)
+    MODULES = nanobind_modules()
+    DECL_INCLUDE = huggorm_decl.include_dir()
 
 
 def pkg_config(*packages: str) -> dict[str, list[str]]:
@@ -76,7 +97,7 @@ _nix = pkg_config("nix-store", "nix-expr", "nix-flake", "nix-cmd")
 # ...and this directory, for the records headers the emitter writes:
 # `huggorm_bindings/path_records.hpp`, which `cpp/logging.hpp`
 # includes as well as the units do (huggorm#103).
-_nix["include_dirs"] = [huggorm_decl.include_dir(), HERE] + _nix["include_dirs"]
+_nix["include_dirs"] = [DECL_INCLUDE, HERE] + _nix["include_dirs"]
 
 # Every module in the package, through nanobind.
 #
@@ -140,5 +161,5 @@ def nanobind_extension(module: str) -> Extension:
 
 
 setup(
-    ext_modules=[nanobind_extension(m) for m in nanobind_modules()],
+    ext_modules=[nanobind_extension(m) for m in MODULES],
 )
