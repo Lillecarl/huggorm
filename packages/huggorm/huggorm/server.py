@@ -9,6 +9,8 @@ result. Handlers are built in a loop from the emitted specs; nothing is
 hand-written per method.
 """
 
+from __future__ import annotations
+
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Iterable

@@ -12,6 +12,8 @@ the same set a reader does, and so adding one upstream is a visible
 edit here rather than a silent widening.
 """
 
+from __future__ import annotations
+
 from huggorm_bindings.errors import BadStorePath as BadStorePath
 from huggorm_bindings.errors import BadStorePathName as BadStorePathName
 from huggorm_bindings.errors import InvalidPath as InvalidPath

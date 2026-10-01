@@ -6,6 +6,8 @@ the one reader left - the suite, which uses it as an enumeration of
 what the build decided - keeps its own (065).
 """
 
+from __future__ import annotations
+
 import pathlib
 
 from google.protobuf import descriptor_pb2, descriptor_pool

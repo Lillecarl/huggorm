@@ -24,6 +24,8 @@ live wrapper and registers new ones; the client turns an id into a
 RemoteObj and reads ids back off one.
 """
 
+from __future__ import annotations
+
 import datetime
 import importlib
 from collections.abc import Callable

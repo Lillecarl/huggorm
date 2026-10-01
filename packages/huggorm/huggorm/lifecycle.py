@@ -34,6 +34,8 @@ Model (huggorm#2):
   hundred times to free one object.
 """
 
+from __future__ import annotations
+
 import time
 import uuid
 from collections.abc import Callable, Iterable

@@ -30,6 +30,8 @@ through protobuf's DEFAULT symbol database, and these descriptors live
 in a private pool built from grpc_schema.pb at import.
 """
 
+from __future__ import annotations
+
 import builtins
 import importlib
 from collections.abc import Sequence
