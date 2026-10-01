@@ -557,6 +557,7 @@ def returned_module(proto: Proto,
             )
         )
     )
+    mod.body.append(_future_annotations())
     typing_names = {"Any"} if "Any" in used else set()
     if any(m["return_type"] != "None" for m in proto["methods"]):
         typing_names.add("cast")
@@ -782,6 +783,7 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
             )
         )
     )
+    mod.body.append(_future_annotations())
 
     annotations = _emitted_annotations(proto, async_types, bound_policies, twins)
     used_types = (_annotation_names(annotations)
@@ -999,8 +1001,9 @@ def _future_annotations() -> ast.ImportFrom:
 
     The protocol and rpc modules each hold the whole surface, and a
     method on the first class can return the last one. PEP 649 already
-    defers evaluation on 3.14, but the emitted package is meant to be
-    readable and portable below it."""
+    defers evaluation on 3.14; the package also runs on 3.11 and up,
+    where an async wrapper's method returning its own class needs this
+    (huggorm#107)."""
     return ast.ImportFrom(module="__future__",
                           names=[ast.alias(name="annotations")], level=0)
 
@@ -1457,6 +1460,7 @@ def free_function_module(protos: list[Proto],
     mod.body.append(ast.Expr(value=ast.Constant(
         value="Generated async wrappers for the bindings' module-level "
               "functions - do not edit. Built via ast at Nix build time.")))
+    mod.body.append(_future_annotations())
 
     annotations: list[str] = []
     defaults: list[str] = []
