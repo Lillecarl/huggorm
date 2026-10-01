@@ -268,6 +268,7 @@ rec {
       bindings-src
       huggorm
       ;
+    vivarium = import (sources.vivarium + "/lib.nix") { inherit pkgs; };
   };
 
   # nix run --file . python -- $args

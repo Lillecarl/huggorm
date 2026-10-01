@@ -28,6 +28,8 @@
   huggorm-decl,
   # The pure Python layer, which the checks run over each wheel.
   huggorm,
+  # vivarium's lib.nix, for the test on openSUSE.
+  vivarium,
 }:
 let
   nixpkgsBoehmgc = boehmgc;
@@ -558,4 +560,96 @@ lib.makeScope pkgs.newScope (self: {
       '';
     };
   checks = lib.genAttrs pythons self.checkFor;
+
+  # The module list the generator gives, one per line: what `smoke.py`
+  # holds a wheel to.
+  modules =
+    pkgs.runCommand "huggorm-bindings-modules"
+      { nativeBuildInputs = [ (pkgs.python3.withPackages (_: [ huggorm-gen ])) ]; }
+      ''
+        python3 -c 'from huggorm_gen.cppgen.generate import nanobind_modules; print(*nanobind_modules(), sep="\n")' > $out
+      '';
+
+  /**
+    Every wheel `pip install --no-index --find-links` needs for huggorm:
+    the bindings for each CPython, and a pure wheel of each Python
+    dependency, from nixpkgs' `dist` output.
+
+    nixpkgs builds protobuf and multidict with their C extensions, for
+    3.14 alone. PyPI publishes a pure wheel of the same versions, which
+    is the one pip takes on any other interpreter.
+  */
+  wheelhouse =
+    let
+      fromPyPI = {
+        protobuf = {
+          url = "https://files.pythonhosted.org/packages/39/ca/c47f91d3cab175b01fd8c4f0d80fdf8613be876cc616e66ad281a59c5ddf/protobuf-7.36.1-py3-none-any.whl";
+          sha256 = "7d951e46b3f963d6c264c367c437921de9d5aedd9c3f9612b9077736b4e3ad5c";
+        };
+        multidict = {
+          url = "https://files.pythonhosted.org/packages/81/08/7036c080d7117f28a4af526d794aab6a84463126db031b007717c1a6676e/multidict-6.7.1-py3-none-any.whl";
+          sha256 = "55d97cc6dae627efa6a6e548885712d4864b81110ac76fa4e534c03819fa4a56";
+        };
+      };
+      pinned =
+        name:
+        let
+          version = pkgs.python3.pkgs.${name}.version;
+          wheel = fromPyPI.${name};
+        in
+        if lib.hasInfix "-${version}-" wheel.url then
+          pkgs.fetchurl wheel
+        else
+          throw "nixpkgs' ${name} is ${version}; pin its pure wheel from PyPI in nix/manylinux";
+      dists = map (p: p.dist) (
+        lib.filter (p: !(lib.elem p.pname ([ "huggorm-bindings" ] ++ lib.attrNames fromPyPI)))
+          (pythonClosure [
+            huggorm
+            # anyio needs it below 3.13.
+            pkgs.python3.pkgs.typing-extensions
+          ])
+      );
+    in
+    pkgs.runCommand "huggorm-wheelhouse" { } ''
+      mkdir $out
+      cp ${lib.concatMapStringsSep " " (w: "${w}/*.whl") (lib.attrValues self.wheels)} $out/
+      cp ${lib.concatMapStringsSep " " (d: "${d}/*.whl") dists} $out/
+      ${lib.concatMapStrings (name: ''
+        cp ${pinned name} $out/${baseNameOf fromPyPI.${name}.url}
+      '') (lib.attrNames fromPyPI)}
+    '';
+
+  /**
+    huggorm on openSUSE Leap 16.0's own Python, from the wheelhouse.
+
+    The guest is SUSE's cloud image under vivarium. `suse.py` makes a
+    venv on its python3 and installs huggorm with pip, offline: what a
+    host without Nix does.
+  */
+  suse = self.callPackage (
+    { wheelhouse, modules }:
+    vivarium.mkTest {
+      name = "huggorm-suse";
+      settings = {
+        wheelhouse = "${wheelhouse}";
+        modules = "${modules}";
+        smoke = "${./smoke.py}";
+        closure = "${pkgs.closureInfo {
+          rootPaths = [
+            wheelhouse
+            modules
+            ./smoke.py
+          ];
+        }}";
+      };
+      nodes.suse = {
+        vivarium.image = vivarium.images.opensuse-leap-16_0;
+        vivarium.memory = "1024M";
+      };
+      phases.huggorm = {
+        script = ./suse.py;
+        after = [ "boot" ];
+      };
+    }
+  ) { };
 })
