@@ -254,10 +254,20 @@ rec {
     huggorm-generated
     ;
 
-  # nix build --file . manylinux.wheel
+  # nix build --file . manylinux.checks
   manylinux = import ./nix/manylinux {
-    inherit pkgs lib huggorm-gen;
-    inherit (nixVersions.nix_2_34) nix boehmgc huggorm;
+    inherit
+      pkgs
+      lib
+      huggorm-gen
+      huggorm-decl
+      ;
+    inherit (nixVersions.nix_2_34)
+      nix
+      boehmgc
+      bindings-src
+      huggorm
+      ;
   };
 
   # nix run --file . python -- $args

@@ -1,5 +1,5 @@
 /**
-  huggorm-bindings as a `manylinux_2_28` wheel.
+  huggorm-bindings as `manylinux_2_28` wheels, one per CPython.
 
   PyPA's own manylinux image does the compiling: its gcc-toolset links
   the parts of libstdc++ that glibc 2.28's libstdc++ lacks statically,
@@ -9,6 +9,10 @@
   The image runs in the build sandbox under bwrap, with the store
   mounted read-only beside it. nixpkgs pins every source, and the
   patched Nix is the one the rest of huggorm binds.
+
+  A scope: each library is a member, and a member's arguments resolve
+  to other members first, so `curl` takes this scope's `openssl`.
+  `overrideScope` replaces one library for everything above it.
 */
 {
   pkgs,
@@ -16,14 +20,17 @@
   # huggorm's patched Nix, from `patchNix`, and the collector it links.
   nix,
   boehmgc,
-  # The emitter, which setup.py runs.
+  # The emitted C++ for that Nix, which every wheel compiles.
+  bindings-src,
+  # The generator, for the module list a check holds a wheel to, and
+  # the declarations, for the helper headers the emitted C++ includes.
   huggorm-gen,
-  # The pure Python layer, whose suite tests the wheel.
+  huggorm-decl,
+  # The pure Python layer, which the checks run over each wheel.
   huggorm,
 }:
 let
-  # `libs` below has a `boehmgc` of its own: the image's build of this one.
-  boehmgcNix = boehmgc;
+  nixpkgsBoehmgc = boehmgc;
 
   # The image digest is the manifest of one architecture, not the index,
   # so `skopeo inspect --raw` on the tag gives it.
@@ -36,6 +43,26 @@ let
     };
   };
 
+  # Every CPython in the image that the bindings' requires-python allows.
+  pythons = [
+    "cp311"
+    "cp312"
+    "cp313"
+    "cp314"
+  ];
+  interpreter = py: "/opt/python/${py}-${py}/bin/python3";
+
+  # The closure of nixpkgs' Python packages, without the interpreter.
+  # `requiredPythonModules` also returns nixpkgs' python3, and its
+  # site-packages carries a `_sysconfigdata` and a `sitecustomize.py`
+  # that replace the image interpreter's: SOABI read `cpython-314` under
+  # 3.13. Only a package has `pythonModule`.
+  pythonClosure =
+    packages: lib.filter (p: p ? pythonModule) (pkgs.python3.pkgs.requiredPythonModules packages);
+  # A PYTHONPATH for an image interpreter, from a closure as above.
+  pythonPath = lib.concatMapStringsSep ":" (p: "${p}/${pkgs.python3.sitePackages}");
+in
+lib.makeScope pkgs.newScope (self: {
   # skopeo reads `$XDG_RUNTIME_DIR/containers/auth.json`, and without the
   # variable it reads `/run/containers/<uid>`, which the sandbox refuses.
   image = (pkgs.dockerTools.pullImage images.${pkgs.stdenv.hostPlatform.system}).overrideAttrs {
@@ -43,30 +70,27 @@ let
   };
 
   rootfs = pkgs.runCommand "manylinux_2_28-rootfs" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-    python3 ${./rootfs.py} ${image} $out
+    python3 ${./rootfs.py} ${self.image} $out
   '';
 
   # meson from its own source, under the image's Python: nixpkgs' meson
   # carries patches that change how it searches for boost and rpaths.
-  python = "/opt/python/cp312-cp312/bin/python3";
   meson = pkgs.writeTextFile {
     name = "meson";
     executable = true;
     destination = "/bin/meson";
     text = ''
       #!/bin/sh
-      exec ${python} ${pkgs.meson.src}/meson.py "$@"
+      exec ${interpreter "cp312"} ${pkgs.meson.src}/meson.py "$@"
     '';
   };
-
-  closureOf = deps: lib.unique (lib.concatMap (d: d.passthru.closure) deps);
 
   /**
     Build `src` inside the image, into `$out`.
 
-    `deps` are other builds of this file. Each one's prefix reaches the
-    compiler, the linker, pkg-config and cmake. `script` runs under the
-    image's bash, in the unpacked source.
+    `deps` are other members. Each one's prefix, and its own deps'
+    prefixes, reach the compiler, the linker, pkg-config and cmake.
+    `script` runs under the image's bash, in the unpacked source.
   */
   build =
     {
@@ -81,7 +105,7 @@ let
       script,
     }:
     let
-      closure = closureOf deps;
+      closure = lib.unique (lib.concatMap (d: d.passthru.closure) deps);
       join = sep: f: lib.concatMapStringsSep sep f closure;
       env = {
         PATH = lib.concatStringsSep ":" [
@@ -90,7 +114,7 @@ let
           "/usr/local/bin"
           "/usr/bin"
           "/bin"
-          "${meson}/bin"
+          "${self.meson}/bin"
           "${pkgs.ninja}/bin"
           "${pkgs.flex}/bin"
         ];
@@ -118,7 +142,7 @@ let
         done
         ${script}
       '';
-      self =
+      drv =
         pkgs.runCommand "manylinux-${pname}${lib.optionalString (version != "") "-${version}"}"
           {
             nativeBuildInputs = [
@@ -127,7 +151,7 @@ let
             ];
             passthru = {
               inherit pname version;
-              closure = closure ++ [ self ];
+              closure = closure ++ [ drv ];
             };
           }
           ''
@@ -137,7 +161,7 @@ let
             chmod -R u+w .
             src=$(echo "$PWD"/*)
             cd ..
-            bwrap --ro-bind ${rootfs} / --dev /dev --proc /proc --tmpfs /tmp \
+            bwrap --ro-bind ${self.rootfs} / --dev /dev --proc /proc --tmpfs /tmp \
               --ro-bind /nix/store /nix/store --bind "$out" "$out" \
               --bind "$NIX_BUILD_TOP" "$NIX_BUILD_TOP" \
               --clearenv${setenv} \
@@ -146,7 +170,7 @@ let
               /bin/bash ${runner}
           '';
     in
-    self;
+    drv;
 
   autotools = flags: ''
     ./configure --prefix="$out" --libdir="$out/lib" --disable-static ${flags}
@@ -165,9 +189,11 @@ let
   #
   # zlib is the image's own: `libz.so.1` is on the manylinux policy's
   # list of libraries a host provides, so auditwheel never bundles it.
-  libs = rec {
-    # nixpkgs' second patch turns bzip2's Makefile into autotools.
-    bzip2 = build {
+
+  # nixpkgs' second patch turns bzip2's Makefile into autotools.
+  bzip2 = self.callPackage (
+    { build, autotools }:
+    build {
       inherit (pkgs.bzip2)
         pname
         version
@@ -176,31 +202,49 @@ let
         patchFlags
         ;
       script = "autoreconf -fi\n" + autotools "";
-    };
-    xz = build {
+    }
+  ) { };
+  xz = self.callPackage (
+    { build, autotools }:
+    build {
       inherit (pkgs.xz) pname version src;
       script = autotools "--disable-doc --disable-scripts --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo --disable-lzma-links";
-    };
-    zstd = build {
+    }
+  ) { };
+  zstd = self.callPackage (
+    { build }:
+    build {
       inherit (pkgs.zstd) pname version src;
       script = ''
         make -C lib -j"$NIX_BUILD_CORES" libzstd PREFIX="$out"
         make -C lib install-pc install-includes install-shared PREFIX="$out" LIBDIR="$out/lib"
       '';
-    };
-    brotli = build {
+    }
+  ) { };
+  brotli = self.callPackage (
+    { build, cmake }:
+    build {
       inherit (pkgs.brotli) pname version src;
       script = cmake "-DBROTLI_BUILD_TOOLS=OFF";
-    };
-    libsodium = build {
+    }
+  ) { };
+  libsodium = self.callPackage (
+    { build, autotools }:
+    build {
       inherit (pkgs.libsodium) pname version src;
       script = "[ -x configure ] || ./autogen.sh -s\n" + autotools "";
-    };
-    sqlite = build {
+    }
+  ) { };
+  sqlite = self.callPackage (
+    { build, autotools }:
+    build {
       inherit (pkgs.sqlite) pname version src;
       script = autotools "--disable-tcl";
-    };
-    openssl = build {
+    }
+  ) { };
+  openssl = self.callPackage (
+    { build }:
+    build {
       inherit (pkgs.openssl) pname version src;
       # Configure needs IPC::Cmd, which the image's perl lacks.
       tools = [ pkgs.perl ];
@@ -209,12 +253,25 @@ let
         make -j"$NIX_BUILD_CORES"
         make install_sw
       '';
-    };
-    nghttp2 = build {
+    }
+  ) { };
+  nghttp2 = self.callPackage (
+    { build, autotools }:
+    build {
       inherit (pkgs.nghttp2) pname version src;
       script = autotools "--enable-lib-only";
-    };
-    curl = build {
+    }
+  ) { };
+  curl = self.callPackage (
+    {
+      build,
+      autotools,
+      openssl,
+      nghttp2,
+      zstd,
+      brotli,
+    }:
+    build {
       inherit (pkgs.curlMinimal) pname version src;
       deps = [
         openssl
@@ -229,8 +286,17 @@ let
         --disable-tftp --disable-pop3 --disable-imap --disable-smtp --disable-gopher \
         --disable-mqtt --disable-manual --disable-docs
       '';
-    };
-    libarchive = build {
+    }
+  ) { };
+  libarchive = self.callPackage (
+    {
+      build,
+      cmake,
+      bzip2,
+      xz,
+      zstd,
+    }:
+    build {
       inherit (pkgs.libarchive) pname version src;
       deps = [
         bzip2
@@ -242,208 +308,254 @@ let
         -DENABLE_LIBB2=OFF -DENABLE_ACL=OFF -DENABLE_TEST=OFF -DENABLE_TAR=OFF \
         -DENABLE_CPIO=OFF -DENABLE_CAT=OFF -DENABLE_UNZIP=OFF -DENABLE_WERROR=OFF
       '';
-    };
-    libgit2 = build {
+    }
+  ) { };
+  libgit2 = self.callPackage (
+    {
+      build,
+      cmake,
+      openssl,
+    }:
+    build {
       inherit (pkgs.libgit2) pname version src;
-      deps = [
-        openssl
-      ];
+      deps = [ openssl ];
       script = cmake ''
         -DUSE_SSH=OFF -DUSE_HTTPS=OpenSSL -DUSE_GSSAPI=OFF -DREGEX_BACKEND=builtin \
         -DUSE_HTTP_PARSER=builtin -DBUILD_TESTS=OFF -DBUILD_CLI=OFF
       '';
-    };
-    # The modules Nix's meson files name, and not the rest of boost.
-    boost = build {
+    }
+  ) { };
+  # The modules Nix's meson files name, and not the rest of boost.
+  boost = self.callPackage (
+    { build }:
+    build {
       inherit (pkgs.nixDependencies.boost) pname version src;
       script = ''
         ./bootstrap.sh --prefix="$out" --with-libraries=context,coroutine,iostreams,url,container,system,thread
         ./b2 -j"$NIX_BUILD_CORES" install link=shared variant=release threading=multi \
           runtime-link=shared -sNO_ZLIB=1 -sNO_BZIP2=1 -sNO_LZMA=1 -sNO_ZSTD=1 cxxflags=-fPIC
       '';
-    };
-    libblake3 = build {
+    }
+  ) { };
+  libblake3 = self.callPackage (
+    { build, cmake }:
+    build {
       inherit (pkgs.libblake3) pname version src;
       script = "cd c\n" + cmake "-DBLAKE3_USE_TBB=OFF";
-    };
-    nlohmann_json = build {
+    }
+  ) { };
+  nlohmann_json = self.callPackage (
+    { build, cmake }:
+    build {
       inherit (pkgs.nlohmann_json) pname version src;
       script = cmake "-DJSON_BuildTests=OFF";
-    };
-    toml11 = build {
+    }
+  ) { };
+  toml11 = self.callPackage (
+    { build, cmake }:
+    build {
       inherit (pkgs.toml11) pname version src;
       script = cmake "";
-    };
-    editline = build {
+    }
+  ) { };
+  editline = self.callPackage (
+    { build, autotools }:
+    build {
       inherit (pkgs.editline) pname version src;
       script = "./autogen.sh\n" + autotools "";
-    };
-    # The collector libexpr links in the rest of huggorm, with its flags
-    # and its patches.
-    boehmgc = build {
-      inherit (boehmgcNix)
+    }
+  ) { };
+  # The collector libexpr links in the rest of huggorm, with its flags
+  # and its patches.
+  boehmgc = self.callPackage (
+    { build, autotools }:
+    build {
+      inherit (nixpkgsBoehmgc)
         pname
         version
         src
         patches
         ;
-      script = "./autogen.sh\n" + autotools (lib.escapeShellArgs boehmgcNix.configureFlags);
-    };
-  };
+      script = "./autogen.sh\n" + autotools (lib.escapeShellArgs nixpkgsBoehmgc.configureFlags);
+    }
+  ) { };
 
   # Nix's libraries, each its own meson project as nixpkgs builds them,
   # from the source huggorm patches. No CLI, no tests. The features off
   # here are the ones the rest of huggorm's Nix has and this one lacks:
   # seccomp, libcpuid, lowdown and AWS authentication for S3.
-  nixLibs =
+  nixLibs = self.callPackage (
+    {
+      build,
+      bzip2,
+      xz,
+      zstd,
+      brotli,
+      libsodium,
+      sqlite,
+      openssl,
+      nghttp2,
+      curl,
+      libarchive,
+      libgit2,
+      boost,
+      libblake3,
+      nlohmann_json,
+      toml11,
+      editline,
+      boehmgc,
+    }:
     let
-      components = [
-        [
-          "libutil"
-          "-Dcpuid=disabled"
-        ]
-        [
-          "libstore"
-          "-Dseccomp-sandboxing=disabled -Ds3-aws-auth=disabled"
-        ]
-        [
-          "libfetchers"
-          ""
-        ]
-        [
-          "libexpr"
-          "-Dgc=enabled"
-        ]
-        [
-          "libflake"
-          ""
-        ]
-        [
-          "libmain"
-          ""
-        ]
-        [
-          "libcmd"
-          "-Dmarkdown=disabled -Dreadline-flavor=editline"
-        ]
+      components = {
+        libutil = "-Dcpuid=disabled";
+        libstore = "-Dseccomp-sandboxing=disabled -Ds3-aws-auth=disabled";
+        libfetchers = "";
+        libexpr = "-Dgc=enabled";
+        libflake = "";
+        libmain = "";
+        libcmd = "-Dmarkdown=disabled -Dreadline-flavor=editline";
+      };
+      # Each one links the ones before it.
+      order = [
+        "libutil"
+        "libstore"
+        "libfetchers"
+        "libexpr"
+        "libflake"
+        "libmain"
+        "libcmd"
       ];
     in
     build {
       pname = "nix";
       inherit (nix) version;
       inherit (nix.libs.nix-util) src;
-      deps = lib.attrValues libs;
+      deps = [
+        bzip2
+        xz
+        zstd
+        brotli
+        libsodium
+        sqlite
+        openssl
+        nghttp2
+        curl
+        libarchive
+        libgit2
+        boost
+        libblake3
+        nlohmann_json
+        toml11
+        editline
+        boehmgc
+      ];
       # The parser asks for `parse.error detailed`, bison 3.6; the image has 3.0.4.
       tools = [ pkgs.bison ];
       script = ''
         export PKG_CONFIG_PATH="$out/lib/pkgconfig:$PKG_CONFIG_PATH"
         export LD_LIBRARY_PATH="$out/lib:$LD_LIBRARY_PATH"
-        export BOOST_ROOT=${libs.boost}
+        export BOOST_ROOT=${boost}
         # `preloadNSS` calls dlopen, which glibc keeps in libdl before 2.34
         # and Nix's meson files never name.
         export LDFLAGS="$LDFLAGS -ldl"
       ''
-      + lib.concatMapStrings (
-        c:
-        let
-          name = builtins.elemAt c 0;
-        in
-        ''
-          meson setup _build/${name} src/${name} --prefix="$out" --libdir=lib \
-            --buildtype=release ${builtins.elemAt c 1}
-          meson compile -C _build/${name}
-          meson install -C _build/${name}
-        ''
-      ) components;
-    };
+      + lib.concatMapStrings (name: ''
+        meson setup _build/${name} src/${name} --prefix="$out" --libdir=lib \
+          --buildtype=release ${components.${name}}
+        meson compile -C _build/${name}
+        meson install -C _build/${name}
+      '') order;
+    }
+  ) { };
 
   /**
-    The extension, built by the package's own setup.py under the image's
-    CPython, then repaired: auditwheel copies every library it links
-    into the wheel under a hashed name, and refuses the tag if any
-    object needs more than glibc 2.28.
+    The extension for one CPython, built by the package's own setup.py
+    under that interpreter, then repaired: auditwheel copies every
+    library it links into the wheel under a hashed name, and refuses
+    the tag if any object needs more than glibc 2.28.
 
-    The generator needs Python 3.14, so the wheel is cp314. The pure
-    Python packages setup.py imports come from nixpkgs' 3.14.
+    Every wheel compiles the one emitted tree, `bindings-src`. The
+    generator reads declarations through `annotationlib`, which is
+    Python 3.14, and one tree means one C++ for every interpreter.
   */
-  wheel =
-    let
-      sitePackages = lib.concatMapStringsSep ":" (p: "${p}/${pkgs.python3.sitePackages}") (
-        pkgs.python3.pkgs.requiredPythonModules [
-          pkgs.python3.pkgs.setuptools
-          pkgs.python3.pkgs.nanobind
-          huggorm-gen
-        ]
-      );
-    in
-    build {
-      pname = "huggorm-bindings-wheel";
-      inherit (nix) version;
-      src = ../../packages/huggorm-bindings;
-      deps = [ nixLibs ];
-      script = ''
-        export PYTHONPATH=${sitePackages}
-        export HUGGORM_NIX_VERSION=${lib.escapeShellArg nix.libs.nix-store.version}
-        mkdir -p huggorm_bindings
-        cp ${nix.libs.nix-store.src}/src/nix/get-env.sh huggorm_bindings/get-env.sh
-        /opt/python/cp314-cp314/bin/python3 -m pip wheel --no-build-isolation \
-          --no-deps --no-index --wheel-dir dist .
-        auditwheel repair --plat manylinux_2_28_x86_64 --wheel-dir "$out" dist/*.whl
-      '';
-    };
+  wheelFor =
+    py:
+    self.callPackage (
+      { build, nixLibs }:
+      build {
+        pname = "huggorm-bindings-${py}";
+        inherit (nix) version;
+        src = ../../packages/huggorm-bindings;
+        deps = [ nixLibs ];
+        script = ''
+          export PYTHONPATH=${
+            pythonPath (pythonClosure [
+              pkgs.python3.pkgs.setuptools
+              pkgs.python3.pkgs.nanobind
+            ])
+          }
+          export HUGGORM_BINDINGS_EMITTED=${bindings-src}
+          export HUGGORM_DECL_INCLUDE=${huggorm-decl}/${pkgs.python3.sitePackages}
+          mkdir -p huggorm_bindings
+          cp ${nix.libs.nix-store.src}/src/nix/get-env.sh huggorm_bindings/get-env.sh
+          ${interpreter py} -m pip wheel --no-build-isolation \
+            --no-deps --no-index --wheel-dir dist .
+          auditwheel repair --plat manylinux_2_28_x86_64 --wheel-dir "$out" dist/*.whl
+        '';
+      }
+    ) { };
+  wheels = lib.genAttrs pythons self.wheelFor;
 
   /**
-    huggorm's hermetic suite against the wheel, inside the image.
+    What one wheel must do, under its own interpreter, inside the image.
 
-    The wheel is the only compiled code under test: pip installs it into
-    the image's own CPython, and the pure Python around it (huggorm, its
-    generated surface, pytest) comes from nixpkgs with nixpkgs' bindings
-    filtered out. A nixpkgs C extension built against glibc 2.42 would
-    fail to load here, so protobuf and multidict take their pure Python
-    implementations.
+    The wheel is the only compiled code under test: pip installs it
+    into the image's CPython, and the pure Python around it comes from
+    nixpkgs with nixpkgs' bindings filtered out. A nixpkgs C extension
+    built against glibc 2.42 would fail to load here, so protobuf and
+    multidict take their pure Python implementations.
+
+    Every wheel runs `smoke.py`. cp314 also runs the hermetic suite,
+    which imports the generator and so runs nowhere else.
   */
-  check =
+  checkFor =
+    py:
     let
+      python = interpreter py;
+      # nixpkgs' bindings are the one package left out: the wheel's are under test.
       pure = lib.filter (p: (p.pname or "") != "huggorm-bindings") (
-        pkgs.python3.pkgs.requiredPythonModules (
+        pythonClosure (
           [ huggorm ]
           ++ (with pkgs.python3.pkgs; [
             pytest
             anyio
             pytest-timeout
-            huggorm-gen
+            # anyio needs it below 3.13, and nixpkgs' 3.14 build drops it.
+            typing-extensions
           ])
+          ++ lib.optional (py == "cp314") huggorm-gen
         )
       );
+      generator = pkgs.python3.withPackages (_: [ huggorm-gen ]);
     in
-    build {
-      pname = "huggorm-wheel-check";
+    self.build {
+      pname = "huggorm-wheel-check-${py}";
       inherit (nix) version;
       src = ../../packages/huggorm;
       script = ''
-        /opt/python/cp314-cp314/bin/python3 -m pip install --no-index --no-deps \
-          --target /tmp/site ${wheel}/*.whl
-        export PYTHONPATH=/tmp/site:${
-          lib.concatMapStringsSep ":" (p: "${p}/${pkgs.python3.sitePackages}") pure
-        }
+        ${generator}/bin/python3 -c \
+          'from huggorm_gen.cppgen.generate import nanobind_modules; print(*nanobind_modules())' \
+          > /tmp/modules
+        ${python} -m pip install --no-index --no-deps --target /tmp/site ${self.wheels.${py}}/*.whl
+        export PYTHONPATH=/tmp/site:${pythonPath pure}
         export PATH="$PATH:${pkgs.grpcurl}/bin"
         export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python MULTIDICT_NO_EXTENSIONS=1
         export HUGGORM_NIX_VERSION=${lib.escapeShellArg nix.libs.nix-store.version} HUGGORM_NIX_GC=1
-        /opt/python/cp314-cp314/bin/python3 -c \
-          'import huggorm_bindings.eval as e; print("bindings from", e.__file__)'
-        /opt/python/cp314-cp314/bin/python3 -m pytest -p no:cacheprovider -m "not live" tests \
-          2>&1 | tee "$out/pytest.log"
+        ${python} ${./smoke.py} /tmp/modules | tee "$out/smoke.log"
+      ''
+      + lib.optionalString (py == "cp314") ''
+        ${python} -m pytest -p no:cacheprovider -m "not live" tests 2>&1 | tee "$out/pytest.log"
       '';
     };
-in
-{
-  inherit
-    image
-    rootfs
-    build
-    libs
-    nixLibs
-    wheel
-    check
-    ;
-}
+  checks = lib.genAttrs pythons self.checkFor;
+})
