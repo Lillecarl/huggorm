@@ -7,33 +7,6 @@
 rec {
   inherit pkgs;
   inherit (pkgs) lib;
-  # nanopynix reads these two until it extends `lanes` (huggorm#108).
-  # `nix/versions.nix` is the table every lane reads.
-  bdwgcPatches = [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
-  nixPatchesFor =
-    version:
-    let
-      newest = {
-        verbosity = ./nix/patches/nix-2.36-remote-verbosity.patch;
-        countCalls = ./nix/patches/nix-2.36-count-calls.patch;
-      };
-      byVersion = {
-        "2.34" = {
-          verbosity = ./nix/patches/nix-remote-verbosity.patch;
-          countCalls = ./nix/patches/nix-2.34-count-calls.patch;
-        };
-        "2.35" = {
-          verbosity = ./nix/patches/nix-remote-verbosity.patch;
-          countCalls = ./nix/patches/nix-2.35-count-calls.patch;
-        };
-      };
-      files = byVersion.${lib.versions.majorMinor version} or newest;
-    in
-    [
-      ./nix/patches/nix-temp-roots-per-store.patch
-      files.verbosity
-      files.countCalls
-    ];
   # The LANGUAGE a declaration is written in, and the reader that
   # parses one. No declaration and no emitter is in here, which is
   # what lets the two below depend on it without depending on each
@@ -82,6 +55,14 @@ rec {
   };
   versions = import ./nix/versions.nix { inherit pkgs; };
 
+  # The variants a lane can instrument its Nix and the bindings with.
+  # `nix/sanitizer.nix` gives each one's rules.
+  sanitizers = {
+    tsan = pkgs.callPackage ./nix/sanitizer.nix { name = "thread"; };
+    ubsan = pkgs.callPackage ./nix/sanitizer.nix { name = "undefined"; };
+    asan = pkgs.callPackage ./nix/sanitizer.nix { name = "address"; };
+  };
+
   /**
     One Nix, patched, and everything huggorm builds against it, as a
     scope. `overrideScope` replaces a member for every member that takes
@@ -97,32 +78,66 @@ rec {
 
     `gc`
     : False builds libexpr with `-Dgc=disabled`. huggorm then makes no
-      collector call, and the lane has no `boehmgc` and no wheels.
+      collector call, and the lane has no `boehmgc`.
+
+    `sanitizer`
+    : One of `sanitizers`, or null. It instruments every Nix component,
+      the libraries `nix/sanitizer.nix` names, and the bindings.
+
+    A lane has `manylinux` wheels only with the collector and no
+    sanitizer.
   */
   mkLane =
     {
       components,
       patches,
       gc ? true,
+      sanitizer ? null,
     }:
+    assert lib.assertMsg (!(sanitizer.requiresNoGC or false) || !gc) ''
+      The ${sanitizer.name} sanitizer needs `gc = false`: libexpr's meson
+      refuses the collector with it, after a rebuild of the whole closure.
+    '';
+    let
+      # One boost for every component that takes it: the ASAN boost
+      # changes the layout of a type they share.
+      ucontextBoost = lib.optionalAttrs (sanitizer.needsUcontextBoost or false) {
+        boost = sanitizer.sanitizeBoost pkgs.boost;
+      };
+    in
     lib.makeScope pkgs.newScope (
       self:
       {
         inherit
           gc
+          sanitizer
           huggorm-dsl
           huggorm-decl
           huggorm-gen
           ;
         inherit (pkgs) python3Packages;
 
-        nixComponents = (components.appendPatches patches).overrideScope (
-          _: prev: {
-            nix-expr = prev.nix-expr.override (
-              if gc then { inherit (self) boehmgc; } else { enableGC = false; }
+        nixComponents =
+          let
+            patched = (components.appendPatches patches).overrideScope (
+              _: prev:
+              {
+                nix-expr = prev.nix-expr.override (
+                  (if gc then { inherit (self) boehmgc; } else { enableGC = false; }) // ucontextBoost
+                );
+              }
+              // lib.optionalAttrs (sanitizer != null) {
+                nix-util = prev.nix-util.override ucontextBoost;
+                nix-store = prev.nix-store.override (
+                  { sqlite = sanitizer.sanitizeSqlite pkgs.sqlite; } // ucontextBoost
+                );
+              }
             );
-          }
-        );
+          in
+          if sanitizer == null then
+            patched
+          else
+            patched.overrideAllMesonComponents sanitizer.mesonComponentOverrides;
         inherit (self.nixComponents) version;
         # The CLI. nixpkgs' `nix_2_34` is `nix-everything`, which also
         # builds the manual and runs Nix's functional tests.
@@ -130,43 +145,101 @@ rec {
         # The collector libexpr links. The bindings link the same one,
         # because a process loads one `libgc.so.1`.
         boehmgc =
-          if gc then
-            pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
+          let
+            patched = pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
               patches = (old.patches or [ ]) ++ versions.boehmgcPatches;
-            })
+            });
+          in
+          if !gc then
+            null
+          else if sanitizer == null then
+            patched
           else
-            null;
+            sanitizer.sanitizeBoehmGC patched;
 
         # The emitted C++ for this Nix. `HUGGORM_NIX_VERSION` picks each
         # declaration's `NIX_VERSION` branch (huggorm#55).
         bindings-src = bindings-src.overrideAttrs { HUGGORM_NIX_VERSION = self.version; };
-        huggorm-bindings = self.callPackage ./packages/huggorm-bindings {
-          inherit (self.nixComponents)
-            nix-util
-            nix-store
-            nix-expr
-            nix-fetchers
-            nix-flake
-            nix-cmd
-            ;
-        };
+        huggorm-bindings =
+          let
+            plain = self.callPackage ./packages/huggorm-bindings {
+              inherit (self.nixComponents)
+                nix-util
+                nix-store
+                nix-expr
+                nix-fetchers
+                nix-flake
+                nix-cmd
+                ;
+            };
+          in
+          if sanitizer == null then
+            plain
+          else
+            # The import check dlopens the extension into a plain CPython,
+            # and a late dlopen cannot grow the static TLS block, so the
+            # runtime is preloaded.
+            plain.overrideAttrs (old: {
+              env =
+                (old.env or { })
+                // {
+                  NIX_CFLAGS_COMPILE = sanitizer.flags;
+                  NIX_CFLAGS_LINK = sanitizer.linkFlag;
+                }
+                // sanitizer.buildEnv
+                // lib.optionalAttrs (sanitizer.runtime != null) { LD_PRELOAD = sanitizer.runtime; };
+              dontStrip = true;
+            });
         huggorm-generated = self.callPackage ./packages/huggorm-generated { };
         huggorm = self.callPackage ./packages/huggorm { };
       }
       # nix build --file . lanes.nix_2_35.manylinux.checks
-      // lib.optionalAttrs gc {
+      // lib.optionalAttrs (gc && sanitizer == null) {
         manylinux = self.callPackage ./nix/manylinux {
           vivarium = import (sources.vivarium + "/lib.nix") { inherit pkgs; };
         };
       }
     );
 
-  # The names nanopynix's CI uses. nix_2_34 is the default below.
+  # Every lane, by the name nanopynix's CI uses. nix_2_34 is the default
+  # below. ASAN needs `gc = false`, so `-asan` is also a lane with no
+  # collector.
   lanes = {
     nix_2_34 = mkLane versions.nix_2_34;
-    nix_2_35 = mkLane versions.nix_2_35;
-    git = mkLane versions.git;
     nix_2_34-nogc = mkLane (versions.nix_2_34 // { gc = false; });
+    nix_2_34-tsan = mkLane (versions.nix_2_34 // { sanitizer = sanitizers.tsan; });
+    nix_2_34-ubsan = mkLane (versions.nix_2_34 // { sanitizer = sanitizers.ubsan; });
+    nix_2_34-asan = mkLane (
+      versions.nix_2_34
+      // {
+        sanitizer = sanitizers.asan;
+        gc = false;
+      }
+    );
+
+    nix_2_35 = mkLane versions.nix_2_35;
+    nix_2_35-nogc = mkLane (versions.nix_2_35 // { gc = false; });
+    nix_2_35-tsan = mkLane (versions.nix_2_35 // { sanitizer = sanitizers.tsan; });
+    nix_2_35-ubsan = mkLane (versions.nix_2_35 // { sanitizer = sanitizers.ubsan; });
+    nix_2_35-asan = mkLane (
+      versions.nix_2_35
+      // {
+        sanitizer = sanitizers.asan;
+        gc = false;
+      }
+    );
+
+    git = mkLane versions.git;
+    git-nogc = mkLane (versions.git // { gc = false; });
+    git-tsan = mkLane (versions.git // { sanitizer = sanitizers.tsan; });
+    git-ubsan = mkLane (versions.git // { sanitizer = sanitizers.ubsan; });
+    git-asan = mkLane (
+      versions.git
+      // {
+        sanitizer = sanitizers.asan;
+        gc = false;
+      }
+    );
   };
   inherit (lanes.nix_2_34)
     nix
