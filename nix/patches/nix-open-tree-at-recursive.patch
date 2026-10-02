@@ -1,0 +1,30 @@
+Define AT_RECURSIVE in the open_tree polyfill
+
+The polyfill for a libc without the open_tree wrapper defines
+OPEN_TREE_CLONE and OPEN_TREE_CLOEXEC, but the call site also uses
+AT_RECURSIVE. glibc 2.28's <fcntl.h> does not define AT_RECURSIVE, so
+libstore does not compile against it:
+
+  linux-derivation-builder.cc:285:57: error: 'AT_RECURSIVE' was not
+  declared in this scope
+
+0x8000 is the kernel's value, from <linux/fcntl.h>. Where the libc
+defines the name, the #ifndef leaves it alone, so the object code does
+not change.
+
+huggorm builds its manylinux_2_28 wheels in PyPA's image, which has
+glibc 2.28 (huggorm#108). Nix 2.34 does not call open_tree here.
+
+--- a/src/libstore/linux/build/linux-derivation-builder.cc
++++ b/src/libstore/linux/build/linux-derivation-builder.cc
+@@ -50,6 +50,10 @@
+ #    define OPEN_TREE_CLOEXEC O_CLOEXEC
+ #  endif
+ 
++#  ifndef AT_RECURSIVE
++#    define AT_RECURSIVE 0x8000
++#  endif
++
+ static int open_tree(int dirfd, const char * filename, unsigned int flags)
+ {
+     return ::syscall(__NR_open_tree, dirfd, filename, flags);

@@ -33,6 +33,9 @@ let
   countCalls234 = patch "nix-2.34-count-calls";
   countCalls235 = patch "nix-2.35-count-calls";
   countCalls236 = patch "nix-2.36-count-calls";
+  # The `open_tree` polyfill defines `AT_RECURSIVE`, which glibc 2.28
+  # lacks: the manylinux build needs it. 2.34 does not call `open_tree`.
+  atRecursive = patch "nix-open-tree-at-recursive";
 in
 {
   nix_2_34 = {
@@ -56,6 +59,7 @@ in
       tempRoots
       remoteVerbosity
       countCalls235
+      atRecursive
     ];
   };
   # Unpinned on purpose: it follows nixpkgs' `nixComponents_git`, so a
@@ -68,6 +72,7 @@ in
       tempRoots
       remoteVerbosity236
       countCalls236
+      atRecursive
     ];
   };
 
