@@ -74,6 +74,9 @@ in
       countCalls236
       atRecursive
     ];
+    # Nix master uses `#embed`, which needs GCC 15. Every PyPA image
+    # ships gcc-toolset-14 (huggorm#109).
+    wheels = false;
   };
 
   # On every collector a lane links, after nixpkgs' own `nixDependencies`

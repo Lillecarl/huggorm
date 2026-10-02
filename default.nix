@@ -84,8 +84,9 @@ rec {
     : One of `sanitizers`, or null. It instruments every Nix component,
       the libraries `nix/sanitizer.nix` names, and the bindings.
 
-    A lane has `manylinux` wheels only with the collector and no
-    sanitizer.
+    `wheels`
+    : False when PyPA's manylinux image cannot build this Nix. A lane has
+      `manylinux` wheels only with this, the collector and no sanitizer.
   */
   mkLane =
     {
@@ -93,6 +94,7 @@ rec {
       patches,
       gc ? true,
       sanitizer ? null,
+      wheels ? true,
     }:
     assert lib.assertMsg (!(sanitizer.requiresNoGC or false) || !gc) ''
       The ${sanitizer.name} sanitizer needs `gc = false`: libexpr's meson
@@ -194,7 +196,7 @@ rec {
         huggorm = self.callPackage ./packages/huggorm { };
       }
       # nix build --file . lanes.nix_2_35.manylinux.checks
-      // lib.optionalAttrs (gc && sanitizer == null) {
+      // lib.optionalAttrs (wheels && gc && sanitizer == null) {
         manylinux = self.callPackage ./nix/manylinux {
           vivarium = import (sources.vivarium + "/lib.nix") { inherit pkgs; };
         };
