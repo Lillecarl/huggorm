@@ -314,7 +314,7 @@ def test_the_version_is_the_evaluator_s_own() -> None:
 
 def test_the_collector_probe_agrees_with_the_build() -> None:
     """`boehm_gc()` says what the build linked: Boehm, as nixpkgs
-    builds it, or no collector for `nixVersions.nix_2_34-nogc`."""
+    builds it, or no collector for `lanes.nix_2_34-nogc`."""
     from huggorm_bindings import boehm_gc
 
     assert boehm_gc() is HAS_COLLECTOR

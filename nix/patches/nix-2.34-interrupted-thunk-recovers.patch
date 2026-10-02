@@ -1,8 +1,9 @@
 Let a thunk that was interrupted be forced again.
 
 A backport of NixOS/nix 5c4f498d3, "Don't memoise Interrupted errors"
-(NixOS/nix#15980), first released in 2.35.0. Drop this patch when the
-bound Nix is 2.35 or later.
+(NixOS/nix#15980), first released in 2.35.0, so only the 2.34 lane
+takes it. huggorm carries the same file, and nanopynix#309 measured it
+here.
 
 EvalState::handleEvalExceptionForThunk and handleEvalExceptionForApp store
 the exception of a failed evaluation in the value, with mkFailed. They keep a
@@ -17,9 +18,9 @@ cancelled call does, measured on 2.34.8 with
     force a again, not interrupted                 -> Interrupted, 0.00s
 
 The change is upstream's, line for line. The diff is not: it is taken after
-nix-base-env-size.patch, with six lines of context. The two handlers share
-their first lines, so upstream's three-line hunks matched the wrong handler
-once the earlier patch moved the line numbers.
+nix-base-env-size.patch, with six lines of context, so it applies last.
+The two handlers share their first lines, so upstream's three-line hunks
+matched the wrong handler once the earlier patch moved the line numbers.
 
 diff --git a/src/libexpr/eval.cc b/src/libexpr/eval.cc
 index 1406366..ba39581 100644

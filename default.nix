@@ -7,105 +7,9 @@
 rec {
   inherit pkgs;
   inherit (pkgs) lib;
-  # The Nix this repository BINDS, with one patch carried on it.
-  #
-  # `EvalState` allocates its base environment once, at a size
-  # `src/libexpr/eval.cc` fixes as `BASE_ENV_SIZE = 128`, and neither
-  # `addConstant` nor `addPrimOp` tests a bound before writing
-  # `baseEnv.values[baseEnvDispl++]`. Nix 2.34 publishes 119 names
-  # under `builtins`, so a stock evaluator has NINE slots left and the
-  # tenth registered primop writes past the end of the block.
-  #
-  # huggorm#33 measured the headroom here; the patch header measures
-  # the overflow, under AddressSanitizer, and explains why the size is
-  # a constant at all. Two things in it are worth knowing before
-  # reading the diff:
-  #
-  # - The collector HIDES this. `allocBytes` is GC_MALLOC and Boehm
-  #   rounds up to a size class, so the write lands in the block's
-  #   slack and nothing reports it. Only a build with no collector
-  #   gets an exact allocation and aborts.
-  # - There are TWO containers of 128. `createBaseEnv` also builds the
-  #   `builtins` attribute set with `buildBindings(128)` and pushes
-  #   into it through a `const_cast` that goes around the capacity
-  #   assert. Raising only the base environment moves the corruption
-  #   rather than removing it, so both go up together.
-  #
-  # Taken from ~/Code/nanopynix, which found it and carries the same
-  # file. Carl's call, 2026-09-03: "there are tiny patches required to
-  # make good bindings for now, eventually I'll work on upstreaming
-  # dynamic env sizing".
-  #
-  # The second patch lets an interrupted thunk be forced again. Nix
-  # caches every non-recoverable error in the thunk it came from, and
-  # `nix::Interrupted` is one, so a cancelled call left every value
-  # it was forcing rethrowing "interrupted by the user" for the life
-  # of the state (huggorm#97). Carl's call, 2026-09-25: patch Nix, not
-  # abandon the state. It is upstream's own fix, 5c4f498d3, released
-  # in 2.35.0, so only 2.34 carries it.
-  #
-  # The patch header says the base-environment hunks have identical
-  # context in 2.31, 2.34 and 2.35, so a version bump moves line
-  # numbers and nothing else.
-  #
-  # It raises both sizes to 512 and makes the two base-environment
-  # writes TEST the bound, so a consumer that still exceeds it reads
-  # an error instead of corrupting the heap.
-  #
-  # The third names each LocalStore's temporary roots file `<pid>-<n>`.
-  # Named by pid alone, a second store on one directory deleted the
-  # first one's file, and the collector stopped seeing its roots.
-  # Carl's call, 2026-09-29: patch Nix rather than cache stores per URI.
-  #
-  # The fourth lets `setOptions` send a daemon a level other than
-  # `nix::verbosity`, which huggorm pins at import (huggorm#102).
-  #
-  # The fifth gives an embedding caller the evaluator's statistics:
-  # `statisticsJSON` returns the report `printStatistics` writes,
-  # `count-calls` becomes a setting, and the call-count maps become
-  # concurrent. One file per version, because the context differs; the
-  # 2.36 file covers git. Taken from nanopynix, which now takes it from
-  # here.
-  #
-  # The collector carries one patch too. huggorm starts Boehm at import
-  # and runs `nix::initGC` at the first evaluator, so importing starts
-  # no marker thread. `initGC` then switches interior pointers after
-  # `GC_init`, and bdwgc's setter drops offset 0 when it does. The
-  # patch header has the detail (huggorm#101).
-  patchNix =
-    {
-      base,
-      # False builds libexpr with `-Dgc=disabled`, as nanopynix's `-nogc`
-      # and `-asan` lanes do. huggorm then makes no collector call.
-      gc ? true,
-    }:
-    (base.appendPatches (
-      [ ./nix/patches/nix-base-env-size.patch ]
-      ++ lib.optional (lib.versionOlder base.version "2.35") ./nix/patches/nix-interrupted-thunk-recovers.patch
-      ++ nixPatchesFor base.version
-    )).overrideScope
-      (
-        final: prev:
-        {
-          # Not in `prev`: the components take it from nixDependencies.
-          boehmgc = pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ bdwgcPatches;
-          });
-        }
-        // lib.optionalAttrs (!gc) {
-          nix-expr = prev.nix-expr.override { enableGC = false; };
-        }
-      );
-  # Exported: a consumer that builds its own collector and its own Nix
-  # for these bindings, as nanopynix does, needs the same patches. The
-  # other two Nix patches are nanopynix's own already.
+  # nanopynix reads these two until it extends `lanes` (huggorm#108).
+  # `nix/versions.nix` is the table every lane reads.
   bdwgcPatches = [ ./nix/patches/bdwgc-late-interior-pointers.patch ];
-  /**
-    The Nix patches these bindings need, for a Nix version string: the
-    temp-roots, remote-verbosity and count-calls patches. A version with
-    no files of its own, such as git's `2.36pre...`, takes the newest,
-    which git's changed `setOptions` and `EvalState` constructor need.
-  */
   nixPatchesFor =
     version:
     let
@@ -176,100 +80,102 @@ rec {
     ];
     pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
-  # Everything that links a Nix, for one Nix (huggorm#55). The bindings,
-  # the surface generated for them and the library over both describe
-  # the Nix `base` is, and `HUGGORM_NIX_VERSION` carries that to every
-  # declaration's `NIX_VERSION` branch.
-  forNix = base: forNixWith { inherit base; };
-  forNixWith =
+  versions = import ./nix/versions.nix { inherit pkgs; };
+
+  /**
+    One Nix, patched, and everything huggorm builds against it, as a
+    scope. `overrideScope` replaces a member for every member that takes
+    it.
+
+    # Inputs
+
+    `components`
+    : A nixpkgs Nix component scope, such as `pkgs.nixVersions.nixComponents_2_34`
+
+    `patches`
+    : The patches to append to every component
+
+    `gc`
+    : False builds libexpr with `-Dgc=disabled`. huggorm then makes no
+      collector call, and the lane has no `boehmgc` and no wheels.
+  */
+  mkLane =
     {
-      base,
+      components,
+      patches,
       gc ? true,
     }:
-    let
-      nix = patchNix { inherit base gc; };
-      # The libgc libnixexpr links. The bindings link the same one, because
-      # a process loads one `libgc.so.1`: with `pkgs.boehmgc` here, the
-      # process ran libnixexpr on a libgc built without its large config.
-      # null when libexpr is built without the collector.
-      boehmgc = lib.findFirst (
-        p: (p.pname or "") == "boehm-gc"
-      ) null nix.libs.nix-expr.propagatedBuildInputs;
-      unversioned-src = bindings-src;
-    in
-    rec {
-      inherit nix boehmgc;
-      # The emitted C++ for this Nix, for reading.
-      bindings-src = unversioned-src.overrideAttrs { HUGGORM_NIX_VERSION = nix.version; };
-      # The bindings. Every module is a nanobind extension whose C++ its
-      # own setup.py writes from a declaration, before setuptools is told
-      # the sources exist.
-      huggorm-bindings = pkgs.callPackage ./packages/huggorm-bindings {
+    lib.makeScope pkgs.newScope (
+      self:
+      {
         inherit
-          huggorm-gen
-          huggorm-decl
+          gc
           huggorm-dsl
-          boehmgc
+          huggorm-decl
+          huggorm-gen
           ;
-        inherit (nix.libs)
-          nix-util
-          nix-store
-          nix-expr
-          nix-fetchers
-          nix-flake
-          nix-cmd
-          ;
-      };
-      # this is a Python library that uses huggorm-bindings
-      huggorm = pkgs.callPackage ./packages/huggorm {
-        inherit huggorm-bindings;
-        inherit huggorm-generated;
-        inherit huggorm-gen huggorm-decl huggorm-dsl;
-      };
-      # AST codegen layer between bindings and python: the declarations
-      # -> async wrappers, protocols, an RPC client, a wire schema and
-      # the binding stubs.
-      huggorm-generated = pkgs.callPackage ./packages/huggorm-generated {
-        inherit huggorm-bindings;
-        inherit huggorm-gen huggorm-decl huggorm-dsl;
-      };
-    };
+        inherit (pkgs) python3Packages;
 
-  # The versions nanopynix's CI covers. 2.34 is the default below.
-  nixVersions = {
-    nix_2_34 = forNix pkgs.nixVersions.nix_2_34;
-    nix_2_35 = forNix pkgs.nixVersions.nix_2_35;
-    git = forNix pkgs.nixVersions.git;
-    # No collector: what nanopynix's `-nogc` and `-asan` lanes run.
-    nix_2_34-nogc = forNixWith {
-      base = pkgs.nixVersions.nix_2_34;
-      gc = false;
-    };
+        nixComponents = (components.appendPatches patches).overrideScope (
+          _: prev: {
+            nix-expr = prev.nix-expr.override (
+              if gc then { inherit (self) boehmgc; } else { enableGC = false; }
+            );
+          }
+        );
+        inherit (self.nixComponents) version;
+        # The CLI. nixpkgs' `nix_2_34` is `nix-everything`, which also
+        # builds the manual and runs Nix's functional tests.
+        nix = self.nixComponents.nix-cli;
+        # The collector libexpr links. The bindings link the same one,
+        # because a process loads one `libgc.so.1`.
+        boehmgc =
+          if gc then
+            pkgs.nixDependencies.boehmgc.overrideAttrs (old: {
+              patches = (old.patches or [ ]) ++ versions.boehmgcPatches;
+            })
+          else
+            null;
+
+        # The emitted C++ for this Nix. `HUGGORM_NIX_VERSION` picks each
+        # declaration's `NIX_VERSION` branch (huggorm#55).
+        bindings-src = bindings-src.overrideAttrs { HUGGORM_NIX_VERSION = self.version; };
+        huggorm-bindings = self.callPackage ./packages/huggorm-bindings {
+          inherit (self.nixComponents)
+            nix-util
+            nix-store
+            nix-expr
+            nix-fetchers
+            nix-flake
+            nix-cmd
+            ;
+        };
+        huggorm-generated = self.callPackage ./packages/huggorm-generated { };
+        huggorm = self.callPackage ./packages/huggorm { };
+      }
+      # nix build --file . lanes.nix_2_35.manylinux.checks
+      // lib.optionalAttrs gc {
+        manylinux = self.callPackage ./nix/manylinux {
+          vivarium = import (sources.vivarium + "/lib.nix") { inherit pkgs; };
+        };
+      }
+    );
+
+  # The names nanopynix's CI uses. nix_2_34 is the default below.
+  lanes = {
+    nix_2_34 = mkLane versions.nix_2_34;
+    nix_2_35 = mkLane versions.nix_2_35;
+    git = mkLane versions.git;
+    nix_2_34-nogc = mkLane (versions.nix_2_34 // { gc = false; });
   };
-  inherit (nixVersions.nix_2_34)
+  inherit (lanes.nix_2_34)
     nix
     boehmgc
     huggorm-bindings
     huggorm
     huggorm-generated
+    manylinux
     ;
-
-  # nix build --file . manylinux.checks
-  manylinux = import ./nix/manylinux {
-    inherit
-      pkgs
-      lib
-      huggorm-gen
-      huggorm-decl
-      ;
-    inherit (nixVersions.nix_2_34)
-      nix
-      boehmgc
-      bindings-src
-      huggorm
-      ;
-    vivarium = import (sources.vivarium + "/lib.nix") { inherit pkgs; };
-  };
 
   # nix run --file . python -- $args
   # to be able to run Python commands

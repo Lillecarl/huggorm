@@ -13,8 +13,8 @@
 {
   pkgs,
   lib,
-  # huggorm's patched Nix, and the collector it links.
-  nix,
+  # A lane's patched Nix components, and the collector libexpr links.
+  nixComponents,
   boehmgc,
 }:
 {
@@ -257,8 +257,8 @@
     in
     build {
       pname = "nix";
-      inherit (nix) version;
-      inherit (nix.libs.nix-util) src;
+      inherit (nixComponents) version;
+      inherit (nixComponents.nix-util) src;
       inherit deps;
       # The parser asks for `parse.error detailed`, bison 3.6; the image has 3.0.4.
       tools = [ pkgs.bison ];

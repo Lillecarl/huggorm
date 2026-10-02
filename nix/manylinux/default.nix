@@ -15,8 +15,8 @@
 {
   pkgs,
   lib,
-  # huggorm's patched Nix, from `patchNix`, and the collector it links.
-  nix,
+  # A lane's patched Nix components, and the collector libexpr links.
+  nixComponents,
   boehmgc,
   # The emitted C++ for that Nix, which every wheel compiles.
   bindings-src,
@@ -64,7 +64,7 @@ let
     inherit
       pkgs
       lib
-      nix
+      nixComponents
       boehmgc
       ;
   };
@@ -210,7 +210,7 @@ lib.makeScope pkgs.newScope (
       py:
       self.build {
         pname = "huggorm-bindings-${py}";
-        inherit (nix) version;
+        inherit (nixComponents) version;
         src = ../../packages/huggorm-bindings;
         deps = [ self.nixLibs ];
         script = ''
@@ -223,7 +223,7 @@ lib.makeScope pkgs.newScope (
           export HUGGORM_BINDINGS_EMITTED=${bindings-src}
           export HUGGORM_DECL_INCLUDE=${huggorm-decl}/${pkgs.python3.sitePackages}
           mkdir -p huggorm_bindings
-          cp ${nix.libs.nix-store.src}/src/nix/get-env.sh huggorm_bindings/get-env.sh
+          cp ${nixComponents.nix-store.src}/src/nix/get-env.sh huggorm_bindings/get-env.sh
           ${interpreter py} -m pip wheel --no-build-isolation \
             --no-deps --no-index --wheel-dir dist .
           auditwheel repair --plat ${platform} --wheel-dir "$out" dist/*.whl
@@ -241,21 +241,23 @@ lib.makeScope pkgs.newScope (
         '';
 
     /**
-      What one wheel must do, under its own interpreter, inside the image.
+      Runs `script` against one wheel, under its own interpreter, inside
+      the image.
 
       The wheel is the only compiled code under test: pip installs it
       into the image's CPython, and the pure Python around it comes from
       nixpkgs with nixpkgs' bindings filtered out. A nixpkgs C extension
       built against glibc 2.42 would fail to load here, so protobuf and
       multidict take their pure Python implementations.
-
-      Every wheel runs `smoke.py`. cp314 also runs the hermetic suite,
-      which imports the generator and so runs nowhere else.
     */
-    checks = lib.genAttrs pythons (
-      py:
+    wheelCheck =
+      {
+        pname,
+        py,
+        script,
+        extraPythonPackages ? [ ],
+      }:
       let
-        python = interpreter py;
         # The wheel's bindings are under test, so nixpkgs' are left out.
         pure = lib.filter (p: p.pname != "huggorm-bindings") (
           pythonClosure (
@@ -266,27 +268,46 @@ lib.makeScope pkgs.newScope (
               # anyio needs it below 3.13, and nixpkgs' 3.14 build drops it.
               pkgs.python3.pkgs.typing-extensions
             ]
-            ++ lib.optional (py == "cp314") huggorm-gen
+            ++ extraPythonPackages
           )
         );
       in
       self.build {
-        pname = "huggorm-wheel-check-${py}";
-        inherit (nix) version;
+        inherit pname;
+        inherit (nixComponents) version;
         src = ../../packages/huggorm;
         script = ''
-          ${python} -m pip install --no-index --no-deps --target /tmp/site ${self.wheels.${py}}/*.whl
+          ${interpreter py} -m pip install --no-index --no-deps --target /tmp/site ${self.wheels.${py}}/*.whl
           export PYTHONPATH=/tmp/site:${pythonPath pure}
           export PATH="$PATH:${pkgs.grpcurl}/bin"
           export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python MULTIDICT_NO_EXTENSIONS=1
-          export HUGGORM_NIX_VERSION=${lib.escapeShellArg nix.libs.nix-store.version} HUGGORM_NIX_GC=1
-          ${python} ${./smoke.py} ${self.modules} | tee "$out/smoke.log"
+          export HUGGORM_NIX_VERSION=${lib.escapeShellArg nixComponents.version} HUGGORM_NIX_GC=1
         ''
-        + lib.optionalString (py == "cp314") ''
-          ${python} -m pytest -p no:cacheprovider -m "not live" tests 2>&1 | tee "$out/pytest.log"
+        + script;
+      };
+
+    # `smoke.py` against every wheel.
+    checks = lib.genAttrs pythons (
+      py:
+      self.wheelCheck {
+        pname = "huggorm-wheel-check-${py}";
+        inherit py;
+        script = ''
+          ${interpreter py} ${./smoke.py} ${self.modules} | tee "$out/smoke.log"
         '';
       }
     );
+
+    # The hermetic suite against the cp314 wheel. It imports the
+    # generator, which needs 3.14.
+    suite = self.wheelCheck {
+      pname = "huggorm-wheel-suite-cp314";
+      py = "cp314";
+      extraPythonPackages = [ huggorm-gen ];
+      script = ''
+        ${interpreter "cp314"} -m pytest -p no:cacheprovider -m "not live" tests 2>&1 | tee "$out/pytest.log"
+      '';
+    };
 
     /**
       Every wheel `pip install --no-index --find-links` needs for huggorm:
