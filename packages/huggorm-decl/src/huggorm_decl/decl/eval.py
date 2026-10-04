@@ -36,7 +36,6 @@ from huggorm_dsl.declare import (
     Bint,
     Bytes,
     Cxx,
-    Field,
     PyFunc,
     Str,
     StrView,
@@ -49,6 +48,7 @@ from huggorm_dsl.declare import (
     guard,
     header,
     instant,
+    local,
     names,
     needs,
     produced,
@@ -58,6 +58,7 @@ from huggorm_dsl.declare import (
     tagged,
     threading,
     tree,
+    wire_read,
     wire_value,
 )
 
@@ -978,14 +979,7 @@ class SourceLocation:
     blocking=False,
 )
 @produced(by="LogRecord.fields")
-@wire_value(fields=(
-    # The `text` part reads `text_bytes`, not `text`: a log line is
-    # bytes Nix raised, and `text` decodes strict UTF-8, so reading
-    # the part through it would fail the crossing on the first line
-    # no decoder accepts (nanopynix#312). The name and the position
-    # stay, so only the type flips.
-    "is_int", "integer", Field("text", read="text_bytes"),
-))
+@wire_value()
 class LogField:
     """One field of one log record: an integer or a string.
 
@@ -1005,39 +999,25 @@ class LogField:
     def integer(self) -> I64:
         """The number, when `is_int`. Zero otherwise."""
 
+    # The wire reads `text_bytes`: a log line is bytes Nix raised, and
+    # `text` decodes strict UTF-8, so the crossing would fail on the
+    # first line no decoder accepts (nanopynix#312).
     @reads("text")
+    @wire_read("text_bytes")
     def text(self) -> Str:
         """The string, when not `is_int`. Empty otherwise.
 
         Strict UTF-8, so a line in any other encoding raises here
         and reads through `text_bytes`."""
 
+    @local
+    @reads("text")
     def text_bytes(self) -> Bytes:
         """The bytes of `text`, exactly as Nix raised them.
 
         `text` decodes strict UTF-8, so a builder that prints anything
         else fails that call. A log carries bytes and not text, and the
-        decoder belongs to the caller. nanopynix#312.
-
-        A `Cxx` body, like `Signature.sig`: `nb::bytes` takes only
-        explicit constructors, so a derived `@reads` body does not
-        compile.
-        """
-        Cxx("return nb::bytes(self.text.data(), self.text.size());")
-
-    @staticmethod
-    def _from_parts() -> LogField:
-        """Rebuild one from the parts that crossed.
-
-        The `text` part arrives as the bytes `text_bytes` read: an
-        aggregate would need a `std::string` from an `nb::bytes`,
-        and no such conversion exists. So the three bytes go back
-        into a string unread, which is exactly what crossed.
-        """
-        Cxx("""
-return huggorm::LogField(is_int, integer,
-    std::string(text.c_str(), text.size()));
-        """)
+        decoder belongs to the caller. nanopynix#312."""
 
 
 @header("huggorm_decl/cpp/logging.hpp")
@@ -1047,13 +1027,7 @@ return huggorm::LogField(is_int, integer,
     blocking=False,
 )
 @produced(by="LogStream.drain")
-@wire_value(fields=(
-    # Like the field's: the `text` part reads `text_bytes`, because
-    # a message is bytes Nix raised and `text` decodes strict UTF-8.
-    # Every name and position stays, so only the type flips.
-    "action", "level", "id", "parent", "type", "request",
-    Field("text", read="text_bytes"), "fields", "info",
-))
+@wire_value()
 class LogRecord:
     """One thing Nix said while it worked.
 
@@ -1128,7 +1102,10 @@ class LogRecord:
         no wrapped call owns, so nothing about them belongs to a
         call."""
 
+    # Like the field's: the wire reads `text_bytes`, because a message
+    # is bytes Nix raised and `text` decodes strict UTF-8.
     @reads("text")
+    @wire_read("text_bytes")
     def text(self) -> Str:
         """The message, or the activity's description.
 
@@ -1138,27 +1115,10 @@ class LogRecord:
         Strict UTF-8, like the field's: a message Nix raised as other
         bytes raises here and reads through `text_bytes`."""
 
+    @local
+    @reads("text")
     def text_bytes(self) -> Bytes:
-        """The bytes of `text`, exactly as Nix raised them.
-
-        A `Cxx` body for the field's reason: `nb::bytes` takes only
-        explicit constructors, so a derived `@reads` body does not
-        compile.
-        """
-        Cxx("return nb::bytes(self.text.data(), self.text.size());")
-
-    @staticmethod
-    def _from_parts() -> LogRecord:
-        """Rebuild one from the parts that crossed.
-
-        The `text` part arrives as the bytes `text_bytes` read, so
-        the aggregate needs the same conversion the field's does:
-        back into a string unread.
-        """
-        Cxx("""
-return huggorm::LogRecord(action, level, id, parent, type, request,
-    std::string(text.c_str(), text.size()), fields, info);
-        """)
+        """The bytes of `text`, exactly as Nix raised them."""
 
     @reads("fields")
     def fields(self) -> list[LogField]:

@@ -509,6 +509,7 @@ MARKERS: dict[str, Marker] = {
                       excludes=frozenset({"blocks"})),
     "local": Marker(_t("method"), "flag"),
     "reads": Marker(_t("method"), "once"),
+    "wire_read": Marker(_t("method"), "once"),
     "threading": Marker(_t("method", "free"), "once"),
     # On anything that names C++ it needs compiled beside it.
     "needs": Marker(_t("class", "method", "free"), "repeatable"),
@@ -926,6 +927,23 @@ def reads[F: Callable[..., Any]](member: str,
     def apply(fn: F) -> F:
         fn._reads = member  # type: ignore[attr-defined]
         fn._member_collection = collection  # type: ignore[attr-defined]
+        return fn
+    return apply
+
+
+def wire_read[F: Callable[..., Any]](accessor: str) -> Callable[[F], F]:
+    """This part crosses the wire as what `accessor` reads.
+
+    The part keeps this accessor's name and position. Only the reader
+    changes: `LogRecord.text` decodes strict UTF-8, so the wire reads
+    `text_bytes` and a line in any other encoding still crosses.
+
+    Said HERE rather than in a `wire_value(fields=...)` list, because a
+    list restates every part to change one, and an accessor added later
+    and left out of it silently stays off the wire. `accessor` must be
+    `@local`, or it would cross a second time as a part of its own."""
+    def apply(fn: F) -> F:
+        fn._wire_read = accessor  # type: ignore[attr-defined]
         return fn
     return apply
 

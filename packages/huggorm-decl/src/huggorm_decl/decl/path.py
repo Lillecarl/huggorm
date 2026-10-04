@@ -15,7 +15,6 @@ from huggorm_dsl.declare import (
     I64,
     Bint,
     Bytes,
-    Cxx,
     Field,
     Str,
     StrView,
@@ -26,8 +25,10 @@ from huggorm_dsl.declare import (
     local,
     needs,
     produced,
+    reads,
     startup,
     translator,
+    wire_read,
     wire_value,
 )
 
@@ -114,15 +115,13 @@ class StorePath:
 
 @produced(by="NixError.info")
 @binding(threading="pool", blocking=False)
-@wire_value(fields=(
-    # Like a log line: the file is bytes the filesystem raised, and
-    # `file` decodes strict UTF-8. The name stays, so only the type
-    # flips.
-    Field("file", read="file_bytes"), "line", "column",
-))
+@wire_value()
 class Position:
     """A place in Nix source: a file, a line and a column."""
 
+    # The wire reads `file_bytes`: a path is bytes the filesystem
+    # raised, and `file` decodes strict UTF-8.
+    @wire_read("file_bytes")
     def file(self) -> Str:
         """The file, or Nix's name for a string or stdin.
 
@@ -136,36 +135,19 @@ class Position:
         """The column."""
 
     @local
+    @reads("file")
     def file_bytes(self) -> Bytes:
-        """The bytes of `file`, exactly as the filesystem raised them.
-
-        A `Cxx` body, like the log's `text_bytes`: `nb::bytes` takes
-        only explicit constructors, so a derived `@reads` body does
-        not compile.
-        """
-        Cxx("return nb::bytes(self.file.data(), self.file.size());")
-
-    @staticmethod
-    def _from_parts() -> Position:
-        """Rebuild one from the parts that crossed.
-
-        The `file` part arrives as the bytes `file_bytes` read, so
-        the aggregate needs them back in a string unread.
-        """
-        Cxx("""
-return huggorm::Position{std::string(file.c_str(), file.size()), line, column};
-        """)
+        """The bytes of `file`, exactly as the filesystem raised them."""
 
 
 @produced(by="ErrorInfo.traces")
 @binding(threading="pool", blocking=False)
-@wire_value(fields=(
-    # Like the file's: a hint quotes paths Nix raised as bytes.
-    Field("hint", read="hint_bytes"), "pos",
-))
+@wire_value()
 class Trace:
     """One frame of an evaluation trace, `--show-trace`'s unit."""
 
+    # Like the file's: a hint quotes paths Nix raised as bytes.
+    @wire_read("hint_bytes")
     def hint(self) -> Str:
         """What Nix was doing, such as "while evaluating the attribute
         'x'". It carries Nix's escape sequences.
@@ -177,31 +159,14 @@ class Trace:
         """Where, or None when the frame has no position."""
 
     @local
+    @reads("hint")
     def hint_bytes(self) -> Bytes:
         """The bytes of `hint`, exactly as Nix raised them."""
-        Cxx("return nb::bytes(self.hint.data(), self.hint.size());")
-
-    @staticmethod
-    def _from_parts() -> Trace:
-        """Rebuild one from the parts that crossed.
-
-        The `hint` part arrives as the bytes `hint_bytes` read.
-        """
-        Cxx("""
-return huggorm::Trace{std::string(hint.c_str(), hint.size()), pos};
-        """)
 
 
 @produced(by="NixError.info")
 @binding(threading="pool", blocking=False)
-@wire_value(fields=(
-    # Like the log's: a message is bytes Nix raised, and every text
-    # here decodes strict UTF-8. Every name and position stays, so
-    # only the types flip.
-    "level", Field("msg", read="msg_bytes"), "pos", "is_from_expr",
-    "status", "traces", "truncated",
-    Field("suggestions", read="suggestions_bytes"),
-))
+@wire_value()
 class ErrorInfo:
     """What `nix::ErrorInfo` holds, beside the rendered message.
 
@@ -211,6 +176,9 @@ class ErrorInfo:
     def level(self) -> I64:
         """`nix::Verbosity`: 0 error, 1 warn, and upward."""
 
+    # A message is bytes Nix raised, and every text here decodes
+    # strict UTF-8, so the wire reads the bytes.
+    @wire_read("msg_bytes")
     def msg(self) -> Str:
         """The message alone, with no position and no trace. It
         carries Nix's escape sequences.
@@ -220,9 +188,9 @@ class ErrorInfo:
         `msg_bytes`."""
 
     @local
+    @reads("msg")
     def msg_bytes(self) -> Bytes:
         """The bytes of `msg`, exactly as Nix raised them."""
-        Cxx("return nb::bytes(self.msg.data(), self.msg.size());")
 
     def pos(self) -> Position | None:
         """Where the error is, or None when Nix gave no position."""
@@ -242,6 +210,7 @@ class ErrorInfo:
     def truncated(self) -> Bint:
         """Whether Nix held more frames than `traces` does."""
 
+    @wire_read("suggestions_bytes")
     def suggestions(self) -> list[Str]:
         """Nix's "did you mean" names, the best match first.
 
@@ -249,30 +218,9 @@ class ErrorInfo:
         raises here and reads through `suggestions_bytes`."""
 
     @local
+    @reads("suggestions")
     def suggestions_bytes(self) -> list[Bytes]:
         """The suggestions as bytes, exactly as Nix raised them."""
-        Cxx("""
-std::vector<nb::bytes> out;
-for (auto & s : self.suggestions)
-    out.emplace_back(s.data(), s.size());
-return out;
-        """)
-
-    @staticmethod
-    def _from_parts() -> ErrorInfo:
-        """Rebuild one from the parts that crossed.
-
-        The text parts arrive as the bytes their `*_bytes` readers
-        read, so each goes back into a string unread.
-        """
-        Cxx("""
-std::vector<std::string> kept;
-kept.reserve(suggestions.size());
-for (auto & s : suggestions)
-    kept.emplace_back(s.c_str(), s.size());
-return huggorm::ErrorInfo{level, std::string(msg.c_str(), msg.size()),
-    pos, is_from_expr, status, traces, truncated, std::move(kept)};
-        """)
 
 
 # --- what the module does before a caller exists -------------------

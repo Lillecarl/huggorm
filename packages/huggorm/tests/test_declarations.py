@@ -284,6 +284,60 @@ def test_the_reader_sees_an_accessor_the_import_kept_as_a_descriptor(
     assert cls.methods[0].prop
 
 
+# One record whose `text` crosses as bytes. `{local}` is filled in by
+# the test, so the same source reads with and without the marker the
+# rule depends on.
+WIRE_READ = '''"""One record with a part read through another accessor."""
+
+from huggorm_dsl.declare import (
+    I64, Bytes, Str, binding, local, produced, reads, wire_read, wire_value)
+
+
+@produced(by="Nothing.makes")
+@binding(threading="pool", blocking=False)
+@wire_value()
+class Line:
+    """A line, for a test that never compiles one."""
+
+    @wire_read("text_bytes")
+    def text(self) -> Str:
+        """The text."""
+
+    def number(self) -> I64:
+        """The line number."""
+
+    {local}
+    @reads("text")
+    def text_bytes(self) -> Bytes:
+        """The bytes of `text`."""
+'''
+
+
+def test_a_part_read_through_another_accessor_is_still_derived(
+        tmp_path: pathlib.Path) -> None:
+    """`@wire_read` changes one part's reader, and nothing else.
+
+    The parts stay derived from the accessors, so an accessor added
+    later crosses with no list to update. A `wire_value(fields=...)`
+    list did the same job and left a new accessor off the wire,
+    silently.
+
+    The reader must be `@local`: otherwise it would cross a second
+    time as a part of its own. Without the marker, the read refuses."""
+    from huggorm_dsl.read import read
+
+    path = _declaration(tmp_path, WIRE_READ.replace("{local}", "@local"))
+    cls = read(path).classes[0]
+    assert [(f.name, f.read) for f, _ in cls.parts] == [
+        ("text", "text_bytes"), ("number", "number")]
+
+    (tmp_path / "unmarked").mkdir()
+    path = _declaration(tmp_path / "unmarked",
+                        WIRE_READ.replace("    {local}\n", ""))
+    with pytest.raises(TypeError, match="must be a @local accessor"):
+        _ = read(path).classes[0].parts
+
+
 # One bound class that declares a dunder. `__call__` because that is
 # the one a declaration actually wants - `await f.apply(x)` is what
 # huggorm#34 shipped, and `await f(x)` is what it could not say.

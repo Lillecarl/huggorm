@@ -56,12 +56,12 @@ class Signature:
     def key_name(self) -> Str:
         """Which key signed it - `cache.nixos.org-1`, usually."""
 
+    @reads("sig")
     def sig(self) -> Bytes:
         """The raw signature bytes, decoded.
 
         Upstream keeps them decoded and renders base64 on the way out,
         so this is the shorter path as well as the honest one."""
-        Cxx("return nb::bytes(self.sig.data(), self.sig.size());")
 
     # --- the rendering, which is derived from both fields above ------
 

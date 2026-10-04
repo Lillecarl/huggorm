@@ -467,6 +467,9 @@ class Method:
     # crosses as every accessor it has, so this is the one thing an
     # accessor has to be able to say for itself.
     local: bool = False
+    # The `@local` accessor the wire reads this part through, from
+    # @wire_read. Empty means this accessor itself.
+    wire_read: str = ""
     # Headers this method's BODY needs, beyond its class's, from
     # @needs. Empty when the signature already names everything.
     headers: tuple[str, ...] = ()
@@ -625,6 +628,10 @@ class Class:
         the accessor's own annotation has it."""
         by_name = {m.name: m for m in self.methods}
         if self.decl.fields:
+            if marked := [m.name for m in self.methods if m.wire_read]:
+                raise TypeError(
+                    f"{self.name}: {marked} carry @wire_read, which a "
+                    f"declared field list ignores. Use one or the other.")
             out = []
             for f in self.decl.fields:
                 if isinstance(f, str):
@@ -639,8 +646,21 @@ class Class:
             return out
         if self.decl.wire != "value":
             return []
-        return [(Field(m.name, read=m.name), m)
-                for m in self.methods if m.ret is not None and not m.local]
+        out = []
+        for m in self.methods:
+            if m.ret is None or m.local:
+                continue
+            if not m.wire_read:
+                out.append((Field(m.name, read=m.name), m))
+                continue
+            reader = by_name.get(m.wire_read)
+            if reader is None or reader.ret is None or not reader.local:
+                raise TypeError(
+                    f"{self.name}.{m.name}: @wire_read names "
+                    f"'{m.wire_read}', which must be a @local accessor "
+                    f"of this class that answers something.")
+            out.append((Field(m.name, read=m.wire_read), reader))
+        return out
 
 
 @dataclass(frozen=True)
@@ -1165,6 +1185,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         member_collection=getattr(marked, "_member_collection", ""),
         cxx_body=_body(node),
         local=bool(getattr(marked, "_local", False)),
+        wire_read=getattr(marked, "_wire_read", ""),
         headers=tuple(getattr(marked, "_needs", ())),
         spells=tuple(getattr(marked, "_spells", ())),
         startup=bool(getattr(marked, "_startup", False)),

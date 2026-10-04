@@ -236,6 +236,10 @@ def _arm(cls: Class, arm: str, known: dict[str, Class]) -> str:
     return _bare(known[arm], known)
 
 
+# What `to_bytes` and `from_bytes` convert, and nothing else does.
+BYTES_SPELLINGS = ("nb::bytes", "std::vector<nb::bytes>")
+
+
 def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | None]:
     """A declared type as C++ carries it BY VALUE, and its caster.
 
@@ -841,6 +845,11 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
         return [*head, f"{INDENT * 4}{call};"]
     if ret_handle is not None:
         return [*head, f"{INDENT * 4}return {_held(ret_handle)}({call});"]
+    # A declared `Bytes` over a string, and the list of each. A string
+    # is not one implicitly - `nb::bytes` takes only explicit
+    # constructors - so the conversion is written here, once.
+    if _cxx(m.ret, known)[0] in BYTES_SPELLINGS:
+        return [*head, f"{INDENT * 4}return to_bytes({call});"]
     # A declared `list[T]` RETURN over a C++ collection that is not
     # a vector. libstore answers with a set almost everywhere, and the
     # declaration already said `list` - so nothing needs to say it
@@ -1760,14 +1769,28 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     and the far side has only the parts. So the constructor is bound
     privately, as `_from_parts`, which is exactly the name the wire
     layer asks for."""
-    if cls.from_parts is not None and cls.from_parts.cxx_body:
-        # A declared body, which is the only way an aggregate stops
-        # being one: a part that crosses as bytes goes back into a
-        # string member unread, and no aggregate converts. The
-        # signature still comes from the field list, so the body can
-        # only consume what `_parts` sent.
+    if cls.from_parts is not None:
+        if not cls.from_parts.cxx_body:
+            raise TypeError(
+                f"{cls.name}: declares `_from_parts` with no body. Write "
+                f"one, or drop the declaration and let the aggregate "
+                f"build it.")
+        # A declared body: the signature still comes from the field
+        # list, so the body can only consume what `_parts` sent.
         return [*_produced_ctor(cls), *_from_parts(cls, known)]
     fields = record_fields(cls, known)
+    if any(f.read != f.name for f, _ in cls.parts):
+        # A part read through another accessor - `@wire_read` - arrives
+        # as that accessor's type, so the aggregate needs the parts
+        # converted back. `_from_parts` initialises POSITIONALLY, so
+        # the parts must be the members, in member order, or a value
+        # lands in the wrong member.
+        names = [f.name for f, _ in cls.parts]
+        if names != [n for n, _ in fields]:
+            raise TypeError(
+                f"{cls.name}: its parts {names} are not its members "
+                f"{[n for n, _ in fields]}, in order.")
+        return [*_produced_ctor(cls), *_from_parts(cls, known)]
     held = _held(cls)
     # `.none()` on an `nb::object` part, and nothing else needs it.
     # nanobind refuses None for a parameter unless the argument says
@@ -2021,9 +2044,11 @@ def _from_parts(cls: Class, known: dict[str, Class] | None = None
         body = [f"{INDENT * 3}{ln}".rstrip()
                 for ln in written.cxx_body.strip().splitlines()]
     else:
-        names = ", ".join(_rebuilt(m, known) or n
-                          for (n, _, _), (_, m) in zip(fields, cls.parts,
-                                                       strict=True))
+        names = ", ".join(
+            f"from_bytes({n})" if t in BYTES_SPELLINGS
+            else _rebuilt(m, known) or n
+            for (n, _, _), (_, m), t in zip(fields, cls.parts, types,
+                                            strict=True))
         body = [f"{INDENT * 3}return {_held(cls)}({names});"]
     doc = _doc(written.doc) if written is not None and written.doc \
         else FROM_PARTS_DOC
@@ -2222,12 +2247,13 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         body += _identity_semantics(cls, known, equality=False)
         body += _round_trip(cls)
         body += _value_semantics(cls)
-        # A `@local` method with a body still binds: local keeps it
-        # off the wire, not off the object. The cxx-class path binds
-        # every method, so only the record path needs saying - a
-        # bytes reader on an error record is the one that taught it.
+        # A `@local` method still binds: local keeps it off the wire,
+        # not off the object. The struct has no member for it, so it
+        # needs a body or a `@reads`; with neither, `_method` names a
+        # member that does not exist and the unit fails to compile,
+        # which is the loud answer rather than a quiet absence.
         for m in cls.methods:
-            if m.local and m.cxx_body:
+            if m.local:
                 body += _method(cls, m, known)
         if body:
             body[-1] += ";"
@@ -2400,6 +2426,50 @@ inline std::vector<std::string> to_strings(const T & items)
 """
 
 
+# The two directions between a string a value holds and the bytes a
+# caller reads. `nb::bytes` has only explicit constructors, so neither
+# direction happens on its own. `to_bytes`, not `as_bytes`: <span>
+# declares a `std::as_bytes` that overload resolution finds first.
+BYTES = """
+/** A string as the bytes a caller reads. */
+inline nb::bytes to_bytes(std::string_view s)
+{
+    return nb::bytes(s.data(), s.size());
+}
+
+inline std::vector<nb::bytes> to_bytes(const std::vector<std::string> & items)
+{
+    std::vector<nb::bytes> out;
+    out.reserve(items.size());
+    for (auto & s : items)
+        out.push_back(to_bytes(s));
+    return out;
+}
+
+/** The mirror: bytes back into the string a value holds, unread. */
+inline std::string from_bytes(const nb::bytes & b)
+{
+    return std::string(b.c_str(), b.size());
+}
+
+inline std::vector<std::string> from_bytes(const std::vector<nb::bytes> & items)
+{
+    std::vector<std::string> out;
+    out.reserve(items.size());
+    for (auto & b : items)
+        out.push_back(from_bytes(b));
+    return out;
+}
+"""
+
+
+def _converts_bytes(classes: Sequence[Class],
+                    known: dict[str, Class] | None = None) -> bool:
+    """Whether any accessor here answers bytes, so a unit needs BYTES."""
+    return any(m.ret is not None and _cxx(m.ret, known)[0] in BYTES_SPELLINGS
+               for cls in classes for m in cls.methods)
+
+
 def _crosses_container(classes: Sequence[Class]) -> bool:
     """Whether any declared type here is a list of bound values."""
     for cls in classes:
@@ -2481,6 +2551,8 @@ def module(classes: Sequence[Class],
                  "}  // namespace huggorm", ""]
     if _crosses_container(classes):
         head += [*CONTAINERS.strip().splitlines(), ""]
+    if _converts_bytes(classes, known):
+        head += [*BYTES.strip().splitlines(), ""]
     # `as_tuple`, for a value whose hash covers a list part. In the
     # unit, not in `records_header`, because a class that binds a real
     # Nix type needs the helper just the same: `pathinfo.cpp` has no
