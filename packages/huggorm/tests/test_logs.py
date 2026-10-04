@@ -563,7 +563,7 @@ def test_the_process_sink_has_the_same_rpc_answer(state: Any) -> None:
     assert "unsubscribe_process_logs" in FREE
 
 
-def test_no_rpc_surface() -> None:
+def test_a_log_stream_crosses_as_a_handle() -> None:
     """A log stream crosses the wire, and says so.
 
     `LogStream` is a PROXY - it crosses as a handle - and every proxy
@@ -571,13 +571,12 @@ def test_no_rpc_surface() -> None:
     `subscribe_logs` answers an id that `drain`, `dropped` and
     `close` all read through.
 
-    This gate used to pin the opposite: no `LogStreamService`, on the
-    grounds that a log stream wants server-streaming rather than a
-    handle to poll. The agreement since is that handles are the
-    representation and streaming is the transport: `Session/Logs`
-    stays the streaming rpc beside the other protocol rpcs, and the
-    handle crosses too. The tests at the end of this file hold the
-    streaming half; the drain test below holds the handle half."""
+    Not a stream-only surface, although a log stream wants
+    server-streaming more than a handle to poll: handles are the
+    representation and streaming is the transport. `Session/Logs` is
+    the streaming rpc beside the handle. The tests at the end of this
+    file hold the streaming half; the drain test below holds the
+    handle half."""
     from huggorm_generated._policy import ASYNC_CLASS, METHODS
     from huggorm_generated.rpc import RPCEvalState, RPCLogStream
 
@@ -755,9 +754,9 @@ async def test_a_message_in_no_encoding_crosses_as_bytes(
         client: Any, tmp_path: pathlib.Path) -> None:
     """The gate on the wire change: the part reads `text_bytes`.
 
-    `_parts` used to read `text`, so the server failed the encoding
-    on the first line no decoder accepts and the stream died there.
-    The record crosses now, and the bytes arrive as Nix raised them.
+    A part that read `text` would fail the encoding on the first line
+    no decoder accepts, and the stream would die there. The record
+    crosses, and the bytes arrive as Nix raised them.
     """
     blob = tmp_path / "blob"
     blob.write_bytes(b"\xff\xfe")
