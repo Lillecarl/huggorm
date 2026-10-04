@@ -5,6 +5,8 @@ source this package links. Nix compiles it into the `nix` binary,
 where no library can reach it, so the copy travels verbatim beside
 the bindings, from the Nix of the same version.
 
-Its terms are its own: GNU Lesser General Public License v2.1 or
-later, copyright the Nix contributors (NixOS/nix). Everything else
-in this package is Apache-2.0, under the umbrella LICENSE.
+Its terms are its own: the GNU Lesser General Public License v2.1,
+copyright the Nix contributors (NixOS/nix). Nix's README states the
+licence, and `COPYING.nix` beside the script is its text, copied from
+the same Nix source. Everything else in this package is Apache-2.0,
+under the umbrella LICENSE.

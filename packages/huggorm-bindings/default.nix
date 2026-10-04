@@ -78,10 +78,14 @@ python3Packages.buildPythonPackage {
   # builder. Nix compiles it into the `nix` binary and no library
   # carries it, so the package that links the libraries carries the
   # copy of the same version. `-f`: no source must fail the build.
-  # NOTICE names whose terms the script travels under.
+  # NOTICE names whose terms the script travels under, and Nix's
+  # `COPYING` is those terms: LGPL-2.1 section 1 has the licence text
+  # go with every copy.
   postInstall = ''
     cp -f "${nix-store.src}/src/nix/get-env.sh" \
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/get-env.sh"
+    cp -f "${nix-store.src}/COPYING" \
+      "$out/${python3Packages.python.sitePackages}/huggorm_bindings/COPYING.nix"
     cp -f ${./NOTICE} \
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/NOTICE"
   '';
