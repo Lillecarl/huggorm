@@ -166,6 +166,17 @@ async def test_remote_swept_connection_reports(ttl_server: Any) -> None:
         await session.aclose()
 
 
+async def test_remote_eval_takes_a_build_store_of_its_own(
+        server: Any) -> None:
+    """`build_store` is a handle on the server, as `store` is."""
+    ctx = _connect(server)
+    async with ctx as session:
+        store = await session.store()
+        state = await session.eval(store, build_store=await session.store())
+        value = await state.eval_expr("1 + 1")
+        assert await value.integer() == 2
+
+
 async def test_remote_close_reports_a_failed_release(server: Any) -> None:
     """The counterpart: on a live connection, a failed release raises.
 

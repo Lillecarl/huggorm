@@ -373,7 +373,7 @@ class AsyncRemoteSessionLike(Protocol):
         self,
         store: RPCStore,
         settings: dict[str, str] | None = None,
-        build_store: Store | None = None,
+        build_store: RPCStore | None = None,
     ) -> RPCEvalState:
         """An evaluator on the server, bound to `store`."""
         ...
@@ -472,7 +472,7 @@ class AsyncRemoteSession:
         self,
         store: RPCStore,
         settings: dict[str, str] | None = None,
-        build_store: Store | None = None,
+        build_store: RPCStore | None = None,
     ) -> RPCEvalState:
         """Build an evaluator on a store this session made.
 
