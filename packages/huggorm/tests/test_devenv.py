@@ -244,12 +244,10 @@ class FakeStore:
     """
 
     def __init__(self, chroot: Store, files: dict[str, pathlib.Path],
-                 log: str | None = None,
                  build_error: str | None = None,
                  empty: bool = False) -> None:
         self.chroot = chroot
         self.files = files
-        self.log = log
         self.build_error = build_error
         self.built: list[DerivedPath] = []
         self.rooted: list[StorePath] = []
@@ -296,7 +294,8 @@ class FakeStore:
 
         self.built = targets
         if self.build_error is not None:
-            raise NixError(self.build_error)
+            self.raised = NixError(self.build_error)
+            raise self.raised
 
     def query_derivation_output_map(
             self, path: StorePath) -> dict[str, StorePath]:
@@ -311,14 +310,6 @@ class FakeStore:
     def add_temp_root(self, path: StorePath) -> None:
         self.rooted.append(path)
 
-    def get_build_log(self, path: StorePath) -> str | None:
-        from huggorm_bindings.errors import NixError
-
-        # `"missing"` is the dummy-store shape: a store that keeps
-        # no logs raises asking for one, and that passes through.
-        if self.log == "missing":
-            raise NixError("a dummy store keeps no logs")
-        return self.log
 
 
 def _fake(chroot: Store, files: dict[str, pathlib.Path],
@@ -389,49 +380,26 @@ def test_get_build_environment_without_an_answer_is_upstream_s_error(
         get_build_environment(store, drv, "script")
 
 
-def test_a_failed_build_raises_with_its_log_attached(
+def test_a_failed_build_raises_its_own_error(
         tmp_path: pathlib.Path) -> None:
-    """libstore's message names the failure; the log shows it."""
+    """The build's exception propagates as it is, as in Nix.
+
+    `nix print-dev-env` lets a failed build's error through, and a
+    build log reaches the user through the logger, which a session's
+    `logs()` streams here. Rewrapping it in a `NixError` lost a
+    `BuildError`'s class, `info` and `status`, and reading a strict
+    UTF-8 log could replace the build error with `UnicodeDecodeError`
+    (huggorm#112)."""
     from huggorm.devshell import get_build_environment
     from huggorm.errors import NixError
     from huggorm_bindings import Store
 
     chroot = Store(str(tmp_path / "chroot"))
     store, drv = _fake(chroot, _canned_files(tmp_path),
-                         build_error="build of foo failed", log="the log\n")
-    with pytest.raises(NixError, match=r"(?s)build of foo failed.*the log"):
+                       build_error="build of foo failed")
+    with pytest.raises(NixError) as caught:
         get_build_environment(store, drv, "script")
-
-
-def test_a_failed_build_without_a_log_raises_bare(
-        tmp_path: pathlib.Path) -> None:
-    """No log kept means nothing to attach: the failure alone."""
-    from huggorm.devshell import get_build_environment
-    from huggorm.errors import NixError
-    from huggorm_bindings import Store
-
-    chroot = Store(str(tmp_path / "chroot"))
-    store, drv = _fake(chroot, _canned_files(tmp_path),
-                         build_error="build of foo failed", log=None)
-    with pytest.raises(NixError, match="build of foo failed"):
-        get_build_environment(store, drv, "script")
-
-
-def test_a_store_with_no_log_says_so_beside_the_build_error(
-        tmp_path: pathlib.Path) -> None:
-    """A store that keeps no logs raises asking for one; that stays
-    in the message beside the build's, so neither fact is lost."""
-    from huggorm.devshell import get_build_environment
-    from huggorm.errors import NixError
-    from huggorm_bindings import Store
-
-    chroot = Store(str(tmp_path / "chroot"))
-    store, drv = _fake(chroot, _canned_files(tmp_path),
-                       build_error="build of foo failed", log="missing")
-    with pytest.raises(
-            NixError,
-            match=r"(?s)build of foo failed.*no build log.*keeps no logs"):
-        get_build_environment(store, drv, "script")
+    assert caught.value is store.raised
 
 
 def test_a_broken_dump_names_the_file_it_broke_on(
@@ -564,8 +532,6 @@ class AsyncFakeStore:
     async def add_temp_root(self, path: StorePath) -> None:
         self.sync.add_temp_root(path)
 
-    async def get_build_log(self, path: StorePath) -> str | None:
-        return self.sync.get_build_log(path)
 
 
 def _afake(chroot: Store, files: dict[str, pathlib.Path],

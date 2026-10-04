@@ -452,25 +452,11 @@ def get_build_environment(
     asked, and a library keeps its answer alive for the process
     instead.
 
-    A failed build raises with the build log attached, because
-    libstore's message alone names the failure without showing it.
-    A store that keeps no log at all raises asking for one, and
-    that stays in the message beside the build's rather than
-    replacing it, so neither fact is lost.
+    A failed build raises its own error, as in Nix: the build log
+    reaches a caller through the logger, which `logs()` streams.
     """
     shell_drv = write_dev_shell_derivation(store, drv_path, get_env_script)
-    try:
-        store.build_paths([DerivedPathBuilt(
-            shell_drv, OutputsSpec(all=True))])
-    except NixError as failed:
-        try:
-            log = store.get_build_log(shell_drv)
-        except NixError as unlogged:
-            raise NixError(
-                f"{failed}\n(no build log: {unlogged})") from failed
-        if log is not None:
-            raise NixError(f"{failed}\n--- build log ---\n{log}") from failed
-        raise
+    store.build_paths([DerivedPathBuilt(shell_drv, OutputsSpec(all=True))])
     env_path = _first_env_output(store, shell_drv)
     store.add_temp_root(env_path)
     data = store.real_path(env_path).read_bytes()
@@ -493,18 +479,8 @@ async def aget_build_environment(
     """
     shell_drv = await awrite_dev_shell_derivation(
         store, drv_path, get_env_script)
-    try:
-        await store.build_paths([DerivedPathBuilt(
-            shell_drv, OutputsSpec(all=True))])
-    except NixError as failed:
-        try:
-            log = await store.get_build_log(shell_drv)
-        except NixError as unlogged:
-            raise NixError(
-                f"{failed}\n(no build log: {unlogged})") from failed
-        if log is not None:
-            raise NixError(f"{failed}\n--- build log ---\n{log}") from failed
-        raise
+    await store.build_paths([DerivedPathBuilt(
+        shell_drv, OutputsSpec(all=True))])
     env_path = await _afirst_env_output(store, shell_drv)
     await store.add_temp_root(env_path)
     data = await (await store.real_path(env_path)).read_bytes()
