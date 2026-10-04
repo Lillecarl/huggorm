@@ -5,9 +5,14 @@ another session, and closes what it made. `dummy://` is in-memory,
 so every test here is hermetic.
 """
 
+import inspect
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 
 from huggorm.session import AsyncSession, AsyncSessionLike
+from huggorm_generated import AsyncEvalState, AsyncStore
 
 
 async def test_evaluates_through_session_stores() -> None:
@@ -37,3 +42,27 @@ async def test_close_is_idempotent() -> None:
     await state.eval_expr("1 + 1")
     await session.aclose()
     await session.aclose()
+
+
+def _params(fn: Callable[..., Any], drop: int) -> list[tuple[str, object]]:
+    return [
+        (name, param.default)
+        for name, param in list(inspect.signature(fn).parameters.items())[drop:]
+    ]
+
+
+def test_session_passes_constructors_through() -> None:
+    """The session adds scope, not parameters.
+
+    `eval()` takes exactly what the generated constructor takes, so
+    a declaration change that moves a signature fails here rather
+    than drifting silently. `store()` names the same parameter, but
+    its default is `None` (the session default) where the bare
+    constructor says `'auto'`; that difference is the session, so
+    the gate names it instead of forbidding it.
+    """
+    session_names = [n for n, _ in _params(AsyncSession.store, 1)]
+    generated_names = [n for n, _ in _params(AsyncStore.__init__, 1)]
+    assert session_names == generated_names
+    assert _params(AsyncSession.eval, 2) == _params(AsyncEvalState.__init__, 2)
+    assert _params(AsyncSessionLike.eval, 2) == _params(AsyncEvalState.__init__, 2)
