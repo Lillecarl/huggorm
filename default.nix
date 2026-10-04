@@ -193,7 +193,17 @@ rec {
               dontStrip = true;
             });
         huggorm-generated = self.callPackage ./packages/huggorm-generated { };
-        huggorm = self.callPackage ./packages/huggorm { };
+        # HUGGORM_SKIP_SUITE=1 drops the in-build suite. `test` and
+        # `check` need this package for the front door only, so a red
+        # suite would otherwise block the loop that debugs it.
+        huggorm =
+          let
+            plain = self.callPackage ./packages/huggorm { };
+          in
+          if builtins.getEnv "HUGGORM_SKIP_SUITE" == "1" then
+            plain.overridePythonAttrs { doCheck = false; }
+          else
+            plain;
       }
       # nix build --file . lanes.nix_2_35.manylinux.checks
       // lib.optionalAttrs (wheels && gc && sanitizer == null) {
