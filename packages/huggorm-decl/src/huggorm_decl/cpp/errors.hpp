@@ -47,8 +47,12 @@ namespace huggorm {
  */
 inline nanobind::object lossy_str(const std::string & s)
 {
-    return nanobind::steal<nanobind::object>(
-        PyUnicode_DecodeUTF8(s.data(), (Py_ssize_t) s.size(), "replace"));
+    // "replace" refuses nothing, so NULL means an allocation failed.
+    // A null object would crash the call it is passed to.
+    PyObject * text = PyUnicode_DecodeUTF8(s.data(), (Py_ssize_t) s.size(), "replace");
+    if (!text)
+        throw nanobind::python_error();
+    return nanobind::steal<nanobind::object>(text);
 }
 
 /**
