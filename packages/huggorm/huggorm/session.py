@@ -171,8 +171,13 @@ class AsyncSession:
                     yield (records, await stream.dropped())
                 await anyio.sleep(poll)
         finally:
-            await stream.close()
-            await state.unsubscribe_logs()
+            # Shielded: a cancelled consumer is the usual way out of
+            # this loop, and anyio re-delivers the cancel at each await
+            # here, which would skip the unsubscribe and leak the
+            # thread's verbosity (huggorm#95).
+            with anyio.CancelScope(shield=True):
+                await stream.close()
+                await state.unsubscribe_logs()
 
     @contextlib.asynccontextmanager
     async def capture(
@@ -194,10 +199,13 @@ class AsyncSession:
         try:
             yield out
         finally:
-            out.records.extend(await stream.drain())
-            out.dropped = max(out.dropped, await stream.dropped())
-            await stream.close()
-            await state.unsubscribe_logs()
+            # Shielded, as in `logs`: a cancelled block still drains
+            # and still unsubscribes.
+            with anyio.CancelScope(shield=True):
+                out.records.extend(await stream.drain())
+                out.dropped = max(out.dropped, await stream.dropped())
+                await stream.close()
+                await state.unsubscribe_logs()
 
     async def aclose(self) -> None:
         """Close the evaluators, then the stores, and report together.

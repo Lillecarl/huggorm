@@ -218,6 +218,29 @@ async def test_local_logs_streams_while_work_runs() -> None:
     assert any("trace: hello-stream" in text for text in seen)
 
 
+async def test_a_cancelled_reader_still_unsubscribes() -> None:
+    """Cancelling the consumer is the usual way out of `logs`.
+
+    anyio re-delivers a cancel at each await in the generator's
+    `finally`, so an unshielded teardown stops at its first await and
+    never unsubscribes - which leaks the thread's verbosity
+    (huggorm#95). Unshield it and `unsubscribed` stays empty."""
+    async with AsyncSession("dummy://") as session:
+        state = session.eval(session.store())
+        unsubscribed: list[bool] = []
+        real = state.unsubscribe_logs
+
+        async def spy() -> None:
+            await real()
+            unsubscribed.append(True)
+
+        state.unsubscribe_logs = spy  # type: ignore[method-assign]
+        with anyio.move_on_after(0.2):
+            async for _ in session.logs(state):
+                pass
+    assert unsubscribed
+
+
 async def test_remote_logs_stream_reports(server: Any) -> None:
     """The live stream, remotely.
 
