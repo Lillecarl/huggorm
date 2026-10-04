@@ -263,3 +263,32 @@ async def test_remote_process_logs_opens(server: Any) -> None:
         installed, _ = await anext(it)
         assert installed == []
         await it.aclose()
+
+
+async def test_local_capture_collects_bytes_it_cannot_decode(
+        tmp_path: Any) -> None:
+    """A capture holds the bytes, not the decoding of them."""
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"\xff\xfe")
+    async with AsyncSession("dummy://") as session:
+        state = session.eval(session.store())
+        async with session.capture(state) as caught:
+            await state.eval_expr(
+                f'builtins.trace (builtins.readFile "{blob}") 1')
+    assert b"trace: \xff\xfe" in [r.text_bytes() for r in caught.records
+                                  if r.action() == "msg"]
+
+
+async def test_remote_capture_collects_bytes_it_cannot_decode(
+        server: Any, tmp_path: Any) -> None:
+    """The same, across the socket: the bytes cross as bytes."""
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"\xff\xfe")
+    ctx = _connect(server)
+    async with ctx as session:
+        state = await session.eval(await session.store())
+        async with session.capture(state) as caught:
+            await state.eval_expr(
+                f'builtins.trace (builtins.readFile "{blob}") 1')
+    assert b"trace: \xff\xfe" in [r.text_bytes() for r in caught.records
+                                  if r.action() == "msg"]

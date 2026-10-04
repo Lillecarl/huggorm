@@ -306,6 +306,49 @@ def test_a_record_carries_its_fields_as_a_list(subscribed: tuple[Any, Any]) -> N
     assert isinstance(record.fields(), list)
 
 
+def test_a_message_in_no_encoding_fails_text_and_reads_as_bytes(
+        tmp_path: pathlib.Path) -> None:
+    """A log carries bytes, and `text` is only one decoder.
+
+    `builtins.trace` of bytes Nix read from a file evaluates fine:
+    the record holds what `printError` was given. Reading it as text
+    fails - strict UTF-8, byte 0xff - and `text_bytes` answers the
+    bytes, prefix and all. nanopynix#312.
+    """
+    from huggorm_bindings import EvalState, Store
+
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"\xff\xfe")
+    state = EvalState(Store("dummy://"))
+    stream = state.subscribe_logs()
+    try:
+        state.eval_expr(f'builtins.trace (builtins.readFile "{blob}") 1')
+        records = stream.drain()
+    finally:
+        state.unsubscribe_logs()
+    assert [r.action() for r in records] == ["msg"]
+    with pytest.raises(UnicodeDecodeError):
+        records[0].text()
+    assert records[0].text_bytes() == b"trace: \xff\xfe"
+
+
+def test_a_field_in_no_encoding_fails_text_and_reads_as_bytes() -> None:
+    """The build-log-line shape, without a builder.
+
+    A `resBuildLogLine` carries the line in its first field, and a
+    builder prints whatever bytes it likes. The gate's sandbox cannot
+    run one, so the field is built from parts - the seam the round
+    trip already goes through - holding bytes no decoder accepts.
+    """
+    from huggorm_bindings import LogField
+
+    kind: Any = LogField
+    field = kind._from_parts(False, 0, b"\xff\xfe")
+    with pytest.raises(UnicodeDecodeError):
+        field.text()
+    assert field.text_bytes() == b"\xff\xfe"
+
+
 @pytest.mark.live
 def test_an_activity_arrives_as_a_start_and_a_stop(
         tmp_path: pathlib.Path) -> None:
@@ -644,6 +687,29 @@ async def test_a_record_arrives_as_a_real_local_object(client: Any) -> None:
     assert isinstance(record, LogRecord)
     assert record.action() == "msg"
     assert isinstance(record.fields(), list)
+
+
+async def test_a_message_in_no_encoding_crosses_as_bytes(
+        client: Any, tmp_path: pathlib.Path) -> None:
+    """The gate on the wire change: the part reads `text_bytes`.
+
+    `_parts` used to read `text`, so the server failed the encoding
+    on the first line no decoder accepts and the stream died there.
+    The record crosses now, and the bytes arrive as Nix raised them.
+    """
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"\xff\xfe")
+    state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
+    stream = await opened(client, state)
+    try:
+        await state.eval_expr(f'builtins.trace (builtins.readFile "{blob}") 1')
+        records, dropped = await batch(stream)
+    finally:
+        await stream.aclose()
+
+    assert any(r.text_bytes() == b"trace: \xff\xfe" for r in records
+               if r.action() == "msg"), records
+    assert dropped == 0
 
 
 async def test_the_level_narrows_over_the_wire_too(client: Any) -> None:

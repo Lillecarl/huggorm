@@ -1941,8 +1941,12 @@ def test_every_wire_value_survives_its_own_round_trip(
         # The flag has to differ, and so do both values. A case pair
         # that only flipped the flag would pass with either value
         # dropped, which is the shape this test exists to refuse.
-        "LogField": (_rebuild(LogField, True, 42, ""),
-                     [(False, 0, "a build log line")]),
+        #
+        # Bytes no decoder accepts in the second case, which is the
+        # point of carrying them: the parts cross as `text_bytes`
+        # reads them, never decoded.
+        "LogField": (_rebuild(LogField, True, 42, b""),
+                     [(False, 0, b"\xff\xfe")]),
         # A record is either a message or a piece of an activity tree,
         # and the two cases are one of each. So every field differs:
         # a message has no activity, no parent, no type and no fields,
@@ -1955,12 +1959,12 @@ def test_every_wire_value_survives_its_own_round_trip(
         # `info` too: None for a start, and the parts for a warning
         # `logEI` raised.
         "LogRecord": (
-            _rebuild(LogRecord, "msg", 1, 0, 0, 0, 0, "warning: hi", [],
+            _rebuild(LogRecord, "msg", 1, 0, 0, 0, 0, b"warning: hi", [],
                      _rebuild(ErrorInfo, 1, "hi",
                               _rebuild(Position, "/w.nix", 1, 1), True, 0,
                               [], False, [])),
-            [("start", 3, 7, 2, 105, 41, "copying '/tmp/x' to the store",
-              [_rebuild(LogField, False, 0, "/tmp/x")], None)]),
+            [("start", 3, 7, 2, 105, 41, b"copying '/tmp/x' to the store",
+              [_rebuild(LogField, False, 0, b"/tmp/x")], None)]),
     }
 
     if NIX_2_35:
