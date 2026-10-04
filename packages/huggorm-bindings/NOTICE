@@ -10,4 +10,4 @@ Its terms are its own: the GNU Lesser General Public License v2.1,
 copyright the Nix contributors (NixOS/nix). Nix's README states the
 licence, and `COPYING.nix` beside the script is its text, copied from
 the same Nix source. Everything else in this package is Apache-2.0,
-under the umbrella LICENSE.
+under the LICENSE at the root of the huggorm repository.
