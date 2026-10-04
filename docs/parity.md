@@ -23,8 +23,8 @@ nanopynix stays until this file says otherwise. No shortcut.
 | nanopynix capability | status | note |
 |---|---|---|
 | Low-level bindings | done | `huggorm_bindings`; nanopynix already runs on it |
-| Store operations | done | `AsyncStore` (51), `RPCStore` (43); same libstore calls |
-| Evaluation | done | `AsyncEvalState` (29); `eval_expr`, `eval_file`, flakes, repl |
+| Store operations | done | `AsyncStore`, `RPCStore`; same libstore calls |
+| Evaluation | done | `AsyncEvalState`; `eval_expr`, `eval_file`, flakes, repl |
 | Value accessors | done | Finer-grained than nanopynix (`integer`, `at`, `formals`); legitimate difference |
 | REPL | done | `AsyncRepl`, `RPCRepl` |
 | Flake lock + metadata | done | `AsyncLockedFlake`, `get_flake`, `call_flake` |
@@ -33,12 +33,12 @@ nanopynix stays until this file says otherwise. No shortcut.
 | dump-db registration text | done | `make_validity_registration` |
 | Primop registration primitives | done | `register_primop`, `make_primop`; the YAML set is policy, see below |
 | Sync API | done | huggorm-only; nanopynix never had it |
-| Remote + leases + detach | done | `NixClient`, `lifecycle.py`; richer than nanopynix rpc |
+| Remote + leases + detach | done | `NixClient`, `lifecycle.py`; richer than nanopynix rpc. A claimed state answers from its `fileEvalCache`, which a fresh state cannot |
 | Warm eval + watch + notify | done | huggorm-only; `Watcher`, `Warmer`, `Notifier` |
 | Session scope (local async) | done | `AsyncSession` + `AsyncSessionLike`, held to the generated ctors |
 | Session scope (remote) | done | `AsyncRemoteSession`: typed acquires, token detach/claim, `share`, `attach`, sweep-aware close |
-| Sync session scope | gap | No sync remote exists; sync local need unproven |
-| Log bus + capture + verbosity | done | Sessions stream (`logs`, `process_logs`) and collect (`capture`) over per-state taps |
+| Sync session scope | gap | No sync remote exists; sync local need unproven; huggorm#113 |
+| Log bus + capture + verbosity | done | Sessions stream (`logs`, `process_logs`) and collect (`capture`) over per-state taps. Thread and default levels are settable; `nix::verbosity` is pinned at import from `HUGGORM_LOG_CEILING`, because every thread reads it. Legitimate difference |
 | Dev-shell derivation rewrite | done | `huggorm.devshell` over generated ops, local sync+async; `read_derivation` and `to_json` cross RPC, the build stays where the environment is sourced |
 | One consumer over sync, async and RPC | gap | Every proxy has a service; the proof is huggorm#111, blocked in part by huggorm#26 |
 | print-dev-env (build + read + render) | done | `get_build_environment`/`print_dev_env` (+async): build every output, parse the dumped JSON into `BuildEnvironment`, render sourcable shell or `to_dict` JSON; redirects need installables and stay CLI. A `live` test compares both renderings with the `nix` CLI of the same version, flat and structured |

@@ -170,28 +170,38 @@ def test_remote_session_follows_the_acquire_table() -> None:
     assert eval_names == [a.name for a in ACQUIRE["EvalState"].args]
 
 
-async def test_warm_state_survives_its_client(server: Any) -> None:
+async def test_warm_state_survives_its_client(
+        server: Any, tmp_path: Any) -> None:
     """The shareable-server property: a client leaves, the state stays.
 
-    The first session evaluates, detaches everything into escrow, and
-    closes. The second claims the token and attaches the evaluator by
-    its id, and the same warm state answers. This is the shape
+    The first session evaluates a file, detaches everything into
+    escrow, and closes. The file then changes on disk. The second
+    session claims the token and attaches the evaluator by its id:
+    `fileEvalCache` still holds the first answer, so only the SAME
+    warm state gives it. A fresh state reads the new text, which is
+    the control that shows the file did change. This is the shape
     nanopynix cannot serve: a worker bound to one session's lifetime.
     """
+    source = tmp_path / "warm.nix"
+    source.write_text("40 + 2")
     first_ctx = _connect(server)
     async with first_ctx as first:
         state = await first.eval(await first.store())
-        value = await state.eval_expr("40 + 2")
+        value = await state.eval_file(str(source))
         assert await value.integer() == 42
         token = first.token
         state_id = state.handle_id
         assert token and state_id
         assert await first.detach(all=True) is True
+    source.write_text("0")
     second_ctx = _connect(server, claim=token)
     async with second_ctx as second:
         adopted = second.attach("EvalState", state_id)
-        value = await adopted.eval_expr("1 + 1")
-        assert await value.integer() == 2
+        value = await adopted.eval_file(str(source))
+        assert await value.integer() == 42
+        cold = await second.eval(await second.store())
+        value = await cold.eval_file(str(source))
+        assert await value.integer() == 0
 
 
 async def test_local_capture_collects_evaluation_logs() -> None:
