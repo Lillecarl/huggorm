@@ -190,10 +190,11 @@ def test_to_rc_script_moves_structured_attrs_out_of_the_build(
     to files that outlive the call."""
     from huggorm.devshell import BuildEnvironment
 
+    # With structured attrs `outputs` is an associative array, name to
+    # path: the shape get-env.sh writes and upstream requires.
     env = BuildEnvironment(
         vars={
-            "outputs": Var(exported=False, value="out"),
-            "out": Var(exported=True, value="/nix/store/abc-out"),
+            "outputs": {"out": "/nix/store/abc-out"},
             "NIX_ATTRS_SH_FILE": Var(exported=True,
                                      value="/build/.attrs.sh"),
             "NIX_ATTRS_JSON_FILE": Var(exported=True,
@@ -206,6 +207,7 @@ def test_to_rc_script_moves_structured_attrs_out_of_the_build(
     script = env.to_rc_script(outputs_dir=str(tmp_path / "o"),
                               tmp_dir=str(owned))
     assert "/build/.attrs.sh" not in script
+    assert "/nix/store/abc-out" not in script
     assert (owned / ".attrs.sh").read_text() == "out=1\n"
     assert (owned / ".attrs.json").read_text() == '{"out": 1}'
 
@@ -224,11 +226,35 @@ def test_rewrite_strings_replaces_every_occurrence_sorted() -> None:
     assert _rewrite_strings("x", {"x": "x", "y": "z"}) == "x"
 
 
-def test_rewrite_strings_terminates_where_upstream_hangs() -> None:
-    """Upstream scans from the replacement, so a target containing
-    its source loops; continuing past it answers the same whenever
-    upstream answers at all."""
-    assert _rewrite_strings("ab", {"ab": "xab"}) == "xab"
+def test_rewrite_strings_rescans_from_the_replacement() -> None:
+    """Upstream's next search starts AT the replacement, so the text a
+    replacement forms with what follows is replaced too. A port that
+    continued past it answered `ab` here (huggorm#112)."""
+    assert _rewrite_strings("abb", {"ab": "a"}) == "a"
+
+
+def test_rewrite_strings_refuses_where_upstream_hangs() -> None:
+    """A target containing its source loops forever upstream."""
+    with pytest.raises(ValueError, match="never ends"):
+        _rewrite_strings("ab", {"ab": "xab"})
+
+
+def test_a_flat_associative_outputs_names_by_its_keys(
+        tmp_path: pathlib.Path) -> None:
+    """Without structured attrs an associative `outputs` names its
+    outputs by its KEYS, and each key's variable holds the path - as
+    upstream's `getStrings` reads it. The port branched on the shape
+    of `outputs` and read the values as paths instead."""
+    env = BuildEnvironment.parse(json.dumps({
+        "variables": {
+            "outputs": {"type": "associative", "value": {"out": "ignored"}},
+            "out": {"type": "exported", "value": "/nix/store/abc-out"},
+        },
+        "bashFunctions": {},
+    }).encode())
+    script = env.to_rc_script(outputs_dir=str(tmp_path / "o"))
+    assert "/nix/store/abc-out" not in script
+    assert str(tmp_path / "o" / "out") in script
 
 
 class FakeStore:

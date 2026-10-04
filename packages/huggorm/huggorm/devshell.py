@@ -42,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -274,17 +275,28 @@ class BuildEnvironment:
             raise NixError(
                 "derivation does not have an 'outputs' attribute")
         base = outputs_dir or os.path.join(os.getcwd(), "outputs")
+        # ONE map and one pass, as upstream builds them: the output
+        # rewrites and the two attrs files go in together, and
+        # `rewriteStrings` walks the map in key order.
         rewrites: dict[str, str] = {}
-        if isinstance(outputs, dict):
-            for name in sorted(outputs):
-                rewrites[outputs[name]] = os.path.join(base, name)
+        # Branched on structured attrs, as upstream branches, and not
+        # on the shape of `outputs`: without them an associative array
+        # names its outputs by its KEYS (`getStrings`).
+        if self.structured_attrs is not None:
+            if not isinstance(outputs, dict):
+                raise NixError("bash variable is not an associative array")
+            for name, path in outputs.items():
+                rewrites[path] = os.path.join(base, name)
         else:
-            names = (outputs.value.split() if isinstance(outputs, Var)
-                     else outputs)
+            if isinstance(outputs, Var):
+                names = [n for n in re.split(r"[ \t\n\r]+", outputs.value) if n]
+            elif isinstance(outputs, dict):
+                names = list(outputs)
+            else:
+                names = outputs
             for name in names:
                 rewrites[self._require_string(name)] = os.path.join(
                     base, name)
-        script = _rewrite_strings(script, rewrites)
 
         if self.structured_attrs is not None:
             attrs_json, attrs_sh = self.structured_attrs
@@ -295,12 +307,9 @@ class BuildEnvironment:
                 handle.write(attrs_sh)
             with open(json_file, "w", encoding="utf-8") as handle:
                 handle.write(attrs_json)
-            script = _rewrite_strings(
-                script, {self._require_string("NIX_ATTRS_SH_FILE"): sh_file})
-            script = _rewrite_strings(
-                script,
-                {self._require_string("NIX_ATTRS_JSON_FILE"): json_file})
-        return script
+            rewrites[self._require_string("NIX_ATTRS_SH_FILE")] = sh_file
+            rewrites[self._require_string("NIX_ATTRS_JSON_FILE")] = json_file
+        return _rewrite_strings(script, rewrites)
 
 
 def _escape_shell_arg(value: str) -> str:
@@ -314,19 +323,26 @@ def _escape_shell_arg(value: str) -> str:
 def _rewrite_strings(script: str, rewrites: dict[str, str]) -> str:
     """Replace every occurrence of each source with its target.
 
-    Nix's `rewriteStrings`, sorted because upstream iterates a
-    `std::map`, skipping the identity like it does. One difference,
-    and it only shows when upstream hangs: the scan continues past
-    the replacement, so a target containing its source terminates
-    here. When no target contains its source both answer the same.
+    Nix's `rewriteStrings` (`util.cc`): the map in key order, the
+    identity skipped, and the next search starting AT the last
+    replacement rather than past it. So text a replacement forms with
+    what follows it is replaced too: `ab -> a` over `abb` answers `a`.
+
+    A target that contains its source makes upstream loop forever.
+    That raises here instead, before any rewrite runs.
     """
+    for old, new in rewrites.items():
+        if old != new and old in new:
+            raise ValueError(
+                f"rewrite of {old!r} to {new!r} never ends: the target "
+                f"contains its source")
     for old, new in sorted(rewrites.items()):
         if old == new:
             continue
         start = 0
         while (at := script.find(old, start)) != -1:
             script = script[:at] + new + script[at + len(old):]
-            start = at + len(new)
+            start = at
     return script
 
 
