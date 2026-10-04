@@ -331,6 +331,22 @@ class NixClient:
             self._pinger.cancel()
             self._pinger = None
 
+    async def alive(self) -> bool:
+        """Whether the server still knows this connection.
+
+        One ping, answered once. The loop asks this on a timer; this
+        asks it now, for a caller deciding whether a failed release is
+        worth reporting: handles on a swept connection are already
+        gone, which is the outcome a close wanted.
+        """
+        try:
+            with anyio.fail_after(5):
+                ack = await self._rpc(
+                    f"/{schema.PKG}.Session/Ping", self.msg("PingReq")(), "AckResp")
+            return bool(ack.ok)
+        except Exception:
+            return False
+
     async def share(self, obj: Any, to_token: str,
                     mode: str = "copy") -> None:
         req = self.msg("ShareReq")(mode=mode)

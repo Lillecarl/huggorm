@@ -1,18 +1,33 @@
-"""One scope for local async Nix objects (first slice).
+"""Scopes onto Nix: local and remote sessions.
 
 A session hands out stores and evaluators, refuses a store from
-another session, and closes what it made. `dummy://` is in-memory,
-so every test here is hermetic.
+another session, and closes what it made. `dummy://` is in-memory
+and the server is a localhost subprocess, so every test here is
+hermetic.
 """
 
 import inspect
 from collections.abc import Callable
 from typing import Any
 
+import anyio
 import pytest
+from conftest import SHORT_TTL
 
-from huggorm.session import AsyncSession, AsyncSessionLike
+from huggorm.remote import ConnectionExpired
+from huggorm.session import (
+    AsyncRemoteSession,
+    AsyncRemoteSessionLike,
+    AsyncSession,
+    AsyncSessionLike,
+)
 from huggorm_generated import AsyncEvalState, AsyncStore
+from huggorm_generated._policy import ACQUIRE
+
+
+def _connect(server: Any, claim: str | None = None) -> Any:
+    """One remote session on this test's server, over `dummy://`."""
+    return AsyncRemoteSession.connect("127.0.0.1", server.port, claim=claim, store_uri="dummy://")
 
 
 async def test_evaluates_through_session_stores() -> None:
@@ -66,3 +81,92 @@ def test_session_passes_constructors_through() -> None:
     assert session_names == generated_names
     assert _params(AsyncSession.eval, 2) == _params(AsyncEvalState.__init__, 2)
     assert _params(AsyncSessionLike.eval, 2) == _params(AsyncEvalState.__init__, 2)
+
+
+async def test_remote_evaluates_through_session(server: Any) -> None:
+    async with _connect(server) as session:
+        store = await session.store()
+        value = await (await session.eval(store)).eval_expr("1 + 1")
+        assert await value.integer() == 2
+        assert isinstance(session, AsyncRemoteSessionLike)
+
+
+async def test_remote_foreign_store_is_refused(server: Any) -> None:
+    first_ctx = _connect(server)
+    second_ctx = _connect(server)
+    async with first_ctx as first, second_ctx as second:
+        with pytest.raises(ValueError, match="another session"):
+            await second.eval(await first.store())
+
+
+async def test_remote_close_is_idempotent(server: Any) -> None:
+    ctx = _connect(server)
+    async with ctx as session:
+        state = await session.eval(await session.store())
+        await state.eval_expr("1 + 1")
+    await session.aclose()
+
+
+async def test_remote_detach_keeps_token(server: Any) -> None:
+    ctx = _connect(server)
+    async with ctx as session:
+        await session.store()
+        token = session.token
+        assert token
+        assert await session.detach(all=True) is True
+        assert session.token == token
+
+
+async def test_remote_swept_connection_reports(ttl_server: Any) -> None:
+    """A swept session reports, through the same path the client does.
+
+    The ping loop learns of the sweep and the next call raises
+    `ConnectionExpired`. Closing afterwards reports nothing: the
+    releases fail against a connection that is already gone.
+    """
+    ctx = _connect(ttl_server)
+    async with ctx as session:
+        store = await session.store()
+        session._client.stop_pinging()
+        await anyio.sleep(SHORT_TTL * 1.5 + 1.0)
+        with anyio.fail_after(5):
+            await session._client._ping_loop(0.01)
+        with pytest.raises(ConnectionExpired):
+            await store.get_uri()
+
+
+def test_remote_session_follows_the_acquire_table() -> None:
+    """Typed acquires name what the manifest declares.
+
+    The acquire table is manifest-derived, so a declaration change
+    that moves a constructor fails here rather than drifting the
+    hand-written session silently.
+    """
+    store_names = [n for n, _ in _params(AsyncRemoteSession.store, 1)]
+    assert store_names == [a.name for a in ACQUIRE["Store"].args]
+    eval_names = [n for n, _ in _params(AsyncRemoteSession.eval, 1)]
+    assert eval_names == [a.name for a in ACQUIRE["EvalState"].args]
+
+
+async def test_warm_state_survives_its_client(server: Any) -> None:
+    """The shareable-server property: a client leaves, the state stays.
+
+    The first session evaluates, detaches everything into escrow, and
+    closes. The second claims the token and attaches the evaluator by
+    its id, and the same warm state answers. This is the shape
+    nanopynix cannot serve: a worker bound to one session's lifetime.
+    """
+    first_ctx = _connect(server)
+    async with first_ctx as first:
+        state = await first.eval(await first.store())
+        value = await state.eval_expr("40 + 2")
+        assert await value.integer() == 42
+        token = first.token
+        state_id = state.handle_id
+        assert token and state_id
+        assert await first.detach(all=True) is True
+    second_ctx = _connect(server, claim=token)
+    async with second_ctx as second:
+        adopted = second.attach("EvalState", state_id)
+        value = await adopted.eval_expr("1 + 1")
+        assert await value.integer() == 2

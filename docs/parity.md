@@ -35,8 +35,9 @@ nanopynix stays until this file says otherwise. No shortcut.
 | Sync API | done | huggorm-only; nanopynix never had it |
 | Remote + leases + detach | done | `NixClient`, `lifecycle.py`; richer than nanopynix rpc |
 | Warm eval + watch + notify | done | huggorm-only; `Watcher`, `Warmer`, `Notifier` |
-| Session scope (local async) | wip | `AsyncSession` + `AsyncSessionLike`; sync and remote follow |
-| Session scope (remote) | gap | huggorm#16 tracks the service; typed acquire + token-preserving detach |
+| Session scope (local async) | done | `AsyncSession` + `AsyncSessionLike`, held to the generated ctors |
+| Session scope (remote) | done | `AsyncRemoteSession`: typed acquires, token detach/claim, `share`, `attach`, sweep-aware close |
+| Sync session scope | gap | No sync remote exists; sync local need unproven |
 | Log bus + capture + verbosity | gap | Per-state `subscribe_logs` exists; session-scoped stream and capture do not |
 | Dev-shell derivation rewrite | gap | `get-env.sh` already ships in `huggorm-bindings`; the rewrite is open |
 | Python store implementations | gap | Blocked on huggorm#84 |

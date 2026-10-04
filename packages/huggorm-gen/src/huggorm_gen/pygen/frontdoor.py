@@ -64,7 +64,12 @@ LOCAL: dict[str, list[str]] = {
     "huggorm_generated._runtime": ["set_pool_size"],
     ".remote": ["ConnectionExpired", "NixClient", "connect"],
     ".server": ["serve"],
-    ".session": ["AsyncSession", "AsyncSessionLike"],
+    ".session": [
+        "AsyncSession",
+        "AsyncSessionLike",
+        "AsyncRemoteSession",
+        "AsyncRemoteSessionLike",
+    ],
     ".watch": ["Watcher"],
     ".notify": ["Notifier"],
     ".warm": ["Warmer"],
