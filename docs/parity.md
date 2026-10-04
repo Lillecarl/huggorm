@@ -40,6 +40,7 @@ nanopynix stays until this file says otherwise. No shortcut.
 | Sync session scope | gap | No sync remote exists; sync local need unproven |
 | Log bus + capture + verbosity | done | Sessions stream (`logs`, `process_logs`) and collect (`capture`) over per-state taps |
 | Dev-shell derivation rewrite | done | `huggorm.devshell` over generated ops, local sync+async; remote needs Derivation over RPC |
+| print-dev-env (build + read + render) | done | `get_build_environment`/`print_dev_env` (+async): build every output, parse the dumped JSON into `BuildEnvironment`, render sourcable shell or `to_dict` JSON; redirects need installables and stay CLI |
 | Python store implementations | gap | Blocked on huggorm#84 |
 | Typed settings models | superseded | Pydantic costs startup (CLI, completion); plain `dict[str, str]` is the surface |
 | Typed store URI models | superseded | Same cost as above; plain URI strings are the surface |
