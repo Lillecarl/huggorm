@@ -29,7 +29,7 @@ import anyio
 
 from huggorm_generated import AsyncEvalState, AsyncStore, RPCEvalState, RPCStore
 
-from .logbus import LOG_CAPACITY, Share, widest
+from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
 from .remote import NixClient, connect
 
 if TYPE_CHECKING:
@@ -189,8 +189,8 @@ class AsyncSessionLike(Protocol):
     def logs(
         self,
         state: AsyncEvalState,
-        capacity: int = 1024,
-        level: int = 3,
+        capacity: int = LOG_CAPACITY,
+        level: int = LOG_LEVEL,
         poll: float = 0.05,
     ) -> AsyncGenerator[LogBatch]:
         """Records raised on this state's thread, as they arrive."""
@@ -199,8 +199,8 @@ class AsyncSessionLike(Protocol):
     def capture(
         self,
         state: AsyncEvalState,
-        capacity: int = 1024,
-        level: int = 3,
+        capacity: int = LOG_CAPACITY,
+        level: int = LOG_LEVEL,
     ) -> contextlib.AbstractAsyncContextManager[CapturedLogs]:
         """Collect what this state says while the block runs."""
         ...
@@ -255,8 +255,8 @@ class AsyncSession:
     async def logs(
         self,
         state: AsyncEvalState,
-        capacity: int = 1024,
-        level: int = 3,
+        capacity: int = LOG_CAPACITY,
+        level: int = LOG_LEVEL,
         poll: float = 0.05,
     ) -> AsyncGenerator[LogBatch]:
         """Records raised on this state's thread, as they arrive.
@@ -264,7 +264,9 @@ class AsyncSession:
         Polls the subscription's queue: a drain never blocks, so
         there is nothing to wait on, only a queue to re-read.
         `capacity` and `level` mean what `subscribe_logs` says.
-        Empty polls yield nothing: quiet means no batch.
+        The FIRST batch is empty and says the subscription is
+        installed, as on the remote stream: start the work after
+        reading it. After that, empty polls yield nothing.
 
         Any state's records read here, not only one this session
         made. Watching creates no lease, so there is nothing to own.
@@ -274,6 +276,7 @@ class AsyncSession:
         """
         reader = await _tap(state).join(capacity, level)
         try:
+            yield ([], reader.dropped())
             while True:
                 records = await reader.drain()
                 if records:
@@ -291,8 +294,8 @@ class AsyncSession:
     async def capture(
         self,
         state: AsyncEvalState,
-        capacity: int = 1024,
-        level: int = 3,
+        capacity: int = LOG_CAPACITY,
+        level: int = LOG_LEVEL,
     ) -> AsyncIterator[CapturedLogs]:
         """Collect what this state says while the block runs.
 

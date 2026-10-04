@@ -245,26 +245,21 @@ async def test_local_capture_collects_evaluation_logs() -> None:
 async def test_local_logs_streams_while_work_runs() -> None:
     """The live stream, locally.
 
-    The sleep lets the subscription land: the watcher subscribes on
-    the state's runner thread, and an eval queued ahead of it would
-    finish before the queue existed. `fail_after` bounds the wait
-    if it ever does anyway.
+    The empty first batch says the subscription is installed, as on
+    the remote stream, so the eval after it cannot run ahead of the
+    queue.
     """
     async with AsyncSession("dummy://") as session:
         state = session.eval(session.store())
-        seen: list[str] = []
-        async with anyio.create_task_group() as tg:
-            async def _watch() -> None:
-                async for records, _ in session.logs(state):
-                    seen.extend(r.text() for r in records)
-                    if any("trace: hello-stream" in text for text in seen):
-                        tg.cancel_scope.cancel()
-            tg.start_soon(_watch)
-            await anyio.sleep(0.2)
-            await state.eval_expr(TRACE % "hello-stream")
-            with anyio.fail_after(10):
-                await anyio.sleep_forever()
-    assert any("trace: hello-stream" in text for text in seen)
+        it = session.logs(state)
+        installed, _ = await anext(it)
+        assert installed == []
+        await state.eval_expr(TRACE % "hello-stream")
+        with anyio.fail_after(10):
+            async for records, _ in it:
+                if any("trace: hello-stream" in r.text() for r in records):
+                    break
+        await it.aclose()
 
 
 async def test_a_nested_capture_silences_no_outer_reader() -> None:
@@ -279,6 +274,7 @@ async def test_a_nested_capture_silences_no_outer_reader() -> None:
         state = session.eval(session.store())
         seen: list[str] = []
         outer = session.logs(state, poll=0.01)
+        assert await anext(outer) == ([], 0)
 
         async def read_until(text: str) -> None:
             with anyio.fail_after(10):
@@ -288,10 +284,7 @@ async def test_a_nested_capture_silences_no_outer_reader() -> None:
                         return
 
         async with anyio.create_task_group() as tg:
-            # The outer reader joins on its first step, and this task
-            # holds it there while the capture runs.
             tg.start_soon(read_until, "INNER")
-            await anyio.sleep(0.05)
             async with session.capture(state) as captured:
                 await state.eval_expr(TRACE % "INNER")
         await state.eval_expr(TRACE % "AFTER")
