@@ -363,7 +363,7 @@ def _rewrite(document: dict[str, Any], args_path: str, srcs_path: str) -> dict[s
     """
     if os.path.basename(document["builder"]) != "bash":
         raise NixError(
-            "'develop' only works on derivations that use 'bash' as their builder")
+            "'nix develop' only works on derivations that use 'bash' as their builder")
     document["args"] = [args_path]
     # A dev shell is not the build, so the build's reference checks
     # do not apply.
@@ -435,9 +435,10 @@ def _first_env_output(store: Store, shell_drv: StorePath) -> StorePath:
     an empty file is not an answer here either.
     """
     for path in store.query_derivation_output_map(shell_drv).values():
-        # A missing file is not an answer, and the search moves on:
-        # upstream's `maybeLstat` says nothing on failure either.
-        with contextlib.suppress(OSError):
+        # A missing file is not an answer, and the search moves on.
+        # Upstream's `maybeLstat` tolerates ENOENT and ENOTDIR only,
+        # and any other failure raises.
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError):
             info = os.lstat(store.real_path(path))
             if stat.S_ISREG(info.st_mode) and info.st_size > 0:
                 return path
@@ -448,7 +449,7 @@ async def _afirst_env_output(store: AsyncStore,
                              shell_drv: StorePath) -> StorePath:
     """The async half of the file search above."""
     for path in (await store.query_derivation_output_map(shell_drv)).values():
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError):
             info = await (await store.real_path(path)).stat()
             if stat.S_ISREG(info.st_mode) and info.st_size > 0:
                 return path

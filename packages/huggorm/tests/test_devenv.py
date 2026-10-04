@@ -406,6 +406,29 @@ def test_get_build_environment_without_an_answer_is_upstream_s_error(
         get_build_environment(store, drv, "script")
 
 
+def test_an_unreadable_output_raises_rather_than_being_skipped(
+        tmp_path: pathlib.Path) -> None:
+    """Only a missing output moves the search on, as in `maybeLstat`.
+
+    An output under a directory nobody may search fails with EACCES,
+    and that raises instead of passing to the next output."""
+    from huggorm.devshell import get_build_environment
+    from huggorm_bindings import Store
+
+    chroot = Store(str(tmp_path / "chroot"))
+    files = _canned_files(tmp_path)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    files["empty"] = locked / "env.json"
+    store, drv = _fake(chroot, files, empty=True)
+    locked.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            get_build_environment(store, drv, "script")
+    finally:
+        locked.chmod(0o700)
+
+
 def test_a_failed_build_raises_its_own_error(
         tmp_path: pathlib.Path) -> None:
     """The build's exception propagates as it is, as in Nix.
