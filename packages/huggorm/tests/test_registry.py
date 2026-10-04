@@ -102,8 +102,11 @@ print(json.dumps([
 def test_entries_come_from_every_layer_in_order(tmp_path: pathlib.Path) -> None:
     """The user layer first, then the global one: the order Nix
     consults them. A write with no path goes to the user's file."""
+    # NIX_CONF_DIR too: the system layer is `$NIX_CONF_DIR/registry.json`,
+    # and a machine's own entries would join the list.
     env = {**os.environ, "NIX_CONFIG": "experimental-features = flakes",
-           "XDG_CONFIG_HOME": str(tmp_path / "config")}
+           "XDG_CONFIG_HOME": str(tmp_path / "config"),
+           "NIX_CONF_DIR": str(tmp_path / "etc")}
     out = subprocess.run(
         [sys.executable, "-c", LIST, str(tmp_path / "global.json")],
         env=env, capture_output=True, text=True, check=True)
