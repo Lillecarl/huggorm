@@ -582,11 +582,18 @@ class AsyncRemoteSession:
         """Collect what the server says while the block runs.
 
         Opens the stream and reads the empty first batch, so the
-        subscription is installed before the block starts. When the
-        block ends it keeps reading for `settle` seconds: records
-        cross a socket, so "the queue holds everything" is true only
-        after the last one lands. `state=None` captures the process
-        stream instead.
+        subscription is installed before the block starts.
+
+        A state's capture is COMPLETE. When the block ends, a barrier
+        call on the state's thread answers a request id, and the
+        capture reads until that request's "finalized" record, which
+        the thread queued after everything it raised before. `settle`
+        plays no part.
+
+        `state=None` captures the process stream, which has no such
+        order: its records come from threads no call owns. It reads
+        for `settle` seconds after the block, and a record later than
+        that is not in `records`.
 
         Nothing reads during the block. The server holds the records
         meanwhile, and `dropped` counts what its bound refused - so
@@ -601,13 +608,28 @@ class AsyncRemoteSession:
         it = stream.__aiter__()
         await anext(it)
         out = CapturedLogs(records=[])
+
+        def take(records: list[LogRecord], dropped: int) -> None:
+            out.records.extend(records)
+            out.dropped = max(out.dropped, dropped)
+
         try:
             yield out
-            with anyio.move_on_after(settle):
-                async for records, dropped in it:
-                    out.records.extend(records)
-                    if dropped > out.dropped:
-                        out.dropped = dropped
+            if state is None:
+                with anyio.move_on_after(settle):
+                    async for records, dropped in it:
+                        take(records, dropped)
+                return
+            barrier = await self._client.logs_barrier(state)
+            async for records, dropped in it:
+                for at, record in enumerate(records):
+                    if (record.action() == "finalized"
+                            and record.request() == barrier):
+                        take(records[:at], dropped)
+                        return
+                take(records, dropped)
+            raise RuntimeError(
+                "the log stream ended before the barrier's marker arrived")
         finally:
             await stream.aclose()
 

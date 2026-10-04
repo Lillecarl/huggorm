@@ -1041,6 +1041,27 @@ class Dispatcher:
             finally:
                 await self._process_fanout.leave(reader)
 
+        async def logs_barrier(stream: Any) -> None:
+            """The request id whose "finalized" ends the records so far.
+
+            One call on the state's own thread. `end_request` pushes
+            its marker into that thread's queue after every record the
+            thread raised before, so a `Logs` reader that sees it has
+            all of them. The process stream has no such order: its
+            records come from threads no call owns."""
+            from huggorm_bindings import current_request
+
+            req = await stream.recv_message()
+            target = self.resolve(req.state.id, _tok(stream))
+            request = await target._runner.run(lambda _: current_request())
+            if not request:
+                raise TypeError(
+                    f"{req.state.id[:8]} runs no call of its own, so no "
+                    f"marker can end its records")
+            resp = self.msg("LogsBarrierResp")()
+            resp.request = request
+            await stream.send_message(resp)
+
         Handle = self.msg("Handle")
         self.mapping[f"/{schema.PKG}.Session/Logs"] = grpclib.const.Handler(
             guard_untyped(logs), grpclib.const.Cardinality.UNARY_STREAM,
@@ -1053,6 +1074,8 @@ class Dispatcher:
         for name, fn, req_cls, resp_cls in (
             ("Realize", realize, self.msg("RealizeReq"),
              self.msg("RealizeResp")),
+            ("LogsBarrier", logs_barrier, self.msg("LogsBarrierReq"),
+             self.msg("LogsBarrierResp")),
             ("Release", release, Handle, Handle),
             ("ReleaseMany", release_many, self.msg("ReleaseManyReq"),
              self.msg("ReleaseManyResp")),

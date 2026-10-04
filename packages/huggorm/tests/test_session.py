@@ -352,19 +352,23 @@ async def test_remote_logs_stream_reports(server: Any) -> None:
 
 
 async def test_remote_capture_collects(server: Any) -> None:
-    """Collecting what a block raised, remotely.
+    """Collecting what a block raised, remotely, completely.
 
-    The settle window is what the local capture does not need:
-    records cross a socket, so the block ending is not the last one
-    landing.
+    Records cross a socket, so the block ending is not the last one
+    landing. The capture reads to the barrier's marker, not for a
+    window: with `settle=0` a window reads nothing at all, and this
+    still holds every record. The marker itself is not a record of
+    the block.
     """
     ctx = _connect(server)
     async with ctx as session:
         state = await session.eval(await session.store())
-        async with session.capture(state) as caught:
+        async with session.capture(state, settle=0) as caught:
             await state.eval_expr(TRACE % "hello-captured")
     assert any("trace: hello-captured" in r.text() for r in caught.records)
     assert caught.dropped == 0
+    finals = {r.request() for r in caught.records if r.action() == "finalized"}
+    assert len(finals) == 1, finals
 
 
 async def test_remote_process_logs_opens(server: Any) -> None:

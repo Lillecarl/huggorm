@@ -834,6 +834,22 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
         rpc.output_type = f".{PKG}.LogsResp"
         rpc.server_streaming = True
 
+    # The end of a state's records so far. A call on the state's own
+    # thread answers its request id, and its "finalized" marker lands
+    # in that thread's queue after every record raised before it. A
+    # reader that sees the marker holds everything; a timed window
+    # would drop what came late.
+    barrier = f.message_type.add()
+    barrier.name = "LogsBarrierReq"
+    _field(barrier, "state", 1, type_name=HANDLE)
+    barrier_resp = f.message_type.add()
+    barrier_resp.name = "LogsBarrierResp"
+    _add_field(barrier_resp, "request", 1, "int", kinds)
+    rpc = sess.method.add()
+    rpc.name = "LogsBarrier"
+    rpc.input_type = f".{PKG}.LogsBarrierReq"
+    rpc.output_type = f".{PKG}.LogsBarrierResp"
+
 
 def _add_free_service(file_dp: Any, manifest: Proto,
                       kinds: dict[str, str]) -> None:

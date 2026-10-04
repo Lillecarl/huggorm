@@ -486,6 +486,21 @@ class NixClient:
         async for batch in self._log_stream("Logs", req):
             yield batch
 
+    async def logs_barrier(self, obj: Any) -> int:
+        """The request id whose "finalized" record ends `obj`'s records
+        so far, on every `logs` stream of it.
+
+        The server runs one call on the state's own thread, so its
+        marker is queued after everything that thread raised before.
+        A reader that sees the marker holds all of it."""
+        if obj.handle_id is None:
+            raise ValueError("this handle was already released")
+        req = self.msg("LogsBarrierReq")()
+        req.state.id = obj.handle_id
+        resp = await self._rpc(f"/{schema.PKG}.Session/LogsBarrier", req,
+                               "LogsBarrierResp")
+        return int(resp.request)
+
     async def process_logs(self, capacity: int = 0,
                            level: int | None = None) -> Any:
         """Records no subscribed thread claimed, as they arrive.
