@@ -1760,6 +1760,13 @@ def _record_ctor(cls: Class, known: dict[str, Class] | None = None
     and the far side has only the parts. So the constructor is bound
     privately, as `_from_parts`, which is exactly the name the wire
     layer asks for."""
+    if cls.from_parts is not None and cls.from_parts.cxx_body:
+        # A declared body, which is the only way an aggregate stops
+        # being one: a part that crosses as bytes goes back into a
+        # string member unread, and no aggregate converts. The
+        # signature still comes from the field list, so the body can
+        # only consume what `_parts` sent.
+        return [*_produced_ctor(cls), *_from_parts(cls, known)]
     fields = record_fields(cls, known)
     held = _held(cls)
     # `.none()` on an `nb::object` part, and nothing else needs it.
@@ -2215,6 +2222,13 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         body += _identity_semantics(cls, known, equality=False)
         body += _round_trip(cls)
         body += _value_semantics(cls)
+        # A `@local` method with a body still binds: local keeps it
+        # off the wire, not off the object. The cxx-class path binds
+        # every method, so only the record path needs saying - a
+        # bytes reader on an error record is the one that taught it.
+        for m in cls.methods:
+            if m.local and m.cxx_body:
+                body += _method(cls, m, known)
         if body:
             body[-1] += ";"
         return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"

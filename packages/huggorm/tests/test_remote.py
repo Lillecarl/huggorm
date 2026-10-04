@@ -168,6 +168,29 @@ async def test_a_nix_error_keeps_its_type_and_its_colour(client: Any) -> None:
     await store.aclose()
 
 
+async def test_a_nix_error_in_no_encoding_crosses_as_bytes(
+        client: Any, tmp_path: Any) -> None:
+    """A fault carries bytes, because the info parts do.
+
+    The message and the colour decode lossily on the raising side,
+    so they are always valid text when the fault codec reads them.
+    The info crosses part by part, and its message part crosses as
+    the bytes `msg_bytes` read.
+    """
+    from huggorm_bindings.errors import ThrownError
+
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"\xff\xfe")
+    state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
+    with pytest.raises(ThrownError) as caught:
+        await state.eval_expr(f'builtins.throw (builtins.readFile "{blob}")')
+    assert "\ufffd" in str(caught.value)
+    info = caught.value.info
+    assert info is not None
+    assert info.msg_bytes() == b"\xff\xfe"
+    await state.aclose()
+
+
 async def test_an_undeclared_cause_still_approximates(client: Any) -> None:
     """Rebuilding is for what the manifest DECLARES, and nothing else.
 

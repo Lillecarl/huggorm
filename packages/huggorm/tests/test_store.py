@@ -1908,18 +1908,22 @@ def test_every_wire_value_survives_its_own_round_trip(
             [("{censored}", other)]),
         # What an error carries. The second case has a position where
         # the first has none, and a trace where the first has none.
+        # Bytes throughout, and bytes no decoder accepts in the
+        # second cases: the parts cross as the `*_bytes` readers read
+        # them, never decoded.
         "Position": (
-            _rebuild(Position, "/a.nix", 3, 5),
-            [("«string»", 1, 1)]),
+            _rebuild(Position, b"/a.nix", 3, 5),
+            [(b"/b/\xff", 1, 1)]),
         "Trace": (
-            _rebuild(Trace, "while evaluating 'x'", None),
-            [("while calling 'f'", _rebuild(Position, "/b.nix", 2, 4))]),
+            _rebuild(Trace, b"while evaluating 'x'", None),
+            [(b"while calling \xff",
+              _rebuild(Position, b"/b.nix", 2, 4))]),
         "ErrorInfo": (
-            _rebuild(ErrorInfo, 0, "boom", None, False, 1, [], False, []),
-            [(1, "attribute 'fo' missing",
-              _rebuild(Position, "/c.nix", 7, 9), True, 100,
-              [_rebuild(Trace, "while evaluating 'y'", None)], True,
-              ["foo"])]),
+            _rebuild(ErrorInfo, 0, b"boom", None, False, 1, [], False, []),
+            [(1, b"attribute '\xff' missing",
+              _rebuild(Position, b"/c.nix", 7, 9), True, 100,
+              [_rebuild(Trace, b"while evaluating 'y'", None)], True,
+              [b"foo"])]),
         # A pin answers `locked`, an add does not, and a removal has no
         # target.
         "RegistryWrite": (
@@ -1960,8 +1964,8 @@ def test_every_wire_value_survives_its_own_round_trip(
         # `logEI` raised.
         "LogRecord": (
             _rebuild(LogRecord, "msg", 1, 0, 0, 0, 0, b"warning: hi", [],
-                     _rebuild(ErrorInfo, 1, "hi",
-                              _rebuild(Position, "/w.nix", 1, 1), True, 0,
+                     _rebuild(ErrorInfo, 1, b"hi",
+                              _rebuild(Position, b"/w.nix", 1, 1), True, 0,
                               [], False, [])),
             [("start", 3, 7, 2, 105, 41, b"copying '/tmp/x' to the store",
               [_rebuild(LogField, False, 0, b"/tmp/x")], None)]),

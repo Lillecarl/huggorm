@@ -39,7 +39,12 @@ class NixError(Exception):
 
     `e.info` is the `ErrorInfo` behind the message: the position, the
     evaluation trace and the suggestions. C++ is the only place that
-    holds them. None when Python built the error (huggorm#100)."""
+    holds them. None when Python built the error (huggorm#100).
+
+    Both strings decode lossily: a message of bytes no decoder
+    accepts reads with U+FFFD rather than failing the translation
+    and losing the error. The exact bytes stay on the info parts,
+    which cross as bytes."""
 
     cxx = "nix::Error"
     header = "nix/util/error.hh"

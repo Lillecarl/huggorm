@@ -107,6 +107,27 @@ def test_a_warning_takes_the_other_path(subscribed: tuple[Any, Any]) -> None:
     assert info.msg() == "careful"
 
 
+def test_a_warning_in_no_encoding_reads_as_bytes(
+        subscribed: tuple[Any, Any], tmp_path: pathlib.Path) -> None:
+    """`logEI` carries the same bytes the error would.
+
+    `builtins.warn` of bytes read from a file logs them through
+    `logWarning`, so the record's info holds what `throw` would
+    have raised with.
+    """
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"\xff\xfe")
+    state, stream = subscribed
+    state.eval_expr(f'builtins.warn (builtins.readFile "{blob}") 1')
+    records = stream.drain()
+    assert [r.action() for r in records] == ["msg"]
+    info = records[0].info()
+    assert info is not None
+    with pytest.raises(UnicodeDecodeError):
+        info.msg()
+    assert info.msg_bytes() == b"\xff\xfe"
+
+
 def test_a_plain_message_carries_no_error_info(
         subscribed: tuple[Any, Any]) -> None:
     """`log`, not `logEI`: a trace is text, and has no parts."""

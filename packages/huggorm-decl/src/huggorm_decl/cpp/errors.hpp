@@ -35,6 +35,23 @@
 namespace huggorm {
 
 /**
+ * A `std::string` as Python text, lossily.
+ *
+ * Nix messages are bytes - a builder prints whatever it likes, and
+ * `throw` carries a string nobody decoded - so decoding one strictly
+ * would fail the translation on the first line no decoder accepts
+ * and lose the error entirely. Undecodable bytes become U+FFFD,
+ * which every consumer of text - tracebacks, status details,
+ * terminals - reads safely. The exact bytes stay available on the
+ * info parts, which cross as bytes.
+ */
+inline nanobind::object lossy_str(const std::string & s)
+{
+    return nanobind::steal<nanobind::object>(
+        PyUnicode_DecodeUTF8(s.data(), (Py_ssize_t) s.size(), "replace"));
+}
+
+/**
  * `module.name` as a live Python exception, built and NOT raised.
  *
  * Two callers want different halves of the same work. The translator
@@ -76,7 +93,8 @@ inline nanobind::object as_error(const char * module, const char * name,
     const std::string colored = e.what();
     const std::string plain = nix::filterANSIEscapes(colored, /*filterAll=*/true);
     nanobind::object cls = nanobind::module_::import_(module).attr(name);
-    return cls(plain, colored, std::forward<Extra>(extra)...);
+    return cls(lossy_str(plain), lossy_str(colored),
+               std::forward<Extra>(extra)...);
 }
 
 /**
@@ -106,9 +124,9 @@ inline void raise_as(const char * module, const char * name,
         PyErr_SetObject(exc.type().ptr(), exc.ptr());
     } catch (...) {
         PyErr_Clear();
-        PyErr_SetString(
-            PyExc_RuntimeError,
-            nix::filterANSIEscapes(e.what(), /*filterAll=*/true).c_str());
+        nanobind::object fallback = lossy_str(
+            nix::filterANSIEscapes(e.what(), /*filterAll=*/true));
+        PyErr_SetObject(PyExc_RuntimeError, fallback.ptr());
     }
 }
 

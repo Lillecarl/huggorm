@@ -98,6 +98,81 @@ def test_a_missing_attribute_carries_its_suggestions(state: Any) -> None:
     assert info.suggestions()[0] == "foo"
 
 
+def test_a_thrown_message_in_no_encoding_survives_translation(
+        state: Any, tmp_path: pathlib.Path) -> None:
+    """The translator decodes lossily, so the error survives it.
+
+    `throw` carries whatever string it was given, and a file holds
+    whatever bytes it holds. Strict decoding would fail the
+    translation on the first such byte and lose the error to a
+    `UnicodeDecodeError` - so the message reads with U+FFFD, and the
+    exact bytes stay on the info.
+    """
+    from huggorm_bindings.errors import ThrownError
+
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"\xff\xfe")
+    with pytest.raises(ThrownError) as caught:
+        state.eval_expr(f'builtins.throw (builtins.readFile "{blob}")')
+    assert "\ufffd" in str(caught.value)
+    info = caught.value.info
+    assert info is not None
+    with pytest.raises(UnicodeDecodeError):
+        info.msg()
+    assert info.msg_bytes() == b"\xff\xfe"
+
+
+def test_a_suggestion_in_no_encoding_reads_as_bytes(
+        state: Any, tmp_path: pathlib.Path) -> None:
+    """A suggestion is an attr name, and names are bytes too.
+
+    The set holds a quoted name no decoder accepts, so looking up a
+    near miss suggests it raw. `suggestions` fails the strict read;
+    `suggestions_bytes` answers it.
+    """
+    from huggorm_bindings.errors import MissingAttribute
+
+    src = tmp_path / "s.nix"
+    src.write_bytes(b'{ "caf\xe9" = 1; }')
+    value = state.eval_file(str(src))
+    with pytest.raises(MissingAttribute) as caught:
+        value.get("caf")
+    info = caught.value.info
+    assert info is not None
+    with pytest.raises(UnicodeDecodeError):
+        info.suggestions()
+    assert info.suggestions_bytes() == [b"caf\xe9"]
+
+
+def test_a_position_in_no_encoding_reads_as_bytes(
+        state: Any, tmp_path: pathlib.Path) -> None:
+    """A position names a file, and filenames are bytes.
+
+    The path cannot cross into `eval_file` as text, so a wrapper
+    imports it: the raw name is built inside Nix, never decoded. The
+    error positioned there fails both strict reads.
+    """
+    import os
+
+    from huggorm_bindings.errors import EvalError
+
+    inner = os.fsencode(str(tmp_path)) + b"/caf\xe9.nix"
+    with open(inner, "wb") as f:
+        f.write(b'1 + "a"\n')
+    wrapper = tmp_path / "wrapper.nix"
+    wrapper.write_bytes(b'import (./. + "/caf\xe9.nix")')
+    with pytest.raises(EvalError) as caught:
+        state.eval_file(str(wrapper))
+    info = caught.value.info
+    assert info is not None
+    pos = info.pos()
+    assert pos is not None
+    with pytest.raises(UnicodeDecodeError):
+        pos.file()
+    assert pos.file_bytes().endswith(b"caf\xe9.nix")
+    assert any(b"caf\xe9.nix" in t.hint_bytes() for t in info.traces())
+
+
 def test_an_error_carries_its_position(state: Any) -> None:
     """C++ is the only place that holds where an error is (huggorm#100)."""
     from huggorm_bindings.errors import EvalError
