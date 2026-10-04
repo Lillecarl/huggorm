@@ -224,6 +224,7 @@ lib.makeScope pkgs.newScope (
           export HUGGORM_DECL_INCLUDE=${huggorm-decl}/${pkgs.python3.sitePackages}
           mkdir -p huggorm_bindings
           cp ${nixComponents.nix-store.src}/src/nix/get-env.sh huggorm_bindings/get-env.sh
+          cp ${../../packages/huggorm-bindings/NOTICE} huggorm_bindings/NOTICE
           ${interpreter py} -m pip wheel --no-build-isolation \
             --no-deps --no-index --wheel-dir dist .
           auditwheel repair --plat ${platform} --wheel-dir "$out" dist/*.whl

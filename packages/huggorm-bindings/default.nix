@@ -78,9 +78,12 @@ python3Packages.buildPythonPackage {
   # builder. Nix compiles it into the `nix` binary and no library
   # carries it, so the package that links the libraries carries the
   # copy of the same version. `-f`: no source must fail the build.
+  # NOTICE names whose terms the script travels under.
   postInstall = ''
     cp -f "${nix-store.src}/src/nix/get-env.sh" \
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/get-env.sh"
+    cp -f ${./NOTICE} \
+      "$out/${python3Packages.python.sitePackages}/huggorm_bindings/NOTICE"
   '';
 
   # Don't run `pip check` that might fail

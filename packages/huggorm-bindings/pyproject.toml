@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 [tool.setuptools.packages.find]
 include = ["huggorm_bindings*"]
 
-# Nix's `get-env.sh`, which a wheel build copies in before setup.py runs.
+# Nix's `get-env.sh`, which a wheel build copies in before setup.py runs,
+# and the NOTICE naming whose terms it travels under.
 [tool.setuptools.package-data]
-huggorm_bindings = ["get-env.sh"]
+huggorm_bindings = ["get-env.sh", "NOTICE"]
