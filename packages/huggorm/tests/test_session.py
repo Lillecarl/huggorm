@@ -46,10 +46,12 @@ async def test_evaluates_through_session_stores() -> None:
         assert isinstance(session, AsyncSessionLike)
 
 
-async def test_explicit_uri_wins_over_the_default() -> None:
+async def test_explicit_uri_wins_over_the_default(tmp_path: Any) -> None:
     async with AsyncSession("dummy://") as session:
-        store = session.store("dummy://")
-        assert await store.get_uri() == await session.store().get_uri()
+        explicit = await session.store(str(tmp_path)).get_uri()
+        default = await session.store().get_uri()
+        assert default.startswith("dummy")
+        assert explicit.startswith("local")
 
 
 async def test_foreign_store_is_refused() -> None:
@@ -62,8 +64,18 @@ async def test_close_is_idempotent() -> None:
     session = AsyncSession("dummy://")
     state = session.eval(session.store())
     await state.eval_expr("1 + 1")
+    calls = 0
+    close = state.aclose
+
+    async def counted() -> None:
+        nonlocal calls
+        calls += 1
+        await close()
+
+    state.aclose = counted  # type: ignore[method-assign]
     await session.aclose()
     await session.aclose()
+    assert calls == 1
 
 
 def _params(fn: Callable[..., Any], drop: int) -> list[tuple[str, object]]:
@@ -111,7 +123,18 @@ async def test_remote_close_is_idempotent(server: Any) -> None:
     async with ctx as session:
         state = await session.eval(await session.store())
         await state.eval_expr("1 + 1")
-    await session.aclose()
+        calls = 0
+        release = session._client.release
+
+        async def counted(obj: Any) -> None:
+            nonlocal calls
+            calls += 1
+            await release(obj)
+
+        session._client.release = counted  # type: ignore[method-assign]
+        await session.aclose()
+        await session.aclose()
+        assert calls == 2
 
 
 async def test_remote_detach_keeps_token(server: Any) -> None:
