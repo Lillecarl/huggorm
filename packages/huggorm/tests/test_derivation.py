@@ -5,7 +5,6 @@ store, which writes the `.drv` and needs no builder.
 """
 
 import importlib.resources
-import json
 import pathlib
 from collections.abc import Iterator
 from typing import Any
@@ -15,6 +14,11 @@ import pytest
 LEAF = ('derivation { name = "leaf"; system = "x86_64-linux"; '
         'builder = "/bin/sh"; args = [ "-c" "echo" ]; '
         'outputs = [ "out" "dev" ]; FOO = "bar"; }')
+# Like LEAF, but with the builder `nix develop` accepts. Nothing
+# builds here, so the path never has to exist.
+BASH_LEAF = ('derivation { name = "leaf"; system = "x86_64-linux"; '
+             'builder = "/bin/bash"; args = [ "-c" "echo" ]; '
+             'outputs = [ "out" "dev" ]; FOO = "bar"; }')
 ROOT = (f'derivation {{ name = "root"; system = "x86_64-linux"; '
         f'builder = "/bin/sh"; dep = ({LEAF}).dev; src = ./src; }}')
 FIXED = ('derivation { name = "fixed"; system = "x86_64-linux"; '
@@ -181,37 +185,113 @@ def test_json_round_trips_to_the_same_path(
 
 def test_a_dev_shell_derivation_from_generated_operations(
         store: Any, tmp_path: pathlib.Path) -> None:
-    """What `nix develop` does to a derivation, done in Python over
-    the generated operations only: read it, change the document, add
-    a script, write it back. `add_derivation` fills in the deferred
-    output paths, so no hash is computed here."""
-    from huggorm_bindings import (
-        ContentAddressMethod,
-        DerivationOutputInputAddressed,
-        HashAlgorithm,
-    )
+    """What `nix develop` does to a derivation, as one operation.
 
-    path = instantiate(tmp_path, LEAF)
-    document = json.loads(store.read_derivation(path).to_json())
-    script = store.add_to_store("get-env.sh", b"echo env\n",
-                                ContentAddressMethod.TEXT,
-                                HashAlgorithm.SHA256)
-    document["name"] += "-env"
-    document["env"]["name"] = document["name"]
-    document["args"] = [store.print_store_path(script)]
-    document["inputs"]["srcs"].append(script.to_string())
-    for name in document["outputs"]:
-        document["outputs"][name] = {}
-        document["env"][name] = ""
+    Read it, change the document, add the script, write it back.
+    `add_derivation` fills in the deferred output paths, so no hash
+    is computed here. The builder dumps the environment when the
+    answer builds, which nothing here does.
+    """
+    from huggorm.devshell import write_dev_shell_derivation
+    from huggorm_bindings import DerivationOutputInputAddressed
 
-    shell = store.read_derivation(store.add_derivation(json.dumps(document)))
+    path = instantiate(tmp_path, BASH_LEAF)
+    script = "echo env\n"
+    shell = store.read_derivation(
+        write_dev_shell_derivation(store, path, script))
 
     assert shell.name() == "leaf-env"
-    assert script in shell.input_srcs()
+    assert len(shell.args()) == 1 and shell.args()[0].endswith("get-env.sh")
+    assert any(p.to_string().endswith("get-env.sh")
+               for p in shell.input_srcs())
     for output in shell.outputs().values():
         assert isinstance(output, DerivationOutputInputAddressed)
     assert shell.outputs()["out"].path() != \
         store.read_derivation(path).outputs()["out"].path()
+
+
+async def test_an_async_dev_shell_derivation_rewrites(
+        store: Any, tmp_path: pathlib.Path) -> None:
+    """The async flavour, over a local `AsyncStore`."""
+    from huggorm.devshell import awrite_dev_shell_derivation
+    from huggorm_bindings import DerivationOutputInputAddressed
+    from huggorm_generated import AsyncStore
+
+    path = instantiate(tmp_path, BASH_LEAF)
+    shell_path = await awrite_dev_shell_derivation(
+        AsyncStore(str(tmp_path)), path, "echo env\n")
+    shell = store.read_derivation(shell_path)
+
+    assert shell.name() == "leaf-env"
+    for output in shell.outputs().values():
+        assert isinstance(output, DerivationOutputInputAddressed)
+
+
+def test_a_dev_shell_derivation_refuses_a_non_bash_builder(
+        store: Any, tmp_path: pathlib.Path) -> None:
+    """The refusal `nix develop` makes, at rewrite time.
+
+    LEAF builds with `/bin/sh`, so rewriting it fails here rather
+    than producing a derivation that fails obscurely at build time.
+    """
+    from huggorm.devshell import write_dev_shell_derivation
+    from huggorm_bindings.errors import NixError
+
+    path = instantiate(tmp_path, LEAF)
+    with pytest.raises(NixError, match="bash"):
+        write_dev_shell_derivation(store, path, "echo env\n")
+
+
+def _leaf_document(**overrides: Any) -> dict[str, Any]:
+    """The document shape `to_json` answers, without a store."""
+    document: dict[str, Any] = {
+        "name": "leaf",
+        "outputs": {"out": {"path": "/nix/store/x-out"}},
+        "inputs": {"drvs": [], "srcs": []},
+        "builder": "/bin/bash",
+        "args": ["-c", "echo"],
+        "env": {"name": "leaf", "out": "/nix/store/x-out"},
+    }
+    document.update(overrides)
+    return document
+
+
+def test_a_dev_shell_rewrite_strips_flat_reference_checks() -> None:
+    """A shell answers no reference checks, so none cross."""
+    from huggorm.devshell import _rewrite
+
+    env = {"name": "leaf", "allowedReferences": ["x"],
+           "allowedRequisites": ["x"], "disallowedReferences": ["x"],
+           "disallowedRequisites": ["x"], "KEEP": "yes"}
+    out = _rewrite(_leaf_document(env=env), "/nix/store/s.sh", "/nix/store/s.sh")
+    assert out["env"] == {"name": "leaf-env", "KEEP": "yes", "out": ""}
+
+
+def test_a_dev_shell_rewrite_strips_structured_output_checks() -> None:
+    """The structured shape of the same rule."""
+    from huggorm.devshell import _rewrite
+
+    attrs = {"outputChecks": {"out": {}}, "other": True}
+    out = _rewrite(_leaf_document(structuredAttrs=attrs),
+                   "/nix/store/s.sh", "/nix/store/s.sh")
+    assert out["structuredAttrs"] == {"other": True}
+
+
+def test_a_dev_shell_rewrite_keeps_outputs_without_a_path() -> None:
+    """Only addressed outputs invalidate: the rest have no path."""
+    from huggorm.devshell import _rewrite
+
+    outputs = {"out": {"path": "/nix/store/x-out"},
+               "fixed": {"hash": "sha256:abc"},
+               "float": {"CAFloating": True}}
+    env = {"name": "leaf", "out": "/nix/store/x-out",
+           "fixed": "/nix/store/x-fixed", "float": "keep"}
+    out = _rewrite(_leaf_document(outputs=outputs, env=env),
+                   "/nix/store/s.sh", "/nix/store/s.sh")
+    assert out["outputs"] == {"out": {}, "fixed": {},
+                              "float": {"CAFloating": True}}
+    assert out["env"]["out"] == "" and out["env"]["fixed"] == ""
+    assert out["env"]["float"] == "keep"
 
 
 def test_the_package_carries_nix_s_get_env_script() -> None:

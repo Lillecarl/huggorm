@@ -72,6 +72,10 @@ LOCAL: dict[str, list[str]] = {
         "CapturedLogs",
         "LogBatch",
     ],
+    ".devshell": [
+        "awrite_dev_shell_derivation",
+        "write_dev_shell_derivation",
+    ],
     ".watch": ["Watcher"],
     ".notify": ["Notifier"],
     ".warm": ["Warmer"],
