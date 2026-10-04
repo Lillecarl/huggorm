@@ -69,6 +69,8 @@ LOCAL: dict[str, list[str]] = {
         "AsyncSessionLike",
         "AsyncRemoteSession",
         "AsyncRemoteSessionLike",
+        "CapturedLogs",
+        "LogBatch",
     ],
     ".watch": ["Watcher"],
     ".notify": ["Notifier"],

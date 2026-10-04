@@ -38,7 +38,7 @@ nanopynix stays until this file says otherwise. No shortcut.
 | Session scope (local async) | done | `AsyncSession` + `AsyncSessionLike`, held to the generated ctors |
 | Session scope (remote) | done | `AsyncRemoteSession`: typed acquires, token detach/claim, `share`, `attach`, sweep-aware close |
 | Sync session scope | gap | No sync remote exists; sync local need unproven |
-| Log bus + capture + verbosity | gap | Per-state `subscribe_logs` exists; session-scoped stream and capture do not |
+| Log bus + capture + verbosity | done | Sessions stream (`logs`, `process_logs`) and collect (`capture`) over per-state taps |
 | Dev-shell derivation rewrite | gap | `get-env.sh` already ships in `huggorm-bindings`; the rewrite is open |
 | Python store implementations | gap | Blocked on huggorm#84 |
 | Typed settings models | superseded | Pydantic costs startup (CLI, completion); plain `dict[str, str]` is the surface |

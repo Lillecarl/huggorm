@@ -10,6 +10,10 @@ its two are coroutines. That asymmetry is honest rather than agreed:
 making the local pair async would pretend to do work, and a remote
 build cannot be sync. Each flavour has its own protocol for that
 reason; the objects they hand out already share one.
+
+Both scopes stream what Nix says while it works. `logs()` passes the
+records through as they arrive; `capture()` collects them for the
+length of a block.
 """
 
 from __future__ import annotations
@@ -17,16 +21,39 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_checkable
+
+import anyio
 
 from huggorm_generated import AsyncEvalState, AsyncStore, RPCEvalState, RPCStore
 
 from .remote import NixClient, connect
 
 if TYPE_CHECKING:
-    from huggorm_bindings import Store
+    from huggorm_bindings import LogRecord, Store
 
 logger = logging.getLogger(__name__)
+
+LogBatch = tuple[list["LogRecord"], int]
+"""One drain: the records waiting, and how many the bound refused.
+
+`dropped` is cumulative over the subscription, so a reader that
+missed a batch still sees the number grow. A reader wanting the
+per-batch figure subtracts.
+"""
+
+
+@dataclass
+class CapturedLogs:
+    """What Nix said while a `capture()` block ran.
+
+    `records` in arrival order; `dropped` the highest count any drain
+    reported, so a quiet capture and a lossy one read differently.
+    """
+
+    records: list[LogRecord]
+    dropped: int = 0
 
 
 @runtime_checkable
@@ -50,6 +77,25 @@ class AsyncSessionLike(Protocol):
 
     async def aclose(self) -> None:
         """Release every object this session handed out. Idempotent."""
+        ...
+
+    def logs(
+        self,
+        state: AsyncEvalState,
+        capacity: int = 1024,
+        level: int = 3,
+        poll: float = 0.05,
+    ) -> AsyncIterator[LogBatch]:
+        """Records raised on this state's thread, as they arrive."""
+        ...
+
+    def capture(
+        self,
+        state: AsyncEvalState,
+        capacity: int = 1024,
+        level: int = 3,
+    ) -> contextlib.AbstractAsyncContextManager[CapturedLogs]:
+        """Collect what this state says while the block runs."""
         ...
 
 
@@ -98,6 +144,60 @@ class AsyncSession:
         state = AsyncEvalState(store, settings, build_store)
         self._evals.add(state)
         return state
+
+    async def logs(
+        self,
+        state: AsyncEvalState,
+        capacity: int = 1024,
+        level: int = 3,
+        poll: float = 0.05,
+    ) -> AsyncIterator[LogBatch]:
+        """Records raised on this state's thread, as they arrive.
+
+        Polls the subscription's queue: a drain never blocks, so
+        there is nothing to wait on, only a queue to re-read.
+        `capacity` and `level` mean what `subscribe_logs` says.
+        Empty polls yield nothing: quiet means no batch.
+
+        Any state's records read here, not only one this session
+        made. Watching creates no lease, so there is nothing to own.
+        Stopping the iteration ends the subscription with it.
+        """
+        stream = await state.subscribe_logs(capacity, level)
+        try:
+            while True:
+                records = stream.drain()
+                if records:
+                    yield (records, stream.dropped())
+                await anyio.sleep(poll)
+        finally:
+            stream.close()
+            await state.unsubscribe_logs()
+
+    @contextlib.asynccontextmanager
+    async def capture(
+        self,
+        state: AsyncEvalState,
+        capacity: int = 1024,
+        level: int = 3,
+    ) -> AsyncIterator[CapturedLogs]:
+        """Collect what this state says while the block runs.
+
+        Subscribing installs synchronously, so everything the block
+        raises is already queued when it ends, and one last drain
+        collects it: complete, not eventual. The `finally` drains on
+        the way out however the block ends, and ends the
+        subscription with it.
+        """
+        stream = await state.subscribe_logs(capacity, level)
+        out = CapturedLogs(records=[])
+        try:
+            yield out
+        finally:
+            out.records.extend(stream.drain())
+            out.dropped = max(out.dropped, stream.dropped())
+            stream.close()
+            await state.unsubscribe_logs()
 
     async def aclose(self) -> None:
         """Close the evaluators, then the stores, and report together.
@@ -162,6 +262,33 @@ class AsyncRemoteSessionLike(Protocol):
 
     async def aclose(self) -> None:
         """Release every handle this session holds. Idempotent."""
+        ...
+
+    def logs(
+        self,
+        state: RPCEvalState,
+        capacity: int = 0,
+        level: int | None = None,
+    ) -> AsyncIterator[LogBatch]:
+        """Records raised on this state's server thread, as they arrive."""
+        ...
+
+    def process_logs(
+        self,
+        capacity: int = 0,
+        level: int | None = None,
+    ) -> AsyncIterator[LogBatch]:
+        """Records no subscribed thread claimed, as they arrive."""
+        ...
+
+    def capture(
+        self,
+        state: RPCEvalState | None = None,
+        capacity: int = 0,
+        level: int | None = None,
+        settle: float = 1.0,
+    ) -> contextlib.AbstractAsyncContextManager[CapturedLogs]:
+        """Collect what the server says while the block runs."""
         ...
 
 
@@ -295,6 +422,76 @@ class AsyncRemoteSession:
         if obj.handle_id is None:
             return
         await self._client.release(obj)
+
+    async def logs(
+        self,
+        state: RPCEvalState,
+        capacity: int = 0,
+        level: int | None = None,
+    ) -> AsyncIterator[LogBatch]:
+        """Records raised on this state's server thread, as they arrive.
+
+        Passes `client.logs` through unchanged: batches, `dropped`
+        and the empty first batch mean what they mean there. That
+        first batch is empty, and it says the subscription is
+        installed - start the work after reading it.
+        """
+        async for batch in self._client.logs(state, capacity, level):
+            yield batch
+
+    async def process_logs(
+        self,
+        capacity: int = 0,
+        level: int | None = None,
+    ) -> AsyncIterator[LogBatch]:
+        """Records no subscribed thread claimed, as they arrive.
+
+        Passes `client.process_logs` through: fetcher threads, file
+        transfers and builds. Read both streams to see everything,
+        and neither repeats the other.
+        """
+        async for batch in self._client.process_logs(capacity, level):
+            yield batch
+
+    @contextlib.asynccontextmanager
+    async def capture(
+        self,
+        state: RPCEvalState | None = None,
+        capacity: int = 0,
+        level: int | None = None,
+        settle: float = 1.0,
+    ) -> AsyncIterator[CapturedLogs]:
+        """Collect what the server says while the block runs.
+
+        Opens the stream and reads the empty first batch, so the
+        subscription is installed before the block starts. When the
+        block ends it keeps reading for `settle` seconds: records
+        cross a socket, so "the queue holds everything" is true only
+        after the last one lands. `state=None` captures the process
+        stream instead.
+
+        Nothing reads during the block. The server holds the records
+        meanwhile, and `dropped` counts what its bound refused - so
+        raise `capacity` for chatty work, and stream `logs()` for a
+        tail with no end.
+        """
+        stream = (
+            self._client.logs(state, capacity, level)
+            if state is not None
+            else self._client.process_logs(capacity, level)
+        )
+        it = stream.__aiter__()
+        await anext(it)
+        out = CapturedLogs(records=[])
+        try:
+            yield out
+            with anyio.move_on_after(settle):
+                async for records, dropped in it:
+                    out.records.extend(records)
+                    if dropped > out.dropped:
+                        out.dropped = dropped
+        finally:
+            await stream.aclose()
 
     async def aclose(self) -> None:
         """Release the evaluators, then the stores, and report together.

@@ -30,6 +30,12 @@ def _connect(server: Any, claim: str | None = None) -> Any:
     return AsyncRemoteSession.connect("127.0.0.1", server.port, claim=claim, store_uri="dummy://")
 
 
+# builtins.trace goes through printError, which is lvlError - 0, and
+# under every verbosity there is. So it is the one message a test can
+# rely on arriving.
+TRACE = 'builtins.trace "%s" 1'
+
+
 async def test_evaluates_through_session_stores() -> None:
     async with AsyncSession("dummy://") as session:
         store = session.store()
@@ -170,3 +176,90 @@ async def test_warm_state_survives_its_client(server: Any) -> None:
         adopted = second.attach("EvalState", state_id)
         value = await adopted.eval_expr("1 + 1")
         assert await value.integer() == 2
+
+
+async def test_local_capture_collects_evaluation_logs() -> None:
+    """Collecting what a block raised, locally.
+
+    Subscribing installs synchronously, so no gate is needed before
+    the work: everything the block raises is already queued when it
+    ends, and the last drain is complete.
+    """
+    async with AsyncSession("dummy://") as session:
+        state = session.eval(session.store())
+        async with session.capture(state) as caught:
+            await state.eval_expr(TRACE % "hello-local")
+    assert any("trace: hello-local" in r.text() for r in caught.records)
+    assert caught.dropped == 0
+
+
+async def test_local_logs_streams_while_work_runs() -> None:
+    """The live stream, locally.
+
+    The sleep lets the subscription land: the watcher subscribes on
+    the state's runner thread, and an eval queued ahead of it would
+    finish before the queue existed. `fail_after` bounds the wait
+    if it ever does anyway.
+    """
+    async with AsyncSession("dummy://") as session:
+        state = session.eval(session.store())
+        seen: list[str] = []
+        async with anyio.create_task_group() as tg:
+            async def _watch() -> None:
+                async for records, _ in session.logs(state):
+                    seen.extend(r.text() for r in records)
+                    if any("trace: hello-stream" in text for text in seen):
+                        tg.cancel_scope.cancel()
+            tg.start_soon(_watch)
+            await anyio.sleep(0.2)
+            await state.eval_expr(TRACE % "hello-stream")
+            with anyio.fail_after(10):
+                await anyio.sleep_forever()
+    assert any("trace: hello-stream" in text for text in seen)
+
+
+async def test_remote_logs_stream_reports(server: Any) -> None:
+    """The live stream, remotely.
+
+    The empty first batch is the gate the local stream lacks: it
+    says the subscription is installed, so the eval after it cannot
+    run ahead of the queue.
+    """
+    ctx = _connect(server)
+    async with ctx as session:
+        state = await session.eval(await session.store())
+        it = session.logs(state).__aiter__()
+        installed, _ = await anext(it)
+        assert installed == []
+        await state.eval_expr(TRACE % "hello-remote")
+        with anyio.fail_after(10):
+            async for records, _ in it:
+                if any("trace: hello-remote" in r.text() for r in records):
+                    break
+        await it.aclose()
+
+
+async def test_remote_capture_collects(server: Any) -> None:
+    """Collecting what a block raised, remotely.
+
+    The settle window is what the local capture does not need:
+    records cross a socket, so the block ending is not the last one
+    landing.
+    """
+    ctx = _connect(server)
+    async with ctx as session:
+        state = await session.eval(await session.store())
+        async with session.capture(state) as caught:
+            await state.eval_expr(TRACE % "hello-captured")
+    assert any("trace: hello-captured" in r.text() for r in caught.records)
+    assert caught.dropped == 0
+
+
+async def test_remote_process_logs_opens(server: Any) -> None:
+    """The process stream opens, with the same installed signal."""
+    ctx = _connect(server)
+    async with ctx as session:
+        it = session.process_logs().__aiter__()
+        installed, _ = await anext(it)
+        assert installed == []
+        await it.aclose()
