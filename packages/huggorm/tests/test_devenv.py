@@ -531,7 +531,15 @@ class AsyncFakeStore:
         return getattr(self.sync, name)
 
     async def read_derivation(self, path: StorePath) -> Any:
-        return self.sync.read_derivation(path)
+        read = self.sync.read_derivation(path)
+
+        class AsyncRead:
+            """`AsyncDerivation`'s shape: `to_json` is awaited."""
+
+            async def to_json(self) -> str:
+                return str(read.to_json())
+
+        return AsyncRead()
 
     async def add_to_store(self, *args: Any) -> StorePath:
         return self.sync.add_to_store(*args)

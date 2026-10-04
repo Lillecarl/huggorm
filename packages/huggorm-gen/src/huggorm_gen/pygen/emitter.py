@@ -434,13 +434,13 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
 
     for group in ("wrappers", "returned_types"):
         for name, proto in manifest[group].items():
-            # WRAPPED, not merely named. `cppgen/manifest` stamps an
-            # `async_class` NAME on every proxy, and an unwrapped one
+            # SERVED, not merely wrapped. `cppgen/manifest` stamps an
+            # `async_class` NAME on every proxy, and an unserved one
             # gets no such class emitted - so reading the key alone
             # put 'LogStream': 'AsyncLogStream' in this table with
             # nothing behind it, and `server.adopt` would have raised
             # AttributeError on the first handle (huggorm#32).
-            if proto["wrapped"] and "async_class" in proto:
+            if proto["wire"] == "proxy" and "async_class" in proto:
                 async_of.append((name,
                                  ast.Constant(value=proto["async_class"])))
             tree = proto.get("tree")
@@ -536,6 +536,11 @@ def returned_module(proto: Proto,
     """
     svc = proto["name"]
     policy = proto["threading"]
+    # Served is addressability; WRAPPED is execution. An unwrapped
+    # class is pool and cannot wait, so its calls run inline: a hop
+    # buys nothing, and a request would push a "finalized" marker from
+    # a pool thread into the process queue for a call no reader made.
+    execution = policy if proto["wrapped"] else "inline"
     policy_wire = proto["wire"]
     async_types = async_types or set()
     bound_policies = bound_policies or {}
@@ -583,11 +588,12 @@ def returned_module(proto: Proto,
                 value=(
                     f"Async handle over a {svc} produced by another wrapper. "
                     f"Policy '{policy}': "
-                    + (
-                        "operations run on the producer's thread."
-                        if policy == "affine"
-                        else "operations may run on any pool thread."
-                    )
+                    + {
+                        "affine": "operations run on the producer's thread.",
+                        "pool": "operations may run on any pool thread.",
+                        "inline": "operations run on the calling thread, "
+                                  "because none of them can wait.",
+                    }[execution]
                 )
             )
         )
@@ -620,7 +626,7 @@ def returned_module(proto: Proto,
                         args=[
                             ast.Name(id="obj"),
                             ast.Name(id="runner"),
-                            ast.Constant(value=policy),
+                            ast.Constant(value=execution),
                         ],
                         keywords=[],
                     ),
@@ -1231,8 +1237,8 @@ def _spec_name(cls: str, method: str) -> str:
 
 
 def rpc_module(manifest: Proto, ordered: list[Proto],
-               wrapped: set[str]) -> ast.Module:
-    """Emit one RPC client class per wrapped class.
+               served: set[str]) -> ast.Module:
+    """Emit one RPC client class per served class.
 
     These replace a __getattr__ proxy. That proxy resolved a method
     name against the manifest at call time, which meant a typechecker
@@ -1255,7 +1261,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     # a handle, never a local object. That is the divergence keeping a
     # method with a proxy parameter off the protocol - the in-process
     # wrapper needs the local object instead.
-    ann = {n: rpc_class_name(n) for n in wrapped}
+    ann = {n: rpc_class_name(n) for n in served}
 
     annotations = ["str"]
     defaults: list[str] = []
@@ -1448,14 +1454,44 @@ FREE_MODULE = "free_functions"
 
 
 def free_function_module(protos: list[Proto],
-                        async_types: set[str]) -> ast.Module:
+                        async_types: set[str],
+                        bound_policies: dict[str, str]) -> ast.Module:
     """Emit module-level coroutines for the bindings' free functions.
 
     They have no instance, so there is no runner to hop through and no
     handle to hold - just the shared pool, which is what "pool" means
     everywhere else. The sync function is imported under an underscore
     alias so the coroutine can take its plain name.
+
+    A proxy return is adopted into its Async form, as a method's is.
+    Only a POOL returned type can be: `attach_runner` gives one a pool
+    runner of its own, while an affine one needs a producer's home
+    thread and a free function has none. A WRAPPER class cannot be
+    adopted at all - its Async form has a constructor, not an
+    adoption path. Both are refused here, at generation, because the
+    alternative is a coroutine that hands a sync object to an async
+    caller and a server that leases one.
     """
+    pool_parent = False
+    for proto in protos:
+        rt = proto["return_type"]
+        if (adopted := adoptee(rt, bound_policies)) is None:
+            if proxies := sorted(names_in(rt) & async_types):
+                raise ValueError(
+                    f"free function {proto['name']} returns {rt}, and "
+                    f"{', '.join(proxies)} cannot be adopted into an "
+                    f"async form from a free function. Drop its threading "
+                    f"policy, or return a pool returned type.")
+            continue
+        policy = bound_policies[adopted[0]]
+        if policy != "pool":
+            raise ValueError(
+                f"free function {proto['name']} returns {adopted[0]}, which "
+                f"is {policy}: it needs a home thread and a free function "
+                f"has none. Return it from a method of the class that owns "
+                f"the thread instead.")
+        pool_parent = True
+
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(ast.Expr(value=ast.Constant(
         value="Generated async wrappers for the bindings' module-level "
@@ -1467,9 +1503,11 @@ def free_function_module(protos: list[Proto],
     for proto in protos:
         annotations += [_param_ann(p["type"], async_types) for p in proto["params"]]
         defaults += _default_names(proto["params"])
-        annotations.append(proto["return_type"])
+        annotations.append(_return_ann(proto["return_type"], bound_policies, {}))
     used = _annotation_names(annotations) | _annotation_names(defaults)
-    if any(p["return_type"] != "None" for p in protos):
+    if any(p["return_type"] != "None"
+           and adoptee(p["return_type"], bound_policies) is None
+           for p in protos):
         mod.body.append(ast.ImportFrom(
             module="typing", names=[ast.alias(name="cast")], level=0))
     mod.body.extend(_sibling_imports(used))
@@ -1481,17 +1519,42 @@ def free_function_module(protos: list[Proto],
                for p in sorted(protos, key=lambda x: x["name"])],
         level=0))
     mod.body.append(ast.ImportFrom(
-        module="_runtime", names=[ast.alias(name="call_function")], level=1))
+        module="_runtime",
+        names=[ast.alias(name="call_function")]
+        + ([ast.alias(name="PoolRunner")] if pool_parent else []),
+        level=1))
 
     for proto in protos:
         body: list[ast.stmt] = []
         if proto["doc"]:
             body.append(ast.Expr(value=ast.Constant(value=proto["doc"])))
-        body.append(_forward(ast.Call(
+        rt = proto["return_type"]
+        call = ast.Call(
             func=ast.Name(id="call_function"),
             args=[ast.Name(id="_" + proto["name"]),
                   ast.List(elts=[ast.Name(id=p["name"]) for p in proto["params"]])],
-            keywords=[]), proto["return_type"]))
+            keywords=[])
+        if (adopted := adoptee(rt, bound_policies)) is not None:
+            name, optional = adopted
+            body.append(ast.Assign(
+                targets=[ast.Name(id="result")],
+                value=ast.Await(value=call)))
+            # A pool policy ignores the parent, so a fresh PoolRunner
+            # stands in for the producer a method would pass.
+            wrapped: ast.expr = ast.Call(
+                func=ast.Name(id=f"Async{name}"),
+                args=[ast.Name(id="result"),
+                      ast.Call(func=ast.Name(id="PoolRunner"),
+                               args=[ast.Constant(value=None)], keywords=[])],
+                keywords=[])
+            if optional:
+                wrapped = ast.IfExp(
+                    test=ast.Compare(left=ast.Name(id="result"), ops=[ast.Is()],
+                                     comparators=[ast.Constant(value=None)]),
+                    body=ast.Constant(value=None), orelse=wrapped)
+            body.append(ast.Return(value=wrapped))
+        else:
+            body.append(_forward(call, rt))
         mod.body.append(ast.AsyncFunctionDef(
             name=proto["name"],
             args=_arguments(
@@ -1500,7 +1563,7 @@ def free_function_module(protos: list[Proto],
                 proto["name"]),
             body=body,
             decorator_list=[],
-            returns=_ann(proto["return_type"], proto["name"]),
+            returns=_ann(_return_ann(rt, bound_policies, {}), proto["name"]),
             type_params=[]))
 
     ast.fix_missing_locations(mod)

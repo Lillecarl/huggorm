@@ -71,6 +71,25 @@ def wrapped_names(manifest: Proto) -> set[str]:
     }
 
 
+def served_names(manifest: Proto) -> set[str]:
+    """Every class with a service behind its handles: all proxies.
+
+    Wrap and serve are different decisions sharing one history.
+    Wrapping is execution - a home thread, a released GIL - and only
+    classes that need it get it. Serving is addressability - a lease
+    registry plus dispatch for a handle - and every proxy needs it,
+    because a handle no later call can use is the thing the wire
+    refuses to publish. A pool class with nothing to block on still
+    gets a service; its calls just run without a hop.
+    """
+    return {
+        name
+        for group in ("wrappers", "returned_types")
+        for name, proto in manifest[group].items()
+        if proto["wire"] == "proxy"
+    }
+
+
 def protocol_blockers(method: Proto, wrapped: set[str]) -> list[str]:
     """Why this method cannot appear on the protocol, or [] if it can.
 
@@ -99,7 +118,7 @@ def protocol_blockers(method: Proto, wrapped: set[str]) -> list[str]:
 
 
 def order(manifest: Proto) -> list[Proto]:
-    """The wrapped protocol dicts, bases before subclasses.
+    """The served protocol dicts, bases before subclasses.
 
     Only class inheritance needs the order - annotations are lazy in
     both emitted modules - but a subclass whose base is not defined yet
@@ -108,7 +127,7 @@ def order(manifest: Proto) -> list[Proto]:
         proto
         for group in ("returned_types", "wrappers")
         for proto in manifest[group].values()
-        if proto["wrapped"]
+        if proto["wire"] == "proxy"
     ]
     by_name = {p["name"]: p for p in protos}
     out: list[Proto] = []
@@ -133,7 +152,7 @@ def annotate(manifest: Proto) -> Proto:
     wrapped = wrapped_names(manifest)
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
-            if not proto["wrapped"]:
+            if proto["wire"] != "proxy":
                 continue
             proto["protocol"] = protocol_name(cls_name)
             proto["async_class"] = async_class_name(cls_name)

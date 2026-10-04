@@ -39,7 +39,8 @@ nanopynix stays until this file says otherwise. No shortcut.
 | Session scope (remote) | done | `AsyncRemoteSession`: typed acquires, token detach/claim, `share`, `attach`, sweep-aware close |
 | Sync session scope | gap | No sync remote exists; sync local need unproven |
 | Log bus + capture + verbosity | done | Sessions stream (`logs`, `process_logs`) and collect (`capture`) over per-state taps |
-| Dev-shell derivation rewrite | done | `huggorm.devshell` over generated ops, local sync+async; remote needs Derivation over RPC |
+| Dev-shell derivation rewrite | done | `huggorm.devshell` over generated ops, local sync+async; `read_derivation` and `to_json` cross RPC, the build stays where the environment is sourced |
+| One consumer over sync, async and RPC | gap | Every proxy has a service; the proof is huggorm#111, blocked in part by huggorm#26 |
 | print-dev-env (build + read + render) | done | `get_build_environment`/`print_dev_env` (+async): build every output, parse the dumped JSON into `BuildEnvironment`, render sourcable shell or `to_dict` JSON; redirects need installables and stay CLI |
 | Python store implementations | gap | Blocked on huggorm#84 |
 | Typed settings models | superseded | Pydantic costs startup (CLI, completion); plain `dict[str, str]` is the surface |

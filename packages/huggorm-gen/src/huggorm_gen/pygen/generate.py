@@ -285,8 +285,9 @@ def build_manifest() -> Proto:
         print(f"not wrapped (pool and non-blocking, so nothing to wrap): "
               f"{', '.join(unwrapped)}")
 
-    # Only a WRAPPED returned type gets adopted into a runner; an
-    # unwrapped one is handed back exactly as the binding produced it.
+    # Adoption serves the affine-bound enforcement below: which
+    # returned types have a runner to be adopted into. The full served
+    # set is decided in `main`; this one only needs the affine names.
     returned_policies = {p["name"]: p["threading"] for p in returned_protos
                          if p["wrapped"]}
 
@@ -475,16 +476,22 @@ def main(argv: list[str] | None = None) -> None:
     # six of them across the split would have made the boundary a
     # tuple nobody could read.
     returned_policies = {p["name"]: p["threading"] for p in returned_protos
-                         if p["wrapped"]}
+                         if p["wire"] == "proxy"}
     async_types = {p["name"] for p in returned_protos + protos
-                   if p["wrapped"]}
+                   if p["wire"] == "proxy"}
     async_twins = manifest["async_twins"]
     unions = manifest["unions"]
 
     # The in-process wrappers. Emitted here rather than mid-derivation:
     # a contract that fails now fails before any file is written.
+    #
+    # Served, not wrapped: every proxy gets its async form, because a
+    # handle the server adopts needs an Async class behind it whether
+    # or not the calls hop threads. The threading policy travels with
+    # the proto, so a pool class keeps pool execution - serving is
+    # addressability, not affinity.
     for proto in returned_protos:
-        if not proto["wrapped"]:
+        if proto["wire"] != "proxy":
             continue
         fname = f"async_{proto['name'].lower()}.py"
         (out / fname).write_text(ast.unparse(returned_module(
@@ -492,7 +499,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"generated {fname} for returned type {proto['name']} "
               f"({proto['threading']})")
     for proto in protos:
-        if not proto["wrapped"]:
+        if proto["wire"] != "proxy":
             continue
         fname = f"async_{proto['name'].lower()}.py"
         (out / fname).write_text(ast.unparse(wrapper_module(
@@ -504,7 +511,8 @@ def main(argv: list[str] | None = None) -> None:
     free_names = [p["name"] for p in wrapped_free]
     if wrapped_free:
         (out / f"{FREE_MODULE}.py").write_text(ast.unparse(
-            free_function_module(wrapped_free, async_types)) + "\n")
+            free_function_module(wrapped_free, async_types,
+                                 returned_policies)) + "\n")
         print(f"generated {FREE_MODULE}.py for {len(wrapped_free)} free "
               f"function(s): {', '.join(free_names)}")
 
@@ -514,7 +522,7 @@ def main(argv: list[str] | None = None) -> None:
         ast.unparse(protocol_module(manifest, ordered, adoptable)) + "\n")
     (out / f"{surface.RPC_MODULE}.py").write_text(
         ast.unparse(rpc_module(manifest, ordered,
-                               surface.wrapped_names(manifest))) + "\n")
+                               surface.served_names(manifest))) + "\n")
     withheld = [
         f"{proto['name']}.{m['name']}"
         for proto in ordered for m in proto["methods"] if m["protocol_blockers"]

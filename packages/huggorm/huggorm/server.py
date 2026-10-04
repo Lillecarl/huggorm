@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import weakref
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -206,9 +207,10 @@ def _widest(readers: Any) -> int:
 class _Reader:
     """One client's share of a subscription many clients read.
 
-    Duck-typed as a `LogStream` on purpose - `drain` and `dropped` are
-    the only two things `_pump` asks of a queue, so a reader drops
-    into the same loop the single-reader path used, unchanged.
+    Duck-typed as an `AsyncLogStream` on purpose - `drain` and
+    `dropped` are the only two things `_pump` asks of a queue, so a
+    reader drops into the same loop the single-reader path used,
+    unchanged, awaits included.
 
     The DROP POLICY is the C++ queue's, restated over a `deque`
     because a reader is a second bound under the first. A full reader
@@ -248,7 +250,11 @@ class _Reader:
             return
         self._records.append(record)
 
-    def drain(self) -> list[Any]:
+    async def drain(self) -> list[Any]:
+        # Async to match the `AsyncLogStream` this stands in for:
+        # `_pump` awaits whichever queue it is given, and a reader
+        # that answered synchronously would split that loop in two.
+        # The deque moves nothing that waits, so this awaits nothing.
         # The shared drain raised, so the queue this reads is not
         # being filled any more. Re-raised HERE rather than logged,
         # because that is what the single-reader path did: the
@@ -260,13 +266,24 @@ class _Reader:
         self._records = []
         return out
 
-    def dropped(self) -> int:
+    async def dropped(self) -> int:
         """This reader's drops PLUS the shared queue's.
 
         Both are cumulative, so the sum is too, and a client that
         missed a batch still learns the total. It cannot tell the two
-        apart, and does not need to: either way the record is gone."""
+        apart, and does not need to: either way the record is gone.
+
+        Async for the same reason `drain` is: the shape matches.
+        """
         return self._dropped + self._fan.dropped
+
+    async def close(self) -> None:
+        """Leave the fan-out. Idempotent: a reader not in it is a no-op,
+        so the reaper and an explicit close can both run."""
+        await self._fan.leave(self)
+
+    async def aclose(self) -> None:
+        await self.close()
 
 
 class _Fanout:
@@ -338,6 +355,10 @@ class _Fanout:
                 self.failure = None
                 self._level = max(level, _widest(self._readers))
                 self._sub = await self._open(self._level)
+                # The subscribe is a call, and its own "finalized"
+                # lands in the queue it just installed. No reader asked
+                # for that call, so it goes before any reader joins.
+                await self._sub.drain()
                 self._stopped = anyio.Event()
                 # `start`, not `start_soon`: it waits for the task to
                 # report its cancel scope, so `leave` can never find
@@ -361,7 +382,7 @@ class _Fanout:
             scope.cancel()
             await stopped.wait()
         if sub is not None:
-            sub.close()
+            await sub.close()
         with contextlib.suppress(Exception):
             await self._drop()
 
@@ -416,8 +437,8 @@ class _Fanout:
             task_status.started(scope)
             try:
                 while True:
-                    self.dropped = sub.dropped()
-                    records = sub.drain()
+                    self.dropped = await sub.dropped()
+                    records = await sub.drain()
                     if not records:
                         await anyio.sleep(LOG_POLL)
                         continue
@@ -467,14 +488,14 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
     await stream.send_message(resp_cls())
     while True:
         alive()
-        records = sub.drain()
+        records = await sub.drain()
         if not records:
             await anyio.sleep(LOG_POLL)
             continue
         resp = resp_cls()
         codec.encode(resp, "records", "list[LogRecord]", records,
                      _never_a_proxy)
-        resp.dropped = sub.dropped()
+        resp.dropped = await sub.dropped()
         await stream.send_message(resp)
 
 
@@ -522,6 +543,26 @@ class Dispatcher:
         # for the same reason.
         self._process_fanout = _Fanout(loops, _open_process_subscription,
                                        _drop_process_subscription)
+        # The generated subscribe rpcs, routed through the fan-outs.
+        # Called straight through, `subscribe_logs` REPLACES the
+        # thread's subscription, and an open `Session/Logs` stream on
+        # that state goes connected and silent (huggorm#85). So the
+        # handle a remote subscribe answers is a fan-out reader, and a
+        # remote unsubscribe leaves only the readers that connection
+        # opened. Weak, because the handle table and the fan-out are
+        # what keep a reader alive.
+        #
+        # Keyed by name, never by class: no layer above the bindings
+        # names a domain type (`test_no_hardcoded_domain_types`).
+        self._method_overrides: dict[str, Callable[..., Awaitable[Any]]] = {
+            "subscribe_logs": self._subscribe_logs,
+            "unsubscribe_logs": self._unsubscribe_logs,
+        }
+        self._free_overrides: dict[str, Callable[..., Awaitable[Any]]] = {
+            "subscribe_process_logs": self._subscribe_process_logs,
+            "unsubscribe_process_logs": self._unsubscribe_process_logs,
+        }
+        self._handle_readers: dict[tuple[str, int], weakref.WeakSet[_Reader]] = {}
         # A failure crosses the same way a value does: as messages, by
         # what the bindings declare, never by a type this file names
         # (huggorm#36).
@@ -550,6 +591,32 @@ class Dispatcher:
                 lambda: _drop_subscription(target))
             self._log_fanouts[key] = fan
         return fan
+
+    async def _join(self, fan: _Fanout, key: tuple[str, int],
+                    capacity: int, level: int) -> _Reader:
+        reader = await fan.join(capacity, level)
+        self._handle_readers.setdefault(key, weakref.WeakSet()).add(reader)
+        return reader
+
+    async def _leave_all(self, key: tuple[str, int]) -> None:
+        for reader in list(self._handle_readers.pop(key, ())):
+            await reader.close()
+
+    async def _subscribe_logs(self, target: Any, token: str,
+                              capacity: int, level: int) -> _Reader:
+        return await self._join(self._fanout(target), (token, id(target)),
+                                capacity, level)
+
+    async def _unsubscribe_logs(self, target: Any, token: str) -> None:
+        await self._leave_all((token, id(target)))
+
+    async def _subscribe_process_logs(self, token: str,
+                                      capacity: int, level: int) -> _Reader:
+        return await self._join(self._process_fanout, (token, 0),
+                                capacity, level)
+
+    async def _unsubscribe_process_logs(self, token: str) -> None:
+        await self._leave_all((token, 0))
 
     def _on_drop(self, obj: Any) -> None:
         """Shut a dropped wrapper's runner down, off the sweep.
@@ -686,9 +753,11 @@ class Dispatcher:
         for m in METHODS.get(cls_name, ()):
             req_cls = self.msg(m.req)
             resp_cls = self.msg(m.resp)
+            override = self._method_overrides.get(m.name)
 
             async def handler(stream: Any, m: Call = m,
-                              resp_cls: Any = resp_cls) -> None:
+                              resp_cls: Any = resp_cls,
+                              override: Any = override) -> None:
                 req = await stream.recv_message()
                 token = _tok(stream)
                 target = self.resolve(req.self.id, token)
@@ -696,7 +765,10 @@ class Dispatcher:
                     self.codec.decode(req, a.name, a.type,
                                       lambda hid: self.resolve(hid, token))
                     for a in m.args]
-                result = await getattr(target, m.name)(*args)
+                if override is not None:
+                    result = await override(target, token, *args)
+                else:
+                    result = await getattr(target, m.name)(*args)
                 resp = resp_cls()
                 # Proxy returns pin their producer (parents=[self]) and
                 # lease to the CALLER's connection; everything else the
@@ -757,17 +829,22 @@ class Dispatcher:
             fn = getattr(flg, fname)
             req_cls = self.msg(spec.req)
             resp_cls = self.msg(spec.resp)
+            override = self._free_overrides.get(fname)
 
             async def handler(stream: Any, fn: Any = fn,
                               spec: Call = spec,
-                              resp_cls: Any = resp_cls) -> None:
+                              resp_cls: Any = resp_cls,
+                              override: Any = override) -> None:
                 req = await stream.recv_message()
                 token = _tok(stream)
                 args = [
                     self.codec.decode(req, a.name, a.type,
                                       lambda hid: self.resolve(hid, token))
                     for a in spec.args]
-                result = await fn(*args)
+                if override is not None:
+                    result = await override(token, *args)
+                else:
+                    result = await fn(*args)
                 resp = resp_cls()
                 self.codec.encode(resp, "result", spec.returns, result,
                                   lambda obj: self.put(obj, token))

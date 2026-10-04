@@ -166,12 +166,12 @@ class AsyncSession:
         stream = await state.subscribe_logs(capacity, level)
         try:
             while True:
-                records = stream.drain()
+                records = await stream.drain()
                 if records:
-                    yield (records, stream.dropped())
+                    yield (records, await stream.dropped())
                 await anyio.sleep(poll)
         finally:
-            stream.close()
+            await stream.close()
             await state.unsubscribe_logs()
 
     @contextlib.asynccontextmanager
@@ -194,9 +194,9 @@ class AsyncSession:
         try:
             yield out
         finally:
-            out.records.extend(stream.drain())
-            out.dropped = max(out.dropped, stream.dropped())
-            stream.close()
+            out.records.extend(await stream.drain())
+            out.dropped = max(out.dropped, await stream.dropped())
+            await stream.close()
             await state.unsubscribe_logs()
 
     async def aclose(self) -> None:

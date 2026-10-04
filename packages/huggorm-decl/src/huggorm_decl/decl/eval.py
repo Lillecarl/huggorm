@@ -1890,18 +1890,13 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
         said. A thread that exits without calling this gives its
         level back anyway (huggorm#96).
 
-        It CROSSES the wire and `subscribe_logs` does not, which looks
-        like an accident and is not. `subscribe_logs` answers a
-        `LogStream`, and a LogStream is a proxy with no service - so
-        the answer would be a handle no later call could use, and the
-        schema refuses it for that reason. This answers nothing, so
-        the reason does not apply.
-
-        What a remote caller can do with it is stop a subscription
-        somebody else made on that state's thread. That is the same
-        power every shared handle already grants - a second connection
-        holding an EvalState can `forget_file` on it too - so it is
-        within the sharing model rather than a new hole in it."""
+        It CROSSES the wire, as `subscribe_logs` does, but the server
+        does not call either straight through. Both go through the
+        state's fan-out: a remote subscribe answers a reader of it,
+        and a remote unsubscribe leaves the readers that connection
+        opened. Called straight through, they would replace or clear
+        the subscription an open `Session/Logs` stream is pumping, and
+        leave that stream connected and silent (huggorm#85)."""
         Cxx("""
 (void) self;
 huggorm::unsubscribe_logs();
@@ -2761,17 +2756,10 @@ def unsubscribe_process_logs() -> None:
     the second one cost while it was missing - 1052 daemon debug
     lines on an unsubscribed caller's stderr.
 
-    It CROSSES the wire, and its counterpart does not, for the same
-    reason the pair on `EvalState` splits that way: this answers
-    nothing, so the refusal that stops a `LogStream` handle crossing
-    does not apply to it.
-
-    So a remote caller can stop a subscription somebody else made -
-    including the one an open `Session/ProcessLogs` stream is pumping,
-    which would leave that stream connected and silent. That is the
-    same power every shared handle already grants, and the same one
-    `EvalState.unsubscribe_logs` grants over a state's thread. Named
-    here so it reads as the sharing model rather than an oversight."""
+    It CROSSES the wire, and so does its counterpart, through the
+    process fan-out as the pair on `EvalState` goes through the
+    state's: a remote caller leaves only the readers it opened, and
+    an open `Session/ProcessLogs` stream keeps hearing (huggorm#85)."""
 
 
 @needs("huggorm_decl/cpp/logging.hpp")

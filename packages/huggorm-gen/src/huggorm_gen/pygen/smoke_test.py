@@ -441,12 +441,12 @@ async def test_behavior() -> None:
     abstract, not_wrapped = [], []
     for cls_name, proto in manifest["wrappers"].items():
         py = pkg_dir / f"async_{cls_name.lower()}.py"
-        if not proto["wrapped"]:
-            # No wrapper was emitted, so there is no emitted __init__
+        if proto["wire"] != "proxy":
+            # No handle was emitted, so there is no emitted __init__
             # to check. What must hold instead is that nothing was
             # emitted at all.
             assert not py.exists(), (
-                f"{cls_name} is not wrapped, yet {py.name} exists")
+                f"{cls_name} is not a proxy, yet {py.name} exists")
             not_wrapped.append(cls_name)
             continue
         tree = ast.parse(py.read_text(), filename=str(py.name))
@@ -1022,13 +1022,14 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
     one that carries every method: the protocol drops what it cannot
     promise and the rpc client drops what cannot cross."""
     from huggorm_gen.pygen.generate import build_manifest
+    from huggorm_gen.pygen.surface import served_names
 
     manifest = build_manifest()
-    wrapped = {
+    served = {
         name: proto
         for group in ("wrappers", "returned_types")
         for name, proto in manifest[group].items()
-        if proto["wrapped"]
+        if name in served_names(manifest)
     }
     found = _emitted_classes(out)
 
@@ -1038,14 +1039,14 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
         class's own list is only part of what it offers."""
         out_: dict[str, Any] = {}
         while name is not None:
-            proto = wrapped[name]
+            proto = served[name]
             for m in proto["methods"]:
                 out_.setdefault(m["name"], m)
             name = proto.get("async_base")
         return out_
 
     failures, checked, ctor_checked = [], 0, 0
-    for cls_name, proto in wrapped.items():
+    for cls_name, proto in served.items():
         emitted = _resolved(found, proto["async_class"])
         for name, m in declared(cls_name).items():
             sig = emitted.get(name)
@@ -1109,10 +1110,10 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
                for pr in declared_classes.values()
                for p in pr.get("ctor") or []), (
         "no constructor declares a default; that half proves nothing")
-    assert ctor_checked >= len(wrapped) // 2, (
+    assert ctor_checked >= len(served) // 2, (
         f"checked only {ctor_checked} constructor(s) in the stubs")
-    assert checked >= 3 * len(wrapped), (
-        f"checked only {checked} method(s) across {len(wrapped)} classes")
+    assert checked >= 3 * len(served), (
+        f"checked only {checked} method(s) across {len(served)} classes")
     # Non-vacuity: something must actually HAVE a default, or the
     # comparison is between two empty lists everywhere.
     assert any(p["default"] is not None
@@ -1144,17 +1145,20 @@ def test_conformance(out: pathlib.Path) -> None:
         form of that same class, or of that class or None."""
     from huggorm_gen.payload.wiretypes import adoptee, respell
     from huggorm_gen.pygen.generate import build_manifest
+    from huggorm_gen.pygen.surface import served_names
 
     manifest = build_manifest()
-    wrapped = {
+    # Served, not wrapped: every proxy has all three surfaces now,
+    # and the gate compares all three of each.
+    served = {
         name: proto
         for group in ("wrappers", "returned_types")
         for name, proto in manifest[group].items()
-        if proto["wrapped"]
+        if name in served_names(manifest)
     }
     # protocol name -> the class it speaks for, so a protocol-typed
     # return can be checked against each implementation's own form.
-    speaks_for = {proto["protocol"]: name for name, proto in wrapped.items()}
+    speaks_for = {proto["protocol"]: name for name, proto in served.items()}
     twins: dict[str, str] = manifest.get("async_twins") or {}
     found = _emitted_classes(out)
 
@@ -1167,14 +1171,14 @@ def test_conformance(out: pathlib.Path) -> None:
         those - a protocol is what both implementations satisfy."""
         out_: dict[str, list[str]] = {}
         while name is not None:
-            proto = wrapped[name]
+            proto = served[name]
             for m in proto["methods"]:
                 out_.setdefault(m["name"], m[key])
             name = proto.get("async_base")
         return {n for n, why in out_.items() if why}
 
     failures, checked = [], 0
-    for cls_name, proto in wrapped.items():
+    for cls_name, proto in served.items():
         P = _resolved(found, proto["protocol"])
         A = _resolved(found, proto["async_class"])
         R = _resolved(found, proto["rpc_class"])
@@ -1231,7 +1235,7 @@ def test_conformance(out: pathlib.Path) -> None:
                 if adoptee(expected, speaks_for) is not None:
                     side = "async_class" if label == "in-process" else "rpc_class"
                     expected = respell(expected, {
-                        p: wrapped[c][side] for p, c in speaks_for.items()})
+                        p: served[c][side] for p, c in speaks_for.items()})
                 elif label == "in-process":
                     # A declared async twin is the same value in the
                     # other spelling - anyio.Path wraps a pathlib.Path
@@ -1249,15 +1253,49 @@ def test_conformance(out: pathlib.Path) -> None:
                           + "\n  ".join(failures))
     # Non-vacuity: the gate must have had something to compare, and the
     # blocked set must be real rather than an empty rule.
-    assert checked >= 3 * len(wrapped), (
+    assert checked >= 3 * len(served), (
         f"conformance checked only {checked} method(s) across "
-        f"{len(wrapped)} classes")
+        f"{len(served)} classes")
     for key, what in (("protocol_blockers", "protocol"),
                       ("wire_blockers", "wire")):
-        assert any(blocked_over_chain(n, key) for n in wrapped), (
+        assert any(blocked_over_chain(n, key) for n in served), (
             f"no method is blocked from the {what}; either the rule "
             f"stopped working or the surface changed and this gate now "
             f"proves nothing")
+
+
+def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
+    """A free function hands back the Async form of a proxy it makes.
+
+    `test_conformance` walks classes, so it never sees a free
+    function. A coroutine annotated with the sync proxy hands a sync
+    object to an async caller, and the server leases that object as a
+    handle whose methods it then awaits."""
+    from huggorm_gen.payload.wiretypes import adoptee, respell
+    from huggorm_gen.pygen.generate import build_manifest
+
+    manifest = build_manifest()
+    returned ={n for n, p in manifest["returned_types"].items()
+                if p["wire"] == "proxy"}
+    emitted = {
+        node.name: ast.unparse(node.returns) if node.returns else "None"
+        for node in ast.parse(
+            (out / "free_functions.py").read_text()).body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    failures, adopted = [], 0
+    for name, proto in manifest["free_functions"].items():
+        if not proto["wrapped"]:
+            continue
+        rt = proto["return_type"]
+        expected = respell(rt, {n: f"Async{n}" for n in returned})
+        if adoptee(rt, returned) is not None:
+            adopted += 1
+        if _expr(emitted[name]) != _expr(expected):
+            failures.append(f"{name}: emitted {emitted[name]}, "
+                            f"expected {expected}")
+    assert not failures, "\n  ".join(failures)
+    assert adopted, "no free function returns a proxy; this gate is vacuous"
 
 
 def test_stubs(out: pathlib.Path) -> None:

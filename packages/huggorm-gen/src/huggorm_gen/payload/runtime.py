@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import copy
 import threading
 from collections.abc import Callable, Iterable
@@ -369,9 +370,11 @@ class BaseRunner:
         # A wrapper argument contributes its target object.
         return [unwrap_arg(a) for a in args]
 
-    def _invoke(self, method: str, args: list[Any], request: int) -> Any:
+    def _invoke(self, method: str, args: list[Any],
+                request: int | None) -> Any:
         try:
-            with _InRequest(request):
+            with (_InRequest(request) if request is not None
+                  else contextlib.nullcontext()):
                 obj = self._resolve()
                 attr = getattr(obj, method)
                 args = self._unwrap(args)
@@ -505,6 +508,30 @@ class PoolRunner(BaseRunner):
         return None  # shared pool outlives wrappers
 
 
+class InlineRunner(BaseRunner):
+    """Operations run on the calling thread, with no request.
+
+    For a pool class none of whose methods can wait. A hop would buy
+    neither a home thread nor a released GIL. A request id would make
+    `end_request` push a "finalized" marker from a pool thread, which
+    has no queue, so the marker falls through to the process queue -
+    one per call, and a log drain calls every `LOG_POLL`."""
+
+    async def call(self, method: str, args: list[Any]) -> Any:
+        _check_isolation(self, args)
+        await _materialize_args(args)
+        return self._invoke(method, args, None)
+
+    async def run(self, fn: Callable[[Any], Any]) -> Any:
+        return fn(self.ensure())
+
+    async def materialize(self) -> None:
+        self._resolve()
+
+    async def aclose(self) -> None:
+        return None
+
+
 class AttachedRunner(BaseRunner):
     """
     Wraps an already-constructed object and runs every operation on
@@ -567,4 +594,6 @@ def attach_runner(obj: Any, parent: BaseRunner, policy: str) -> BaseRunner:
         )
     if policy == "pool":
         return PoolRunner(None, obj=obj)
+    if policy == "inline":
+        return InlineRunner(None, obj=obj)
     raise ValueError(f"unknown threading policy {policy!r}")

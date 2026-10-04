@@ -38,6 +38,7 @@ from huggorm_gen.payload.wiretypes import (
     optional_value,
     scalar_spelling,
 )
+from huggorm_gen.pygen.surface import served_names
 
 Proto = dict[str, Any]
 
@@ -254,14 +255,12 @@ def wire_blocker(type_str: str, kinds: dict[str, str],
     # returning this would publish an rpc whose answer no later call
     # can use.
     #
-    # This was a SILENT skip until LogStream. Every unwrapped class
-    # until then was also a wire VALUE, so "unwrapped" and "crosses by
-    # copy" agreed, and `annotate` said so in a comment: "an unwrapped
-    # class has no remote surface: it crosses as a value, so a caller
-    # already holds the object". LogStream is unwrapped - pool, and no
-    # method of it can block - and a proxy, which made that sentence
-    # false and published `EvalState.subscribe_logs` answering a
-    # handle with no service behind it (huggorm#32).
+    # This is the backstop, not the rule it once was. Every proxy the
+    # manifest names gets a service in `annotate` below, so this fires
+    # only for a proxy nothing declares - a type the schema cannot see
+    # and therefore cannot serve. When it does fire the manifest says
+    # so per method instead of the build dying on the first one
+    # (huggorm#32).
     if served is not None and type_str not in served \
             and kinds.get(type_str) == "proxy":
         return (f"{type_str} is a proxy with no service: it crosses as a "
@@ -329,19 +328,16 @@ def annotate(manifest: Proto) -> Proto:
         for cls_name, proto in manifest[group].items():
             if proto["wire"] == "value":
                 proto["message"] = value_msg_name(cls_name)
-            # An unwrapped class gets no service. A wrapper buys two
-            # things - a hop onto a home thread and a released GIL -
-            # and a pool class whose methods cannot block needs
-            # neither, so there is no async form for a handler to
-            # await.
-            #
-            # This USED to read "it crosses as a value, so a caller
-            # already holds the object", and that was true of every
-            # unwrapped class until LogStream. It is not a rule: it
-            # was a coincidence of which classes existed. What the
-            # absence of a service actually means is now CHECKED,
-            # below and in `wire_blocker`, rather than assumed here.
-            if not proto["wrapped"]:
+            # A service is addressability, not execution. Wrapping
+            # decides which thread runs a call - a home thread, a
+            # pool thread, a released GIL - and a pool class whose
+            # methods cannot block needs none of that. But its
+            # handles still need somewhere to live, so every proxy
+            # gets a service: the async form the server adopts and
+            # the client holds is emitted with the rest, and the
+            # served set below is what the wire blocker checks
+            # rather than the wrapper set.
+            if proto["wire"] != "proxy":
                 continue
             proto["service"] = service_name(cls_name)
             if group == "wrappers":
@@ -351,19 +347,17 @@ def annotate(manifest: Proto) -> Proto:
                 }
 
     kinds = _wire_kinds(manifest)
-    # Which classes a handle can be USED with: the same two facts the
-    # loop above stamps a service on, and not the stamp itself -
-    # `cppgen/manifest` puts a `service` NAME on every proxy whether
-    # or not one is published, so reading the key back would call
-    # LogStream served and defeat the check.
-    served = frozenset(
-        name
-        for group in ("wrappers", "returned_types")
-        for name, proto in manifest[group].items()
-        if proto["wrapped"] and proto["wire"] == "proxy")
+    # Which classes a handle can be USED with: every proxy. This used
+    # to be the wrapped classes, which is how an unwrapped proxy lost
+    # its methods' rpc one by one. It is the same set `surface` serves
+    # protocols for, not a second answer. (`cppgen/manifest` puts a
+    # `service` NAME on every proxy whether or not one is published,
+    # so reading that back would defeat the check the way reading
+    # `wrapped` did.)
+    served = frozenset(served_names(manifest))
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
-            if not proto["wrapped"]:
+            if proto["wire"] != "proxy":
                 continue
             # A METHOD gets the same treatment a free function has
             # always had: say why it cannot cross, rather than raise
@@ -888,7 +882,7 @@ def build_fdset(manifest: Proto) -> bytes:
     # operations run wherever the producing wrapper put them.
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
-            if proto["wrapped"]:
+            if proto["wire"] == "proxy":
                 _add_service(f, cls_name, proto, kinds)
     _add_free_service(f, manifest, kinds)
     return bytes(fds.SerializeToString())

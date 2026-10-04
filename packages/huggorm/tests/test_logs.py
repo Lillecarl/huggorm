@@ -545,60 +545,100 @@ def test_unsubscribing_stops_the_process_sink(state: Any) -> None:
 def test_the_process_sink_has_the_same_rpc_answer(state: Any) -> None:
     """Derived, and that is the whole claim.
 
-    `subscribe_process_logs` is a FREE function returning a proxy
-    with no service, which is the same shape as
-    `EvalState.subscribe_logs` - and the codegen reached the same
-    answer with no emitter change. Its inverse crosses, for the same
-    reason `unsubscribe_logs` does: it answers nothing.
+    `subscribe_process_logs` is a FREE function returning a proxy,
+    which is the same shape as `EvalState.subscribe_logs` - and the
+    codegen reached the same answer with no emitter change: every
+    proxy gets its service, so the handle crosses and `drain` reads
+    through it. Its inverse crosses for the same reason
+    `unsubscribe_logs` does: it answers nothing.
 
-    Asserted on the emitted reason rather than on the absence, so a
+    Asserted on the emitted surface rather than on the absence, so a
     function that lost its rpc for some OTHER reason would not pass
     this."""
-    from huggorm_generated._policy import FREE, NO_RPC
+    from huggorm_generated._policy import FREE
+    from huggorm_generated.rpc import RPCLogStream
 
-    assert "subscribe_process_logs" in NO_RPC
-    assert "proxy with no service" in NO_RPC["subscribe_process_logs"]
+    assert "subscribe_process_logs" in FREE
+    assert hasattr(RPCLogStream, "drain")
     assert "unsubscribe_process_logs" in FREE
 
 
 def test_no_rpc_surface() -> None:
-    """A log stream does not cross the wire yet, and says so.
+    """A log stream crosses the wire, and says so.
 
-    `LogStream` is a PROXY - it crosses as a handle - and it is not
-    wrapped, because it is pool-threaded and no method of it blocks.
-    So nothing publishes a service for that handle, and a remote
-    `subscribe_logs` would answer an id no later call could use.
+    `LogStream` is a PROXY - it crosses as a handle - and every proxy
+    gets a service, however cheap its methods are. So a remote
+    `subscribe_logs` answers an id that `drain`, `dropped` and
+    `close` all read through.
 
-    That was SHIPPING before this gate. The schema had
-    `EvalState/subscribe_logs` and no `LogStreamService`, and nothing
-    complained - `grpc_schema.annotate` assumed an unwrapped class
-    crosses by copy, which was true of every unwrapped class until
-    this one. The refusal is derived now: a return whose type is a
-    proxy with no service is a `wire_blocker`, so any future case
-    reports itself rather than shipping a dead handle.
-
-    The remote half is not missing and is no longer deferred: it is
-    `Session/Logs`, hand-written beside the other protocol rpcs, and
-    the tests at the end of this file hold it. A log stream wants a
-    server-streaming rpc rather than a handle to poll, so the
-    generator stays unaware of it - which is what this gate keeps
-    true."""
+    This gate used to pin the opposite: no `LogStreamService`, on the
+    grounds that a log stream wants server-streaming rather than a
+    handle to poll. The agreement since is that handles are the
+    representation and streaming is the transport: `Session/Logs`
+    stays the streaming rpc beside the other protocol rpcs, and the
+    handle crosses too. The tests at the end of this file hold the
+    streaming half; the drain test below holds the handle half."""
     from huggorm_generated._policy import ASYNC_CLASS, METHODS
-    from huggorm_generated.rpc import RPCEvalState
+    from huggorm_generated.rpc import RPCEvalState, RPCLogStream
 
-    assert not hasattr(RPCEvalState, "subscribe_logs")
-    assert "LogStream" not in METHODS, "no service, so no methods"
-    # ...and no async class either. The name was in this table with
-    # nothing behind it, so `server.adopt` would have raised
-    # AttributeError on the first handle it tried to lease.
-    assert "LogStream" not in ASYNC_CLASS
+    assert hasattr(RPCEvalState, "subscribe_logs")
+    assert "LogStream" in METHODS, "a service, so methods"
+    assert "LogStream" in ASYNC_CLASS
+    assert hasattr(RPCLogStream, "drain")
     names = [m.name for m in METHODS["EvalState"]]
-    assert "subscribe_logs" not in names, names
-    # ...and its inverse DOES cross, which is asserted so the
-    # asymmetry reads as a decision. `unsubscribe_logs` answers
-    # nothing, so the reason that refuses `subscribe_logs` - a handle
-    # with no service behind it - does not apply to it.
+    assert "subscribe_logs" in names, names
     assert "unsubscribe_logs" in names, names
+
+
+async def test_a_remote_handle_drains(client: Any) -> None:
+    """The handle half: `subscribe_logs` answers an id, and `drain`,
+    `dropped` and `close` all read through it.
+
+    The handle is a reader of the state's fan-out, which the server
+    fills every `LOG_POLL`, so the record arrives a moment after the
+    call that raised it."""
+    state = await client.acquire(
+        "EvalState", await client.acquire("Store", "dummy://"))
+    stream = await state.subscribe_logs()
+    try:
+        await state.eval_expr(TRACE % "through a handle")
+        records: list[Any] = []
+        with anyio.fail_after(20):
+            while not any("through a handle" in r.text() for r in records):
+                records += await stream.drain()
+                await anyio.sleep(0.05)
+        assert await stream.dropped() == 0
+    finally:
+        await stream.close()
+        await state.unsubscribe_logs()
+
+
+async def test_a_remote_subscribe_silences_no_stream(client: Any) -> None:
+    """A handle subscription joins the fan-out, as a stream does.
+
+    The binding REPLACES a thread's subscription. Called straight
+    through, a remote `subscribe_logs` would leave an open
+    `Session/Logs` stream on the same state connected and silent, and
+    a remote `unsubscribe_logs` would end it (huggorm#85). Both rpcs
+    go through the state's fan-out instead, so the stream hears every
+    record before, between and after them."""
+    state = await client.acquire(
+        "EvalState", await client.acquire("Store", "dummy://"))
+    stream = await opened(client, state)
+    try:
+        handle = await state.subscribe_logs()
+        await state.eval_expr(TRACE % "SHARED")
+        seen, _ = await batch(stream)
+        assert any("SHARED" in r.text() for r in seen), seen
+        assert any("SHARED" in r.text() for r in await handle.drain())
+
+        await state.unsubscribe_logs()
+        await state.eval_expr(TRACE % "AFTER")
+        seen, _ = await batch(stream)
+        assert any("AFTER" in r.text() for r in seen), seen
+        assert await handle.drain() == [], "the handle left the fan-out"
+    finally:
+        await stream.aclose()
 
 
 async def test_the_loop_drains_while_the_evaluator_works() -> None:
@@ -619,17 +659,18 @@ async def test_the_loop_drains_while_the_evaluator_works() -> None:
     OVERLAPPED it - it proves the drain does not need the eval
     thread, which is the part a wrong design would fail.
 
-    `subscribe_logs` hands back the sync `LogStream` itself, with no
-    await on its methods. That is right and is what the manifest
-    says: it is pool-threaded and nothing in it can block, so a
-    wrapper would buy neither a thread hop nor a released GIL."""
+    `subscribe_logs` hands back an `AsyncLogStream`, awaited like
+    every other async handle. That is the agreement: a proxy crosses
+    as a handle however cheap its methods are, and the pool policy
+    runs the drain wherever the caller asks - still off the eval
+    thread, which is the part a wrong design would fail."""
     from huggorm_generated import AsyncEvalState, AsyncStore
 
     state = AsyncEvalState(AsyncStore(URI))
     stream = await state.subscribe_logs()
     try:
         await state.eval_expr(TRACE % "from the loop")
-        seen = " ".join(r.text() for r in stream.drain())
+        seen = " ".join(r.text() for r in await stream.drain())
     finally:
         await state.unsubscribe_logs()
         await state.aclose()
@@ -1199,7 +1240,7 @@ async def test_a_record_carries_the_call_it_was_raised_inside() -> None:
     stream = await state.subscribe_logs()
     try:
         await state.eval_expr(TRACE % "inside a call")
-        records = stream.drain()
+        records = await stream.drain()
     finally:
         await state.unsubscribe_logs()
         await state.aclose()
@@ -1227,7 +1268,7 @@ async def test_two_calls_get_two_numbers() -> None:
     try:
         await state.eval_expr(TRACE % "first")
         await state.eval_expr(TRACE % "second")
-        records = stream.drain()
+        records = await stream.drain()
     finally:
         await state.unsubscribe_logs()
         await state.aclose()
@@ -1279,8 +1320,8 @@ async def test_the_marker_survives_a_queue_full_of_messages() -> None:
     try:
         for i in range(20):
             await state.eval_expr(TRACE % f"overflow-{i}")
-        records = stream.drain()
-        dropped = stream.dropped()
+        records = await stream.drain()
+        dropped = await stream.dropped()
     finally:
         await state.unsubscribe_logs()
         await state.aclose()

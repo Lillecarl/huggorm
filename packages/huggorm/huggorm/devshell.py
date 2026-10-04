@@ -13,11 +13,13 @@ document surgery is JSON throughout, so no hash is computed here;
 `add_derivation` fills in the deferred output paths.
 
 Two flavours, like the session's: the sync one over a local
-`Store`, the async one over a local `AsyncStore`. A remote session
-cannot rewrite: `read_derivation` answers a C++-backed object that
-does not cross RPC, so there is nothing there to read the document
-from. The script text stays a parameter in both, because the bytes
-follow the caller's Nix.
+`Store`, the async one over a local `AsyncStore`. The document half
+crosses RPC - `read_derivation` answers a handle and `to_json`
+reads through it - but the build half does not follow it across:
+`build_paths` would build on the server's store and `real_path`
+answers the server's filesystem, while the environment has to be
+built where it will be sourced. The script text stays a parameter
+in both, because the bytes follow the caller's Nix.
 
 The second half is here too: build the rewrite, read the JSON file
 `get-env.sh` wrote, and render it. `get_build_environment` is Nix's
@@ -395,10 +397,11 @@ async def awrite_dev_shell_derivation(
     """The async flavour, over a local `AsyncStore`.
 
     Same rewrite, awaited: every store call here crosses into the
-    pool. Not for remote sessions, which have no `read_derivation`
-    to read the document from.
+    pool, and the derivation handle answers `to_json` the same way.
+    Remote stores read the document the same way; only the build
+    stays where the environment will be sourced.
     """
-    document = json.loads((await store.read_derivation(drv_path)).to_json())
+    document = json.loads(await (await store.read_derivation(drv_path)).to_json())
     script = await store.add_to_store(
         "get-env.sh", get_env_script.encode(), ContentAddressMethod.TEXT,
         HashAlgorithm.SHA256)
