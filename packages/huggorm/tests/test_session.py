@@ -23,6 +23,7 @@ from huggorm.session import (
 )
 from huggorm_generated import AsyncEvalState, AsyncStore
 from huggorm_generated._policy import ACQUIRE
+from huggorm_generated._runtime import InternalError
 
 
 def _connect(server: Any, claim: str | None = None) -> Any:
@@ -139,6 +140,21 @@ async def test_remote_swept_connection_reports(ttl_server: Any) -> None:
             await session._client._ping_loop(0.01)
         with pytest.raises(ConnectionExpired):
             await store.get_uri()
+        await session.aclose()
+
+
+async def test_remote_close_reports_a_failed_release(server: Any) -> None:
+    """The counterpart: on a live connection, a failed release raises.
+
+    The handle id is one the server never issued, so its release
+    fails while the connection still answers pings."""
+    ctx = _connect(server)
+    async with ctx as session:
+        store = await session.store()
+        store.handle_id = "0" * 32
+        with pytest.raises(InternalError, match="release") as caught:
+            await session.aclose()
+        assert "lease(s) on 00000000" in str(caught.value.__cause__)
 
 
 def test_remote_session_follows_the_acquire_table() -> None:

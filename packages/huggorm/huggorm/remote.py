@@ -338,13 +338,20 @@ class NixClient:
         asks it now, for a caller deciding whether a failed release is
         worth reporting: handles on a swept connection are already
         gone, which is the outcome a close wanted.
+
+        Only a failure to REACH the server answers False. Anything
+        else is a bug here, and it raises rather than reading as a
+        swept connection that silences the errors it was asked about.
         """
         try:
             with anyio.fail_after(5):
                 ack = await self._rpc(
                     f"/{schema.PKG}.Session/Ping", self.msg("PingReq")(), "AckResp")
             return bool(ack.ok)
-        except Exception:
+        except (ConnectionExpired, TimeoutError, OSError,
+                grpclib.exceptions.GRPCError,
+                grpclib.exceptions.ProtocolError,
+                grpclib.exceptions.StreamTerminatedError):
             return False
 
     async def share(self, obj: Any, to_token: str,
