@@ -37,6 +37,7 @@ from huggorm_generated._policy import (
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails
 from .lifecycle import TOKEN_HEADER, HandleTable
+from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
 from .wire import WireCodec
 
 # One grpclib handler: it reads the stream and answers on it.
@@ -183,72 +184,19 @@ async def _drop_process_subscription() -> None:
         await unsubscribe_process_logs()
 
 
-# What a reader gets when the request names neither. The binding's own
-# defaults, restated here because the shared subscription no longer
-# passes them through (`decl/eval.py:1051`).
-LOG_CAPACITY = 1024
-LOG_LEVEL = 3
-
-
-# The WIDEST any reader has asked for, recomputed as readers come and
-# go. Not a constant 7: a subscription raises the level
-# `RemoteStore::setOptions` sends to the daemon, so subscribing at 7
-# asks every daemon connection this server opens to narrate at vomit
-# down the socket, whether or not any client wants it (huggorm#102).
-#
-# The arrival-order problem that constant solved is still solved: a
-# reader that wants more REOPENS the subscription at its level rather
-# than being refused, so a warnings-only reader arriving first cannot
-# shut out the CLI listener huggorm#85 exists for.
-def _widest(readers: Any) -> int:
-    return max((r.level for r in readers), default=LOG_LEVEL)
-
-
-class _Reader:
+class _Reader(Share):
     """One client's share of a subscription many clients read.
 
     Duck-typed as an `AsyncLogStream` on purpose - `drain` and
     `dropped` are the only two things `_pump` asks of a queue, so a
     reader drops into the same loop the single-reader path used,
-    unchanged, awaits included.
-
-    The DROP POLICY is the C++ queue's, restated over a `deque`
-    because a reader is a second bound under the first. A full reader
-    refuses a "msg" and a "result" and nothing else, for the reason
-    `LogQueue` gives: a dropped stop leaks a node in the reader's
-    activity tree that nothing later closes.
-
-    The test names what to DROP, and that is what made `"finalized"`
-    safe to add without touching this class. A control event marks the
-    end of a call, so a lost one parks a reader waiting for that call.
-    Had this listed what to KEEP instead, the C++ guarantee would have
-    died here in silence - which is the eighth shape of this repo's
-    named failure mode, and it was checked for rather than assumed.
-
-    `level` filters a "msg" only, which is the same rule and the same
-    reason.
+    unchanged, awaits included. A remote `subscribe_logs` hands one
+    out as a handle for the same reason.
     """
 
     def __init__(self, fan: _Fanout, capacity: int, level: int) -> None:
+        super().__init__(capacity, level)
         self._fan = fan
-        self._capacity = capacity
-        # PUBLIC, because the fan-out reads it: the shared
-        # subscription is opened at the widest level any reader wants,
-        # and that is recomputed from these.
-        self.level = level
-        self._level = level
-        self._records: list[Any] = []
-        self._dropped = 0
-
-    def offer(self, record: Any) -> None:
-        """One record from the shared drain. Never awaits."""
-        action = record.action()
-        if action == "msg" and record.level() > self._level:
-            return
-        if action in ("msg", "result") and len(self._records) >= self._capacity:
-            self._dropped += 1
-            return
-        self._records.append(record)
 
     async def drain(self) -> list[Any]:
         # Async to match the `AsyncLogStream` this stands in for:
@@ -262,9 +210,7 @@ class _Reader:
         # learned. A reader that just went quiet would not say so.
         if self._fan.failure is not None:
             raise self._fan.failure
-        out = self._records
-        self._records = []
-        return out
+        return self.take()
 
     async def dropped(self) -> int:
         """This reader's drops PLUS the shared queue's.
@@ -275,7 +221,7 @@ class _Reader:
 
         Async for the same reason `drain` is: the shape matches.
         """
-        return self._dropped + self._fan.dropped
+        return self.own_dropped + self._fan.dropped
 
     async def close(self) -> None:
         """Leave the fan-out. Idempotent: a reader not in it is a no-op,
@@ -353,7 +299,7 @@ class _Fanout:
             if self._sub is None:
                 self.dropped = 0
                 self.failure = None
-                self._level = max(level, _widest(self._readers))
+                self._level = max(level, widest(self._readers))
                 self._sub = await self._open(self._level)
                 # The subscribe is a call, and its own "finalized"
                 # lands in the queue it just installed. No reader asked

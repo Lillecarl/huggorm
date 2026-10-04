@@ -218,6 +218,42 @@ async def test_local_logs_streams_while_work_runs() -> None:
     assert any("trace: hello-stream" in text for text in seen)
 
 
+async def test_a_nested_capture_silences_no_outer_reader() -> None:
+    """Two local readers on one state share one subscription.
+
+    The binding REPLACES a thread's subscription, so a `capture()`
+    that subscribed on its own left the outer `logs()` loop connected
+    and silent, forever (huggorm#85). Both join the state's tap now:
+    the capture sees its record, and the outer loop hears that one
+    and the one raised after the capture ended."""
+    async with AsyncSession("dummy://") as session:
+        state = session.eval(session.store())
+        seen: list[str] = []
+        outer = session.logs(state, poll=0.01)
+
+        async def read_until(text: str) -> None:
+            with anyio.fail_after(10):
+                async for records, _ in outer:
+                    seen.extend(r.text() for r in records)
+                    if any(text in s for s in seen):
+                        return
+
+        async with anyio.create_task_group() as tg:
+            # The outer reader joins on its first step, and this task
+            # holds it there while the capture runs.
+            tg.start_soon(read_until, "INNER")
+            await anyio.sleep(0.05)
+            async with session.capture(state) as captured:
+                await state.eval_expr(TRACE % "INNER")
+        await state.eval_expr(TRACE % "AFTER")
+        await read_until("AFTER")
+        await outer.aclose()
+
+    assert any("INNER" in r.text() for r in captured.records)
+    assert any("INNER" in s for s in seen), seen
+    assert any("AFTER" in s for s in seen), seen
+
+
 async def test_a_cancelled_reader_still_unsubscribes() -> None:
     """Cancelling the consumer is the usual way out of `logs`.
 

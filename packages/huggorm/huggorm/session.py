@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+import weakref
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_checkable
 
@@ -28,6 +29,7 @@ import anyio
 
 from huggorm_generated import AsyncEvalState, AsyncStore, RPCEvalState, RPCStore
 
+from .logbus import LOG_CAPACITY, Share, widest
 from .remote import NixClient, connect
 
 if TYPE_CHECKING:
@@ -54,6 +56,111 @@ class CapturedLogs:
 
     records: list[LogRecord]
     dropped: int = 0
+
+
+class _Tap:
+    """One subscription on one state, shared by every local reader.
+
+    PULL-based, where the server's `_Fanout` pushes: whichever reader
+    drains reads the shared queue and offers every record to every
+    reader. So no task drains in the background, and a session needs
+    no task group - it still works without `async with`.
+
+    One per state, process-wide, and never removed while the state
+    lives. Removing an empty tap would let a `join` that already holds
+    it open a subscription nobody can find, and the next reader would
+    open a second one, which the binding answers by replacing the
+    first (huggorm#85).
+    """
+
+    def __init__(self, state: AsyncEvalState) -> None:
+        # Weak: `_TAPS` is keyed weakly by the state, and a strong
+        # reference here would keep the key alive forever.
+        self._state = weakref.ref(state)
+        self._stream: Any = None
+        self._level: int | None = None
+        self._readers: set[_LocalReader] = set()
+        self._lock = anyio.Lock()
+        self.dropped = 0
+
+    async def join(self, capacity: int, level: int) -> _LocalReader:
+        reader = _LocalReader(self, capacity, level)
+        async with self._lock:
+            if self._stream is not None and level > (self._level or 0):
+                # Wider than the live subscription: hand out what it
+                # holds, then reopen at the new widest level.
+                await self._pull()
+                await self._close()
+            if self._stream is None:
+                state = self._state()
+                assert state is not None, "a joining caller holds the state"
+                self._level = max(level, widest(self._readers))
+                self._stream = await state.subscribe_logs(
+                    LOG_CAPACITY, self._level)
+                self.dropped = 0
+                # The subscribe is a call, and its own "finalized"
+                # lands in the queue it just installed. No reader asked
+                # for that call, so it goes before any reader joins.
+                await self._stream.drain()
+            self._readers.add(reader)
+        return reader
+
+    async def pull(self) -> None:
+        async with self._lock:
+            await self._pull()
+
+    async def _pull(self) -> None:
+        """LOCK HELD. Offer what the shared queue holds to every reader."""
+        if self._stream is None:
+            return
+        records = await self._stream.drain()
+        self.dropped = await self._stream.dropped()
+        for record in records:
+            for reader in self._readers:
+                reader.offer(record)
+
+    async def leave(self, reader: _LocalReader) -> None:
+        async with self._lock:
+            self._readers.discard(reader)
+            if not self._readers and self._stream is not None:
+                await self._close()
+
+    async def _close(self) -> None:
+        """LOCK HELD. Drop the shared subscription."""
+        stream, self._stream, self._level = self._stream, None, None
+        await stream.close()
+        if (state := self._state()) is not None:
+            await state.unsubscribe_logs()
+
+
+class _LocalReader(Share):
+    """One local reader's share of a state's tap."""
+
+    def __init__(self, tap: _Tap, capacity: int, level: int) -> None:
+        super().__init__(capacity, level)
+        self._tap = tap
+
+    async def drain(self) -> list[LogRecord]:
+        await self._tap.pull()
+        return self.take()
+
+    def dropped(self) -> int:
+        """This reader's drops plus the shared queue's. Cumulative."""
+        return self.own_dropped + self._tap.dropped
+
+    async def leave(self) -> None:
+        await self._tap.leave(self)
+
+
+_TAPS: weakref.WeakKeyDictionary[AsyncEvalState, _Tap] = (
+    weakref.WeakKeyDictionary())
+
+
+def _tap(state: AsyncEvalState) -> _Tap:
+    tap = _TAPS.get(state)
+    if tap is None:
+        tap = _TAPS[state] = _Tap(state)
+    return tap
 
 
 @runtime_checkable
@@ -85,7 +192,7 @@ class AsyncSessionLike(Protocol):
         capacity: int = 1024,
         level: int = 3,
         poll: float = 0.05,
-    ) -> AsyncIterator[LogBatch]:
+    ) -> AsyncGenerator[LogBatch]:
         """Records raised on this state's thread, as they arrive."""
         ...
 
@@ -151,7 +258,7 @@ class AsyncSession:
         capacity: int = 1024,
         level: int = 3,
         poll: float = 0.05,
-    ) -> AsyncIterator[LogBatch]:
+    ) -> AsyncGenerator[LogBatch]:
         """Records raised on this state's thread, as they arrive.
 
         Polls the subscription's queue: a drain never blocks, so
@@ -161,14 +268,16 @@ class AsyncSession:
 
         Any state's records read here, not only one this session
         made. Watching creates no lease, so there is nothing to own.
-        Stopping the iteration ends the subscription with it.
+        Every reader on one state shares one subscription, so a
+        `capture()` inside this loop silences nothing. Stopping the
+        iteration leaves it, and the last reader out ends it.
         """
-        stream = await state.subscribe_logs(capacity, level)
+        reader = await _tap(state).join(capacity, level)
         try:
             while True:
-                records = await stream.drain()
+                records = await reader.drain()
                 if records:
-                    yield (records, await stream.dropped())
+                    yield (records, reader.dropped())
                 await anyio.sleep(poll)
         finally:
             # Shielded: a cancelled consumer is the usual way out of
@@ -176,8 +285,7 @@ class AsyncSession:
             # here, which would skip the unsubscribe and leak the
             # thread's verbosity (huggorm#95).
             with anyio.CancelScope(shield=True):
-                await stream.close()
-                await state.unsubscribe_logs()
+                await reader.leave()
 
     @contextlib.asynccontextmanager
     async def capture(
@@ -191,10 +299,10 @@ class AsyncSession:
         Subscribing installs synchronously, so everything the block
         raises is already queued when it ends, and one last drain
         collects it: complete, not eventual. The `finally` drains on
-        the way out however the block ends, and ends the
-        subscription with it.
+        the way out however the block ends, and leaves the shared
+        subscription, as `logs` does.
         """
-        stream = await state.subscribe_logs(capacity, level)
+        reader = await _tap(state).join(capacity, level)
         out = CapturedLogs(records=[])
         try:
             yield out
@@ -202,10 +310,9 @@ class AsyncSession:
             # Shielded, as in `logs`: a cancelled block still drains
             # and still unsubscribes.
             with anyio.CancelScope(shield=True):
-                out.records.extend(await stream.drain())
-                out.dropped = max(out.dropped, await stream.dropped())
-                await stream.close()
-                await state.unsubscribe_logs()
+                out.records.extend(await reader.drain())
+                out.dropped = max(out.dropped, reader.dropped())
+                await reader.leave()
 
     async def aclose(self) -> None:
         """Close the evaluators, then the stores, and report together.
@@ -277,7 +384,7 @@ class AsyncRemoteSessionLike(Protocol):
         state: RPCEvalState,
         capacity: int = 0,
         level: int | None = None,
-    ) -> AsyncIterator[LogBatch]:
+    ) -> AsyncGenerator[LogBatch]:
         """Records raised on this state's server thread, as they arrive."""
         ...
 
@@ -285,7 +392,7 @@ class AsyncRemoteSessionLike(Protocol):
         self,
         capacity: int = 0,
         level: int | None = None,
-    ) -> AsyncIterator[LogBatch]:
+    ) -> AsyncGenerator[LogBatch]:
         """Records no subscribed thread claimed, as they arrive."""
         ...
 
@@ -436,7 +543,7 @@ class AsyncRemoteSession:
         state: RPCEvalState,
         capacity: int = 0,
         level: int | None = None,
-    ) -> AsyncIterator[LogBatch]:
+    ) -> AsyncGenerator[LogBatch]:
         """Records raised on this state's server thread, as they arrive.
 
         Passes `client.logs` through unchanged: batches, `dropped`
@@ -451,7 +558,7 @@ class AsyncRemoteSession:
         self,
         capacity: int = 0,
         level: int | None = None,
-    ) -> AsyncIterator[LogBatch]:
+    ) -> AsyncGenerator[LogBatch]:
         """Records no subscribed thread claimed, as they arrive.
 
         Passes `client.process_logs` through: fetcher threads, file
