@@ -18,6 +18,8 @@
   # A lane's patched Nix components, and the collector libexpr links.
   nixComponents,
   boehmgc,
+  # `get-env.sh` as the `nix` binary embeds it.
+  getEnvSh,
   # The emitted C++ for that Nix, which every wheel compiles.
   bindings-src,
   # The generator, for the module list a check holds a wheel to, and
@@ -223,7 +225,7 @@ lib.makeScope pkgs.newScope (
           export HUGGORM_BINDINGS_EMITTED=${bindings-src}
           export HUGGORM_DECL_INCLUDE=${huggorm-decl}/${pkgs.python3.sitePackages}
           mkdir -p huggorm_bindings
-          cp ${nixComponents.nix-store.src}/src/nix/get-env.sh huggorm_bindings/get-env.sh
+          cp ${getEnvSh} huggorm_bindings/get-env.sh
           cp ${nixComponents.nix-store.src}/COPYING huggorm_bindings/COPYING.nix
           cp ${../../packages/huggorm-bindings/NOTICE} huggorm_bindings/NOTICE
           ${interpreter py} -m pip wheel --no-build-isolation \

@@ -20,6 +20,8 @@
   # For `lookupFileArg`, which resolves `<nixpkgs>`, `flake:x` and a
   # tarball URL as `nix eval --file` does. It lives in libcmd.
   nix-cmd,
+  # `get-env.sh` as the `nix` binary embeds it.
+  getEnvSh,
   pkg-config,
   ...
 }:
@@ -77,12 +79,12 @@ python3Packages.buildPythonPackage {
   # Nix's own `src/nix/get-env.sh`, which `nix develop` runs as a
   # builder. Nix compiles it into the `nix` binary and no library
   # carries it, so the package that links the libraries carries the
-  # copy of the same version. `-f`: no source must fail the build.
+  # text of the same version, as the binary embeds it.
   # NOTICE names whose terms the script travels under, and Nix's
   # `COPYING` is those terms: LGPL-2.1 section 1 has the licence text
   # go with every copy.
   postInstall = ''
-    cp -f "${nix-store.src}/src/nix/get-env.sh" \
+    cp -f ${getEnvSh} \
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/get-env.sh"
     cp -f "${nix-store.src}/COPYING" \
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/COPYING.nix"

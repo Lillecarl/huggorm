@@ -159,6 +159,15 @@ rec {
           else
             sanitizer.sanitizeBoehmGC patched;
 
+        # `get-env.sh` as the `nix` binary embeds it, which is the text
+        # `nix develop` adds to the store. Nix's `generate-header` wraps
+        # the file in a raw string that starts on the line after
+        # `R"__NIX_STR(`, so the text gains a leading newline, and the
+        # file alone hashes to another shell derivation.
+        getEnvSh = pkgs.runCommand "get-env.sh" { } ''
+          { echo; cat ${self.nixComponents.nix-store.src}/src/nix/get-env.sh; } > "$out"
+        '';
+
         # The emitted C++ for this Nix. `HUGGORM_NIX_VERSION` picks each
         # declaration's `NIX_VERSION` branch (huggorm#55).
         bindings-src = bindings-src.overrideAttrs { HUGGORM_NIX_VERSION = self.version; };
@@ -406,6 +415,10 @@ rec {
       ${frontDoor}
       cd packages/huggorm
       export PYTHONPATH="$PWD''${PYTHONPATH:+:$PYTHONPATH}"
+      # The oracle the devshell's live test runs: the CLI of the Nix the
+      # bindings link, and a `bash` for its derivation's builder.
+      export HUGGORM_ORACLE_NIX="${nix}/bin/nix"
+      export HUGGORM_ORACLE_BASH="${pkgs.bash}"
       export PYTEST_DEBUG_TEMPROOT="''${PYTEST_DEBUG_TEMPROOT:-/tmp/huggorm}"
       mkdir -p "$PYTEST_DEBUG_TEMPROOT"
       # SAID OUT LOUD, because no gate can hold this. The suite runs

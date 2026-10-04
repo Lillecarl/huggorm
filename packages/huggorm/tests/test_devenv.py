@@ -459,6 +459,92 @@ def test_print_dev_env_renders_the_built_environment(
     assert 'eval "${shellHook:-}"\n' in script
 
 
+def _oracle(*args: str, cwd: pathlib.Path | None = None) -> str:
+    """Run the `nix` CLI the `test` app exports, which links the Nix
+    the bindings link: another version's `get-env.sh` names another
+    derivation, and the comparison would prove nothing."""
+    import os
+    import subprocess
+
+    from huggorm_bindings import nix_version
+
+    nix = os.environ.get("HUGGORM_ORACLE_NIX")
+    assert nix, "run through `nix run --file . test`, which sets HUGGORM_ORACLE_NIX"
+    version = subprocess.run([nix, "--version"], check=True,
+                             capture_output=True, text=True).stdout
+    assert version.split()[-1] == nix_version()
+    return subprocess.run(
+        [nix, "--extra-experimental-features", "nix-command", *args],
+        check=True, capture_output=True, text=True, cwd=cwd).stdout
+
+
+def _oracle_drv(structured: bool) -> str:
+    """A `bash` derivation with two outputs, a hook and a spaced value."""
+    import os
+
+    bash = os.environ.get("HUGGORM_ORACLE_BASH")
+    assert bash, "run through `nix run --file . test`, which sets HUGGORM_ORACLE_BASH"
+    return _oracle(
+        "eval", "--raw", "--impure", "--expr",
+        f"""(derivation {{
+          name = "devenv-oracle";
+          system = builtins.currentSystem;
+          builder = "${{builtins.storePath "{bash}"}}/bin/bash";
+          args = [ "-c" "echo > $out" ];
+          outputs = [ "out" "dev" ];
+          FOO = "bar baz";
+          shellHook = "echo hi";
+          __structuredAttrs = {str(structured).lower()};
+        }}).drvPath""")
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("structured", [False, True],
+                         ids=["flat", "structured"])
+def test_the_environment_matches_nix_print_dev_env(
+        ambient_store: Store, tmp_path: pathlib.Path,
+        structured: bool) -> None:
+    """Both renderings against `nix print-dev-env` on the same drv.
+
+    The JSON half compares whole documents. The shell half differs
+    only where each side picks a directory: Nix puts the attrs files
+    in a temporary directory of its own, so that one path is
+    substituted before the compare."""
+    import importlib.resources
+    import re
+
+    from huggorm.devshell import get_build_environment, print_dev_env
+
+    script = (importlib.resources.files("huggorm_bindings")
+              / "get-env.sh").read_text()
+    drv_text = _oracle_drv(structured)
+    drv = ambient_store.parse_store_path(drv_text)
+    installable = f"{drv_text}^*"
+
+    ours, _ = get_build_environment(ambient_store, drv, script)
+    mine = ours.to_dict()
+    nix = json.loads(_oracle("print-dev-env", "--json", installable))
+    assert mine.keys() == nix.keys()
+    for section in nix:
+        differ = {k: (mine[section].get(k), nix[section].get(k))
+                  for k in mine[section].keys() | nix[section].keys()
+                  if mine[section].get(k) != nix[section].get(k)}
+        assert differ == {}, section
+
+    # `Logger::writeToStdout` writes a newline after the script.
+    theirs = _oracle("print-dev-env", installable, cwd=tmp_path)
+    assert theirs.endswith("\n\n")
+    theirs = theirs[:-1]
+    rendered = print_dev_env(ambient_store, drv, script,
+                             outputs_dir=str(tmp_path / "outputs"),
+                             tmp_dir=str(tmp_path))
+    attrs = re.search(r"NIX_ATTRS_JSON_FILE='(.*)/\.attrs\.json'", theirs)
+    assert (attrs is not None) == structured
+    if attrs is not None:
+        theirs = theirs.replace(attrs.group(1), str(tmp_path))
+    assert rendered == theirs
+
+
 def test_first_env_output_needs_a_build(
         tmp_path: pathlib.Path) -> None:
     """The search over a real store, before anything built.

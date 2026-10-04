@@ -2,8 +2,9 @@ huggorm-bindings carries one file it did not write.
 
 `get-env.sh` is Nix's own script, `src/nix/get-env.sh` in the Nix
 source this package links. Nix compiles it into the `nix` binary,
-where no library can reach it, so the copy travels verbatim beside
-the bindings, from the Nix of the same version.
+where no library can reach it, so a copy travels beside the bindings,
+from the Nix of the same version. The copy is the text the binary
+embeds: the file, after the one newline Nix's build puts before it.
 
 Its terms are its own: the GNU Lesser General Public License v2.1,
 copyright the Nix contributors (NixOS/nix). Nix's README states the

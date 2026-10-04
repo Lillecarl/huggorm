@@ -514,8 +514,9 @@ def print_dev_env(
 ) -> str:
     """Shell code that reproduces this derivation's environment.
 
-    What `nix print-dev-env` prints without `--json`: build the
-    environment and render it sourcable. The JSON half needs no
+    What `nix print-dev-env` prints without `--json`, less the newline
+    its logger writes after: build the environment and render it
+    sourcable. The JSON half needs no
     function - it is `json.dumps` over `get_build_environment`'s
     `to_dict` - so this is the only rendering here.
     """
