@@ -385,22 +385,23 @@ def _rewrite(document: dict[str, Any], args_path: str, srcs_path: str) -> dict[s
 
 
 def write_dev_shell_derivation(
-    store: Store, drv_path: StorePath, get_env_script: str,
+    store: Store, drv_path: StorePath, get_env_script: bytes,
 ) -> StorePath:
     """Store a rewrite of `drv_path` whose builder dumps its environment.
 
-    `get_env_script` is the text of the dumping script, and the
-    caller owns it: Nix keeps its own copy inside the `nix` binary,
-    where no library can reach it. The script has to enter the store
-    before the derivation is hashed, which is why the text is the
-    argument.
+    `get_env_script` is the dumping script's bytes, and the caller
+    owns them: Nix keeps its own copy inside the `nix` binary, where
+    no library can reach it. The script has to enter the store before
+    the derivation is hashed, which is why its bytes are the
+    argument. `huggorm_bindings/get-env.sh` holds the bytes the
+    binary of the same version stores.
 
     Raises `NixError` when the builder of `drv_path` is not `bash`,
     which is the same refusal `nix develop` makes.
     """
     document = json.loads(store.read_derivation(drv_path).to_json())
     script = store.add_to_store(
-        "get-env.sh", get_env_script.encode(), ContentAddressMethod.TEXT,
+        "get-env.sh", get_env_script, ContentAddressMethod.TEXT,
         HashAlgorithm.SHA256)
     rewritten = _rewrite(
         document, store.print_store_path(script), script.to_string())
@@ -408,7 +409,7 @@ def write_dev_shell_derivation(
 
 
 async def awrite_dev_shell_derivation(
-    store: AsyncStore, drv_path: StorePath, get_env_script: str,
+    store: AsyncStore, drv_path: StorePath, get_env_script: bytes,
 ) -> StorePath:
     """The async flavour, over a local `AsyncStore`.
 
@@ -419,7 +420,7 @@ async def awrite_dev_shell_derivation(
     """
     document = json.loads(await (await store.read_derivation(drv_path)).to_json())
     script = await store.add_to_store(
-        "get-env.sh", get_env_script.encode(), ContentAddressMethod.TEXT,
+        "get-env.sh", get_env_script, ContentAddressMethod.TEXT,
         HashAlgorithm.SHA256)
     rewritten = _rewrite(
         document, await store.print_store_path(script), script.to_string())
@@ -457,7 +458,7 @@ async def _afirst_env_output(store: AsyncStore,
 
 
 def get_build_environment(
-    store: Store, drv_path: StorePath, get_env_script: str,
+    store: Store, drv_path: StorePath, get_env_script: bytes,
 ) -> tuple[BuildEnvironment, StorePath]:
     """The build environment of this derivation, built and read.
 
@@ -486,7 +487,7 @@ def get_build_environment(
 
 
 async def aget_build_environment(
-    store: AsyncStore, drv_path: StorePath, get_env_script: str,
+    store: AsyncStore, drv_path: StorePath, get_env_script: bytes,
 ) -> tuple[BuildEnvironment, StorePath]:
     """The async flavour, over a local `AsyncStore`.
 
@@ -510,7 +511,7 @@ async def aget_build_environment(
 
 
 def print_dev_env(
-    store: Store, drv_path: StorePath, get_env_script: str,
+    store: Store, drv_path: StorePath, get_env_script: bytes,
     outputs_dir: str | None = None, tmp_dir: str | None = None,
 ) -> str:
     """Shell code that reproduces this derivation's environment.
@@ -526,7 +527,7 @@ def print_dev_env(
 
 
 async def aprint_dev_env(
-    store: AsyncStore, drv_path: StorePath, get_env_script: str,
+    store: AsyncStore, drv_path: StorePath, get_env_script: bytes,
     outputs_dir: str | None = None, tmp_dir: str | None = None,
 ) -> str:
     """The async flavour, over a local `AsyncStore`."""

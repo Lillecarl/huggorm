@@ -365,7 +365,7 @@ def test_get_build_environment_builds_reads_and_roots(
 
     chroot = Store(str(tmp_path / "chroot"))
     store, drv = _fake(chroot, _canned_files(tmp_path))
-    env, path = get_build_environment(store, drv, "script")
+    env, path = get_build_environment(store, drv, b"script")
     assert env.vars["out"] == Var(exported=True,
                                   value="/nix/store/abc-out")
     assert env.bash_functions == {"hello": "echo hi\n"}
@@ -385,7 +385,7 @@ def test_get_build_environment_skips_the_empty_output(
 
     chroot = Store(str(tmp_path / "chroot"))
     store, drv = _fake(chroot, _canned_files(tmp_path), empty=True)
-    env, path = get_build_environment(store, drv, "script")
+    env, path = get_build_environment(store, drv, b"script")
     assert path.to_string().endswith("-full")
     assert env.vars["outputs"] == Var(exported=False, value="out")
 
@@ -403,7 +403,7 @@ def test_get_build_environment_without_an_answer_is_upstream_s_error(
     store, drv = _fake(chroot, files)
     with pytest.raises(
             NixError, match=r"get-env.sh failed to produce an environment"):
-        get_build_environment(store, drv, "script")
+        get_build_environment(store, drv, b"script")
 
 
 def test_an_unreadable_output_raises_rather_than_being_skipped(
@@ -424,7 +424,7 @@ def test_an_unreadable_output_raises_rather_than_being_skipped(
     locked.chmod(0)
     try:
         with pytest.raises(PermissionError):
-            get_build_environment(store, drv, "script")
+            get_build_environment(store, drv, b"script")
     finally:
         locked.chmod(0o700)
 
@@ -447,7 +447,7 @@ def test_a_failed_build_raises_its_own_error(
     store, drv = _fake(chroot, _canned_files(tmp_path),
                        build_error="build of foo failed")
     with pytest.raises(NixError) as caught:
-        get_build_environment(store, drv, "script")
+        get_build_environment(store, drv, b"script")
     assert caught.value is store.raised
 
 
@@ -463,7 +463,7 @@ def test_a_broken_dump_names_the_file_it_broke_on(
     files["full"].write_bytes(b"{nope")
     store, drv = _fake(chroot, files)
     with pytest.raises(NixError, match=r"(?s)cannot parse.*-full"):
-        get_build_environment(store, drv, "script")
+        get_build_environment(store, drv, b"script")
 
 
 def test_print_dev_env_renders_the_built_environment(
@@ -475,7 +475,7 @@ def test_print_dev_env_renders_the_built_environment(
 
     chroot = Store(str(tmp_path / "chroot"))
     store, drv = _fake(chroot, _canned_files(tmp_path))
-    script = print_dev_env(store, drv, "script",
+    script = print_dev_env(store, drv, b"script",
                            outputs_dir=str(tmp_path / "o"))
     assert script.startswith("unset shellHook\n")
     assert f"out='{tmp_path / 'o' / 'out'}'\n" in script
@@ -539,7 +539,7 @@ def test_the_environment_matches_nix_print_dev_env(
     from huggorm.devshell import get_build_environment, print_dev_env
 
     script = (importlib.resources.files("huggorm_bindings")
-              / "get-env.sh").read_text()
+              / "get-env.sh").read_bytes()
     drv_text = _oracle_drv(structured)
     drv = ambient_store.parse_store_path(drv_text)
     installable = f"{drv_text}^*"
@@ -590,7 +590,7 @@ def test_first_env_output_needs_a_build(
         'derivation { name = "leaf"; system = "x86_64-linux"; '
         'builder = "/bin/bash"; outputs = [ "out" ]; }',
         str(tmp_path)).drv_path()
-    shell = write_dev_shell_derivation(store, drv, "echo env\n")
+    shell = write_dev_shell_derivation(store, drv, b"echo env\n")
     with pytest.raises(
             NixError, match=r"get-env.sh failed to produce an environment"):
         _first_env_output(store, shell)
@@ -614,7 +614,7 @@ async def test_afirst_env_output_needs_a_build(
         'builder = "/bin/bash"; outputs = [ "out" ]; }',
         str(tmp_path)).drv_path()
     astore = AsyncStore(str(tmp_path))
-    shell = await awrite_dev_shell_derivation(astore, drv, "echo env\n")
+    shell = await awrite_dev_shell_derivation(astore, drv, b"echo env\n")
     with pytest.raises(
             NixError, match=r"get-env.sh failed to produce an environment"):
         await _afirst_env_output(astore, shell)
@@ -686,7 +686,7 @@ async def test_aget_build_environment_builds_reads_and_roots(
 
     chroot = Store(str(tmp_path / "chroot"))
     store, drv = _afake(chroot, _canned_files(tmp_path))
-    env, path = await aget_build_environment(store, drv, "script")
+    env, path = await aget_build_environment(store, drv, b"script")
     assert env.vars["out"] == Var(exported=True,
                                   value="/nix/store/abc-out")
     assert store.rooted == [path]
@@ -703,8 +703,8 @@ async def test_aprint_dev_env_renders_the_built_environment(
     chroot = Store(str(tmp_path / "chroot"))
     files = _canned_files(tmp_path)
     sync, drv = _afake(chroot, files)
-    script = await aprint_dev_env(sync, drv, "script",
+    script = await aprint_dev_env(sync, drv, b"script",
                                   outputs_dir=str(tmp_path / "o"))
     assert script == print_dev_env(
-        _fake(chroot, files)[0], drv, "script",
+        _fake(chroot, files)[0], drv, b"script",
         outputs_dir=str(tmp_path / "o"))

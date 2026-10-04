@@ -196,7 +196,7 @@ def test_a_dev_shell_derivation_from_generated_operations(
     from huggorm_bindings import DerivationOutputInputAddressed
 
     path = instantiate(tmp_path, BASH_LEAF)
-    script = "echo env\n"
+    script = b"echo env\n"
     shell = store.read_derivation(
         write_dev_shell_derivation(store, path, script))
 
@@ -219,7 +219,7 @@ async def test_an_async_dev_shell_derivation_rewrites(
 
     path = instantiate(tmp_path, BASH_LEAF)
     shell_path = await awrite_dev_shell_derivation(
-        AsyncStore(str(tmp_path)), path, "echo env\n")
+        AsyncStore(str(tmp_path)), path, b"echo env\n")
     shell = store.read_derivation(shell_path)
 
     assert shell.name() == "leaf-env"
@@ -239,7 +239,7 @@ def test_a_dev_shell_derivation_refuses_a_non_bash_builder(
 
     path = instantiate(tmp_path, LEAF)
     with pytest.raises(NixError, match="bash"):
-        write_dev_shell_derivation(store, path, "echo env\n")
+        write_dev_shell_derivation(store, path, b"echo env\n")
 
 
 def _leaf_document(**overrides: Any) -> dict[str, Any]:
