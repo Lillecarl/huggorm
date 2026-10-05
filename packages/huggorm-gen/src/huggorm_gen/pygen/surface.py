@@ -31,6 +31,8 @@ cannot carry, rather than pretending.
 
 from typing import Any
 
+from huggorm_gen.payload.wiretypes import adoptee
+
 Proto = dict[str, Any]
 
 PROTOCOL_MODULE = "protocols"
@@ -59,16 +61,6 @@ def rpc_class_name(cls_name: str) -> str:
     return f"RPC{cls_name}"
 
 
-def wrapped_names(manifest: Proto) -> set[str]:
-    """Every class the codegen wraps, across both groups."""
-    return {
-        name
-        for group in ("wrappers", "returned_types")
-        for name, proto in manifest[group].items()
-        if proto["wrapped"]
-    }
-
-
 def served_names(manifest: Proto) -> set[str]:
     """Every class with a service behind its handles: all proxies.
 
@@ -88,7 +80,7 @@ def served_names(manifest: Proto) -> set[str]:
     }
 
 
-def protocol_blockers(method: Proto, wrapped: set[str]) -> list[str]:
+def protocol_blockers(method: Proto, served: set[str]) -> list[str]:
     """Why this method cannot appear on the protocol, or [] if it can.
 
     Two reasons, and they arrive from different places.
@@ -108,7 +100,8 @@ def protocol_blockers(method: Proto, wrapped: set[str]) -> list[str]:
         f"takes a handle. A protocol parameter is contravariant, so no "
         f"single type describes both."
         for p in method["params"]
-        if p["type"] in wrapped
+        # `X | None` too: None is the only value both surfaces share.
+        if adoptee(p["type"], served) is not None
     ] + [
         f"no rpc, so the remote surface cannot offer it: {why}"
         for why in method.get("wire_blockers", ())
@@ -147,7 +140,7 @@ def order(manifest: Proto) -> list[Proto]:
 
 def annotate(manifest: Proto) -> Proto:
     """Stamp the surface names onto the manifest, in place."""
-    wrapped = wrapped_names(manifest)
+    served = served_names(manifest)
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
             if proto["wire"] != "proxy":
@@ -156,5 +149,5 @@ def annotate(manifest: Proto) -> Proto:
             proto["async_class"] = async_class_name(cls_name)
             proto["rpc_class"] = rpc_class_name(cls_name)
             for m in proto["methods"]:
-                m["protocol_blockers"] = protocol_blockers(m, wrapped)
+                m["protocol_blockers"] = protocol_blockers(m, served)
     return manifest

@@ -237,6 +237,14 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     assert respell("Store | None", {"Store": "AsyncStore"}) == "AsyncStore | None"
     assert respell("str", {"Store": "AsyncStore"}) == "str"
 
+    # A proxy parameter keeps a method off the protocol, optional or not.
+    from huggorm_gen.pygen.surface import protocol_blockers
+    for spelling in ("Store", "Store | None"):
+        taking = {"params": [{"name": "s", "type": spelling}]}
+        assert protocol_blockers(taking, {"Store"}), spelling
+    assert not protocol_blockers(
+        {"params": [{"name": "p", "type": "StorePath | None"}]}, {"Store"})
+
     cls = ast.ClassDef(name="AsyncProbe", bases=[], keywords=[], body=[],
                        decorator_list=[], type_params=[])
     method = {"name": "find", "return_type": "Store | None", "params": [],
