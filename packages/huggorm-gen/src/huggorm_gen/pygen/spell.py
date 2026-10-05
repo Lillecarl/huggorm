@@ -20,21 +20,28 @@ from huggorm_gen.payload.wiretypes import python_spelling
 BUILTIN = frozenset({"None", "str", "int", "float", "bool", "bytes",
                      "object"})
 
-# Where a renamed proxy comes from: this module ("defined"), the
-# protocols module, a sibling async module, or the bindings.
-Rename = Callable[[TypeRef], tuple[str, str]]
+# Where a name is imported from: a module and its relative level.
+Source = tuple[str, int]
+BINDINGS: Source = ("huggorm_bindings", 0)
+UNIONS: Source = ("_unions", 1)
+PROTOCOLS: Source = ("protocols", 1)
+
+
+def sibling(cls: str) -> Source:
+    """The module a class's async form lives in: `Store`'s is
+    `async_store`."""
+    return (f"async_{cls.lower()}", 1)
+
+
+# A renamed proxy, and where it comes from: None when the module
+# defines it.
+Rename = Callable[[TypeRef], tuple[str, Source | None]]
 
 
 def import_from(module: str, *names: str, level: int = 0) -> ast.ImportFrom:
     """`from module import names`. ruff merges and orders them later."""
     return ast.ImportFrom(module=module, names=[ast.alias(name=n) for n in names],
                           level=level)
-
-
-def _async_module(name: str) -> str:
-    """The module an async class lives in: `AsyncStore` is in
-    `async_store`."""
-    return f"async_{name.removeprefix('Async').lower()}"
 
 
 class Spelling:
@@ -51,11 +58,10 @@ class Spelling:
         # alias: a binding stub, because a compiled module holds no
         # alias for a typechecker to find.
         self._expand = expand
-        self.bindings: set[str] = set()
-        self.unions: set[str] = set()
-        self.protocols: set[str] = set()
+        # `from module import name`, by where it comes from.
+        self.froms: dict[Source, set[str]] = {}
+        # `import module`, for a type written dotted.
         self.modules: set[str] = set()
-        self.siblings: set[str] = set()
 
     def __call__(self, t: TypeRef, proxy: Rename | None = None) -> str:
         if t.optional:
@@ -78,9 +84,9 @@ class Spelling:
         elif t.kind == "union":
             if self._expand is not None:
                 return self._arms(t.name)
-            self.unions.add(t.name)
+            self.need(t.name, UNIONS)
         elif t.name not in BUILTIN:
-            self.bindings.add(t.name)
+            self.need(t.name, BINDINGS)
         return t.name
 
     def _arms(self, union: str) -> str:
@@ -92,17 +98,17 @@ class Spelling:
                 continue
             name = python_spelling(arm.name)
             if name not in BUILTIN:
-                self.bindings.add(name)
+                self.need(name, BINDINGS)
             out.append(name)
         return " | ".join(out)
 
-    def need(self, name: str, source: str) -> None:
-        if source == "protocols":
-            self.protocols.add(name)
-        elif source == "bindings":
-            self.bindings.add(name)
-        elif source == "siblings":
-            self.siblings.add(name)
+    def need(self, name: str, source: Source | None) -> None:
+        if source is not None:
+            self.froms.setdefault(source, set()).add(name)
+
+    @property
+    def bindings(self) -> set[str]:
+        return self.froms.get(BINDINGS, set())
 
     def module(self, dotted: str) -> None:
         """A type written dotted, `pathlib.Path`: its module is bound."""
@@ -115,16 +121,14 @@ class Spelling:
         """The vocabulary a member default names is an import too."""
         for p in params:
             if p.default_class:
-                self.bindings.add(p.default_class)
+                self.need(p.default_class, BINDINGS)
 
     def absorb(self, other: Spelling) -> None:
         """Take another renderer's imports, for a module that spells
         parameters and returns differently."""
-        self.bindings |= other.bindings
-        self.unions |= other.unions
-        self.protocols |= other.protocols
+        for source, names in other.froms.items():
+            self.froms.setdefault(source, set()).update(names)
         self.modules |= other.modules
-        self.siblings |= other.siblings
 
     def module_imports(self) -> list[ast.stmt]:
         return [ast.Import(names=[ast.alias(name=m)]) for m in self.modules]
@@ -132,12 +136,6 @@ class Spelling:
     def imports(self, own: str = "") -> list[ast.stmt]:
         """Every import what this renderer wrote needs. `own` is the
         class the module defines, which it must not import."""
-        out = self.module_imports()
-        out += [import_from(_async_module(n), n, level=1)
-                for n in self.siblings - {own}]
-        for module, names, level in (("huggorm_bindings", self.bindings, 0),
-                                     ("_unions", self.unions, 1),
-                                     ("protocols", self.protocols, 1)):
-            if names:
-                out.append(import_from(module, *names, level=level))
-        return out
+        return self.module_imports() + [
+            import_from(module, *(names - {own}), level=level)
+            for (module, level), names in self.froms.items() if names - {own}]

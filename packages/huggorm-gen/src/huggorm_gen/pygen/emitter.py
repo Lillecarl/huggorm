@@ -16,7 +16,14 @@ from huggorm_gen.payload.wiretypes import (
     python_spelling,
 )
 from huggorm_gen.pygen import grpc_schema
-from huggorm_gen.pygen.spell import Spelling, import_from
+from huggorm_gen.pygen.spell import (
+    BINDINGS,
+    PROTOCOLS,
+    Source,
+    Spelling,
+    import_from,
+    sibling,
+)
 
 ASYNC = ir.ASYNC
 
@@ -359,20 +366,20 @@ def _adopted(model: ir.Model, m: ir.MethodModel) -> ir.TypeRef | None:
     return None
 
 
-def _as_binding(t: ir.TypeRef) -> tuple[str, str]:
-    return t.name, "bindings"
+def _as_binding(t: ir.TypeRef) -> tuple[str, Source | None]:
+    return t.name, BINDINGS
 
 
-def _as_async(t: ir.TypeRef) -> tuple[str, str]:
-    return f"{ASYNC}{t.name}", "siblings"
+def _as_async(t: ir.TypeRef) -> tuple[str, Source | None]:
+    return f"{ASYNC}{t.name}", sibling(t.name)
 
 
 def _widened(spell: Spelling, model: ir.Model, t: ir.TypeRef) -> str:
     """A constructor's or a free function's parameter: on no protocol,
     so a bare proxy takes the sync object or its async wrapper."""
     if t.kind == "proxy" and not t.origin and t.name in model.served:
-        spell.need(t.name, "bindings")
-        spell.need(f"{ASYNC}{t.name}", "siblings")
+        spell.need(t.name, BINDINGS)
+        spell.need(f"{ASYNC}{t.name}", sibling(t.name))
         return f"{t.name} | {ASYNC}{t.name}"
     return spell(t, _as_binding)
 
@@ -389,7 +396,7 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
     adopted return is the async class, a type with an async twin is the
     twin, and everything else is itself."""
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                "protocols"))
+                                PROTOCOLS))
     ctor = [_widened(spell, model, p.type) for p in c.ctor]
     methods: dict[str, tuple[list[str], str]] = {}
     for m in c.methods:
@@ -444,7 +451,7 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
     how an instance comes to hold an object."""
     spell, _, methods = _async_spelling(model, c)
     # `__init__` or `_adopt` names the sync class it takes.
-    spell.bindings.add(c.name)
+    spell.need(c.name, BINDINGS)
     cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], decorator_list=[], body=[
         ast.Expr(value=ast.Constant(value=class_doc)),
         _code("_wire = $wire", wire=repr(c.wire)),
@@ -579,7 +586,7 @@ def protocol_module(model: ir.Model) -> ast.Module:
     parameter or return, is spelled as its protocol, here and on both
     implementations."""
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                "defined"))
+                                None))
     # Spelled once, before the module is written: the imports come
     # first in the file and only the spelling knows what they are.
     signatures = {
@@ -727,9 +734,9 @@ def rpc_module(model: ir.Model) -> ast.Module:
     # proxy PARAMETER is spelled as the protocol, as on every surface,
     # and the client refuses an in-process object when it encodes one.
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                "protocols"))
+                                PROTOCOLS))
     returned = Spelling(lambda t: (model.classes[t.name].rpc_name,
-                                   "defined"))
+                                   None))
     # Only the methods this module WRITES, so a type named only by a
     # method with no rpc does not become an unused import.
     signatures = {
