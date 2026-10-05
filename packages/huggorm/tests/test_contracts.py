@@ -517,6 +517,8 @@ def test_the_stubs_promise_the_same_order_the_manifest_does(
     the check skipped exactly the two classes that were wrong."""
     import sys
 
+    from huggorm_dsl.read import DECLARED_DUNDERS
+
     # Found on the path, not beside the bindings. A PEP 561 stub
     # package is its own distribution and Nix installs it in its own
     # store path, so `huggorm_bindings.__file__` is the wrong anchor.
@@ -533,9 +535,12 @@ def test_the_stubs_promise_the_same_order_the_manifest_does(
         for node in ast.parse(pyi.read_text()).body:
             if not isinstance(node, ast.ClassDef) or node.name not in declared:
                 continue
+            # A taught dunder is a declared METHOD, in the manifest's
+            # methods; this compares the derived value dunders.
             stubbed = {n.name for n in node.body
                        if isinstance(n, ast.FunctionDef)
-                       and n.name.startswith("__") and n.name != "__init__"}
+                       and n.name.startswith("__") and n.name != "__init__"
+                       and n.name not in DECLARED_DUNDERS}
             assert stubbed == declared[node.name], (
                 f"{pyi.name}:{node.name} stubs {sorted(stubbed)}, "
                 f"the manifest says {sorted(declared[node.name])}")

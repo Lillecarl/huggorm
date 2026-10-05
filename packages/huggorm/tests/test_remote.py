@@ -293,7 +293,7 @@ async def test_a_proxy_argument_resolves_against_another_object(
     state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
     fn = await state.eval_expr("x: x + 1")
     arg = await state.eval_expr("7")
-    assert await (await fn.apply(arg)).integer() == 8
+    assert await (await fn(arg)).integer() == 8
     await state.aclose()
 
 

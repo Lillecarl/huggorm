@@ -46,7 +46,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from huggorm_dsl.declare import Decl
-from huggorm_dsl.read import Class, Method, Param, Type
+from huggorm_dsl.read import Class, Method, Param, Type, is_surface
 
 # The names a proxy's RPC surface is spelled with. Derived from the
 # class name in every case, so the whole surface is knowable from a
@@ -455,8 +455,7 @@ def entry(cls: Class, package: str, module: str,
         # walk calls it. Nothing generated describes it: a leading
         # underscore is Python's own word for "not surface", and the
         # reflection this replaces dropped one for the same reason.
-        "methods": [_method(m) for m in cls.methods
-                    if not m.name.startswith("_")],
+        "methods": [_method(m) for m in cls.methods if is_surface(m.name)],
         # Written by a later stage of the real generator, and a
         # package-level fact rather than a class one.
         "async_base": None,

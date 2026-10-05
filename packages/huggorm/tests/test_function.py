@@ -47,7 +47,7 @@ def fn(state: Any, expr: str) -> Any:
 def test_one_argument_applies(state: Any) -> None:
     """`f x`, which is how every Nix function is called."""
     f = fn(state, "x: x + 1")
-    got = f.apply(state.make_int(41))
+    got = f(state.make_int(41))
     state.force(got)
     assert got.integer() == 42
 
@@ -59,11 +59,11 @@ def test_a_function_returns_a_function(state: Any) -> None:
     says so - this is the shape any accessor offering a single arity
     for a lambda would be lying about."""
     f = fn(state, "x: y: x + y")
-    once = f.apply(state.make_int(40))
+    once = f(state.make_int(40))
     state.force(once)
     assert once.type_name() == "function", "one argument left"
 
-    twice = once.apply(state.make_int(2))
+    twice = once(state.make_int(2))
     state.force(twice)
     assert twice.integer() == 42
 
@@ -79,11 +79,11 @@ def test_the_result_comes_back_in_whnf(state: Any) -> None:
     So the laziness is one level down, which is what the second half
     asserts: an attribute set comes back forced, and its attributes
     do not."""
-    got = fn(state, "x: x + 1").apply(state.make_int(41))
+    got = fn(state, "x: x + 1")(state.make_int(41))
     assert got.type_name() == "int", "already evaluated"
     assert got.integer() == 42
 
-    nested = fn(state, "x: { a = x + 1; }").apply(state.make_int(41))
+    nested = fn(state, "x: { a = x + 1; }")(state.make_int(41))
     assert nested.type_name() == "attrs", "the set itself is forced"
     inner = nested.get("a")
     assert inner.type_name() == "thunk", "and its contents are not"
@@ -97,12 +97,12 @@ def test_applying_a_non_function_is_nix_s_own_refusal(state: Any) -> None:
 
     with pytest.raises(NixTypeError, match="attempt to call something "
                        "which is not a function but an integer"):
-        state.eval_expr("42").apply(state.make_int(1))
+        state.eval_expr("42")(state.make_int(1))
 
 
 def test_a_functor_set_applies_as_nix_calls_it(state: Any) -> None:
     functor = state.eval_expr("{ n = 40; __functor = self: x: self.n + x; }")
-    assert functor.apply(state.make_int(2)).integer() == 42
+    assert functor(state.make_int(2)).integer() == 42
 
 
 # -- the three shapes ------------------------------------------------------
@@ -141,7 +141,7 @@ def test_a_partly_applied_builtin_is_the_third_shape(state: Any) -> None:
     assert partial.doc() is None, "no getDoc branch for this shape"
 
     # It still applies, which is the point of the shape existing.
-    got = partial.apply(state.make_int(41))
+    got = partial(state.make_int(41))
     state.force(got)
     assert got.integer() == 42
 
@@ -401,7 +401,7 @@ def test_an_attribute_set_applies_by_name(state: Any) -> None:
 def test_a_missing_argument_falls_back_to_its_default(state: Any) -> None:
     """What `apply_auto` adds over applying the set with `apply`.
 
-    `apply` would hand the set straight to the lambda and the missing
+    `f(x)` would hand the set straight to the lambda and the missing
     formal would be an error. This fills it from the formal's own
     default, which is what `--arg` does."""
     f = fn(state, "{ a, b ? 2 }: a + b")
@@ -490,7 +490,7 @@ def test_python_calls_nix_calling_python(state: Any) -> None:
     assert f.is_primop()
     assert f.primop_arity() == 1
 
-    got = f.apply(state.make_int(21))
+    got = f(state.make_int(21))
     state.force(got)
     assert got.integer() == 42
     assert calls == [21], "the callback ran inside the applied call"
@@ -505,7 +505,7 @@ def test_a_python_primop_applied_through_a_lambda(state: Any) -> None:
     state.register_primop("trip", 1, lambda v: state.make_int(v.integer() * 3))
 
     f = fn(state, "x: builtins.trip x")
-    got = f.apply(state.make_int(14))
+    got = f(state.make_int(14))
     state.force(got)
     assert got.integer() == 42
 
@@ -573,7 +573,7 @@ async def test_an_ellipsis_becomes_var_keyword() -> None:
 async def test_a_simple_lambda_is_positional() -> None:
     """`x: body` takes a value, not a keyword.
 
-    POSITIONAL_ONLY because `apply` passes one value and the name is
+    POSITIONAL_ONLY because `f(x)` passes one value and the name is
     the lambda's own binding - no caller can use it as a keyword. It
     is reported so `help()` can show what the author called it."""
     assert str(await asig("x: x + 1")) == "(x, /)"

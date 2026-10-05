@@ -338,12 +338,11 @@ def test_a_part_read_through_another_accessor_is_still_derived(
         _ = read(path).classes[0].parts
 
 
-# One bound class that declares a dunder. `__call__` because that is
-# the one a declaration actually wants - `await f.apply(x)` is what
-# huggorm#34 shipped, and `await f(x)` is what it could not say.
-CALLABLE = '''"""One bound class that declares __call__."""
+# One bound class that declares a dunder the emitters carry and one
+# they do not.
+CALLABLE = '''"""One bound class that declares two dunders."""
 
-from huggorm_dsl.declare import Cxx, Str, binding, header
+from huggorm_dsl.declare import Cxx, I64, Str, binding, header
 
 
 @header("nix/expr/value.hh")
@@ -354,38 +353,42 @@ class Callable:
     def __call__(self, arg: Str) -> Str:
         """Apply this to one argument."""
         Cxx("return arg;")
+
+    def __len__(self) -> I64:
+        """No emitter carries this one."""
+        Cxx("return 0;")
 '''
 
 
-def test_a_declared_dunder_is_refused_rather_than_dropped(
+def test_an_undeclarable_dunder_is_refused_rather_than_dropped(
         tmp_path: pathlib.Path) -> None:
-    """A declaration that writes `__call__` gets an answer.
+    """A dunder the emitters are not taught gets an answer.
 
-    It used to get NOTHING. The class-body loop kept the names that
-    are not `__`-prefixed and skipped the rest, so a declared dunder
-    reached no binding, no stub line and no manifest entry, with no
+    The class-body loop once kept the names that are not
+    `__`-prefixed and skipped the rest, so a declared dunder reached
+    no binding, no stub line and no manifest entry, with no
     diagnostic anywhere - and a skip is indistinguishable from an
     absence, which is this repo's named failure mode (huggorm#88).
 
-    Measured before the refusal, on a probe declaring `__call__` and
-    `__len__` beside one plain accessor:
-
-        Probe ['nar_size'] ctor= None
-
-    Two declared methods gone, and the read reported success.
-
-    The message points at huggorm#88 rather than describing what a
-    dunder would take, because the answer for a caller today is to
-    declare a plain name. `Value.apply` is that name."""
+    `__call__` IS taught, so the refusal names `__len__` alone, at
+    its line."""
     from huggorm_dsl.read import DeclarationError, read
 
     path = _declaration(tmp_path, CALLABLE)
     with pytest.raises(DeclarationError, match="huggorm#88") as caught:
         read(path)
-    # The LINE, because a refusal whose answer is "rename this" has to
-    # say which one. `__call__` is the eleventh line of the fixture.
-    assert ":11:" in str(caught.value)
-    assert "Callable.__call__" in str(caught.value)
+    assert ":15:" in str(caught.value)
+    assert "Callable.__len__" in str(caught.value)
+    assert "Callable.__call__" not in str(caught.value)
+
+
+def test_a_taught_dunder_reads_as_a_method(tmp_path: pathlib.Path) -> None:
+    """`__call__` is an ordinary method to every emitter."""
+    from huggorm_dsl.read import read
+
+    path = _declaration(tmp_path, CALLABLE.split("    def __len__")[0])
+    names = [m.name for m in read(path).classes[0].methods]
+    assert names == ["__call__"]
 
 
 # One declaration with an `async def` in each of the three places it

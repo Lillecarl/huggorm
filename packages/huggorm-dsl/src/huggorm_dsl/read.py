@@ -105,6 +105,18 @@ DECLARATIONS = "huggorm_decl.decl"
 # that name.
 FROM_PARTS = "_from_parts"
 
+# The dunders a declaration may write as an ordinary method. Every
+# emitter carries a method by name, so a dunder needs only a wire
+# spelling a protobuf identifier allows (`grpc_schema.wire_method`).
+# Each one is added when a declaration needs it (huggorm#88).
+DECLARED_DUNDERS = frozenset({"__call__"})
+
+
+def is_surface(name: str) -> bool:
+    """Whether a declared method is surface: not private, or a taught
+    dunder. A leading underscore alone would drop `__call__`."""
+    return not name.startswith("_") or name in DECLARED_DUNDERS
+
 
 # Which declaration is being read, innermost last.
 #
@@ -1352,7 +1364,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                     f"{decl.built_by} builds one - so {decl.built_by} "
                     f"owns the signature. Move them there and leave "
                     f"the docstring here.")
-        elif item.name.startswith("__"):
+        elif item.name.startswith("__") and item.name not in DECLARED_DUNDERS:
             # A SILENT SKIP, until this refusal. The loop kept the
             # names that are not `__`-prefixed and dropped the rest
             # with no answer, so a declaration that wrote
@@ -1376,14 +1388,13 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             _survive(DeclarationError(
                 item,
                 f"{node.name}.{item.name}: a name starting with `__` "
-                f"reaches no emitter, and until now was dropped in "
-                f"silence. `__init__` is the one exception. The value "
-                f"dunders are derived from the class decorators - "
+                f"reaches no emitter unless the emitters are taught it. "
+                f"`__init__` and {sorted(DECLARED_DUNDERS)} are. The "
+                f"value dunders are derived from the class decorators - "
                 f"@wire_value writes them, and its `order=` and "
-                f"`text=` decide which - so do not "
-                f"declare one. Anything else needs the emitters taught "
-                f"(huggorm#88); declare it under a plain name until "
-                f"then."))
+                f"`text=` decide which - so do not declare one. "
+                f"Anything else needs the emitters taught (huggorm#88); "
+                f"declare it under a plain name until then."))
         else:
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.

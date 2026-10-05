@@ -201,8 +201,17 @@ def resp_name(cls_name: str, method: str) -> str:
     return f"{cls_name}_{_camel(method)}Resp"
 
 
+def wire_method(method: str) -> str:
+    """A method's name in the schema. A declared dunder such as
+    `__call__` crosses as `call`: a protobuf identifier starts with a
+    letter. Every Python surface keeps the dunder (huggorm#88)."""
+    if method.startswith("__") and method.endswith("__"):
+        return method.strip("_")
+    return method
+
+
 def method_path(cls_name: str, method: str) -> str:
-    return f"/{PKG}.{service_name(cls_name)}/{method}"
+    return f"/{PKG}.{service_name(cls_name)}/{wire_method(method)}"
 
 
 # Construction is an rpc on the class's OWN service, not a string-keyed
@@ -570,7 +579,7 @@ def _add_service(file_dp: Any, cls_name: str, proto: Proto,
         if "rpc" not in m:
             continue  # no wire representation; annotate() said why
         rpc = svc.method.add()
-        rpc.name = m["name"]
+        rpc.name = wire_method(m["name"])
 
         req = file_dp.message_type.add()
         req.name = m["rpc"]["req"]

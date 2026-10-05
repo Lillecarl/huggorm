@@ -23,8 +23,8 @@ async def _remote_value(client: Any) -> Any:
 async def _apply_twice(state: EvalStateLike, fn: ValueLike,
                        arg: ValueLike) -> int:
     """One consumer, typed only against the protocols."""
-    once = await fn.apply(arg)
-    twice = await fn.apply(once)
+    once = await fn(arg)
+    twice = await fn(once)
     await state.force(twice)
     return await twice.integer()
 

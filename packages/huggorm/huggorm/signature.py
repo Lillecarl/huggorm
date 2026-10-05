@@ -22,7 +22,7 @@ describes and no emitter should learn.
 
 A formal becomes KEYWORD_ONLY, because that is how `apply_auto`
 passes it - by name, out of an attribute set. A `x:` lambda's
-parameter becomes POSITIONAL_ONLY, because `apply` takes one value and
+parameter becomes POSITIONAL_ONLY, because `f(x)` takes one value and
 its name is not a keyword anyone can use.
 
 ## Why `Ellipsis` is the default
@@ -106,7 +106,7 @@ async def signature_of(value: ValueLike | Any) -> inspect.Signature:
 async def _lambda_signature(value: Any) -> inspect.Signature:
     """A lambda's, from its formals or its single argument."""
     if not await value.has_formals():
-        # `x: body`. POSITIONAL_ONLY, because `apply` takes a value
+        # `x: body`. POSITIONAL_ONLY, because `f(x)` takes a value
         # and the name is not a keyword any caller can use - it is
         # the lambda's own binding, reported so `help()` can show it.
         name = await value.lambda_arg()

@@ -95,7 +95,7 @@ async def test_a_value_from_this_state_is_not_refused() -> None:
 
 
 async def test_applying_a_foreign_function_is_refused() -> None:
-    """huggorm#34 listed `apply` beside `force`, and one check covers
+    """huggorm#34 listed calling a value beside `force`, and one check covers
     both.
 
     Derived rather than restated: the refusal lives in `unwrap_arg`,
@@ -108,7 +108,7 @@ async def test_applying_a_foreign_function_is_refused() -> None:
         fn = await first.eval_expr("x: x")
         arg = await second.eval_expr("1")
         with pytest.raises(TypeError, match="another EvalState"):
-            await fn.apply(arg)
+            await fn(arg)
     finally:
         await first.aclose()
         await second.aclose()

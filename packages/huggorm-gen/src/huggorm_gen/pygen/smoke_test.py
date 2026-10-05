@@ -26,6 +26,8 @@ from typing import Any
 
 import anyio
 
+from huggorm_dsl.read import is_surface
+
 
 def test_parse(out: pathlib.Path) -> None:
     for py in sorted(out.glob("*.py")):
@@ -989,7 +991,7 @@ def _emitted_classes(out: pathlib.Path) -> dict[str, Any]:
             for f in node.body:
                 if not isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                if f.name.startswith("_"):
+                if not is_surface(f.name):
                     continue
                 args = f.args.args[1:]  # drop self
                 methods[f.name] = {
@@ -1407,7 +1409,7 @@ def test_stubs(out: pathlib.Path) -> None:
                     out_ |= surface(b.id)
             return out_ | {f.name for f in cn.body
                            if isinstance(f, ast.FunctionDef)
-                           and not f.name.startswith("_")}
+                           and is_surface(f.name)}
 
         for name in classes:
             cls = getattr(module, name)
@@ -1417,7 +1419,7 @@ def test_stubs(out: pathlib.Path) -> None:
                 if getattr(k, "__module__", "").split(".")[0] != bindings.__name__:
                     continue
                 live_methods |= {a for a, v in k.__dict__.items()
-                                 if not a.startswith("_")
+                                 if is_surface(a)
                                  and (callable(v) or hasattr(v, "__get__"))}
             if stub_methods != live_methods:
                 failures.append(

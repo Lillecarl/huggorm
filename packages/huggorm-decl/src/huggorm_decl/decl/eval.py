@@ -477,8 +477,9 @@ return argv;
         Cxx("return self.get()->isPrimOpApp();")
 
     @blocks
-    def apply(self, arg: Value) -> Value:
-        """Apply one argument. `f x`, and the answer may be a function.
+    def __call__(self, arg: Value) -> Value:
+        """Apply one argument. `f x` is `f(x)`, awaited on the async
+        and RPC surfaces, and the answer may be a function.
 
         The curried form, so this is how every Nix function is called
         and the by-name form below is the special case. Applying `x:
@@ -516,7 +517,7 @@ return self.wrap(out);
         """Apply an attribute set BY NAME, filling defaults.
 
         `autoCallFunction`, which is what `--arg` reaches. One round
-        trip for a whole argument set, where `apply` is one per
+        trip for a whole argument set, where a call is one per
         argument - and it fills each formal the set does not mention
         from that formal's own default.
 
@@ -531,7 +532,7 @@ return self.wrap(out);
 
         It forces `self`, unlike everything else here, because
         `autoCallFunction` does (eval.cc:1783) - so a thunk that
-        evaluates to a function is accepted where `apply` would
+        evaluates to a function is accepted where a call would
         refuse it. `@guard` still rejects a thunk before we get here,
         so that reachability belongs to a caller who forced first.
 

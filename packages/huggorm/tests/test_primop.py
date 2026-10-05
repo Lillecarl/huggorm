@@ -354,7 +354,7 @@ def test_a_python_function_becomes_a_nix_function(state: Any) -> None:
 
     assert inc.is_primop()
     assert inc.primop_name() == "inc"
-    assert inc.apply(state.make_int(41)).integer() == 42
+    assert inc(state.make_int(41)).integer() == 42
     assert state.eval_expr("builtins ? inc").boolean() is False
 
 
@@ -378,7 +378,7 @@ def test_a_made_function_names_itself_in_its_errors(state: Any) -> None:
     wrong = state.make_primop("wrong", 1, lambda v: 42)
 
     with pytest.raises(Exception) as caught:
-        wrong.apply(state.make_int(1)).integer()
+        wrong(state.make_int(1)).integer()
     assert "implementation of wrong did not return a Value" \
         in str(caught.value)
 
@@ -404,7 +404,7 @@ def test_a_made_function_closing_over_its_state_does_not_leak_it() -> None:
             return state.make_int(v.integer())
 
         made = state.make_primop("keep", 1, keep)
-        assert made.apply(state.make_int(1)).integer() == 1
+        assert made(state.make_int(1)).integer() == 1
 
     build()
     gc.collect()
