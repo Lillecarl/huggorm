@@ -758,8 +758,8 @@ def protocol_module(model: ir.Model) -> ast.Module:
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(ast.Expr(value=ast.Constant(value=(
         "Generated protocols: the surface both implementations share - do "
-        "not edit. One per wrapped class, mirroring the wrapper hierarchy, "
-        "so a function typed against StoreLike accepts an in-process "
+        "not edit. One per served class, so a function typed against "
+        "StoreLike accepts an in-process "
         "AsyncStore and a remote RPCStore alike."))))
     mod.body.append(_future_annotations())
     mod.body.append(ast.ImportFrom(
@@ -778,12 +778,15 @@ def protocol_module(model: ir.Model) -> ast.Module:
             # test is what proves an implementation really conforms.
             decorator_list=[ast.Name(id="runtime_checkable")],
             type_params=[])
-        withheld = [m.name for m in model_cls.methods
-                    if not model.offered(m)]
+        withheld = sorted(
+            (m.name, "; ".join(ir.blockers(m.params, m.returns, model.served)))
+            for m in model_cls.methods if not model.offered(m))
         cls.body.append(ast.Expr(value=ast.Constant(value=(
             f"What every {name} implementation promises."
-            + (f" {', '.join(sorted(withheld))} cannot be promised: see "
-               f"protocol_blockers in the manifest." if withheld else "")))))
+            + ("\n\n    Not promised, because the RPC client cannot offer "
+               "them:\n\n" + "".join(f"    - {n}: {why}\n"
+                                     for n, why in withheld)
+               + "    " if withheld else "")))))
         for m in model_cls.methods:
             if not model.offered(m):
                 continue
