@@ -9,6 +9,7 @@ import ast
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from huggorm_gen import ir
 from huggorm_gen.payload.wiretypes import (
     SCALAR_NAMES,
     adoptee,
@@ -17,6 +18,7 @@ from huggorm_gen.payload.wiretypes import (
     python_spelling,
     respell,
 )
+from huggorm_gen.pygen.spell import Spelling
 
 # One class, method or function as a plain dict. See model.Proto.
 Proto = dict[str, Any]
@@ -1105,34 +1107,30 @@ def _params(m: Proto, cls_name: str,
         f"{cls_name}.{m['name']}")
 
 
-def protocol_module(manifest: Proto, ordered: list[Proto],
-                    adoptable: set[str]) -> ast.Module:
-    """Emit one Protocol per wrapped class: the surface a caller can
+def protocol_module(model: ir.Model) -> ast.Module:
+    """Emit one Protocol per served class: the surface a caller can
     program against without knowing whether the object answering is in
     this process or on the far side of a socket.
 
-    Methods with no rpc are absent, and the manifest says why for each
-    of them (see surface.protocol_blockers). A proxy parameter is
-    spelled as its protocol, here and on both implementations."""
-    from huggorm_gen.pygen.surface import ACLOSE, like_spelling, protocol_name
+    A method with no rpc is absent, and the manifest says why. A proxy,
+    parameter or return, is spelled as its protocol, here and on both
+    implementations."""
+    from huggorm_gen.pygen.surface import ACLOSE
 
-    defined = {protocol_name(p["name"]) for p in ordered}
-
-    def ret_ann(rt: str) -> str:
-        return respell(rt, {n: protocol_name(n) for n in adoptable})
-
-    def like(t: str) -> str:
-        return like_spelling(t, adoptable)
-
-    annotations: list[str] = []
-    defaults: list[str] = []
-    for proto in ordered:
-        for m in proto["methods"]:
-            if m["protocol_blockers"]:
-                continue
-            annotations += [like(p["type"]) for p in m["params"]]
-            defaults += _default_names(m["params"])
-            annotations.append(ret_ann(m["return_type"]))
+    spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
+                                "defined"))
+    # Spelled once, before the module is written: the imports come
+    # first in the file and only the spelling knows what they are.
+    signatures = {
+        (cls.name, m.name): ([spell(p.type) for p in m.params],
+                             spell.returns(m.returns))
+        for cls in model.ordered_served for m in cls.methods
+        if model.offered(m)
+    }
+    for served in model.ordered_served:
+        for m in served.methods:
+            if model.offered(m):
+                spell.defaults(m.params)
 
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(ast.Expr(value=ast.Constant(value=(
@@ -1145,58 +1143,56 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
         module="typing",
         names=[ast.alias(name="Protocol"), ast.alias(name="runtime_checkable")],
         level=0))
-    mod.body.extend(_foreign_imports(annotations))
-    sync = _sync_imports(annotations, defined, defaults)
-    mod.body.extend(sync)
+    mod.body.extend(spell.imports())
 
-    for proto in ordered:
-        name = proto["name"]
-        base = proto.get("async_base")
-        bases: list[ast.expr] = (
-            [ast.Name(id=protocol_name(base))] if base else [])
-        bases.append(ast.Name(id="Protocol"))
+    for model_cls in model.ordered_served:
+        name = model_cls.name
         cls = ast.ClassDef(
-            name=protocol_name(name), bases=bases, keywords=[], body=[],
+            name=model_cls.protocol_name, bases=[ast.Name(id="Protocol")],
+            keywords=[], body=[],
             # isinstance() against this checks that the method NAMES are
             # present and nothing more. The signature gate in the smoke
             # test is what proves an implementation really conforms.
             decorator_list=[ast.Name(id="runtime_checkable")],
             type_params=[])
-        offered = [m for m in proto["methods"] if not m["protocol_blockers"]]
-        withheld = [m["name"] for m in proto["methods"] if m["protocol_blockers"]]
+        withheld = [m.name for m in model_cls.methods
+                    if not model.offered(m)]
         cls.body.append(ast.Expr(value=ast.Constant(value=(
-            f"What every {name} implementation promises"
-            + (f", on top of {protocol_name(base)}." if base else ".")
+            f"What every {name} implementation promises."
             + (f" {', '.join(sorted(withheld))} cannot be promised: see "
                f"protocol_blockers in the manifest." if withheld else "")))))
-        for m in offered:
+        for m in model_cls.methods:
+            if not model.offered(m):
+                continue
+            params, returns = signatures[(name, m.name)]
             body: list[ast.stmt] = []
-            if m["doc"]:
-                body.append(ast.Expr(value=ast.Constant(value=m["doc"])))
+            if m.doc:
+                body.append(ast.Expr(value=ast.Constant(value=m.doc)))
             body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
             cls.body.append(ast.AsyncFunctionDef(
-                name=m["name"],
-                args=_params(m, name, like),
+                name=m.name,
+                args=_arguments([ast.arg(arg="self")],
+                                [p.entry() for p in m.params], params,
+                                f"{name}.{m.name}"),
                 body=body,
                 decorator_list=[],
-                returns=_ann(ret_ann(m["return_type"]), f"{name}.{m['name']}"),
+                returns=_ann(returns, f"{name}.{m.name}"),
                 type_params=[]))
-        if base is None:
-            cls.body.append(ast.AsyncFunctionDef(
-                name=ACLOSE,
-                args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
-                                   vararg=None, kwonlyargs=[], kw_defaults=[],
-                                   kwarg=None, defaults=[]),
-                body=[
-                    ast.Expr(value=ast.Constant(value=(
-                        "Release this object. In process that shuts the "
-                        "runner's thread down; remotely it gives the lease "
-                        "back. Either way the object is spent afterwards."))),
-                    ast.Expr(value=ast.Constant(value=Ellipsis)),
-                ],
-                decorator_list=[],
-                returns=_ann("None", f"{name}.{ACLOSE}"),
-                type_params=[]))
+        cls.body.append(ast.AsyncFunctionDef(
+            name=ACLOSE,
+            args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
+                               vararg=None, kwonlyargs=[], kw_defaults=[],
+                               kwarg=None, defaults=[]),
+            body=[
+                ast.Expr(value=ast.Constant(value=(
+                    "Release this object. In process that shuts the "
+                    "runner's thread down; remotely it gives the lease "
+                    "back. Either way the object is spent afterwards."))),
+                ast.Expr(value=ast.Constant(value=Ellipsis)),
+            ],
+            decorator_list=[],
+            returns=_ann("None", f"{name}.{ACLOSE}"),
+            type_params=[]))
         mod.body.append(cls)
 
     ast.fix_missing_locations(mod)

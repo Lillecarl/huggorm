@@ -298,6 +298,9 @@ class ParamModel:
     # there is no default. A vocabulary member is written as the
     # member: `'nar'` says nothing about which vocabulary it is from.
     default: str | None
+    # The vocabulary a member default names, which a module writing the
+    # default has to import, or "".
+    default_class: str = ""
 
     @classmethod
     def of(cls, p: Param, resolver: Resolver) -> ParamModel:
@@ -315,7 +318,8 @@ class ParamModel:
             default = f"{p.type.python}.{p.member}"
         else:
             default = repr(p.default)
-        return cls(p.name, type_ref(declared, resolver), default)
+        return cls(p.name, type_ref(declared, resolver), default,
+                   p.type.python if p.member else "")
 
     def entry(self) -> dict[str, Any]:
         return {"name": self.name, "type": self.type.spelling,
@@ -570,6 +574,20 @@ class Model:
     def served(self) -> frozenset[str]:
         """Every class with a service behind its handles: every proxy."""
         return frozenset(n for n, c in self.classes.items() if c.served)
+
+    @property
+    def ordered_served(self) -> list[ClassModel]:
+        """Every served class: the returned ones, then the constructed
+        ones, each by name - the order every surface emits them in."""
+        returned = sorted(n for n in self.classes if n in self.returned)
+        built = sorted(n for n in self.classes if n not in self.returned)
+        return [self.classes[n] for n in (*returned, *built)
+                if self.classes[n].served]
+
+    def offered(self, m: MethodModel) -> bool:
+        """Whether a method crosses the wire, which is also whether the
+        protocol may promise it: both implementations must offer it."""
+        return not blockers(m.params, m.returns, self.served)
 
 
 def returned_names(module_classes: Sequence[tuple[Mapping[str, Class],

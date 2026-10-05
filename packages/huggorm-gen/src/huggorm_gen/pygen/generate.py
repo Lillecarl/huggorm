@@ -392,9 +392,8 @@ def main(argv: list[str] | None = None) -> None:
               f"function(s): {', '.join(free_names)}")
 
     ordered = surface.order(manifest)
-    adoptable = set(served_policies)
     (out / f"{surface.PROTOCOL_MODULE}.py").write_text(
-        ast.unparse(protocol_module(manifest, ordered, adoptable)) + "\n")
+        ast.unparse(protocol_module(declared_model())) + "\n")
     (out / f"{surface.RPC_MODULE}.py").write_text(
         ast.unparse(rpc_module(manifest, ordered,
                                surface.served_names(manifest))) + "\n")
