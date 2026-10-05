@@ -671,9 +671,9 @@ def test_a_field_says_which_64_bit_integer_it_is(
     assert [(f.name, m.ret.wire) for f, m in cls.parts
             if m.ret is not None] == [("total", "uint"), ("when", "int")]
 
-    entry = ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module)).entry()
-    assert entry["wire_fields"] == [["total", "uint"], ["when", "int"]]
-    assert [(m["name"], m["return_type"]) for m in entry["methods"]] == [
+    typed = ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module))
+    assert typed.wire_fields == (("total", "uint"), ("when", "int"))
+    assert [(m.name, m.return_spelling) for m in typed.methods] == [
         ("total", "int"), ("when", "int")]
 
 

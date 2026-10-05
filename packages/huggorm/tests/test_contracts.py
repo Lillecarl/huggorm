@@ -4,30 +4,29 @@ Contracts that hold without a server running.
 
 import ast
 import pathlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+if TYPE_CHECKING:
+    from huggorm_gen import ir
 
-def test_no_hardcoded_domain_types(manifest: dict[str, Any]) -> None:
+
+def test_no_hardcoded_domain_types(model: ir.Model) -> None:
     """No layer above the bindings may name a domain type.
 
     Wire policy is declared next to the binding and reaches the schema,
-    the server and the client through the manifest. A type name written
+    the server and the client through the model. A type name written
     into any of them is the duplication this design exists to remove:
     it means adding a class needs edits in four places, and forgetting
     one fails at the first call that touches it, not at build time."""
-    domain = {
-        name
-        for group in ("wrappers", "returned_types")
-        for name in manifest[group]
-    }
+    domain = set(model.classes)
     # Exception classes are domain types too, and the same rule holds
     # for the same reason: which errors exist is the bindings' to
     # declare, so no layer above them may carry a list of them
     # (huggorm#36). The builtins this layer raises ITSELF - KeyError for
     # an unknown handle - are not in that set and are not the subject.
-    domain |= set((manifest.get("errors") or {}).get("classes", {}))
+    domain |= set(model.errors.classes)
     here = pathlib.Path(__file__).resolve().parent.parent / "huggorm"
     offenders = []
     for mod in ("server.py", "remote.py", "wire.py", "faults.py",
@@ -39,8 +38,7 @@ def test_no_hardcoded_domain_types(manifest: dict[str, Any]) -> None:
     assert not offenders, "; ".join(offenders)
 
 
-def test_a_declared_error_crosses_as_its_own_message(
-        manifest: dict[str, Any]) -> None:
+def test_a_declared_error_crosses_as_its_own_message() -> None:
     """The class identity is the MESSAGE TYPE, not a name to look up.
 
     That is the whole reason a fault travels in the status details
@@ -107,8 +105,8 @@ def test_an_error_s_info_survives_the_wire() -> None:
     assert rebuilt == sent
 
 
-def test_every_declared_error_has_a_message(manifest: dict[str, Any]) -> None:
-    """One message per declared class, emitted from the manifest.
+def test_every_declared_error_has_a_message(model: ir.Model) -> None:
+    """One message per declared class, emitted from the model.
 
     The schema builder loops the error table; it names no class. So
     adding an error to the bindings adds its message here, and this
@@ -116,17 +114,17 @@ def test_every_declared_error_has_a_message(manifest: dict[str, Any]) -> None:
     from huggorm.grpc_pb import PKG, load_pool
 
     pool = load_pool()
-    declared = (manifest.get("errors") or {}).get("classes", {})
+    declared = model.errors.classes
     assert declared, "the bindings declare no errors at all"
-    for name, proto in declared.items():
+    for name, error in declared.items():
         desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
             f"{PKG}.{name}Fault")
         assert [f.name for f in desc.fields] == [
-            fname for fname, _ in proto["wire_fields"]], name
+            fname for fname, _ in error.wire_fields], name
 
 
 def test_every_declared_error_rebuilds_from_its_parts(
-        manifest: dict[str, Any]) -> None:
+        model: ir.Model) -> None:
     """An error must survive its own round trip.
 
     An error crosses as its declared parts and comes back as
@@ -145,12 +143,11 @@ def test_every_declared_error_rebuilds_from_its_parts(
     """
     import importlib
 
-    errors: dict[str, Any] = manifest.get("errors") or {}
-    module_name = errors["module"]
+    module_name = model.errors.module
     assert module_name, "the bindings declare no error module"
     module = importlib.import_module(module_name)
-    for name, proto in errors["classes"].items():
-        fields = proto["wire_fields"]
+    for name, error in model.errors.classes.items():
+        fields = error.wire_fields
         assert fields, (
             f"{name}: no wire_fields, so nothing says how to rebuild it "
             f"on the far side")
@@ -165,11 +162,11 @@ def test_every_declared_error_rebuilds_from_its_parts(
                 f"its parts leaves {fname} = {got!r}, not {sent!r}")
 
 
-def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
+def test_a_string_enum_decodes_to_its_class(model: ir.Model) -> None:
     """A value read off the wire comes back typed.
 
     A StrEnum crosses as a plain string - it IS one - so nothing about
-    the transport changes. What the manifest's enum table buys is the
+    the transport changes. What the declared enum table buys is the
     other direction: the codec knows which class to rebuild, so a
     caller gets ContentAddressMethod.FLAT rather than "flat", and a
     value that is not a member raises here instead of reaching
@@ -180,7 +177,7 @@ def test_a_string_enum_decodes_to_its_class(manifest: dict[str, Any]) -> None:
     from huggorm_bindings import ContentAddressMethod
 
     codec = WireCodec()
-    assert manifest["enums"], "the bindings declare no vocabularies"
+    assert model.enums, "the bindings declare no vocabularies"
     assert codec.kind("ContentAddressMethod") == "scalar"
 
     rebuild = codec.scalar("ContentAddressMethod")
@@ -234,40 +231,36 @@ Everything behind the front door
         "something to call. It has no place on the front door.")
 
 
-def test_every_name_the_manifest_DECLARES_reaches_the_front_door() -> None:
-    """The same question as above, asked of the manifest instead.
+def test_every_name_the_model_DECLARES_reaches_the_front_door() -> None:
+    """The same question as above, asked of the model instead.
 
     The test above walks the two packages' `__all__`, which covers
     everything that IS a Python object in one of them. A union is not:
     `DerivedPath = StorePath | DerivedPathBuilt` is an alias the
-    generated package writes from the manifest, and it reached the
-    front door because a person put it there.
+    generated package writes from the model, and it reached the front
+    door because a person put it there.
 
-    That is the hole. The manifest grows TABLES - wrappers and
-    returned_types, then free_functions, then enums, then unions - and
-    a test that names them is a test the next table is born outside
-    of. So this names none of them.
+    That is the hole. The model grows TABLES - classes, then
+    functions, then enums, then unions - and a test that names them
+    is a test the next table is born outside of. So this names none.
 
-    A NAME TABLE is one whose keys are all identifiers and whose
-    values are all descriptions - a dict or a list. That is what
-    separates the five from `errors` (which maps "module" to a string,
-    so it describes one thing rather than naming many), from
-    `async_twins` (whose key is `pathlib.Path`, not an identifier) and
-    from the two plain settings. The next table is covered by being
-    that shape, which is the shape a table of declared names has."""
+    A NAME TABLE is a mapping field whose keys are all identifiers.
+    That separates the four from `twins` (whose key is `pathlib.Path`)
+    and from `errors`, which is one record rather than a table."""
+    import dataclasses
+    from collections.abc import Mapping
+
+    from conftest import load_model
+
     import huggorm
-    from huggorm_gen.pygen.generate import build_manifest
 
-    manifest = build_manifest()
-
-    def names_things(table: object) -> bool:
-        return (isinstance(table, dict) and bool(table)
-                and all(str(k).isidentifier() for k in table)
-                and all(isinstance(v, (dict, list)) for v in table.values()))
-
+    model = load_model()
+    tables = [getattr(model, f.name) for f in dataclasses.fields(model)]
     declared = {
         name
-        for table in manifest.values() if names_things(table)
+        for table in tables
+        if isinstance(table, Mapping) and table
+        and all(str(k).isidentifier() for k in table)
         for name in table
     }
     assert "DerivedPath" in declared, (
@@ -275,9 +268,9 @@ def test_every_name_the_manifest_DECLARES_reaches_the_front_door() -> None:
 
     missing = sorted(declared - set(huggorm.__all__))
     assert not missing, (
-        f"the manifest declares {missing}, and `import huggorm` does not "
+        f"the model declares {missing}, and `import huggorm` does not "
         f"reach them. A declared name that no front door carries is a "
-        f"name only a reader of the manifest knows about.")
+        f"name only a reader of the model knows about.")
 
 
 def test_the_package_ships_no_demos() -> None:
@@ -337,7 +330,7 @@ def _probe_message() -> Any:
             "probe.Probe"))()
 
 
-def test_an_enum_survives_a_container(manifest: dict[str, Any]) -> None:
+def test_an_enum_survives_a_container() -> None:
     """An enum is a scalar, and a container does not change that.
 
     The schema already said so - wire_blocker accepts an enum
@@ -382,7 +375,7 @@ def test_an_enum_survives_a_container(manifest: dict[str, Any]) -> None:
 
 
 def test_a_method_with_no_wire_form_is_absent_everywhere(
-        manifest: dict[str, Any]) -> None:
+        model: ir.Model) -> None:
     """A method the wire cannot carry leaves three places at once.
 
     Not everything a binding offers is a remote call. Store.real_path
@@ -395,17 +388,17 @@ def test_a_method_with_no_wire_form_is_absent_everywhere(
     distinction: local and remote are different surfaces, and this is
     the machinery that lets them differ without either one lying."""
     from huggorm_generated import AsyncStore, rpc
+    from huggorm_generated.protocols import StoreLike
     from huggorm_generated.rpc import RPCStore
 
-    store = manifest["wrappers"]["Store"]
-    blocked = {m["name"]: m for m in store["methods"] if m["wire_blockers"]}
+    store = model.classes["Store"]
+    blocked = {m.name for m in store.methods if not model.offered(m)}
     assert "real_path" in blocked, sorted(blocked)
 
-    for name, m in blocked.items():
-        assert "rpc" not in m, f"{name} is blocked and still has an rpc"
-        # A wire blocker is a protocol blocker: the remote surface
-        # cannot offer it, so the shared one cannot declare it.
-        assert m["protocol_blockers"], name
+    for name in blocked:
+        # The remote surface cannot offer it, so the shared one cannot
+        # declare it.
+        assert not hasattr(StoreLike, name), f"{name} is on the protocol"
         assert hasattr(AsyncStore, name), f"{name} lost its wrapper too"
         assert not hasattr(RPCStore, name), f"{name} is on the rpc client"
         # ...and no call spec was emitted for it either. The specs are
@@ -448,8 +441,8 @@ def test_an_untyped_cause_rebuilds_from_builtins_only() -> None:
 
 
 def test_a_declared_order_is_an_order_that_works(
-        manifest: dict[str, Any]) -> None:
-    """A type the manifest says compares must actually compare.
+        model: ir.Model) -> None:
+    """A type the declaration says compares must actually compare.
 
     The stubs are generated from `dunders`, so a type listed there as
     ordering typechecks under `sorted()`. For two of them that was a
@@ -463,32 +456,32 @@ def test_a_declared_order_is_an_order_that_works(
     emitted, not what the source said - so the fix was to take
     `dunders` from the declaration. This is the test that says the fix
     holds, and it asks the question the stub's reader will ask: if the
-    manifest says `<` works, does `<` work?"""
+    declaration says `<` works, does `<` work?"""
     import importlib
 
+    from huggorm_gen import ir
+
     checked = []
-    for group in ("wrappers", "returned_types"):
-        for name, entry in manifest[group].items():
-            if "__lt__" not in entry["dunders"]:
-                continue
-            module = importlib.import_module(entry["module"])
-            cls = getattr(module, name)
-            # Two of the same type, however this one is built. A value
-            # that cannot be constructed here is skipped rather than
-            # faked: the claim is about types a caller can hold.
-            try:
-                a, b = cls("0" * 32 + "-a"), cls("0" * 32 + "-b")
-            except Exception:
-                continue
-            assert (a < b) is not NotImplemented
-            assert sorted([b, a]) == [a, b]
-            checked.append(name)
+    for c in model.classes.values():
+        if "__lt__" not in ir.dunders(c.decl):
+            continue
+        cls = getattr(importlib.import_module(c.qualified_module), c.name)
+        # Two of the same type, however this one is built. A value that
+        # cannot be constructed here is skipped rather than faked: the
+        # claim is about types a caller can hold.
+        try:
+            a, b = cls("0" * 32 + "-a"), cls("0" * 32 + "-b")
+        except Exception:
+            continue
+        assert (a < b) is not NotImplemented
+        assert sorted([b, a]) == [a, b]
+        checked.append(c.name)
     # A test that checked nothing would pass forever.
-    assert checked, "no ordered type in the manifest was constructible"
+    assert checked, "no ordered type in the model was constructible"
 
 
 def test_reflection_would_still_get_the_order_wrong(
-        manifest: dict[str, Any]) -> None:
+        model: ir.Model) -> None:
     """Why `dunders` cannot be reflected, held as a fact.
 
     A bound class defining any rich comparison gets `tp_richcompare`,
@@ -497,36 +490,35 @@ def test_reflection_would_still_get_the_order_wrong(
     refuses when called. It was a cdef class that made this a bug; a
     nanobind one behaves the same way, which is why the test stayed.
 
-    That is what made the reflected manifest wrong, and it is still
+    That is what made the reflected dunders wrong, and it is still
     true - the fix was to stop asking the compiled class. This test
     says so out loud: if it ever starts failing, the slot has stopped
     being filled and `dunders` could be measured again."""
     import importlib
 
+    from huggorm_gen import ir
+
     found = []
-    for group in ("wrappers", "returned_types"):
-        for name, entry in manifest[group].items():
-            if entry["wire"] != "value" or "__lt__" in entry["dunders"]:
-                continue
-            module = importlib.import_module(entry["module"])
-            cls = getattr(module, name)
-            # The slot is there. Reflection sees it and calls it an
-            # implemented comparison; the declaration knows better.
-            assert getattr(cls, "__lt__", None) is not None, name
-            found.append(name)
+    for c in model.classes.values():
+        if c.wire != "value" or "__lt__" in ir.dunders(c.decl):
+            continue
+        cls = getattr(importlib.import_module(c.qualified_module), c.name)
+        # The slot is there. Reflection sees it and calls it an
+        # implemented comparison; the declaration knows better.
+        assert getattr(cls, "__lt__", None) is not None, c.name
+        found.append(c.name)
     assert found, "no value type without a declared order was found"
 
 
-def test_the_stubs_promise_the_same_order_the_manifest_does(
-        manifest: dict[str, Any]) -> None:
+def test_the_stubs_promise_the_same_order_the_model_does(
+        model: ir.Model) -> None:
     """The stubs are what a caller's typechecker reads.
 
-    huggorm#52 was a complaint about the STUBS, and fixing the manifest
-    did not fix them: they were re-extracted by reflection on a second
-    route that never saw the declaration, so `manifest.json` stopped
-    claiming PathInfo has an ordering while `store.pyi` went on
-    claiming it. A second route to the same fact is a second answer to
-    it.
+    huggorm#52 was a complaint about the STUBS: they were re-extracted
+    by reflection on a second route that never saw the declaration, so
+    the manifest stopped claiming PathInfo has an ordering while
+    `store.pyi` went on claiming it. A second route to the same fact
+    is a second answer to it.
 
     So this compares the two artefacts rather than calling anything.
     An earlier version built an instance and tried `<`, which looked
@@ -535,6 +527,7 @@ def test_the_stubs_promise_the_same_order_the_manifest_does(
     import sys
 
     from huggorm_dsl.read import DECLARED_DUNDERS
+    from huggorm_gen import ir
 
     # Found on the path, not beside the bindings. A PEP 561 stub
     # package is its own distribution and Nix installs it in its own
@@ -544,30 +537,29 @@ def test_the_stubs_promise_the_same_order_the_manifest_does(
                   .is_dir()), None)
     assert stubs is not None, "huggorm_bindings-stubs is not on sys.path"
 
-    declared = {name: set(entry["dunders"])
-                for group in ("wrappers", "returned_types")
-                for name, entry in manifest[group].items()}
+    declared = {name: set(ir.dunders(c.decl))
+                for name, c in model.classes.items()}
     checked = 0
     for pyi in sorted(stubs.glob("*.pyi")):
         for node in ast.parse(pyi.read_text()).body:
             if not isinstance(node, ast.ClassDef) or node.name not in declared:
                 continue
-            # A taught dunder is a declared METHOD, in the manifest's
-            # methods; this compares the derived value dunders.
+            # A taught dunder is a declared METHOD; this compares the
+            # derived value dunders.
             stubbed = {n.name for n in node.body
                        if isinstance(n, ast.FunctionDef)
                        and n.name.startswith("__") and n.name != "__init__"
                        and n.name not in DECLARED_DUNDERS}
             assert stubbed == declared[node.name], (
                 f"{pyi.name}:{node.name} stubs {sorted(stubbed)}, "
-                f"the manifest says {sorted(declared[node.name])}")
+                f"the declaration says {sorted(declared[node.name])}")
             checked += 1
-    assert checked, "no stubbed class was found in the manifest"
+    assert checked, "no stubbed class was found in the model"
 
 
 def test_a_class_with_no_door_refuses_to_be_built(
-        manifest: dict[str, Any]) -> None:
-    """A class the manifest says does not construct must refuse.
+        model: ir.Model) -> None:
+    """A class the declaration says does not construct must refuse.
 
     Every layer above reads `constructs` and declines to offer a
     constructor, so the BINDING has to agree or the layers are
@@ -599,15 +591,14 @@ def test_a_class_with_no_door_refuses_to_be_built(
     import importlib
 
     checked = []
-    for group in ("wrappers", "returned_types"):
-        for name, entry in manifest[group].items():
-            if entry["constructs"]:
-                continue
-            cls = getattr(importlib.import_module(entry["module"]), name)
-            with pytest.raises(TypeError) as caught:
-                cls()
-            assert name in str(caught.value), str(caught.value)
-            checked.append(name)
+    for c in model.classes.values():
+        if c.constructs:
+            continue
+        cls = getattr(importlib.import_module(c.qualified_module), c.name)
+        with pytest.raises(TypeError) as caught:
+            cls()
+        assert c.name in str(caught.value), str(caught.value)
+        checked.append(c.name)
     assert len(checked) >= 5, checked
 
 
@@ -640,7 +631,7 @@ def test_every_declared_constructor_default_reaches_the_binding() -> None:
     assert "EvalState" in checked, checked
 
 
-def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
+def test_a_wire_value_cannot_be_subclassed(model: ir.Model) -> None:
     """A type that crosses as its PARTS must be final.
 
     Two things break otherwise, and both are silent. A subclass
@@ -661,19 +652,18 @@ def test_a_wire_value_cannot_be_subclassed(manifest: dict[str, Any]) -> None:
     import importlib
 
     checked = []
-    for group in ("wrappers", "returned_types"):
-        for name, entry in manifest[group].items():
-            if entry["wire"] != "value":
-                continue
-            cls = getattr(importlib.import_module(entry["module"]), name)
-            with pytest.raises(TypeError, match=r"prohibit|final"):
-                type(f"Sub{name}", (cls,), {})
-            checked.append(name)
-    assert checked, "the manifest declares no wire value"
+    for c in model.classes.values():
+        if c.wire != "value":
+            continue
+        cls = getattr(importlib.import_module(c.qualified_module), c.name)
+        with pytest.raises(TypeError, match=r"prohibit|final"):
+            type(f"Sub{c.name}", (cls,), {})
+        checked.append(c.name)
+    assert checked, "the model declares no wire value"
 
 
 def test_each_64_bit_width_reaches_its_own_proto_type(
-        manifest: dict[str, Any]) -> None:
+        model: ir.Model) -> None:
     """A `uint` field is a uint64 and an `int` field is a sint64.
 
     Python has one integer type and C++ has two of 64 bits, so the
@@ -686,10 +676,10 @@ def test_each_64_bit_width_reaches_its_own_proto_type(
     `ValueError: Value out of range: 18446744073709551615` -
     the default options object could not cross an RPC (huggorm#79).
 
-    Derived from the manifest, so a field that changes width is
-    checked by the same run that emits it. Both counts are asserted:
-    a manifest that stopped spelling `uint` would otherwise pass this
-    by having nothing to check."""
+    Derived from the model, so a field that changes width is checked
+    by the same run that emits it. Both counts are asserted: a model
+    that stopped spelling `uint` would otherwise pass this by having
+    nothing to check."""
     from google.protobuf.descriptor import FieldDescriptor
 
     from huggorm.grpc_pb import PKG, load_pool
@@ -698,19 +688,18 @@ def test_each_64_bit_width_reaches_its_own_proto_type(
     want = {"uint": FieldDescriptor.TYPE_UINT64,
             "int": FieldDescriptor.TYPE_SINT64}
     seen = {"uint": 0, "int": 0}
-    for group in ("wrappers", "returned_types"):
-        for name, proto in manifest[group].items():
-            if proto["wire"] != "value":
+    for c in model.classes.values():
+        if c.wire != "value":
+            continue
+        desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
+            f"{PKG}.{c.message}")
+        for fname, ftype in c.wire_fields:
+            ftype = ftype.removesuffix("?")
+            if ftype not in want:
                 continue
-            desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-                f"{PKG}.{proto['message']}")
-            for fname, ftype in proto["wire_fields"]:
-                ftype = ftype.removesuffix("?")
-                if ftype not in want:
-                    continue
-                seen[ftype] += 1
-                assert desc.fields_by_name[fname].type == want[ftype], (
-                    f"{name}.{fname} is declared {ftype} and the schema "
-                    f"disagrees")
+            seen[ftype] += 1
+            assert desc.fields_by_name[fname].type == want[ftype], (
+                f"{c.name}.{fname} is declared {ftype} and the schema "
+                f"disagrees")
     assert seen["uint"], "no field crosses unsigned; the width is unproven"
     assert seen["int"], "no field crosses signed; the width is unproven"

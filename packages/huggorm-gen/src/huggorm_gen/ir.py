@@ -511,6 +511,12 @@ class ClassModel:
         return f"{self.package}.{self.module}"
 
     @property
+    def binds(self) -> str:
+        """The C++ class name the binding defines, or "" for a produced
+        value, which binds no C++ type."""
+        return "" if self.is_value else f"C{self.name}"
+
+    @property
     def service(self) -> str:
         return service_name(self.name)
 
@@ -556,8 +562,7 @@ class ClassModel:
             "name": self.name,
             "module": self.qualified_module,
             "doc": self.doc,
-            # Empty for a produced value: it binds no C++ type.
-            "binds": "" if self.is_value else "C" + self.name,
+            "binds": self.binds,
             "bases": [],
             "threading": decl.threading,
             "abstract": decl.abstract,

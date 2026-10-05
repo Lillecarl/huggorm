@@ -1448,9 +1448,8 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
     name = c.name
     cls = ast.ClassDef(name=name, bases=[], keywords=[], body=[],
                        decorator_list=[], type_params=[])
-    binds = "" if c.is_value else f"C{name}"
     cls.body.append(ast.Expr(value=ast.Constant(value=(
-        c.doc or f"Binding for the C++ {binds}. Threading "
+        c.doc or f"Binding for the C++ {c.binds}. Threading "
                  f"'{c.decl.threading}', wire '{c.wire}'."))))
     # The declarations the codegen itself reads. They are real class
     # attributes, so a stub that omitted them would make every

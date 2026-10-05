@@ -1619,13 +1619,10 @@ def test_a_unit_arm_of_a_union_crosses_as_itself(arm: Any) -> None:
 
 def _wire_values() -> dict[str, str]:
     """Every type the build says crosses as its PARTS."""
-    from huggorm_gen.pygen.generate import build_manifest
+    from conftest import load_model
 
-    manifest = build_manifest()
-    return {name: entry["module"]
-            for group in ("wrappers", "returned_types")
-            for name, entry in manifest[group].items()
-            if entry["wire"] == "value"}
+    return {n: c.qualified_module for n, c in load_model().classes.items()
+            if c.wire == "value"}
 
 
 def _rebuild(kind: Any, *parts: Any) -> Any:
@@ -1696,7 +1693,7 @@ def test_every_wire_value_survives_its_own_round_trip(
     to pass while any part holds one value across all of them.
 
     SAMPLES is the one hand-written part, and the test refuses to pass
-    if it does not cover every wire value the manifest declares.
+    if it does not cover every wire value the model declares.
     Adding a value without adding a sample fails here rather than
     shipping unproven.
 
@@ -1986,7 +1983,7 @@ def test_every_wire_value_survives_its_own_round_trip(
     declared = _wire_values()
     missing = sorted(set(declared) - set(samples))
     assert not missing, (
-        f"the manifest declares {missing} as wire values and this test "
+        f"the model declares {missing} as wire values and this test "
         f"cannot build one. Add a sample - the round trip is not "
         f"optional for a type that crosses as its parts.")
 

@@ -10,7 +10,7 @@ It stands beside the mock's StorePath rather than replacing it.
 """
 
 import copy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -18,6 +18,9 @@ from huggorm import grpc_pb
 from huggorm.wire import WireCodec
 from huggorm_bindings import StorePath
 from huggorm_bindings.errors import BadStorePath, NixError
+
+if TYPE_CHECKING:
+    from huggorm_gen import ir
 
 HELLO = "7rjjfrn5w3z1kb2v9v0ilxmvmb2n5k1y-hello-2.12.1"
 
@@ -99,15 +102,14 @@ def test_a_real_path_crosses_the_wire() -> None:
     from the _wire_fields the binding declares, and rebuilds it on the
     far side through _from_parts. No layer above the binding knows the
     type exists."""
-    from conftest import load_manifest
+    from conftest import load_model
 
-    manifest = load_manifest()
-    proto = manifest["wrappers"]["StorePath"]
-    assert proto["binds"] == "CStorePath"
-    assert proto["wire"] == "value"
+    path = load_model().classes["StorePath"]
+    assert path.binds == "CStorePath"
+    assert path.wire == "value"
 
     codec = WireCodec()
-    msg = _message(proto["message"])()
+    msg = _message(path.message)()
     codec.value_to_msg("StorePath", StorePath(HELLO), msg)
     assert msg.base_name == HELLO
 
@@ -148,8 +150,8 @@ def test_a_value_compares_hashes_and_prints() -> None:
     assert sorted([a, other])[0] == other
 
 
-def test_every_value_type_has_value_semantics(manifest: dict[str, Any]) -> None:
-    """The rule, held against the manifest rather than a list.
+def test_every_value_type_has_value_semantics(model: ir.Model) -> None:
+    """The rule, held against the model rather than a list.
 
     A `_wire = "value"` class that did not compare would be a value in
     name only. The build refuses one now, so this asserts the RESULT
@@ -157,9 +159,7 @@ def test_every_value_type_has_value_semantics(manifest: dict[str, Any]) -> None:
     new one lands."""
     import huggorm_bindings
 
-    values = [name for group in ("wrappers", "returned_types")
-              for name, proto in manifest[group].items()
-              if proto["wire"] == "value"]
+    values = [n for n, c in model.classes.items() if c.wire == "value"]
     assert len(values) >= 4, values
     for name in values:
         cls = getattr(huggorm_bindings, name)
@@ -189,11 +189,10 @@ def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
     So there is no object whose accessors can pose the question, and
     driving encode/decode directly is the honest way to keep asking
     it. It is also closer to the bug: 048 was a codec fix."""
-    from conftest import load_manifest
+    from conftest import load_model
 
-    manifest = load_manifest()
     codec = WireCodec()
-    msg = _message(manifest["returned_types"]["PathInfo"]["message"])()
+    msg = _message(load_model().classes["PathInfo"].message)()
 
     # `int | None`, the ANNOTATION spelling. `int?` is how
     # `_wire_fields` writes it, and `value_to_msg` strips the "?" and

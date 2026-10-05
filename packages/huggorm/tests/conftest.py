@@ -27,12 +27,15 @@ import shutil
 import socket
 import sys
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import anyio.abc
 import pytest
 from anyio.streams.text import TextReceiveStream
+
+if TYPE_CHECKING:
+    from huggorm_gen import ir
 
 HOST = "127.0.0.1"
 
@@ -218,36 +221,19 @@ def grpcurl() -> str:
     return found
 
 
-def load_manifest() -> dict[str, Any]:
-    """What the build decided, derived rather than read.
+def load_model() -> ir.Model:
+    """The declaration set as the typed model the emitters read.
 
-    This opened `manifest.json`. The file is gone (065): it was a
-    serialisation of a value, and every reader of it now calls the
-    function that produces the value.
+    Holding emitted code against this is holding it against the
+    DECLARATIONS, through the same reader the emitters use."""
+    from huggorm_gen.cppgen.generate import declared_model
 
-    That is the whole point of the change and it is worth being
-    precise about. Reading the JSON meant the suite checked the
-    emitted code against a SECOND artifact of the same build - which
-    looks like a cross-check and is not, because one emitter wrote
-    both. Calling the derivation means these tests hold the emitted
-    code against the DECLARATIONS, through the same reader the
-    emitters use.
-
-    The tests that matter here compare it to something genuinely
-    independent: the protobuf descriptor set, the front door's
-    `__all__`, the type stubs, the compiled bindings.
-
-    Slower than a JSON load, and not by enough to matter: it reads
-    nine declarations, which `Corpus` caches for the process."""
-    from huggorm_gen.pygen.generate import build_manifest
-
-    manifest: dict[str, Any] = build_manifest()
-    return manifest
+    return declared_model()
 
 
 @pytest.fixture
-def manifest() -> Iterator[dict[str, Any]]:
-    yield load_manifest()
+def model() -> ir.Model:
+    return load_model()
 
 
 async def run_tool(binpath: str, port: int, symbol: str | None = None,

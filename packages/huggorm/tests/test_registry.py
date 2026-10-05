@@ -119,15 +119,14 @@ def test_entries_come_from_every_layer_in_order(tmp_path: pathlib.Path) -> None:
 def test_an_attribute_keeps_its_arm_across_the_wire() -> None:
     """A bool is an int to isinstance, so a codec that tested arms in
     order would send True as the count 1."""
-    from conftest import load_manifest
+    from conftest import load_model
 
-    manifest = load_manifest()
     codec = WireCodec()
-    proto = {**manifest["wrappers"], **manifest["returned_types"]}["RegistryEntry"]
+    entry_cls = load_model().classes["RegistryEntry"]
     attrs = {"text": "x", "count": 7, "yes": True, "no": False, "zero": 0}
     entry = cast("Any", RegistryEntry)._from_parts(
         RegistryType.GLOBAL, "flake:a", "github:o/a", attrs, True)
-    msg = _message(proto["message"])()
+    msg = _message(entry_cls.message)()
     codec.value_to_msg("RegistryEntry", entry, msg)
     back = codec.value_from_msg("RegistryEntry", msg).extra_attrs()
     assert {k: (type(v), v) for k, v in back.items()} \
