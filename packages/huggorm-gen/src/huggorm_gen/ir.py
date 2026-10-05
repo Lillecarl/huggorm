@@ -700,7 +700,8 @@ class ClassModel:
 @dataclass(frozen=True)
 class UnionModel:
     """One sum type. Each arm is named as the wire names it, a scalar
-    by its wire spelling, and carries the C++ the variant holds it as."""
+    by its wire spelling, and carries the C++ the arms' variant holds
+    it as - the bare type, never a holder - with the caster it needs."""
 
     name: str
     decl: Decl
@@ -711,9 +712,10 @@ class UnionModel:
         arms = []
         for a in u.decl.arms:
             held = u.decl.scalars.get(a) or Type(python=a, bound=True)
-            spelled, caster = cxx.value(held, resolver.known)
+            _, caster = cxx.value(held, resolver.known)
             arms.append(replace(TypeRef.named(a, resolver.kind(a)),
-                                cxx=spelled, caster=caster))
+                                cxx=cxx.arm(u, a, resolver.known),
+                                caster=caster))
         return cls(u.name, u.decl, tuple(arms))
 
 
