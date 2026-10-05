@@ -49,7 +49,6 @@ def nanobind_modules() -> tuple[str, ...]:
 
 
 @functools.cache
-@functools.cache
 def declared_model() -> ir.Model:
     """The declaration set as the typed model, built once.
 
