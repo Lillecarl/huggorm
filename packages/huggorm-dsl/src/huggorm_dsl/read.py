@@ -2222,26 +2222,25 @@ def _errors(body: list[ast.stmt], stem: str,
     return tuple(out)
 
 
-def _assigned(node: ast.ClassDef, name: str) -> str:
-    """A bare `name = "..."` in this class body, or empty."""
-    for item in node.body:
-        if (isinstance(item, ast.Assign)
-                and len(item.targets) == 1
-                and isinstance(item.targets[0], ast.Name)
-                and item.targets[0].id == name
-                and isinstance(item.value, ast.Constant)):
-            return str(item.value.value)
-    return ""
+def _assigned(node: ast.ClassDef, kls: type, name: str) -> str:
+    """The class's OWN `name = "..."`, or empty.
+
+    `vars`, not `getattr`: a subclass inherits its base's catch, and
+    an inherited `cxx` would emit a second catch of the base type."""
+    value = vars(kls).get(name, "")
+    if not isinstance(value, str):
+        raise DeclarationError(
+            node, f"{node.name}: `{name}` is {type(value).__name__}; it "
+                  f"names C++, so write a string.")
+    return value
 
 
 def _raised(node: ast.ClassDef, kls: type, home: dict[str, Any]) -> Raised:
     """One exception's C++ facts, refused unless it can be caught right.
 
-    Two readings, each for what it is good for. The TREE gives `cxx`
-    and `header`, which belong to the class that writes them. The
-    IMPORT gives the bases, `_wire_fields` and `reader`, which a
-    subclass inherits through the MRO: a tree walk follows the first
-    base, and an MRO does not.
+    All of it from the IMPORT. `cxx` and `header` belong to the class
+    that writes them, so they come from its own `vars`. The bases,
+    `_wire_fields` and `reader` are inherited through the MRO.
 
     `cxx` and `header` come as a pair. A `cxx` with no `header` is a
     catch whose type the emitted file reaches only through somebody
@@ -2252,7 +2251,7 @@ def _raised(node: ast.ClassDef, kls: type, home: dict[str, Any]) -> Raised:
     A caught class with parts past the message needs a `reader`: its
     catch would call the constructor with parts missing, and
     `raise_as` turns that refusal into a RuntimeError, in silence."""
-    cxx, header = _assigned(node, CXX), _assigned(node, HEADER)
+    cxx, header = _assigned(node, kls, CXX), _assigned(node, kls, HEADER)
     if cxx and not header:
         raise DeclarationError(
             node, f"{node.name}: `cxx = \"{cxx}\"` says the emitted "
