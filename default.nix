@@ -201,6 +201,20 @@ rec {
                 // lib.optionalAttrs (sanitizer.runtime != null) { LD_PRELOAD = sanitizer.runtime; };
               dontStrip = true;
             });
+        # The same build under clang, with every warning an error. gcc's
+        # -Wall misses what clang warns about (-Wbraced-scalar-init, 30
+        # of them once), and clang is what a darwin lane and clangd
+        # compile the emitted C++ with.
+        huggorm-bindings-clang = self.huggorm-bindings.overrideAttrs (old: {
+          name = "${old.name}-clang";
+          nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clang ];
+          preBuild = (old.preBuild or "") + ''
+            export CC=clang CXX=clang++ LDSHARED="clang++ -shared"
+          '';
+          env = (old.env or { }) // {
+            NIX_CFLAGS_COMPILE = "-Werror";
+          };
+        });
         huggorm-generated = self.callPackage ./packages/huggorm-generated { };
         # HUGGORM_SKIP_SUITE=1 drops the in-build suite. `test` and
         # `check` need this package for the front door only, so a red
@@ -266,6 +280,7 @@ rec {
     nix
     boehmgc
     huggorm-bindings
+    huggorm-bindings-clang
     huggorm
     huggorm-generated
     manylinux
@@ -365,6 +380,8 @@ rec {
       echo "--- typecheck: the emitted package ---"
       zuban mypy --python-executable "${ourPython}/bin/python3" \
         "${huggorm-generated}/lib/python3.14/site-packages/huggorm_generated"
+      # Built before this script runs, so a clang warning fails `check`.
+      echo "--- clang -Werror: ${huggorm-bindings-clang} ---"
       echo "all checks passed"
     '';
   };
