@@ -13,7 +13,7 @@ from huggorm_gen.payload.wiretypes import (
     SCALAR_NAMES,
     python_spelling,
 )
-from huggorm_gen.pygen.spell import Spelling
+from huggorm_gen.pygen.spell import Spelling, import_from
 
 # A declared tree spec, as the declaration states it.
 Proto = dict[str, Any]
@@ -412,18 +412,11 @@ def returned_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     typing_names = {"Self"}
     if any(m.returns is not None for m in c.methods):
         typing_names.add("cast")
-    mod.body.append(ast.ImportFrom(
-        module="typing",
-        names=[ast.alias(name=n) for n in sorted(typing_names)], level=0))
-    mod.body.append(ast.ImportFrom(
-        module="_runtime",
-        names=[ast.alias(name="BaseRunner"), ast.alias(name="attach_runner")],
-        level=1))
+    mod.body.append(import_from("typing", *typing_names))
+    mod.body.append(import_from("_runtime", "BaseRunner", "attach_runner", level=1))
     # A value that produces values names its OWN async class, which is
     # defined right here: importing it would be a self-import.
-    mod.body.extend(spell.sibling_imports(own=c.async_name))
-    mod.body.extend(spell.module_imports())
-    mod.body.extend(spell.binding_imports())
+    mod.body.extend(spell.imports(own=c.async_name))
 
     cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], body=[],
                        decorator_list=[])
@@ -492,27 +485,16 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     if any(m.returns is not None and _adopted(model, m) is None
            for m in c.methods):
         typing_names.add("cast")
-    mod.body.append(ast.ImportFrom(
-        module="typing",
-        names=[ast.alias(name=n) for n in sorted(typing_names)], level=0))
-    mod.body.extend(spell.sibling_imports(own=c.async_name))
-    mod.body.extend(spell.module_imports())
-
-    runtime_names = ["BaseRunner", "attach_runner"]
+    runtime_names = {"BaseRunner", "attach_runner"}
     if c.constructs:
-        mod.body.append(ast.ImportFrom(
-            module="huggorm_bindings", names=[ast.alias(name=svc)], level=0))
-        runtime_names.append(runner)
-    mod.body.extend(spell.binding_imports(
-        exclude={svc} if c.constructs else ()))
-    mod.body.append(ast.ImportFrom(
-        module="_runtime",
-        names=[ast.alias(name=n) for n in sorted(runtime_names)], level=1))
+        runtime_names.add(runner)
     if c.ctor and c.constructs:
         # Only the factory calls it, so a constructor taking nothing
         # would leave the import unused - which the smoke gate rejects.
-        mod.body.append(ast.ImportFrom(
-            module="_runtime", names=[ast.alias(name="unwrap_arg")], level=1))
+        runtime_names.add("unwrap_arg")
+    mod.body.append(import_from("typing", *typing_names))
+    mod.body.append(import_from("_runtime", *runtime_names, level=1))
+    mod.body.extend(spell.imports(own=c.async_name))
 
     cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], body=[],
                        decorator_list=[])
@@ -762,10 +744,7 @@ def protocol_module(model: ir.Model) -> ast.Module:
         "StoreLike accepts an in-process "
         "AsyncStore and a remote RPCStore alike."))))
     mod.body.append(_future_annotations())
-    mod.body.append(ast.ImportFrom(
-        module="typing",
-        names=[ast.alias(name="Protocol"), ast.alias(name="runtime_checkable")],
-        level=0))
+    mod.body.append(import_from("typing", "Protocol", "runtime_checkable"))
     mod.body.extend(spell.imports())
 
     for model_cls in model.ordered_served:
@@ -953,21 +932,15 @@ def rpc_module(model: ir.Model) -> ast.Module:
         "spec the manifest gave it, so a call needs no lookup and names "
         "nothing the build did not put there."))))
     mod.body.append(_future_annotations())
-    mod.body.append(ast.ImportFrom(
-        module="typing",
-        names=[ast.alias(name="Any"), ast.alias(name="Protocol"),
-               ast.alias(name="cast")], level=0))
+    mod.body.append(import_from("typing", "Any", "Protocol", "cast"))
     # The call specs, from where the build wrote them. Emitted in
     # `_policy` rather than here, because the SERVER reads the same
     # ones - and two derivations of one call's shape is exactly the
     # disagreement this repo generates code to prevent.
-    specs = sorted(_spec_name(name, m) for name, m in signatures)
-    mod.body.append(ast.ImportFrom(
-        module="._callspec", names=[ast.alias(name="Call")], level=0))
+    specs = [_spec_name(name, m) for name, m in signatures]
+    mod.body.append(import_from("_callspec", "Call", level=1))
     if specs:
-        mod.body.append(ast.ImportFrom(
-            module="._policy",
-            names=[ast.alias(name=s) for s in specs], level=0))
+        mod.body.append(import_from("_policy", *specs, level=1))
     mod.body.extend(spell.imports())
 
     # What these classes need from whatever is driving them. Declaring
@@ -1170,21 +1143,14 @@ def free_function_module(model: ir.Model) -> ast.Module:
               "functions - do not edit. Built via ast at Nix build time.")))
     mod.body.append(_future_annotations())
     if any(f.returns is not None and f.returns.kind != "proxy" for f in fns):
-        mod.body.append(ast.ImportFrom(
-            module="typing", names=[ast.alias(name="cast")], level=0))
-    mod.body.extend(spell.sibling_imports())
-    mod.body.extend(spell.module_imports())
-    mod.body.extend(spell.binding_imports())
+        mod.body.append(import_from("typing", "cast"))
+    mod.body.extend(spell.imports())
     mod.body.append(ast.ImportFrom(
         module="huggorm_bindings",
-        names=[ast.alias(name=f.name, asname="_" + f.name)
-               for f in sorted(fns, key=lambda x: x.name)],
+        names=[ast.alias(name=f.name, asname="_" + f.name) for f in fns],
         level=0))
-    mod.body.append(ast.ImportFrom(
-        module="_runtime",
-        names=[ast.alias(name="call_function")]
-        + ([ast.alias(name="PoolRunner")] if pool_parent else []),
-        level=1))
+    runtime_names = ["call_function"] + (["PoolRunner"] if pool_parent else [])
+    mod.body.append(import_from("_runtime", *runtime_names, level=1))
 
     for fn in fns:
         params, ret = signatures[fn.name]

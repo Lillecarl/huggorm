@@ -25,6 +25,12 @@ BUILTIN = frozenset({"None", "str", "int", "float", "bool", "bytes",
 Rename = Callable[[TypeRef], tuple[str, str]]
 
 
+def import_from(module: str, *names: str, level: int = 0) -> ast.ImportFrom:
+    """`from module import names`. ruff merges and orders them later."""
+    return ast.ImportFrom(module=module, names=[ast.alias(name=n) for n in names],
+                          level=level)
+
+
 def _async_module(name: str) -> str:
     """The module an async class lives in: `AsyncStore` is in
     `async_store`."""
@@ -120,36 +126,18 @@ class Spelling:
         self.modules |= other.modules
         self.siblings |= other.siblings
 
-    def sibling_imports(self, own: str = "") -> list[ast.stmt]:
-        """`from .async_x import AsyncX`, one per sibling, never this
-        module's own class."""
-        return [ast.ImportFrom(module=_async_module(n),
-                               names=[ast.alias(name=n)], level=1)
-                for n in sorted(self.siblings - {own})]
-
     def module_imports(self) -> list[ast.stmt]:
-        return [ast.Import(names=[ast.alias(name=m)])
-                for m in sorted(self.modules)]
+        return [ast.Import(names=[ast.alias(name=m)]) for m in self.modules]
 
-    def binding_imports(self, exclude: Iterable[str] = ()) -> list[ast.stmt]:
-        """The bindings, then the unions, then the protocols, each
-        sorted."""
-        out: list[ast.stmt] = []
-        bound = sorted(self.bindings - set(exclude))
-        if bound:
-            out.append(ast.ImportFrom(
-                module="huggorm_bindings",
-                names=[ast.alias(name=n) for n in bound], level=0))
-        for module, names in (("_unions", self.unions),
-                              ("protocols", self.protocols)):
+    def imports(self, own: str = "") -> list[ast.stmt]:
+        """Every import what this renderer wrote needs. `own` is the
+        class the module defines, which it must not import."""
+        out = self.module_imports()
+        out += [import_from(_async_module(n), n, level=1)
+                for n in self.siblings - {own}]
+        for module, names, level in (("huggorm_bindings", self.bindings, 0),
+                                     ("_unions", self.unions, 1),
+                                     ("protocols", self.protocols, 1)):
             if names:
-                out.append(ast.ImportFrom(
-                    module=module,
-                    names=[ast.alias(name=n) for n in sorted(names)],
-                    level=1))
+                out.append(import_from(module, *names, level=level))
         return out
-
-    def imports(self) -> list[ast.stmt]:
-        """`import pathlib`, then the binding groups: the order the
-        all-in-one modules write them in."""
-        return self.module_imports() + self.binding_imports()

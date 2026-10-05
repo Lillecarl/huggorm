@@ -182,6 +182,7 @@ No hand-written source, like the other leaf. The emitter it runs is
     pygen/surface.py      names for the PYTHON surface
     pygen/grpc_schema.py  the FileDescriptorSet
     pygen/emitter.py      the model -> Python, via ast.unparse
+    pygen/fmt.py          ruff sorts and lays out what the emitters wrote
     pygen/generate.py     the driver
     pygen/smoke_test.py   the gates that hold the surfaces to each other
     payload/wiretypes.py  how a `_wire_fields` STRING is spelled
