@@ -20,7 +20,15 @@ from functools import cached_property
 from typing import Literal
 
 from huggorm_dsl.declare import Decl
-from huggorm_dsl.read import Class, Method, Module, Param, Type, is_surface
+from huggorm_dsl.read import (
+    MESSAGE_PARTS,
+    Class,
+    Method,
+    Module,
+    Param,
+    Type,
+    is_surface,
+)
 from huggorm_gen import cxx
 from huggorm_gen.payload import callspec
 from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED
@@ -1083,6 +1091,33 @@ class ErrorModel:
     # exception with, as C++, in part order.
     readers: tuple[str, ...] = ()
 
+    @classmethod
+    def of(cls, error: Class, resolver: Resolver) -> ErrorModel:
+        raised = error.raised
+        if raised is None:
+            raise TypeError(f"{error.name}: not an exception declaration")
+        parts = tuple(FieldModel(part, type_ref(t, resolver))
+                      for part, t in raised.parts)
+        readers: tuple[str, ...] = ()
+        if raised.cxx:
+            readers = tuple(_reader(error.name, raised.reader, f)
+                            for f in parts[MESSAGE_PARTS:])
+        return cls(error.name, raised.bases, parts, raised.cxx,
+                   raised.header, readers)
+
+
+def _reader(error: str, reader: str, part: FieldModel) -> str:
+    """The reader template given the part's record type, so a part
+    that is not a record is refused rather than cross as something it
+    is not."""
+    record = part.type.required
+    if record.kind != "value":
+        raise TypeError(
+            f"{error}: part '{part.name}' is a {record.kind}, and "
+            f"`{reader}` reads a record - a declared value - off the "
+            f"caught exception.")
+    return f"{reader}<{cxx.NAMESPACE}::{record.name}>"
+
 
 @dataclass(frozen=True)
 class Errors:
@@ -1095,12 +1130,33 @@ class Errors:
     classes: Mapping[str, ErrorModel]
     caught: tuple[str, ...] = ()
 
+    @classmethod
+    def of(cls, module: str, declared: Sequence[Class],
+           resolver: Resolver) -> Errors:
+        """`declared` in file order, which breaks a tie in depth."""
+        classes = {e.name: ErrorModel.of(e, resolver)
+                   for e in sorted(declared, key=lambda e: e.name)}
+        caught = sorted((e.name for e in declared if classes[e.name].cxx),
+                        key=lambda name: -_depth(name, classes))
+        return cls(module, classes, tuple(caught))
+
     @property
     def headers(self) -> list[str]:
         """Every header the catch chain needs, once each, sorted: an
         include block is a set, and the chain's order is a fact about
         the catches."""
         return sorted({c.header for c in self.classes.values() if c.header})
+
+def _depth(name: str, classes: Mapping[str, ErrorModel]) -> int:
+    """How far this class is from the root of the declared hierarchy.
+
+    A subclass is deeper than its base, so depth descending puts every
+    class before anything it derives from."""
+    depth = 0
+    while classes[name].bases:
+        name, depth = classes[name].bases[0], depth + 1
+    return depth
+
 
 # Why a free function with no threading policy has no rpc.
 NO_POLICY = ("no threading policy, so the function has no async form for "

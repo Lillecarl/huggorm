@@ -16,7 +16,6 @@ import ast
 import dataclasses
 import pathlib
 import re
-from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -69,6 +68,11 @@ class Here(NixError):
 '''
 
 
+def _errors(mod: Any, ir: Any) -> Any:
+    """The errors model of one declaration read on its own."""
+    return ir.Errors.of("pkg.errors", mod.errors, ir.Resolver.of(mod))
+
+
 def _declaration(tmp_path: pathlib.Path, source: str) -> str:
     """One declaration on disk, as a path its reader can open.
 
@@ -94,14 +98,14 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
     So `Gone` must be absent from all three and `Here` present in all
     three. Asserting only one direction would pass on an emitter that
     kept everything."""
-    from huggorm_dsl.read import load, resolved
+    from huggorm_dsl.read import read, resolved
     from huggorm_gen import ir
     from huggorm_gen.cppgen import pyerrors
 
     path = _declaration(tmp_path, BRANCHED)
     tree = resolved(path)
 
-    errors = pyerrors.errors(tree, load(path), ir.Resolver({}), "pkg.errors")
+    errors = _errors(read(path), ir)
     assert sorted(errors.classes) == ["Here", "NixError"]
     # ...and it inherits, which is the half only the IMPORT knows.
     assert errors.classes["Here"].bases == ("NixError",)
@@ -118,14 +122,13 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
 
 
 READERLESS = '''
-from huggorm_decl.decl.path import ErrorInfo
+from huggorm_dsl.declare import I64
 
 
 class NixError(Exception):
     cxx = "nix::Error"
     header = "nix/util/error.hh"
-    _wire_fields = (("message", str), ("colored", str),
-                    ("info", ErrorInfo | None))
+    _wire_fields = (("message", str), ("colored", str), ("code", I64))
 
 
 class Read(NixError):
@@ -140,17 +143,16 @@ def test_a_part_beyond_the_message_needs_a_reader(
     """A catch with a part and no reader calls the constructor short,
     and `raise_as` turns that refusal into a RuntimeError in silence.
 
-    So the model refuses it, and the shipped declaration, whose
+    So the reader refuses it, and the shipped declaration, whose
     classes name a reader, gets one argument per extra part, typed by
     the part's record."""
-    from huggorm_dsl.read import DeclarationError, load, resolved
-    from huggorm_gen import ir
+    from huggorm_dsl.read import DeclarationError, read
     from huggorm_gen.cppgen import pyerrors
     from huggorm_gen.cppgen.generate import declared_model
 
     path = _declaration(tmp_path, READERLESS)
     with pytest.raises(DeclarationError, match="NixError: `_wire_fields`"):
-        pyerrors.errors(resolved(path), load(path), ir.Resolver({}))
+        read(path)
 
     chain = "\n".join(pyerrors.chain(declared_model().errors, "raise_as"))
     assert ('"ThrownError", e, '
@@ -195,25 +197,14 @@ def test_the_errors_emitter_refuses_a_tree_nothing_resolved(
     nothing else can: for a declaration that does not branch the two
     trees are identical, and no declaration in this repo branches.
     So the emitter refuses the shape a raw parse has and a resolved
-    one cannot - a surviving `ast.If`.
-
-    All three readings, because all three used to walk the body on
-    their own and that is how they came to disagree."""
-    from huggorm_dsl.read import DeclarationError, load
-    from huggorm_gen import ir
+    one cannot - a surviving `ast.If`."""
+    from huggorm_dsl.read import DeclarationError
     from huggorm_gen.cppgen import pyerrors
 
     path = _declaration(tmp_path, BRANCHED)
     raw = ast.parse(pathlib.Path(path).read_text())
-    mod = load(path)
-
-    readings: list[Callable[[], object]] = [
-        lambda: pyerrors.errors(raw, mod, ir.Resolver({})),
-        lambda: pyerrors.module(raw, "emitted"),
-    ]
-    for reading in readings:
-        with pytest.raises(DeclarationError, match="version branch"):
-            reading()
+    with pytest.raises(DeclarationError, match="version branch"):
+        pyerrors.module(raw, "emitted")
 
 
 def test_a_declaration_that_does_not_branch_reads_the_same_either_way(
@@ -1644,7 +1635,8 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
         "the headers come from the derivation, not from a fixed list"
 
 
-def test_a_caught_error_must_say_which_header_declares_it() -> None:
+def test_a_caught_error_must_say_which_header_declares_it(
+        tmp_path: pathlib.Path) -> None:
     """Both directions refused, because either line alone reaches
     nothing.
 
@@ -1654,25 +1646,48 @@ def test_a_caught_error_must_say_which_header_declares_it() -> None:
     nobody reads looking exactly like one nobody wrote.
 
     Drop either refusal and the matching half of this passes."""
-    import ast
-    import types
+    from huggorm_dsl.read import DeclarationError, read
 
-    from huggorm_dsl.read import DeclarationError
-    from huggorm_gen import ir
-    from huggorm_gen.cppgen import pyerrors
-
-    def errors(source: str) -> ir.Errors:
-        mod = types.ModuleType("errs")
-        exec(source, vars(mod))
-        return pyerrors.errors(ast.parse(source), mod, ir.Resolver({}))
+    def errors(name: str, source: str) -> None:
+        (tmp_path / name).mkdir()
+        read(_declaration(tmp_path / name, source))
 
     with pytest.raises(DeclarationError, match="which header declares it"):
-        errors('class NixError(Exception):\n'
-               '    cxx = "nix::Error"\n')
+        errors("no_header", 'class NixError(Exception):\n'
+                            '    cxx = "nix::Error"\n')
 
     with pytest.raises(DeclarationError, match="`header` with no `cxx`"):
-        errors('class NixError(Exception):\n'
-               '    header = "nix/util/error.hh"\n')
+        errors("no_cxx", 'class NixError(Exception):\n'
+                         '    header = "nix/util/error.hh"\n')
+
+
+def test_an_undecorated_class_is_an_exception(
+        tmp_path: pathlib.Path) -> None:
+    """A class with no decorator that derives from no exception is
+    refused. The module transform would copy it through, and no model
+    entry and no catch clause would know it - a silent skip."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    path = _declaration(tmp_path, 'class NixError(Exception):\n'
+                                  '    pass\n\n\n'
+                                  'class Helper:\n'
+                                  '    pass\n')
+    with pytest.raises(DeclarationError, match="Helper: a class with no "
+                                               "decorator declares an "
+                                               "exception"):
+        read(path)
+
+
+def test_a_reader_reads_a_record(tmp_path: pathlib.Path) -> None:
+    """A part past the message crosses through the reader template,
+    which takes a record. A scalar there would only fail to compile."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    path = _declaration(tmp_path, READERLESS.replace(
+        '    _wire', '    reader = "huggorm::error_info"\n    _wire', 1))
+    with pytest.raises(TypeError, match="part 'code' is a scalar"):
+        _errors(read(path), ir)
 
 
 def test_the_header_line_does_not_reach_the_emitted_module() -> None:
@@ -1720,22 +1735,15 @@ def test_emitting_the_module_leaves_the_declaration_alone() -> None:
     Found 2026-09-05, by `headers` reading [] where the same call had
     read three headers a moment earlier."""
     from huggorm_decl import corpus
-    from huggorm_gen import ir
     from huggorm_gen.cppgen import pyerrors
 
     have = corpus()
     tree = have.resolved(have.errors)
 
-    mod = have.imported(have.errors)
-    resolver = ir.Resolver({n: c for m in have.modules
-                            for n, c in m.known.items()})
-    before = pyerrors.errors(tree, mod, resolver, "pkg.errors")
+    before = ast.dump(tree)
     pyerrors.module(tree, "doc", "pkg")
-    after = pyerrors.errors(tree, mod, resolver, "pkg.errors")
-
-    assert before == after, "the transform kept its hands off the tree"
-    assert "nix::InvalidPath" in "\n".join(pyerrors.chain(after, "raise_as"))
-    assert after.headers, "and the headers survive it too"
+    assert ast.dump(tree) == before, "the transform kept its hands off the tree"
+    assert "nix::InvalidPath" in before
 
 
 def test_a_body_brings_its_own_standard_header() -> None:

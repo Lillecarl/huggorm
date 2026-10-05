@@ -28,8 +28,8 @@ from typing import Any
 
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
-from huggorm_dsl.read import FROM_PARTS, Module, reading
-from huggorm_gen import cxx, ir
+from huggorm_dsl.read import FROM_PARTS, Module
+from huggorm_gen import ir
 from huggorm_gen.cppgen import nbemit, pyenum, pyerrors, pyinit
 from huggorm_gen.cppgen.nbemit import extension
 
@@ -88,17 +88,8 @@ def _errors() -> ir.Errors:
     have = corpus()
     if not have.errors:
         return ir.Errors("", {})
-    # Named, so a refusal from `entries` carries the file it is about
-    # rather than `<declaration>`. The reader does this for itself;
-    # an emitter reading a tree the corpus already parsed has to say
-    # so (huggorm#61).
-    with reading(str(have.path(have.errors))):
-        # An error's parts name classes from any module.
-        everything = ir.Resolver({n: c for mod in have.modules
-                                  for n, c in mod.known.items()})
-        return pyerrors.errors(have.resolved(have.errors),
-                               have.imported(have.errors), everything,
-                               errors_module(), cxx.NAMESPACE)
+    mod = have.module(have.errors)
+    return ir.Errors.of(errors_module(), mod.errors, ir.Resolver.of(mod))
 
 
 # The exception hierarchy, declared once. It emits two things that
@@ -403,12 +394,11 @@ def census_read(have: Any) -> None:
 
 
 def _errors_read(have: Any) -> list[str]:
-    """The same question for the errors declaration, which is not a Module.
+    """The same question for the errors declaration.
 
-    Nothing reads `errors.py` as a `Module`: it emits a Python module
-    and a C++ catch chain, both written from the tree. So the consumed
-    side here is the RESOLVED tree - what `_resolve` kept - and the
-    declared side is the raw parse, as above.
+    Its emitted module is copied from the tree, methods and all. So
+    the consumed side here is the RESOLVED tree - what `_resolve`
+    kept - and the declared side is the raw parse, as above.
 
     Raw against RESOLVED, not against the emitted module. That is the
     seam: `resolved` is parse, then `_live`, then `_reconcile`, then
@@ -427,7 +417,7 @@ def _errors_read(have: Any) -> list[str]:
     is precautionary. Measured: `_resolve` appends a `ClassDef` whole
     and does not filter its body, so a method of a kept class cannot
     be dropped on this path at all - the per-method filtering happens
-    in `_class`, which errors.py never reaches. Perturbing `_live` to
+    in `_class`, which an exception never reaches. Perturbing `_live` to
     forget one class does fire this:
 
         errors.py: SysError is declared and the resolved tree has no

@@ -105,6 +105,16 @@ DECLARATIONS = "huggorm_decl.decl"
 # that name.
 FROM_PARTS = "_from_parts"
 
+# The lines an exception declaration writes in its class body. `cxx`
+# and `header` are the class's own; `reader` and `_wire_fields` are
+# read off the import, so a subclass inherits them.
+CXX = "cxx"
+HEADER = "header"
+READER = "reader"
+WIRE_FIELDS = "_wire_fields"
+# The parts `as_error` fills from `what()` itself.
+MESSAGE_PARTS = 2
+
 # The dunders a declaration may write as an ordinary method. Every
 # emitter carries a method by name, so a dunder needs only a wire
 # spelling a protobuf identifier allows (`ir.wire_method`).
@@ -508,6 +518,23 @@ class Member:
 
 
 @dataclass(frozen=True)
+class Raised:
+    """What an exception declaration says beyond its name."""
+
+    # Bases declared in the same file, in order. Not `Exception`.
+    bases: tuple[str, ...]
+    # What crosses the wire, in constructor order.
+    parts: tuple[tuple[str, Type], ...] = ()
+    # The C++ class the translator catches, and the header that
+    # declares it. Both empty for an exception only this binding raises.
+    cxx: str = ""
+    header: str = ""
+    # The C++ template that reads each part past the message off the
+    # caught exception, given the part's record type.
+    reader: str = ""
+
+
+@dataclass(frozen=True)
 class Class:
     """One declared class: what it says, and what its decorators said."""
 
@@ -529,6 +556,8 @@ class Class:
     # already takes exactly those parts: naming the constructor is
     # then the whole helper, and the emitter writes it.
     from_parts: Method | None = None
+    # The C++ facts of an exception. None for every other kind.
+    raised: Raised | None = None
 
     @property
     def is_words(self) -> bool:
@@ -687,15 +716,10 @@ class Module:
     # file and several bindings take one, so the alternative was
     # every emitter guessing which other files to read.
     uses: dict[str, Class] = field(default_factory=dict)
-    # The EXCEPTION classes this declaration declares. Apart from
-    # `classes` because nothing binds one either: an exception class
-    # is plain Python that the errors emitter copies through, and it
-    # carries no C++ object, no header and no methods a binding calls.
-    #
-    # Read at all because a VALUE may now hold one. A BuildResult's
-    # failure arm is a `nix::BuildError`, so the accessor answers a
-    # live Python exception - and an emitter that could not see the
-    # name had nothing to resolve the annotation against.
+    # The EXCEPTION classes this declaration declares, in declared
+    # order. Apart from `classes` because nothing binds one: the
+    # translator CATCHES its C++ class, and its Python body is copied
+    # through as written.
     errors: tuple[Class, ...] = ()
 
     @property
@@ -1856,7 +1880,8 @@ def _read(path: str) -> Module:
                 _method(n, vocab, fns, bound=False, bound_kind=False))
         except DeclarationError as e:
             _survive(e)
-    unions = _unions(body, stem, vars(load(path)))
+    glb = vars(load(path))
+    unions = _unions(body, stem, glb)
     uses = _uses(tree, pathlib.Path(path).parent)
     # ...checked once the arms can be resolved, which needs the
     # imports this file made and the classes it declares itself.
@@ -1881,7 +1906,7 @@ def _read(path: str) -> Module:
         name=stem,
         doc=ast.get_docstring(tree, clean=False) or "",
         classes=tuple(classes),
-        errors=_errors(body, stem),
+        errors=_errors(body, stem, glb),
         functions=tuple(functions),
         vocabulary=vocab,
         unions=unions,
@@ -2045,36 +2070,33 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
                       f"make every union a bulk-lease problem (huggorm#31).")
 
 
-def _errors(body: list[ast.stmt], stem: str) -> tuple[Class, ...]:
+def _errors(body: list[ast.stmt], stem: str,
+            glb: dict[str, Any]) -> tuple[Class, ...]:
     """The EXCEPTION classes this file declares, in declared order.
 
     An error declaration wears no decorator - `cxx = "nix::Error"` is
-    a bare assignment, because there is no behaviour to mark - so the
-    class loop above skips every one of them. That was fine while
-    nothing but the errors emitter read the file, and it stopped
-    being fine when a VALUE gained a field of one.
-
-    Derived from the BASE, which is the only thing that says what an
-    exception is: a class deriving from `Exception`, or from one this
-    file already recognised. Nothing is listed and no decorator is
-    invented; the hierarchy the file already writes IS the answer.
-
-    A NAME and nothing else, HERE. An error declaration does carry a
-    `cxx` and, since 2026-09-05, a `header` beside it - but both are
-    read by `pyerrors`, which walks the tree itself, so nothing in
-    this function needs them. What this builds is what an emitter
-    needs to resolve an ANNOTATION naming an exception, and that is
-    the name.
+    a bare assignment, because there is no behaviour to mark. So an
+    undecorated class IS an exception, and one that derives from none
+    is refused: the module transform would copy it through, and no
+    model entry and no catch clause would know it.
     """
     out: list[Class] = []
-    known = {"Exception"}
     for node in body:
         if not isinstance(node, ast.ClassDef) or node.decorator_list:
             continue
-        bases = {b.id for b in node.bases if isinstance(b, ast.Name)}
-        if not bases & known:
+        # The IMPORT says what the class derives from: `Interrupted`
+        # is a BaseException, as upstream's is, and a match on base
+        # names skipped it.
+        kls = glb[node.name]
+        try:
+            if not (isinstance(kls, type) and issubclass(kls, BaseException)):
+                raise DeclarationError(
+                    node, f"{node.name}: a class with no decorator declares "
+                          f"an exception, so it derives from BaseException.")
+            raised = _raised(node, kls, glb)
+        except DeclarationError as e:
+            _survive(e, unsound=node.name)
             continue
-        known.add(node.name)
         decl = Decl()
         decl.name = node.name
         decl.kind = "error"
@@ -2084,8 +2106,70 @@ def _errors(body: list[ast.stmt], stem: str) -> tuple[Class, ...]:
             decl=decl,
             ctor=None,
             module=stem,
+            raised=raised,
         ))
     return tuple(out)
+
+
+def _assigned(node: ast.ClassDef, name: str) -> str:
+    """A bare `name = "..."` in this class body, or empty."""
+    for item in node.body:
+        if (isinstance(item, ast.Assign)
+                and len(item.targets) == 1
+                and isinstance(item.targets[0], ast.Name)
+                and item.targets[0].id == name
+                and isinstance(item.value, ast.Constant)):
+            return str(item.value.value)
+    return ""
+
+
+def _raised(node: ast.ClassDef, kls: type, home: dict[str, Any]) -> Raised:
+    """One exception's C++ facts, refused unless it can be caught right.
+
+    Two readings, each for what it is good for. The TREE gives `cxx`
+    and `header`, which belong to the class that writes them. The
+    IMPORT gives the bases, `_wire_fields` and `reader`, which a
+    subclass inherits through the MRO: a tree walk follows the first
+    base, and an MRO does not.
+
+    `cxx` and `header` come as a pair. A `cxx` with no `header` is a
+    catch whose type the emitted file reaches only through somebody
+    else's include (huggorm#90). A `header` with no `cxx` reaches no
+    emitter, and a line nobody reads looks exactly like one nobody
+    wrote.
+
+    A caught class with parts past the message needs a `reader`: its
+    catch would call the constructor with parts missing, and
+    `raise_as` turns that refusal into a RuntimeError, in silence."""
+    cxx, header = _assigned(node, CXX), _assigned(node, HEADER)
+    if cxx and not header:
+        raise DeclarationError(
+            node, f"{node.name}: `cxx = \"{cxx}\"` says the emitted "
+                  f"translator catches this type, and nothing says "
+                  f"which header declares it. Add `header = \"nix/...\"` "
+                  f"beside it, or the emitted file reaches the type "
+                  f"only through somebody else's include (huggorm#90).")
+    if header and not cxx:
+        raise DeclarationError(
+            node, f"{node.name}: `header` with no `cxx`. Only a class "
+                  f"the translator CATCHES needs a header emitted for "
+                  f"it, so this line reaches no emitter - and a line "
+                  f"nobody reads looks exactly like one nobody wrote.")
+    fields = tuple(getattr(kls, WIRE_FIELDS, ()))
+    reader = getattr(kls, READER, "")
+    extra = fields[MESSAGE_PARTS:]
+    if cxx and extra and not reader:
+        raise DeclarationError(
+            node, f"{node.name}: `_wire_fields` declares "
+                  f"{[f for f, _ in extra]} beyond the message, and no "
+                  f"`reader = \"...\"` says which C++ reads them off the "
+                  f"caught exception.")
+    here = home["__name__"]
+    return Raised(
+        bases=tuple(b.__name__ for b in kls.__bases__
+                    if b.__module__ == here),
+        parts=tuple((part, type_of(t, node, home)) for part, t in fields),
+        cxx=cxx, header=header, reader=reader)
 
 
 def _uses(tree: ast.Module, here: pathlib.Path) -> dict[str, Class]:

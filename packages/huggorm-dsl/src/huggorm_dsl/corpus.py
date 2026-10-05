@@ -40,14 +40,12 @@ lists.
 
 import ast
 import pathlib
-from types import ModuleType
 
 from huggorm_dsl.read import (
     Class,
     Method,
     Module,
     collecting,
-    load,
     read,
 )
 from huggorm_dsl.read import resolved as resolve_tree
@@ -60,7 +58,7 @@ class Corpus:
     nothing else about them differs. A NANOBIND declaration owns a
     compiled module. A VOCABULARY is plain Python with no C++ behind
     it. The ERRORS declaration is neither: it emits a Python module
-    and a C++ catch chain, and nothing reads it as a `Module`.
+    and a C++ catch chain.
     """
 
     def __init__(self, root: pathlib.Path, *,
@@ -124,28 +122,6 @@ class Corpus:
             self._chosen[name] = resolve_tree(str(self.path(name)))
         return self._chosen[name]
 
-    def imported(self, name: str) -> ModuleType:
-        """One declaration, as the module Python built from it.
-
-        The reading a tree cannot give: Python resolved every base
-        chain and every inherited attribute while executing the file.
-        A reader that walks the tree for those recomputes what the
-        interpreter already knows, and gets it subtly wrong the first
-        time a hierarchy is three deep.
-
-        `read()` imports the same file for the same reason - to learn
-        which definitions a `NIX_VERSION` branch kept - and `load` is
-        cached by path, so this shares that one execution rather than
-        running the decorators a second time.
-
-        A file that will not import is refused by `load`, with the
-        reason it gave. It used to answer None here, and `read()`
-        used to fall back to the tree alone - which read a
-        non-importing declaration as a working one for every file
-        with no `NIX_VERSION` branch in it, which is all of them
-        (huggorm#82)."""
-        return load(str(self.path(name)))
-
     # -- the three groups ------------------------------------------
 
     def read_all(self) -> None:
@@ -166,8 +142,7 @@ class Corpus:
             for name in (*self._nanobind, *self._vocabularies):
                 self.module(name)
             if self._errors:
-                self.tree(self._errors)
-                self.imported(self._errors)
+                self.module(self._errors)
 
     @property
     def nanobind(self) -> tuple[str, ...]:
@@ -204,8 +179,8 @@ class Corpus:
     def errors(self) -> str:
         """The exception declaration's file name, or "" if there is none.
 
-        A name rather than a `Module`, because nothing reads this one
-        as a declaration of classes. Two emitters parse its tree."""
+        A name rather than a `Module`, like `vocabularies`: the module
+        transform wants the tree as well as the `Module`."""
         return self._errors
 
     # -- the whole set ---------------------------------------------
