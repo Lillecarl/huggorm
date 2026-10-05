@@ -437,7 +437,7 @@ def main(argv: list[str] | None = None) -> None:
                     print(f"warning: {cls_name}.{m['name']} has no RPC "
                           f"surface - {why}")
 
-    (out / "grpc_schema.pb").write_bytes(build_fdset(manifest))
+    (out / "grpc_schema.pb").write_bytes(build_fdset(model))
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
 
     # The payload ships rather than runs, so it lives beside the

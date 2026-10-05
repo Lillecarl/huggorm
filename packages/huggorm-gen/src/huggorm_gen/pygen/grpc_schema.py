@@ -118,7 +118,8 @@ def _add_field(msg: Any, name: str, number: int, type_str: str,
     if (inner := optional_value(type_str)) is not None:
         type_str, optional = inner, True
     if (value_type := map_value(type_str)) is not None:
-        return _add_map_field(msg, name, number, value_type, kinds)
+        return _add_map_field(msg, name, number,
+                              _msg_arg_type(value_type, kinds))
     if (item_type := list_value(type_str)) is not None:
         pt, message = _msg_arg_type(item_type, kinds)
         f = _field(msg, name, number, proto_type=pt, type_name=message)
@@ -133,18 +134,63 @@ def _add_field(msg: Any, name: str, number: int, type_str: str,
     return f
 
 
-def _add_map_field(msg: Any, name: str, number: int, value_type: str,
-                   kinds: dict[str, str]) -> Any:
-    """A `map<string, V>` field, plus the entry message it needs."""
+def _add_map_field(msg: Any, name: str, number: int,
+                   value: tuple[int | None, str | None]) -> Any:
+    """A `map<string, V>` field, plus the entry message it needs.
+    `value` is V's (proto_type, message), as `_msg_arg_type` answers."""
     entry = msg.nested_type.add()
     entry.name = entry_name(name)
     entry.options.map_entry = True
     _field(entry, "key", 1, proto_type=_scalar_const(SCALARS[MAP_KEY]))
-    vt, vmessage = _msg_arg_type(value_type, kinds)
+    vt, vmessage = value
     _field(entry, "value", 2, proto_type=vt, type_name=vmessage)
     f = _field(msg, name, number, type_name=f"{msg.name}.{entry.name}")
     f.label = f.LABEL_REPEATED
     return f
+
+
+def _add_typed_field(msg: Any, name: str, number: int, t: ir.TypeRef,
+                     optional: bool = False) -> Any:
+    """`_add_field` for a resolved type: the structure decides the
+    field's shape and the leaf's kind decides its type, with nothing
+    read back out of a spelling."""
+    if t.optional:
+        t, optional = t.required, True
+    if t.origin == "dict":
+        return _add_map_field(msg, name, number, _leaf(t.args[0]))
+    if t.origin == "list":
+        pt, message = _leaf(t.args[0])
+        f = _field(msg, name, number, proto_type=pt, type_name=message)
+        f.label = f.LABEL_REPEATED
+        return f
+    pt, message = _leaf(t)
+    f = _field(msg, name, number, proto_type=pt, type_name=message)
+    if optional and pt is not None:
+        _with_presence(msg, f)
+    return f
+
+
+def _leaf(t: ir.TypeRef) -> tuple[int | None, str | None]:
+    """What one resolved leaf goes in a field as: (proto_type, None)
+    for a scalar, (None, message) for everything else."""
+    if t.origin:
+        # proto3 nests neither container in the other; `ir.wire_blocker`
+        # keeps such a call off the wire before it gets here.
+        raise TypeError(f"cannot put {t.spelling!r} in one field")
+    if (builtin := scalar_spelling(t.name)) is not None:
+        return _scalar_const(SCALARS[builtin]), None
+    if t.kind == "union":
+        return None, union_msg_name(t.name)
+    if t.kind == "enum":
+        return _scalar_const(SCALARS["str"]), None
+    if t.kind == "error":
+        return None, fault_msg_name(t.name)
+    if t.kind == "value":
+        return None, value_msg_name(t.name)
+    if t.kind == "proxy":
+        return None, HANDLE
+    raise TypeError(f"cannot put {t.spelling!r} on the wire: it is a "
+                    f"{t.kind}, which has no field type")
 
 
 def _scalar_const(name: str) -> int:
@@ -247,26 +293,19 @@ UNION = "union"
 ERROR = "error"
 
 
-def _wire_kinds(manifest: Proto) -> dict[str, str]:
-    """Surface type name -> "value" | "proxy" | "enum".
+def _wire_kinds(model: ir.Model) -> dict[str, str]:
+    """Declared name -> what it is on the wire, for the `_wire_fields`
+    spellings, which are still strings: the runtime codec parses the
+    same ones.
 
-    Every declared name and what it is on the wire. A string enum is
-    here because it is a declared NAME that is not a class the wire
-    knows - and it needs no policy of its own, because a StrEnum
-    member is a str and crosses as one."""
-    out = {
-        name: proto["wire"]
-        for group in ("wrappers", "returned_types")
-        for name, proto in manifest[group].items()
-    }
-    out.update({name: ENUM for name in manifest.get("enums", {})})
-    out.update({name: UNION for name in manifest.get("unions", {})})
-    # An EXCEPTION class, which is a declared name and not a class in
-    # the groups either. It already has a message - the fault detail
-    # every typed error crosses in (huggorm#36) - so a field of one
-    # points at that rather than inventing a second shape.
-    out.update({name: ERROR
-                for name in (manifest.get("errors") or {}).get("classes", {})})
+    A string enum needs no policy of its own: a StrEnum member is a str
+    and crosses as one. An EXCEPTION class already has a message - the
+    fault detail every typed error crosses in (huggorm#36) - so a field
+    of one points at that rather than inventing a second shape."""
+    out = {name: c.wire for name, c in model.classes.items()}
+    out.update({name: ENUM for name in model.enums})
+    out.update({name: UNION for name in model.unions})
+    out.update({name: ERROR for name in model.errors.classes})
     return out
 
 
@@ -308,7 +347,7 @@ def _msg_arg_type(type_str: str,
 FAULT = "Fault"
 
 
-def _add_faults(file_dp: Any, manifest: Proto) -> None:
+def _add_faults(file_dp: Any, model: ir.Model) -> None:
     """How a failure describes itself, in the status details.
 
     A failed call carries no response message - only a status - so this
@@ -333,35 +372,32 @@ def _add_faults(file_dp: Any, manifest: Proto) -> None:
     _field(fault, "cause_type", 3, proto_type=_scalar_const("string"))
     _field(fault, "cause_message", 4, proto_type=_scalar_const("string"))
 
-    errors: Proto = manifest.get("errors") or {}
-    kinds = _wire_kinds(manifest)
-    for cls_name, proto in errors.get("classes", {}).items():
+    kinds = _wire_kinds(model)
+    for cls_name, error in model.errors.classes.items():
         m = file_dp.message_type.add()
         m.name = fault_msg_name(cls_name)
-        for n, (fname, ftype) in enumerate(proto["wire_fields"], start=1):
+        for n, (fname, ftype) in enumerate(error.wire_fields, start=1):
             _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
                        optional=ftype.endswith("?"))
 
 
-def _add_common(file_dp: Any, manifest: Proto) -> None:
+def _add_common(file_dp: Any, model: ir.Model) -> None:
     handle = file_dp.message_type.add()
     handle.name = HANDLE
     _field(handle, "id", 1, proto_type=_scalar_const("string"))
 
     # Wire-value messages, built from the contract each binding declares.
-    kinds = _wire_kinds(manifest)
-    for group in ("wrappers", "returned_types"):
-        for cls_name, proto in manifest[group].items():
-            if proto["wire"] != "value":
-                continue
-            m = file_dp.message_type.add()
-            m.name = value_msg_name(cls_name)
-            for n, (fname, ftype) in enumerate(proto["wire_fields"], start=1):
-                # "?" reaches the schema now. It used to be a codec
-                # concern only, and the codec answered it by reading
-                # an empty string as absent (huggorm#48).
-                _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
-                           optional=ftype.endswith("?"))
+    kinds = _wire_kinds(model)
+    for c in (*model.constructed, *model.handed_back):
+        if c.wire != "value":
+            continue
+        m = file_dp.message_type.add()
+        m.name = value_msg_name(c.name)
+        for n, (fname, ftype) in enumerate(c.wire_fields, start=1):
+            # "?" reaches the schema: the codec once answered it by
+            # reading an empty string as absent (huggorm#48).
+            _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
+                       optional=ftype.endswith("?"))
 
     # ...and one message per UNION, holding one oneof.
     #
@@ -372,7 +408,7 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
     # happen not to collide. A oneof is a real tag, and protobuf lets
     # a message hold itself, so the recursive arm needs nothing said
     # about it here (huggorm#59).
-    for alias, arms in manifest.get("unions", {}).items():
+    for alias, arms in model.unions.items():
         m = file_dp.message_type.add()
         m.name = union_msg_name(alias)
         one = m.oneof_decl.add()
@@ -385,44 +421,43 @@ def _add_common(file_dp: Any, manifest: Proto) -> None:
             f.oneof_index = 0
 
 
-def _add_service(file_dp: Any, cls_name: str, proto: Proto,
-                 kinds: dict[str, str]) -> None:
+def _add_service(file_dp: Any, model: ir.Model, c: ir.ClassModel) -> None:
     svc = file_dp.service.add()
-    svc.name = proto["service"]
+    svc.name = c.service
 
-    if "acquire" in proto:
-        req = file_dp.message_type.add()
-        req.name = proto["acquire"]["req"]
-        for n, param in enumerate(proto["ctor"], start=1):
-            # The client skips a None argument and the server decodes
-            # with optional=True, so the field has to be able to say
-            # "absent" rather than lean on an empty string.
-            _add_field(req, param["name"], n, param["type"], kinds,
-                       optional=param["default"] == "None")
+    # EVERY served class, the returned ones included: a returned proxy
+    # gets an Acquire rpc here that `_policy.ACQUIRE` never offers.
+    req = file_dp.message_type.add()
+    req.name = c.acquire.req
+    for n, param in enumerate(c.ctor, start=1):
+        # The client skips a None argument and the server decodes
+        # with optional=True, so the field has to be able to say
+        # "absent" rather than lean on an empty string.
+        _add_typed_field(req, param.name, n, param.type,
+                         optional=param.default == "None")
+    rpc = svc.method.add()
+    rpc.name = ACQUIRE
+    rpc.input_type = f".{PKG}.{req.name}"
+    rpc.output_type = f".{PKG}.{HANDLE}"
+
+    for m in c.methods:
+        if not model.offered(m):
+            continue  # no wire representation; the build says why
+        names = c.rpc(m)
         rpc = svc.method.add()
-        rpc.name = ACQUIRE
-        rpc.input_type = f".{PKG}.{req.name}"
-        rpc.output_type = f".{PKG}.{HANDLE}"
-
-    for m in proto["methods"]:
-        if "rpc" not in m:
-            continue  # no wire representation; annotate() said why
-        rpc = svc.method.add()
-        rpc.name = wire_method(m["name"])
+        rpc.name = wire_method(m.name)
 
         req = file_dp.message_type.add()
-        req.name = m["rpc"]["req"]
+        req.name = names.req
         _field(req, "self", 1, type_name=HANDLE)
-        n = 2
-        for p in m["params"]:
-            _add_field(req, p["name"], n, p["type"], kinds)
-            n += 1
+        for n, p in enumerate(m.params, start=2):
+            _add_typed_field(req, p.name, n, p.type)
         rpc.input_type = f".{PKG}.{req.name}"
 
         resp = file_dp.message_type.add()
-        resp.name = m["rpc"]["resp"]
-        if m["return_type"] != "None":
-            _add_field(resp, "result", 1, m["return_type"], kinds)
+        resp.name = names.resp
+        if m.returns is not None:
+            _add_typed_field(resp, "result", 1, m.returns)
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
@@ -700,54 +735,48 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     rpc.output_type = f".{PKG}.LogsBarrierResp"
 
 
-def _add_free_service(file_dp: Any, manifest: Proto,
-                      kinds: dict[str, str]) -> None:
+def _add_free_service(file_dp: Any, model: ir.Model) -> None:
     """One service for every free function the wire can represent."""
-    wired = {n: p for n, p in manifest.get("free_functions", {}).items()
-             if "rpc" in p}
+    wired = [model.functions[n] for n in sorted(model.functions)
+             if not model.function_blockers(model.functions[n])]
     if not wired:
         return
     svc = file_dp.service.add()
     # Through service_name, like every other service: method_path()
-    # already appends "Service", so declaring the bare name here left
-    # the descriptor calling it Functions while dispatch routed
-    # FunctionsService. Reflection would list it and no call could
-    # reach it.
+    # appends "Service", so the bare name would leave the descriptor
+    # calling it Functions while dispatch routed FunctionsService.
     svc.name = service_name(FREE_SERVICE)
-    for fname, proto in wired.items():
+    for fn in wired:
         rpc = svc.method.add()
-        rpc.name = fname
+        rpc.name = fn.name
 
         req = file_dp.message_type.add()
-        req.name = proto["rpc"]["req"]
+        req.name = fn.rpc.req
         # No `self` field: there is no instance to address.
-        for n, p in enumerate(proto["params"], start=1):
-            _add_field(req, p["name"], n, p["type"], kinds)
+        for n, p in enumerate(fn.params, start=1):
+            _add_typed_field(req, p.name, n, p.type)
         rpc.input_type = f".{PKG}.{req.name}"
 
         resp = file_dp.message_type.add()
-        resp.name = proto["rpc"]["resp"]
-        if proto["return_type"] != "None":
-            _add_field(resp, "result", 1, proto["return_type"], kinds)
+        resp.name = fn.rpc.resp
+        if fn.returns is not None:
+            _add_typed_field(resp, "result", 1, fn.returns)
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
-def build_fdset(manifest: Proto) -> bytes:
+def build_fdset(model: ir.Model) -> bytes:
     fds = descriptor_pb2.FileDescriptorSet()  # type: ignore[attr-defined]
     f = fds.file.add()
     f.name = FILE
     f.package = PKG
     f.syntax = "proto3"
-    _add_common(f, manifest)
-    _add_faults(f, manifest)
-    kinds = _wire_kinds(manifest)
-    _add_session(f, kinds)
-
+    _add_common(f, model)
+    _add_faults(f, model)
+    _add_session(f, _wire_kinds(model))
     # Returned types expose methods through handles as well: their
     # operations run wherever the producing wrapper put them.
-    for group in ("wrappers", "returned_types"):
-        for cls_name, proto in manifest[group].items():
-            if proto["wire"] == "proxy":
-                _add_service(f, cls_name, proto, kinds)
-    _add_free_service(f, manifest, kinds)
+    for c in (*model.constructed, *model.handed_back):
+        if c.served:
+            _add_service(f, model, c)
+    _add_free_service(f, model)
     return bytes(fds.SerializeToString())
