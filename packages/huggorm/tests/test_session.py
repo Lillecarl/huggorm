@@ -371,6 +371,22 @@ async def test_remote_capture_collects(server: Any) -> None:
     assert len(finals) == 1, finals
 
 
+async def test_a_remote_warning_crosses_with_its_error_info(
+        server: Any) -> None:
+    """A record raised by `logEI` crosses with its parts: the same
+    `ErrorInfo` a failed call's error carries (huggorm#85, gap 4)."""
+    ctx = _connect(server)
+    async with ctx as session:
+        state = await session.eval(await session.store())
+        async with session.capture(state) as caught:
+            await state.eval_expr('builtins.warn "careful" 1')
+    warned = [r for r in caught.records if r.action() == "msg"]
+    assert warned, caught.records
+    info = warned[0].info()
+    assert info is not None, "the parts did not cross"
+    assert info.msg() == "careful"
+
+
 async def test_remote_process_logs_opens(server: Any) -> None:
     """The process stream opens, with the same installed signal."""
     ctx = _connect(server)
