@@ -65,7 +65,8 @@ class Input:
         """What names this input's contents in the evaluation cache, or
         None for an input that cannot say without fetching.
 
-        BLOCKS: a path input hashes its tree to answer."""
+        BLOCKS: a git work tree with uncommitted changes is answered
+        by reading and hashing every changed file."""
         Cxx("return self.getFingerprint(store);")
 
     @staticmethod

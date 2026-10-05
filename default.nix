@@ -424,6 +424,7 @@ rec {
   test = pkgs.writeShellApplication {
     name = "test";
     runtimeInputs = [
+      pkgs.gitMinimal
       pkgs.grpcurl
       ourPython
     ];
