@@ -20,6 +20,7 @@ extension or parsing a pxd.
 """
 import argparse
 import ast
+import functools
 import pathlib
 import re
 import sys
@@ -73,13 +74,34 @@ def declared_entries() -> dict[str, dict[str, Any]]:
     MODULES declaration owns a whole module and is complete by
     construction, and an INCLUDES declaration is complete for the
     values it emits, which is what `is_value` already says."""
-    out = {}
-    for mod in corpus().modules:
+    return {name: cls.entry(final=False)
+            for name, cls in declared_model().classes.items()}
+
+
+@functools.cache
+def declared_model() -> ir.Model:
+    """The declaration set as the typed model, built once.
+
+    Each module resolves its own names: `Module.known` is what that
+    translation unit can name, its imports included."""
+    have = corpus()
+    classes: dict[str, ir.ClassModel] = {}
+    functions: dict[str, ir.FunctionModel] = {}
+    seen: list[tuple[dict[str, Any], Any]] = []
+    for mod in have.modules:
+        resolver = ir.Resolver.of(mod)
         for cls in mod.classes:
-            out[cls.name] = ir.ClassModel.of(
-                cls, PACKAGE, mod.name, ir.Resolver.of(mod),
-                mod.functions).entry(final=False)
-    return out
+            classes[cls.name] = ir.ClassModel.of(
+                cls, PACKAGE, mod.name, resolver, mod.functions)
+            seen.append((mod.known, cls))
+        # `nbemit.public` drops a startup hook, a translator and a
+        # factory bound as its class's constructor: none is surface.
+        for fn in nbemit.public(mod.exported, mod.classes):
+            functions[fn.name] = ir.FunctionModel.of(
+                fn, PACKAGE, mod.name, resolver)
+    unions = {u.name: tuple(u.decl.arms)
+              for mod in have.modules for u in mod.unions}
+    return ir.Model(classes, functions, unions, ir.returned_names(seen))
 
 
 def declared_unions() -> dict[str, list[str]]:
@@ -93,11 +115,8 @@ def declared_unions() -> dict[str, list[str]]:
 
     Arms in DECLARED order, because that is the order the schema
     numbers a oneof's fields in and a renumbering is a wire change."""
-    out: dict[str, list[str]] = {}
-    for mod in corpus().modules:
-        for union in mod.unions:
-            out[union.name] = list(union.decl.arms)
-    return out
+    return {name: list(arms)
+            for name, arms in declared_model().unions.items()}
 
 
 def declared_functions() -> dict[str, dict[str, Any]]:
@@ -114,11 +133,8 @@ def declared_functions() -> dict[str, dict[str, Any]]:
     factory some class names, which is bound as that class's __new__
     instead. `nbemit.public` is where that last rule lives, and this
     reads it rather than repeating it."""
-    out = {}
-    for mod in corpus().modules:
-        for fn in nbemit.public(mod.exported, mod.classes):
-            out[fn.name] = ir.FunctionModel.of(
-                fn, PACKAGE, mod.name, ir.Resolver.of(mod)).entry()
+    out = {name: fn.entry()
+           for name, fn in declared_model().functions.items()}
     return out
 
 
@@ -144,23 +160,7 @@ def declared_returned() -> list[str]:
     Store's methods and a caller can still build one from a base name,
     so it is an entry point that happens to be returned. Value cannot
     be built at all, and neither can PathInfo."""
-    out: set[str] = set()
-    for mod in corpus().modules:
-        known = mod.known
-        for cls in mod.classes:
-            for m in cls.methods:
-                if m.ret is None:
-                    continue
-                ret = m.ret.required
-                if ret.origin == "list":
-                    ret = ret.element
-                spelled = ret.python
-                if ret.origin or spelled not in known or known[spelled].is_words:
-                    continue
-                held = known[spelled]
-                if held.decl.built_by and held.ctor is None:
-                    out.add(spelled)
-    return sorted(out)
+    return sorted(declared_model().returned)
 
 
 # The exception hierarchy, declared once. It emits two things that

@@ -455,6 +455,51 @@ class ClassModel:
         }
 
 
+@dataclass(frozen=True)
+class Model:
+    """The whole declaration set, resolved: what every stage reads.
+
+    Declared order throughout, because a later pass numbers protobuf
+    fields from it and a reorder is a wire change."""
+
+    classes: Mapping[str, ClassModel]
+    functions: Mapping[str, FunctionModel]
+    # Every union alias, to its arms in declared order.
+    unions: Mapping[str, tuple[str, ...]]
+    # The classes that are HANDED BACK rather than constructed.
+    returned: frozenset[str]
+
+    @property
+    def served(self) -> frozenset[str]:
+        """Every class with a service behind its handles: every proxy."""
+        return frozenset(n for n, c in self.classes.items() if c.served)
+
+
+def returned_names(module_classes: Sequence[tuple[Mapping[str, Class],
+                                                  Class]]) -> frozenset[str]:
+    """The classes some declared method hands back and nothing builds.
+
+    Every name a return type holds counts: `list[StorePath]` hands back
+    StorePaths as surely as `StorePath` does. A class a caller can
+    construct is an entry point that happens to be returned, so it is
+    not one; `@produced(by=...)` with no `__init__` is the whole test."""
+    out: set[str] = set()
+    for known, cls in module_classes:
+        for m in cls.methods:
+            if m.ret is None:
+                continue
+            ret = m.ret.required
+            if ret.origin == "list":
+                ret = ret.element
+            name = ret.python
+            if ret.origin or name not in known or known[name].is_words:
+                continue
+            held = known[name]
+            if held.decl.built_by and held.ctor is None:
+                out.add(name)
+    return frozenset(out)
+
+
 def words_entry(cls: Class, package: str, module: str) -> dict[str, Any]:
     """One vocabulary, as the manifest carries it."""
     return {"name": cls.name, "module": f"{package}.{module}",
