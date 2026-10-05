@@ -276,7 +276,7 @@ def _wrong_arm(owner: str, hold: str, expected: str) -> str:
 
 
 
-def _render(cls: Class, accessor: str) -> str:
+def _render(cls: ir.ClassModel, accessor: str) -> str:
     """The Python that renders one of this value's accessors as text.
 
     Through the PYTHON object, like the repr and the hash beside it,
@@ -292,13 +292,13 @@ def _render(cls: Class, accessor: str) -> str:
     `nix::Hash::to_string` takes a format and a flag, so the emitted
     `self.to_string()` did not compile. The declaration's `to_string`
     is the BOUND one, and this is how to reach it."""
-    if not any(m.name == accessor for m in cls.methods):
+    if not any(m.name == accessor for m in cls.bound):
         raise TypeError(
             f"{cls.name}: \"{accessor}\" names no accessor on this class.")
     return f'nb::str(h.attr("{accessor}")())'
 
 
-def _value_semantics(cls: Class) -> list[str]:
+def _value_semantics(cls: ir.ClassModel) -> list[str]:
     """What a wire value owes Python, in nanobind's spelling.
 
     All of it from `@wire_value` and `@binding`, so a value prints and
@@ -343,7 +343,7 @@ def _value_semantics(cls: Class) -> list[str]:
     return out
 
 
-def _attribute(cls: Class, m: ir.MethodModel) -> TypeError:
+def _attribute(cls: ir.ClassModel, m: ir.MethodModel) -> TypeError:
     """The refusal a `@property` accessor gets, and why it is one.
 
     `@property` says an accessor is an ATTRIBUTE rather than a call.
@@ -396,7 +396,8 @@ def records_include(module: str, package: str) -> str:
     return f"{package}/{name}" if package else name
 
 
-def records_header(mod: Module, package: str) -> str | None:
+def records_header(mod: Module, package: str,
+                   model: ir.Model) -> str | None:
     """The header a module's records are emitted into, or None.
 
     A HEADER, not the unit, because a record is a C++ type another unit
@@ -408,7 +409,7 @@ def records_header(mod: Module, package: str) -> str | None:
     emit = Emitter(mod.known, {}, {})
     others = [m for m in emit.records_named(values, ())
               if m != mod.name]
-    structs = emit.records(values)
+    structs = emit.records([model.classes[c.name] for c in values])
     # What the fields SPELL, read off the structs as `includes` reads
     # a body: `std::int64_t` needs <cstdint>, and no caster names it.
     text = "\n".join(structs)
@@ -509,15 +510,15 @@ FROM_PARTS_DOC = "Wire-deserialization helper (private, never surfaced)."
 
 
 
-def wire_fields(cls: Class) -> list[tuple[str, Type, str]]:
+def wire_fields(cls: ir.ClassModel) -> list[tuple[str, ir.TypeRef, str]]:
     """What this value is made of, as (name, type, how to read).
 
     The third element is a Python expression on a handle called `h`,
     which is how one line covers a str, a store path and a list of
     them: the part comes back as whatever its own binding hands over,
     so nothing here knows what a part IS."""
-    return [(f.name, m.ret, f'h.attr("{f.read}")()')
-            for f, m in cls.parts if m.ret is not None]
+    return [(f.name, f.type, f'h.attr("{f.read}")()')
+            for f in cls.wire_fields]
 
 
 # What `_parts` is for, in one sentence a caller can read.
@@ -532,7 +533,7 @@ PARTS_DOC = ("Wire-serialization helper (private): one value per "
 
 
 
-def _round_trip(cls: Class) -> list[str]:
+def _round_trip(cls: ir.ClassModel) -> list[str]:
     """`_parts`, the half of the wire round trip that is a method.
 
     The other half is `_from_parts`, and it needs no code at all: see
@@ -552,7 +553,7 @@ def _round_trip(cls: Class) -> list[str]:
             f'{INDENT * 2}}}, "{PARTS_DOC}")']
 
 
-def markers(cls: Class) -> list[str]:
+def markers(cls: ir.ClassModel) -> list[str]:
     """The class attributes the runtime reads off a compiled object.
 
     `_wire`, which `unwrap_arg` reads to copy a value rather than hand
@@ -566,7 +567,7 @@ def markers(cls: Class) -> list[str]:
     # class is told rather than left to know the default.
     out = [f'{INDENT}cls.attr("_wire") = "{decl.wire or "proxy"}";']
     fields = wire_fields(cls)
-    if (fields or cls.decl.unit) and not cls.is_value and cls.ctor is not None:
+    if (fields or cls.decl.unit) and not cls.is_value and cls.init is not None:
         # The other half of the round trip, and for a CONSTRUCTED value
         # it is the class.
         #
@@ -583,10 +584,10 @@ def markers(cls: Class) -> list[str]:
         # in order. A forgotten `@local` breaks exactly that: an accessor
         # joins the wire by existing, `_parts` grows a value, and the
         # constructor does not.
-        if len(cls.ctor.params) != len(fields):
+        if len(cls.init.params) != len(fields):
             raise TypeError(
                 f"{cls.name}: `_from_parts` is the constructor, which "
-                f"takes {len(cls.ctor.params)} parameter(s), and "
+                f"takes {len(cls.init.params)} parameter(s), and "
                 f"{len(fields)} accessor(s) cross the wire: "
                 f"{[n for n, _, _ in fields]}. An accessor joins the "
                 f"wire by existing - mark the ones that should not "
@@ -744,7 +745,8 @@ class Emitter:
         self.producers = producers
         self.classes = classes
 
-    def _produced_ctor(self, cls: Class, because: str = "") -> list[str]:
+    def _produced_ctor(self, cls: ir.ClassModel,
+                       because: str = "") -> list[str]:
         """The `__init__` of a class nothing constructs.
 
         `because` is the sentence, for a class that is unconstructible
@@ -1201,7 +1203,7 @@ class Emitter:
                            f"{pr.name}_.value_or({held}{{}});")
         return args, opening
 
-    def _identity_semantics(self, cls: Class,
+    def _identity_semantics(self, cls: ir.ClassModel,
                             equality: bool = True) -> list[str]:
         """The repr and the hash every wire value owes a reader.
 
@@ -1317,7 +1319,7 @@ class Emitter:
         doc = _doc(init.doc)
         return [line + ",", f'{INDENT * 3}     "{doc}")']
 
-    def record_fields(self, cls: Class) -> list[tuple[str, str]]:
+    def record_fields(self, cls: ir.ClassModel) -> list[tuple[str, str]]:
         """Every member of a produced value's struct, in declared order.
 
         Nothing is listed. A produced value's ACCESSORS are its fields -
@@ -1326,10 +1328,10 @@ class Emitter:
         it returns. Order is the declaration's, which is the order a
         reader of the declaration sees and the order the constructor
         takes."""
-        return [(m.name, self._cxx(m.ret)[0])
-                for m in cls.methods if m.ret is not None and not m.local]
+        return [(m.name, m.returns.cxx)
+                for m in cls.bound if m.returns is not None and not m.local]
 
-    def record(self, cls: Class) -> list[str]:
+    def record(self, cls: ir.ClassModel) -> list[str]:
         """The C++ struct a produced value crosses as.
 
         Real types, every one. This is what the Cython route could not do:
@@ -1361,7 +1363,7 @@ class Emitter:
                 "};"]
         return out
 
-    def records(self, classes: Sequence[Class]) -> list[str]:
+    def records(self, classes: Sequence[ir.ClassModel]) -> list[str]:
         """Every produced value in one unit, inside one namespace."""
         values = [c for c in classes if c.is_value]
         if not values:
@@ -1597,7 +1599,7 @@ class Emitter:
             "",
         ]
 
-    def _record_semantics(self, cls: Class) -> list[str]:
+    def _record_semantics(self, cls: ir.ClassModel) -> list[str]:
         """What a RECORD owes Python beyond reading its own fields.
 
         Equality, and only equality. The repr and the hash beside it are
@@ -1613,7 +1615,7 @@ class Emitter:
             f"{INDENT * 3} {{ return a == b; }}, nb::is_operator())",
         ]
 
-    def _record_ctor(self, cls: Class) -> list[str]:
+    def _record_ctor(self, cls: ir.ClassModel) -> list[str]:
         """The two ways a record is and is not built.
 
         A produced value is PRODUCED. Nothing a caller does should build
@@ -1635,13 +1637,13 @@ class Emitter:
             # list, so the body can only consume what `_parts` sent.
             return [*self._produced_ctor(cls), *self._from_parts(cls)]
         fields = self.record_fields(cls)
-        if any(f.read != f.name for f, _ in cls.parts):
+        if any(f.read != f.name for f in cls.wire_fields):
             # A part read through another accessor - `@wire_read` - arrives
             # as that accessor's type, so the aggregate needs the parts
             # converted back. `_from_parts` initialises POSITIONALLY, so
             # the parts must be the members, in member order, or a value
             # lands in the wrong member.
-            names = [f.name for f, _ in cls.parts]
+            names = [f.name for f in cls.wire_fields]
             if names != [n for n, _ in fields]:
                 raise TypeError(
                     f"{cls.name}: its parts {names} are not its members "
@@ -1746,7 +1748,7 @@ class Emitter:
         ret = f" -> {fn.returns.cxx}" if fn.returns is not None else ""
         return f"[]({args}){ret} {{"
 
-    def part_types(self, cls: Class) -> list[str]:
+    def part_types(self, cls: ir.ClassModel) -> list[str]:
         """The C++ each part ARRIVES as, one per wire field.
 
         From the accessor's own annotation wherever there is one, because
@@ -1757,9 +1759,9 @@ class Emitter:
 
         Every part has an accessor: `Class.parts` refuses one that does
         not."""
-        return [self._cxx(m.ret)[0] for _, m in cls.parts if m.ret is not None]
+        return [f.type.cxx for f in cls.wire_fields]
 
-    def _rebuilt(self, m: Method | None) -> str:
+    def _rebuilt(self, f: ir.FieldModel) -> str:
         """One part, converted back to what the C++ member IS, or "".
 
         A part arrives as the wire carries it, and a `list[T]` is a
@@ -1788,14 +1790,11 @@ class Emitter:
 
         `PathInfo` still writes its own, for reasons that are not this
         one - a virtual base, so it is not an aggregate at all."""
-        if m is None or m.ret is None:
+        if not f.collection:
             return ""
-        held = m.member_collection or cxx.collection(m.ret, self.known)
-        if not held:
-            return ""
-        return f"as_set<{held}>({m.name})"
+        return f"as_set<{f.collection}>({f.read})"
 
-    def _from_parts(self, cls: Class) -> list[str]:
+    def _from_parts(self, cls: ir.ClassModel) -> list[str]:
         """`_from_parts`, for a value nothing constructs.
 
         A wire value has to be rebuildable from its parts: it crosses as a
@@ -1840,9 +1839,9 @@ class Emitter:
         else:
             names = ", ".join(
                 f"from_bytes({n})" if t in BYTES_SPELLINGS
-                else self._rebuilt(m) or n
-                for (n, _, _), (_, m), t in zip(fields, cls.parts, types,
-                                                strict=True))
+                else self._rebuilt(f) or n
+                for (n, _, _), f, t in zip(fields, cls.wire_fields, types,
+                                           strict=True))
             body = [f"{INDENT * 3}return {_held(cls)}({names});"]
         doc = _doc(written.doc) if written is not None and written.doc \
             else FROM_PARTS_DOC
@@ -1850,7 +1849,7 @@ class Emitter:
                 *body,
                 f'{INDENT * 2}}}{keywords}, "{doc}")']
 
-    def bind_function(self, cls: Class) -> str:
+    def bind_function(self, cls: ir.ClassModel) -> str:
         """The whole `bind_<name>` function for one declared class.
 
         A function per class, because that is the seam nanopynix already
@@ -1861,7 +1860,6 @@ class Emitter:
         if not decl.cxx and not cls.is_value:
             raise TypeError(
                 f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
-        model = self.classes[cls.name]
         held = _held(cls)
         holds = [held]
         # A WIRE VALUE is final, and that is a contract rather than a
@@ -1910,7 +1908,7 @@ class Emitter:
             # The accessor is derived from the field list, but what the
             # field MEANS is a sentence only a person can write, and the
             # declaration already has one on every method.
-            described = {m.name: _doc(m.doc) for m in cls.methods}
+            described = {m.name: _doc(m.doc) for m in cls.bound}
             body += [f'{INDENT * 2}.def("{name}", [](const {held} &{obj}) '
                      f"{{ return {obj}.{name}; }}"
                      + (f', "{described[name]}"' if described.get(name) else "")
@@ -1927,9 +1925,9 @@ class Emitter:
             # needs a body or a `@reads`; with neither, `_method` names a
             # member that does not exist and the unit fails to compile,
             # which is the loud answer rather than a quiet absence.
-            for mm in model.bound:
-                if mm.local:
-                    body += self._method(model, mm)
+            for m in cls.bound:
+                if m.local:
+                    body += self._method(cls, m)
             if body:
                 body[-1] += ";"
             return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
@@ -1957,22 +1955,22 @@ class Emitter:
             # to open it. `_produced_ctor` supplies the third wording
             # itself, from the calls that return the class.
             body = self._produced_ctor(cls, "" if cls.decl.produced else (
-                "declares no constructor" if cls.ctor is None
+                "declares no constructor" if cls.init is None
                 else "is abstract, and no factory opens one"))
         elif decl.factory:
             # A factory this module BINDS - `open_store` becomes
             # `Store.__new__`.
-            body = self._factory(model)
+            body = self._factory(cls)
         else:
-            body = self._ctor(model)
-        for mm in model.bound:
-            if mm.prop:
-                raise _attribute(cls, mm)
-            body += self._method(model, mm)
+            body = self._ctor(cls)
+        for m in cls.bound:
+            if m.prop:
+                raise _attribute(cls, m)
+            body += self._method(cls, m)
         if decl.wire == "value":
             body += self._identity_semantics(cls)
             body += _round_trip(cls)
-            if cls.ctor is None:
+            if cls.init is None:
                 body += self._from_parts(cls)
         body += _value_semantics(cls)
         for source in decl.custom.values():
@@ -2113,7 +2111,7 @@ class Emitter:
                 head += self.caster(u)
             head += ["}  // namespace nanobind::detail", ""]
         out = "\n".join(head) + "\n" + "\n".join(
-            self.bind_function(cls) for cls in classes)
+            self.bind_function(self.classes[cls.name]) for cls in classes)
         return out + ("\n" + self.free_functions(exported)
                       if exported else "")
 
@@ -2241,7 +2239,7 @@ static void register_{fn.name.lstrip("_")}() {{
 """
 
 
-def census(cls: Class) -> dict[str, int]:
+def census(cls: ir.ClassModel) -> dict[str, int]:
     """How much of this class the declaration derived, and how much a
     person wrote.
 
@@ -2255,13 +2253,13 @@ def census(cls: Class) -> dict[str, int]:
     # A written `_from_parts` is a hatch like any other, and the one
     # most worth counting: it is the half of the wire that stopped
     # being true by construction when the value bound a real type.
-    for m in (*cls.methods, *filter(None, (cls.from_parts,))):
+    for m in (*cls.bound, *filter(None, (cls.from_parts,))):
         if m.cxx_body:
             hatched += 1
             hatch_lines += len(m.cxx_body.strip().splitlines())
         else:
             derived += 1
-    if cls.ctor is not None:
+    if cls.init is not None:
         derived += 1
     derived += len(_value_semantics(cls)) and sum(
         1 for name, _, fact in COMPARISONS
@@ -2287,8 +2285,8 @@ if __name__ == "__main__":
                            producers(mod.known.values(), mod.functions),
                            models)
             print(emit.module([cls], (), ()) if len(mod.classes) == 1
-                  else emit.bind_function(cls))
-            c = census(cls)
+                  else emit.bind_function(models[cls.name]))
+            c = census(models[cls.name])
             total = c["derived"] + c["hatched"]
             print(f"// {cls.name}: {c['derived']}/{total} derived, "
                   f"{c['hatched']} through the hatch "

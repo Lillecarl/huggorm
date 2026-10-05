@@ -266,7 +266,7 @@ def emit_module(mod: Module, dotted: str, out: str,
                         error_headers=headers or ())
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(written)
-    header = nbemit.records_header(mod, PACKAGE)
+    header = nbemit.records_header(mod, PACKAGE, declared_model())
     if header is not None:
         target = pathlib.Path(out).with_name(f"{mod.name}_records.hpp")
         target.write_text(header + "\n")
@@ -278,7 +278,7 @@ def emit_module(mod: Module, dotted: str, out: str,
     # measures becomes the place the real code lives - and a number
     # in a build log is cheaper than a review that has to notice.
     for cls in bound:
-        c = nbemit.census(cls)
+        c = nbemit.census(declared_model().classes[cls.name])
         hatch = (f", {c['hatched']} hatched ({c['hatch_lines']} lines)"
                  if c["hatched"] else "")
         print(f"  {cls.name}: {c['derived']} derived{hatch}")

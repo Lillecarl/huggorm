@@ -778,7 +778,7 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
     model = ir.ClassModel.of(cls, "", mod.name, ir.Resolver.of(mod))
     with pytest.raises(TypeError, match="ATTRIBUTE"):
         nbemit.Emitter({cls.name: cls}, {},
-                       {cls.name: model}).bind_function(cls)
+                       {cls.name: model}).bind_function(model)
 
 
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:

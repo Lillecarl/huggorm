@@ -306,11 +306,17 @@ class FieldModel:
 
     name: str
     type: TypeRef
+    # The accessor that reads the part, when it is not `name`.
+    read: str = ""
+    # The C++ set the part is rebuilt into, or "" when a vector is the
+    # member: `@reads(collection=...)`, else the element class's.
+    collection: str = ""
 
     @classmethod
-    def of(cls, name: str, t: Type, resolver: Resolver) -> FieldModel:
+    def of(cls, name: str, t: Type, resolver: Resolver, read: str = "",
+           collection: str = "") -> FieldModel:
         crossable(t, name)
-        return cls(name, type_ref(t, resolver))
+        return cls(name, type_ref(t, resolver), read, collection)
 
 
 def crossable(t: Type | None, where: str) -> None:
@@ -543,6 +549,9 @@ class ClassModel:
     # The declared `__init__`, and the factory that runs in its place.
     init: MethodModel | None = None
     factory: FunctionModel | None = None
+    # A declared `_from_parts`, which a value carries when its C++ type
+    # cannot be rebuilt from the parts as they are.
+    from_parts: MethodModel | None = None
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -562,8 +571,11 @@ class ClassModel:
             # RAW: the stubs carry the indentation the source had.
             doc=c.doc, decl=decl, is_value=c.is_value,
             produced=c.is_produced, constructs=c.constructs,
-            wire_fields=tuple(FieldModel.of(f.name, m.ret, resolver)
-                              for f, m in c.parts if m.ret is not None),
+            wire_fields=tuple(
+                FieldModel.of(f.name, m.ret, resolver, f.read,
+                              m.member_collection
+                              or cxx.collection(m.ret, resolver.known))
+                for f, m in c.parts if m.ret is not None),
             ctor=tuple(ParamModel.of(p, resolver)
                        for p in _ctor_params(c, functions)),
             bound=tuple(MethodModel.of(m, resolver) for m in c.methods),
@@ -571,6 +583,8 @@ class ClassModel:
                   if c.ctor is not None else None),
             factory=(FunctionModel.of(made, package, module, resolver)
                      if (made := _factory(c, functions)) else None),
+            from_parts=(MethodModel.of(c.from_parts, resolver)
+                        if c.from_parts is not None else None),
         )
 
     @property
