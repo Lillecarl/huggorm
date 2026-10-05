@@ -30,6 +30,7 @@ class NixError(Exception):
     """The base every other one derives from."""
 
     cxx = "nix::Error"
+    header = "nix/util/error.hh"
 
 
 if NIX_VERSION >= (2, 0):
@@ -38,6 +39,7 @@ if NIX_VERSION >= (2, 0):
         """The arm this build has - the version is long past."""
 
         cxx = "nix::Here"
+        header = "nix/util/error.hh"
 
 else:
 
@@ -45,6 +47,7 @@ else:
         """The arm it does not have."""
 
         cxx = "nix::Gone"
+        header = "nix/util/error.hh"
 '''
 
 # The same hierarchy with nothing to resolve. Written out rather than
@@ -98,13 +101,12 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
     path = _declaration(tmp_path, BRANCHED)
     tree = resolved(path)
 
-    entries = pyerrors.entries(tree, load(path), ir.Resolver({}))
-    assert sorted(entries) == ["Here", "NixError"]
+    errors = pyerrors.errors(tree, load(path), ir.Resolver({}), "pkg.errors")
+    assert sorted(errors.classes) == ["Here", "NixError"]
     # ...and it inherits, which is the half only the IMPORT knows.
-    assert entries["Here"].bases == ("NixError",)
+    assert errors.classes["Here"].bases == ("NixError",)
 
-    chain = "\n".join(pyerrors.chain(tree, load(path), "raise_as",
-                                      "pkg.errors"))
+    chain = "\n".join(pyerrors.chain(errors, "raise_as"))
     assert "nix::Here" in chain
     assert "nix::Gone" not in chain
     # Most-derived first, or the base swallows the subclass.
@@ -138,23 +140,20 @@ def test_a_part_beyond_the_message_needs_a_reader(
     """A catch with a part and no reader calls the constructor short,
     and `raise_as` turns that refusal into a RuntimeError in silence.
 
-    So the chain refuses it, and a subclass that names a reader gets
-    one argument per extra part, typed by the part's record."""
+    So the model refuses it, and the shipped declaration, whose
+    classes name a reader, gets one argument per extra part, typed by
+    the part's record."""
     from huggorm_dsl.read import DeclarationError, load, resolved
+    from huggorm_gen import ir
     from huggorm_gen.cppgen import pyerrors
+    from huggorm_gen.cppgen.generate import declared_model
 
     path = _declaration(tmp_path, READERLESS)
     with pytest.raises(DeclarationError, match="NixError: `_wire_fields`"):
-        pyerrors.chain(resolved(path), load(path), "raise_as", "pkg.errors")
+        pyerrors.errors(resolved(path), load(path), ir.Resolver({}))
 
-    fixed = READERLESS.replace('    header = "nix/util/error.hh"\n    _wire',
-                               '    header = "nix/util/error.hh"\n'
-                               '    reader = "huggorm::error_info"\n    _wire')
-    (tmp_path / "fixed").mkdir()
-    path = _declaration(tmp_path / "fixed", fixed)
-    chain = "\n".join(pyerrors.chain(resolved(path), load(path), "raise_as",
-                                     "pkg.errors"))
-    assert ('raise_as("pkg.errors", "Read", e, '
+    chain = "\n".join(pyerrors.chain(declared_model().errors, "raise_as"))
+    assert ('"ThrownError", e, '
             "huggorm::error_info<huggorm::ErrorInfo>);") in chain
 
 
@@ -209,8 +208,7 @@ def test_the_errors_emitter_refuses_a_tree_nothing_resolved(
     mod = load(path)
 
     readings: list[Callable[[], object]] = [
-        lambda: pyerrors.entries(raw, mod, ir.Resolver({})),
-        lambda: pyerrors.chain(raw, mod, "raise_as", "pkg.errors"),
+        lambda: pyerrors.errors(raw, mod, ir.Resolver({})),
         lambda: pyerrors.module(raw, "emitted"),
     ]
     for reading in readings:
@@ -1621,13 +1619,10 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
 
     A file with NO translator is the control. It catches nothing, so
     it asks for none of them."""
-    from huggorm_decl import corpus
-    from huggorm_gen.cppgen import pyerrors
     from huggorm_gen.cppgen.generate import declared_model
     from huggorm_gen.cppgen.nbemit import extension
 
-    have = corpus()
-    headers = pyerrors.headers(have.resolved(have.errors))
+    headers = declared_model().errors.headers
     assert headers == ["huggorm_decl/cpp/eval_errors.hpp",
                        "nix/expr/eval-error.hh",
                        "nix/store/store-api.hh",
@@ -1660,21 +1655,24 @@ def test_a_caught_error_must_say_which_header_declares_it() -> None:
 
     Drop either refusal and the matching half of this passes."""
     import ast
+    import types
 
     from huggorm_dsl.read import DeclarationError
+    from huggorm_gen import ir
     from huggorm_gen.cppgen import pyerrors
 
-    no_header = ast.parse(
-        'class NixError(Exception):\n'
-        '    cxx = "nix::Error"\n')
-    with pytest.raises(DeclarationError, match="which header declares it"):
-        pyerrors.headers(no_header)
+    def errors(source: str) -> ir.Errors:
+        mod = types.ModuleType("errs")
+        exec(source, vars(mod))
+        return pyerrors.errors(ast.parse(source), mod, ir.Resolver({}))
 
-    no_cxx = ast.parse(
-        'class NixError(Exception):\n'
-        '    header = "nix/util/error.hh"\n')
+    with pytest.raises(DeclarationError, match="which header declares it"):
+        errors('class NixError(Exception):\n'
+               '    cxx = "nix::Error"\n')
+
     with pytest.raises(DeclarationError, match="`header` with no `cxx`"):
-        pyerrors.headers(no_cxx)
+        errors('class NixError(Exception):\n'
+               '    header = "nix/util/error.hh"\n')
 
 
 def test_the_header_line_does_not_reach_the_emitted_module() -> None:
@@ -1722,19 +1720,22 @@ def test_emitting_the_module_leaves_the_declaration_alone() -> None:
     Found 2026-09-05, by `headers` reading [] where the same call had
     read three headers a moment earlier."""
     from huggorm_decl import corpus
+    from huggorm_gen import ir
     from huggorm_gen.cppgen import pyerrors
 
     have = corpus()
     tree = have.resolved(have.errors)
 
     mod = have.imported(have.errors)
-    before = pyerrors.chain(tree, mod, "raise_as", "pkg.errors")
+    resolver = ir.Resolver({n: c for m in have.modules
+                            for n, c in m.known.items()})
+    before = pyerrors.errors(tree, mod, resolver, "pkg.errors")
     pyerrors.module(tree, "doc", "pkg")
-    after = pyerrors.chain(tree, mod, "raise_as", "pkg.errors")
+    after = pyerrors.errors(tree, mod, resolver, "pkg.errors")
 
     assert before == after, "the transform kept its hands off the tree"
-    assert "nix::InvalidPath" in "\n".join(after)
-    assert pyerrors.headers(tree), "and the headers survive it too"
+    assert "nix::InvalidPath" in "\n".join(pyerrors.chain(after, "raise_as"))
+    assert after.headers, "and the headers survive it too"
 
 
 def test_a_body_brings_its_own_standard_header() -> None:

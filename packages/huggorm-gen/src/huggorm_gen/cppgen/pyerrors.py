@@ -119,17 +119,10 @@ def _header_of(node: ast.ClassDef) -> str:
     return _assigned(node, HEADER)
 
 
-def headers(tree: ast.Module) -> list[str]:
-    """Every header the catch chain needs, once each, sorted.
+def _paired(node: ast.ClassDef) -> tuple[str, str]:
+    """A class's `cxx` and `header`, refused unless both or neither.
 
-    Sorted rather than declared-order, because an include block is a
-    set and the chain's order - most-derived first - is a fact about
-    the CATCHES and not about the includes. Ordering them by
-    declaration would make a reordered declaration rewrite an
-    unrelated block.
-
-    Refuses BOTH directions, because either one alone is a line that
-    reaches nothing:
+    Either one alone is a line that reaches nothing:
 
     - a `cxx` with no `header` is a catch whose type the emitted file
       can only reach by accident, through somebody else's transitive
@@ -137,27 +130,21 @@ def headers(tree: ast.Module) -> list[str]:
     - a `header` with no `cxx` is a line no emitter reads, and a line
       nobody reads is indistinguishable from a line nobody wrote.
     """
-    out: set[str] = set()
-    for node in _body(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        cxx, header = _cxx_of(node), _header_of(node)
-        if cxx and not header:
-            raise DeclarationError(
-                node, f"{node.name}: `cxx = \"{cxx}\"` says the emitted "
-                      f"translator catches this type, and nothing says "
-                      f"which header declares it. Add `header = \"nix/...\"` "
-                      f"beside it, or the emitted file reaches the type "
-                      f"only through somebody else's include (huggorm#90).")
-        if header and not cxx:
-            raise DeclarationError(
-                node, f"{node.name}: `header` with no `cxx`. Only a class "
-                      f"the translator CATCHES needs a header emitted for "
-                      f"it, so this line reaches no emitter - and a line "
-                      f"nobody reads looks exactly like one nobody wrote.")
-        if header:
-            out.add(header)
-    return sorted(out)
+    cxx, header = _cxx_of(node), _header_of(node)
+    if cxx and not header:
+        raise DeclarationError(
+            node, f"{node.name}: `cxx = \"{cxx}\"` says the emitted "
+                  f"translator catches this type, and nothing says "
+                  f"which header declares it. Add `header = \"nix/...\"` "
+                  f"beside it, or the emitted file reaches the type "
+                  f"only through somebody else's include (huggorm#90).")
+    if header and not cxx:
+        raise DeclarationError(
+            node, f"{node.name}: `header` with no `cxx`. Only a class "
+                  f"the translator CATCHES needs a header emitted for "
+                  f"it, so this line reaches no emitter - and a line "
+                  f"nobody reads looks exactly like one nobody wrote.")
+    return cxx, header
 
 
 def _body(tree: ast.Module) -> list[ast.stmt]:
@@ -213,9 +200,10 @@ def _depth(name: str, bases: dict[str, str]) -> int:
 WIRE_FIELDS = "_wire_fields"
 
 
-def entries(tree: ast.Module, mod: ModuleType,
-            resolver: ir.Resolver) -> dict[str, ir.ErrorModel]:
-    """Every declared exception, by name.
+def errors(tree: ast.Module, mod: ModuleType, resolver: ir.Resolver,
+           module: str = "", namespace: str = "huggorm") -> ir.Errors:
+    """The exception surface, resolved: every declared exception by
+    name, and the catch order.
 
     Two readings of one file, each answering what it is good for. The
     TREE says which classes this document declares and in what order.
@@ -243,12 +231,13 @@ def entries(tree: ast.Module, mod: ModuleType,
     (huggorm#82).
     """
     nodes = {n.name: n for n in _body(tree) if isinstance(n, ast.ClassDef)}
-    declared = list(nodes)
     here = mod.__name__
     out = {}
-    for name in sorted(declared):
+    for name in sorted(nodes):
         kls = getattr(mod, name)
         node = nodes[name]
+        cxx, header = _paired(node)
+        readers = _readers(node, kls, namespace) if cxx else ()
         out[name] = ir.ErrorModel(
             name,
             tuple(b.__name__ for b in kls.__bases__ if b.__module__ == here),
@@ -256,12 +245,17 @@ def entries(tree: ast.Module, mod: ModuleType,
             # every class below it carries them.
             tuple(ir.FieldModel(part, ir.type_ref(type_of(t, node, vars(mod)),
                                                   resolver))
-                  for part, t in getattr(kls, WIRE_FIELDS, ())))
-    return out
+                  for part, t in getattr(kls, WIRE_FIELDS, ())),
+            cxx, header, readers)
+    bases = _bases(tree)
+    caught = [name for name in nodes if out[name].cxx]
+    caught.sort(key=lambda name: -_depth(name, bases))
+    return ir.Errors(module, out, tuple(caught))
 
 
-def _readers(node: ast.ClassDef, kls: type, namespace: str) -> str:
-    """The reader arguments the catch for one class passes, or "".
+def _readers(node: ast.ClassDef, kls: type,
+             namespace: str) -> tuple[str, ...]:
+    """The reader arguments the catch for one class passes.
 
     One per part beyond the message, in `_wire_fields` order, because
     `as_error` hands them to the constructor in that order. Each is
@@ -274,7 +268,7 @@ def _readers(node: ast.ClassDef, kls: type, namespace: str) -> str:
     that refusal into a RuntimeError, in silence."""
     extra = list(getattr(kls, WIRE_FIELDS, ()))[MESSAGE_PARTS:]
     if not extra:
-        return ""
+        return ()
     reader = getattr(kls, READER, "")
     if not reader:
         raise DeclarationError(
@@ -282,7 +276,7 @@ def _readers(node: ast.ClassDef, kls: type, namespace: str) -> str:
                   f"{[f for f, _ in extra]} beyond the message, and no "
                   f"`reader = \"...\"` says which C++ reads them off the "
                   f"caught exception.")
-    return "".join(f", {reader}<{namespace}::{_record(t)}>" for _, t in extra)
+    return tuple(f"{reader}<{namespace}::{_record(t)}>" for _, t in extra)
 
 
 def _record(t: object) -> str:
@@ -292,8 +286,7 @@ def _record(t: object) -> str:
     return getattr(t, "__name__", repr(t))
 
 
-def chain(tree: ast.Module, mod: ModuleType, raise_as: str, module: str,
-          namespace: str = "huggorm") -> list[str]:
+def chain(errors: ir.Errors, raise_as: str) -> list[str]:
     """The translator's catch chain, most-derived first.
 
     `raise_as` is the C++ helper that sets the Python error: it is the
@@ -301,7 +294,7 @@ def chain(tree: ast.Module, mod: ModuleType, raise_as: str, module: str,
     `std::exception` into a live Python exception is nanobind's
     protocol rather than anything a declaration knows.
 
-    `module` is where the helper looks the class up. It was a string
+    `errors.module` is where the helper looks the class up. It was a string
     literal inside the helper, which made it a copy of a name the
     build derives three other ways - and a copy that no gate could
     see, because a stale one fails at RUNTIME by falling back to
@@ -309,23 +302,17 @@ def chain(tree: ast.Module, mod: ModuleType, raise_as: str, module: str,
     part of the library it raises into, and both strings in the call
     come from the same declaration.
 
-    A class with no `cxx` is skipped. That is how a Python-only
+    A class with no `cxx` is not caught. That is how a Python-only
     exception - one this binding raises itself and Nix never throws -
     stays in the module without inventing a catch for it.
-
-    `mod` is the imported declaration. It says which parts each class
-    INHERITS, and which reader, where the tree says only what the
-    class itself writes (`_readers`).
     """
-    bases = _bases(tree)
-    caught = [n for n in _body(tree)
-              if isinstance(n, ast.ClassDef) and _cxx_of(n)]
-    caught.sort(key=lambda n: -_depth(n.name, bases))
     out = ["    try {", "        throw;"]
-    for node in caught:
-        readers = _readers(node, getattr(mod, node.name), namespace)
-        out.append(f"    }} catch (const {_cxx_of(node)} & e) {{")
-        out.append(f'        {raise_as}("{module}", "{node.name}", e{readers});')
+    for name in errors.caught:
+        error = errors.classes[name]
+        readers = "".join(f", {r}" for r in error.readers)
+        out.append(f"    }} catch (const {error.cxx} & e) {{")
+        out.append(f'        {raise_as}("{errors.module}", "{name}", '
+                   f"e{readers});")
     out.append("    }")
     return out
 

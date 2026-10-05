@@ -1074,14 +1074,33 @@ class ErrorModel:
     # Bases declared in the same errors document, not `Exception`.
     bases: tuple[str, ...]
     wire_fields: tuple[FieldModel, ...]
+    # The C++ class the translator catches, or "" for an exception
+    # only this binding raises.
+    cxx: str = ""
+    # The header that declares `cxx`.
+    header: str = ""
+    # The reader each part past the message is read off the caught
+    # exception with, as C++, in part order.
+    readers: tuple[str, ...] = ()
+
 
 @dataclass(frozen=True)
 class Errors:
     """The exception surface: the module the hierarchy is emitted into
-    ("" when nothing declares one) and its classes, by name."""
+    ("" when nothing declares one), its classes by name, and the ones
+    the translator catches, most-derived first - C++ takes the first
+    catch that matches, so a base before its subclass swallows it."""
 
     module: str
     classes: Mapping[str, ErrorModel]
+    caught: tuple[str, ...] = ()
+
+    @property
+    def headers(self) -> list[str]:
+        """Every header the catch chain needs, once each, sorted: an
+        include block is a set, and the chain's order is a fact about
+        the catches."""
+        return sorted({c.header for c in self.classes.values() if c.header})
 
 # Why a free function with no threading policy has no rpc.
 NO_POLICY = ("no threading policy, so the function has no async form for "

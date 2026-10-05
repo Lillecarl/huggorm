@@ -96,10 +96,9 @@ def _errors() -> ir.Errors:
         # An error's parts name classes from any module.
         everything = ir.Resolver({n: c for mod in have.modules
                                   for n, c in mod.known.items()})
-        return ir.Errors(errors_module(),
-                         pyerrors.entries(have.resolved(have.errors),
-                                          have.imported(have.errors),
-                                          everything))
+        return pyerrors.errors(have.resolved(have.errors),
+                               have.imported(have.errors), everything,
+                               errors_module(), cxx.NAMESPACE)
 
 
 # The exception hierarchy, declared once. It emits two things that
@@ -119,10 +118,7 @@ def error_chain() -> list[str]:
     `errors_module()` is the same call that names the emitted module
     and fills `_policy.ERROR_MODULE`, so the catch chain cannot point
     somewhere the module is not."""
-    have = corpus()
-    return pyerrors.chain(have.resolved(have.errors),
-                          have.imported(have.errors), "huggorm::raise_as",
-                          errors_module(), cxx.NAMESPACE)
+    return pyerrors.chain(declared_model().errors, "huggorm::raise_as")
 
 
 def error_headers() -> list[str]:
@@ -133,10 +129,7 @@ def error_headers() -> list[str]:
     fact, and this is the emitter learning it rather than
     `cpp/errors.hpp` carrying it on the emitted files' behalf
     (huggorm#90)."""
-    have = corpus()
-    if not have.errors:
-        return []
-    return pyerrors.headers(have.resolved(have.errors))
+    return declared_model().errors.headers
 
 
 def errors_module() -> str:
