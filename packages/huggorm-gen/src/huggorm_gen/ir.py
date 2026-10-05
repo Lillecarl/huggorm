@@ -646,11 +646,30 @@ class FunctionModel:
     def rpc(self) -> RpcNames:
         return RpcNames.of(FREE_SERVICE, self.name)
 
-def dunders(decl: Decl) -> list[str]:
-    """The value dunders a declaration implies, sorted."""
-    facts = {"value": decl.wire == "value", "order": bool(decl.order),
-             "text": bool(decl.text)}
-    return sorted(name for name, fact in DUNDERS if facts[fact])
+@dataclass(frozen=True)
+class Semantics:
+    """What a value owes Python, from `@wire_value`."""
+
+    # The accessor `str()` answers with, or "".
+    text: str = ""
+    # The accessor a repr with no fields shows, or "".
+    shown: str = ""
+    # `==` is the C++ type's own operator, not a comparison of parts.
+    cxx_equal: bool = False
+    # It declares an ordering.
+    ordered: bool = False
+    # It has no parts, and every one is equal.
+    unit: bool = False
+
+    @classmethod
+    def of(cls, decl: Decl) -> Semantics:
+        return cls(decl.text, decl.shown, decl.compare == "cxx",
+                   decl.order, decl.unit)
+
+    @property
+    def cxx_order(self) -> bool:
+        """`<` and the rest are the C++ type's own operators."""
+        return self.cxx_equal and self.ordered
 
 
 def _factory(cls: Class, functions: Sequence[Method]) -> Method | None:
@@ -698,6 +717,7 @@ class ClassModel:
     from_parts: MethodModel | None = None
     # The header that declares its C++ type, or "".
     header: str = ""
+    semantics: Semantics = Semantics()
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -737,6 +757,7 @@ class ClassModel:
             from_parts=(MethodModel.of(c.from_parts, c, resolver)
                         if c.from_parts is not None else None),
             header=decl.header,
+            semantics=Semantics.of(decl),
         )
 
     @property
@@ -747,6 +768,14 @@ class ClassModel:
 
     def method(self, name: str) -> MethodModel:
         return next(m for m in self.methods if m.name == name)
+
+    @property
+    def dunders(self) -> list[str]:
+        """The value dunders this class implies, sorted."""
+        facts = {"value": self.wire == "value",
+                 "order": self.semantics.ordered,
+                 "text": bool(self.semantics.text)}
+        return sorted(name for name, fact in DUNDERS if facts[fact])
 
     @property
     def tree(self) -> callspec.Tree | None:
@@ -836,12 +865,13 @@ def _shaped(cls: ClassModel) -> ClassModel:
     Each check is one the binding depends on: `text=` renders through
     an accessor, and `_from_parts` rebuilds a value from its wire
     fields, in order."""
-    decl = cls.decl
-    if decl.text and not any(m.name == decl.text for m in cls.bound):
+    text = cls.semantics.text
+    if text and not any(m.name == text for m in cls.bound):
         raise TypeError(
-            f"{cls.name}: \"{decl.text}\" names no accessor on this class.")
+            f"{cls.name}: \"{text}\" names no accessor on this class.")
     fields = [f.name for f in cls.wire_fields]
-    if (decl.wire == "value" and (fields or decl.unit) and not cls.is_value
+    if (cls.wire == "value" and (fields or cls.semantics.unit)
+            and not cls.is_value
             and cls.init is not None and len(cls.init.params) != len(fields)):
         # `_from_parts` IS the constructor here. A forgotten `@local`
         # breaks that: an accessor joins the wire by existing, `_parts`

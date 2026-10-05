@@ -68,6 +68,14 @@ COMPARISONS = (("__eq__", "==", "value"), ("__lt__", "<", "order"),
                ("__ge__", ">=", "order"))
 
 
+def _cxx_comparisons(cls: ir.ClassModel) -> list[tuple[str, str]]:
+    """Each comparison bound to the C++ type's own operator, as
+    (dunder, operator)."""
+    facts = {"value": cls.semantics.cxx_equal,
+             "order": cls.semantics.cxx_order}
+    return [(name, op) for name, op, fact in COMPARISONS if facts[fact]]
+
+
 def _doc(text: str) -> str:
     """One docstring, as the C++ string literal that carries it.
 
@@ -304,17 +312,16 @@ def _value_semantics(cls: ir.ClassModel) -> list[str]:
     Every comparison carries `nb::is_operator()`. That is not a style
     choice: without it, comparing against an unrelated type raises
     TypeError where Python's protocol wants NotImplemented."""
-    decl = cls.decl
     obj = _self(cls)
     held = _held(cls)
     ref = f"const {held} &{obj}"
     out: list[str] = []
 
-    if decl.text:
+    if cls.semantics.text:
         # A CONVERSION, and only for a value that IS a string.
         out.append(f'{INDENT * 2}.def("__str__", [](nb::handle h) '
-                   f"{{ return {_render(cls, decl.text)}; }})")
-    if decl.wire == "value":
+                   f"{{ return {_render(cls, cls.semantics.text)}; }})")
+    if cls.wire == "value":
         # A value COPIES. Without these, copy.copy falls through to
         # pickle, which a bound C++ type cannot do - so a caller gets
         # TypeError rather than a copy.
@@ -325,11 +332,7 @@ def _value_semantics(cls: ir.ClassModel) -> list[str]:
                 f'{INDENT * 2}.def("__deepcopy__", []({ref}, nb::dict) '
                 f"{{ return {held}({obj}); }}, \"memo\"_a)"]
 
-    facts = {"value": decl.compare == "cxx",
-             "order": decl.compare == "cxx" and decl.order}
-    for name, op, fact in COMPARISONS:
-        if not facts[fact]:
-            continue
+    for name, op in _cxx_comparisons(cls):
         # The C++ comparison, not a Python one on the rendered text.
         # Upstream defaults these, so declaring them means the binding
         # follows if that ever stops being true.
@@ -516,7 +519,7 @@ def _round_trip(cls: ir.ClassModel) -> list[str]:
     IS - which is what lets one line cover a str, a StorePath and a
     list of them."""
     fields = wire_fields(cls)
-    if not fields and not cls.decl.unit:
+    if not fields and not cls.semantics.unit:
         return []
     reads = ", ".join(read for _, _, read in fields)
     return [f'{INDENT * 2}.def("_parts", [](nb::handle h) {{',
@@ -531,14 +534,14 @@ def markers(cls: ir.ClassModel) -> list[str]:
     over a handle, and `_from_parts` for a constructed value. Every
     other fact about a class reaches the layers above through the
     model, not through the compiled class."""
-    decl = cls.decl
     # The EFFECTIVE value, not the declared one. "proxy" is the safe
     # default on both sides - stateful until a declaration proves
     # otherwise - and writing it out means a reader of the compiled
     # class is told rather than left to know the default.
-    out = [f'{INDENT}cls.attr("_wire") = "{decl.wire or "proxy"}";']
+    out = [f'{INDENT}cls.attr("_wire") = "{cls.wire}";']
     fields = wire_fields(cls)
-    if (fields or cls.decl.unit) and not cls.is_value and cls.init is not None:
+    if ((fields or cls.semantics.unit) and not cls.is_value
+            and cls.init is not None):
         # The other half of the round trip, and for a CONSTRUCTED value
         # it is the class.
         #
@@ -759,7 +762,8 @@ class Emitter:
 
         out = ["#include <nanobind/nanobind.h>"]
         out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
-        if any(cls.decl.wire == "value" and cls.decl.text for cls in classes):
+        if any(cls.wire == "value" and cls.semantics.text
+               for cls in classes):
             # std::hash lives in <functional>, and the value hash uses it.
             out.append("#include <functional>")
         out += [f"#include <{h}>" for h in sorted(standard)]
@@ -1107,19 +1111,19 @@ class Emitter:
         one matches every same-type comparison, and the parts one never
         ran. They agreed only because the members ARE the parts."""
         fields = wire_fields(cls)
-        if not fields and cls.decl.shown:
+        if not fields and cls.semantics.shown:
             # A value that declares no FIELDS and one thing worth showing.
             # The repr then has no name to print, so it prints the value
             # alone - `ValidPathInfo('/nix/store/...')`. Weaker than a
             # named field, and it is what the declaration carries.
             return [f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
                     f'{INDENT * 3}return nb::str("{cls.name}({{!r}})").format(',
-                    f'{INDENT * 4}h.attr("{cls.decl.shown}")());',
+                    f'{INDENT * 4}h.attr("{cls.semantics.shown}")());',
                     f"{INDENT * 2}}})"]
         # A UNIT value has no parts and still compares, hashes and prints:
         # every one is equal, `Deferred()` names it, and the empty tuple
         # hashes.
-        if not fields and not cls.decl.unit:
+        if not fields and not cls.semantics.unit:
             return []
         spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
         reads = ", ".join(read for _, _, read in fields)
@@ -1128,7 +1132,7 @@ class Emitter:
             else read
             for _, t, read in fields)
         out = []
-        if equality and cls.decl.compare != "cxx":
+        if equality and not cls.semantics.cxx_equal:
             # Equal when the SAME CLASS carries the same declared parts.
             #
             # `b.type().is(a.type())` rather than isinstance: a subclass
@@ -1663,7 +1667,7 @@ class Emitter:
         disagree with `_parts` about what crosses or in which order - it
         can only consume what it is handed."""
         fields = wire_fields(cls)
-        if not fields and not cls.decl.unit:
+        if not fields and not cls.semantics.unit:
             return []
         types = self.part_types(cls)
         args = ", ".join(f"{t} {n}" for (n, _, _), t in zip(fields, types,
@@ -1721,7 +1725,7 @@ class Emitter:
         #
         # A PROXY is not final: a caller may subclass one to add
         # behaviour, and nothing about a handle breaks when they do.
-        final = ", nb::is_final()" if decl.wire == "value" else ""
+        final = ", nb::is_final()" if cls.wire == "value" else ""
         # The class's own prose, which a declaration always writes and a
         # caller could not read: `help(StorePath)` answered with nothing
         # but the signature until this line existed.
@@ -1810,7 +1814,7 @@ class Emitter:
             body = self._ctor(cls)
         for m in cls.bound:
             body += self._method(cls, m)
-        if decl.wire == "value":
+        if cls.wire == "value":
             body += self._identity_semantics(cls)
             body += _round_trip(cls)
             if cls.init is None:
@@ -2093,10 +2097,7 @@ def census(cls: ir.ClassModel) -> dict[str, int]:
             derived += 1
     if cls.init is not None:
         derived += 1
-    derived += len(_value_semantics(cls)) and sum(
-        1 for name, _, fact in COMPARISONS
-        if {"value": cls.decl.compare == "cxx",
-            "order": cls.decl.compare == "cxx" and cls.decl.order}[fact])
+    derived += len(_value_semantics(cls)) and len(_cxx_comparisons(cls))
     return {"derived": derived, "hatched": hatched,
             "hatch_lines": hatch_lines}
 

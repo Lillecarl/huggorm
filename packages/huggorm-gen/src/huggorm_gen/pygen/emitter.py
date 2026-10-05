@@ -990,7 +990,7 @@ def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
             signature=_arguments([ast.arg(arg="self")], c.ctor,
                                  [spell(p.type) for p in c.ctor],
                                  f"{name}.__init__")))
-    cls.body.extend(_stub_dunders(name, ir.dunders(c.decl)))
+    cls.body.extend(_stub_dunders(name, c.dunders))
     for m in c.methods:
         spell.defaults(m.params)
         params = [spell(p.type) for p in m.params]

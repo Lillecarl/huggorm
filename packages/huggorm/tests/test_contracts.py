@@ -465,11 +465,9 @@ def test_a_declared_order_is_an_order_that_works(
     declaration says `<` works, does `<` work?"""
     import importlib
 
-    from huggorm_gen import ir
-
     checked = []
     for c in model.classes.values():
-        if "__lt__" not in ir.dunders(c.decl):
+        if "__lt__" not in c.dunders:
             continue
         cls = getattr(importlib.import_module(c.qualified_module), c.name)
         # Two of the same type, however this one is built. A value that
@@ -502,11 +500,9 @@ def test_reflection_would_still_get_the_order_wrong(
     being filled and `dunders` could be measured again."""
     import importlib
 
-    from huggorm_gen import ir
-
     found = []
     for c in model.classes.values():
-        if c.wire != "value" or "__lt__" in ir.dunders(c.decl):
+        if c.wire != "value" or "__lt__" in c.dunders:
             continue
         cls = getattr(importlib.import_module(c.qualified_module), c.name)
         # The slot is there. Reflection sees it and calls it an
@@ -532,7 +528,6 @@ def test_the_stubs_promise_the_same_order_the_model_does(
     import sys
 
     from huggorm_dsl.read import DECLARED_DUNDERS
-    from huggorm_gen import ir
 
     # Found on the path, not beside the bindings. A PEP 561 stub
     # package is its own distribution and Nix installs it in its own
@@ -542,7 +537,7 @@ def test_the_stubs_promise_the_same_order_the_model_does(
                   .is_dir()), None)
     assert stubs is not None, "huggorm_bindings-stubs is not on sys.path"
 
-    declared = {name: set(ir.dunders(c.decl))
+    declared = {name: set(c.dunders)
                 for name, c in model.classes.items()}
     checked = 0
     for pyi in sorted(stubs.glob("*.pyi")):
