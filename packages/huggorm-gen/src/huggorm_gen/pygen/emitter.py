@@ -76,6 +76,21 @@ def _admits_none(annotation: ast.expr) -> bool:
 # inline, because it is prose a reader of the OUTPUT sees and an
 # 800-column string literal in an emitter argument list is neither
 # readable nor lintable.
+# The two modules every served class has a form in, beside its own
+# `async_<name>` module.
+PROTOCOL_MODULE = "protocols"
+RPC_MODULE = "rpc"
+
+# Every implementation closes the same way, and only the meaning
+# differs: in process it shuts the runner's thread down, remotely it
+# gives the lease back. So it belongs on the protocol, and it is the
+# one method no binding declares.
+ACLOSE = "aclose"
+
+# The registry a client uses to turn a handle into an object of the
+# right class.
+REGISTRY = "RPC_CLASSES"
+
 POLICY_DOC = """The wire policy of every declared type.
 
 The tables the codec needs and no caller does: what a wire value and
@@ -729,8 +744,6 @@ def protocol_module(model: ir.Model) -> ast.Module:
     A method with no rpc is absent, and the manifest says why. A proxy,
     parameter or return, is spelled as its protocol, here and on both
     implementations."""
-    from huggorm_gen.pygen.surface import ACLOSE
-
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
                                 "defined"))
     # Spelled once, before the module is written: the imports come
@@ -910,8 +923,6 @@ def rpc_module(model: ir.Model) -> ast.Module:
     handle addresses a real object on the server, and the base is a
     perfectly good view of it - which is the common case, since a
     caller usually does not care which store answered."""
-    from huggorm_gen.pygen.surface import ACLOSE, REGISTRY
-
     ordered = model.ordered_served
     # A returned proxy is an RPC class: the server leased a handle. A
     # proxy PARAMETER is spelled as the protocol, as on every surface,
@@ -1443,19 +1454,12 @@ def stub_init_module(by_module: dict[str, list[str]]) -> ast.Module:
     return mod
 
 
-def init_module(all_names: list[str], free_names: list[str] | None = None) -> ast.Module:
-    """The package front door: every wrapped class in its three forms -
+def init_module(model: ir.Model) -> ast.Module:
+    """The package front door: every served class in its three forms -
     the protocol it promises, the in-process implementation and the RPC
     implementation - plus the free functions."""
-    from huggorm_gen.pygen.surface import (
-        PROTOCOL_MODULE,
-        REGISTRY,
-        RPC_MODULE,
-        async_class_name,
-        protocol_name,
-        rpc_class_name,
-    )
-
+    served = model.ordered_served
+    free_names = wrapped_functions(model)
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(
         ast.Expr(
@@ -1464,19 +1468,12 @@ def init_module(all_names: list[str], free_names: list[str] | None = None) -> as
             )
         )
     )
-    for name in all_names:
-        fname = f"async_{name.lower()}"
-        mod.body.append(ast.ImportFrom(
-            module=fname,
-            names=[ast.alias(name=async_class_name(name))], level=1))
-    mod.body.append(ast.ImportFrom(
-        module=PROTOCOL_MODULE,
-        names=[ast.alias(name=protocol_name(n)) for n in all_names], level=1))
-    mod.body.append(ast.ImportFrom(
-        module=RPC_MODULE,
-        names=[ast.alias(name=REGISTRY)]
-        + [ast.alias(name=rpc_class_name(n)) for n in all_names], level=1))
-    free_names = free_names or []
+    for c in served:
+        mod.body.append(import_from(f"async_{c.name.lower()}", c.async_name, level=1))
+    mod.body.append(import_from(PROTOCOL_MODULE, *(c.protocol_name for c in served),
+                                level=1))
+    mod.body.append(import_from(RPC_MODULE, REGISTRY, *(c.rpc_name for c in served),
+                                level=1))
     if free_names:
         mod.body.append(ast.ImportFrom(
             module=FREE_MODULE,
@@ -1487,15 +1484,19 @@ def init_module(all_names: list[str], free_names: list[str] | None = None) -> as
             targets=[ast.Name(id="__all__")],
             value=ast.List(
                 elts=[ast.Constant(value=n)
-                      for n in package_exports(all_names, free_names)]),
+                      for n in package_exports(model)]),
         )
     )
     ast.fix_missing_locations(mod)
     return mod
 
 
-def package_exports(all_names: list[str],
-                    free_names: list[str] | None = None) -> list[str]:
+def wrapped_functions(model: ir.Model) -> list[str]:
+    """Every free function with an async form, by name."""
+    return [n for n in sorted(model.functions) if model.functions[n].wrapped]
+
+
+def package_exports(model: ir.Model) -> list[str]:
     """Everything `huggorm_generated` offers, in `__all__` order.
 
     Apart from `init_module` because a second file needs the same
@@ -1508,13 +1509,6 @@ def package_exports(all_names: list[str],
     handle into an object rather than surface, and the front door
     drops it - but this package does export it, and saying otherwise
     here would be a lie a reader of `__all__` could measure."""
-    from huggorm_gen.pygen.surface import (
-        REGISTRY,
-        async_class_name,
-        protocol_name,
-        rpc_class_name,
-    )
-
-    return ([f(n) for n in all_names
-             for f in (async_class_name, protocol_name, rpc_class_name)]
-            + [REGISTRY] + list(free_names or []))
+    return ([n for c in model.ordered_served
+             for n in (c.async_name, c.protocol_name, c.rpc_name)]
+            + [REGISTRY] + wrapped_functions(model))

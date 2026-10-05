@@ -14,9 +14,10 @@ import sys
 from huggorm_decl import corpus
 from huggorm_gen import contracts, ir
 from huggorm_gen.cppgen.generate import declared_model
-from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
+    PROTOCOL_MODULE,
+    RPC_MODULE,
     STUB_PACKAGE,
     free_function_module,
     init_module,
@@ -26,6 +27,7 @@ from huggorm_gen.pygen.emitter import (
     rpc_module,
     stub_package,
     unions_module,
+    wrapped_functions,
     wrapper_module,
 )
 from huggorm_gen.pygen.fmt import format_paths
@@ -107,22 +109,20 @@ def main(argv: list[str] | None = None) -> None:
         (out / fname).write_text(ast.unparse(emit(model, cls)) + "\n")
         print(f"generated {fname} for {cls.name} ({cls.decl.threading})")
 
-    free_names = sorted(f.name for f in model.functions.values() if f.wrapped)
+    free_names = wrapped_functions(model)
     if free_names:
         (out / f"{FREE_MODULE}.py").write_text(ast.unparse(
             free_function_module(model)) + "\n")
         print(f"generated {FREE_MODULE}.py for {len(free_names)} free "
               f"function(s): {', '.join(free_names)}")
 
-    served = [c.name for c in model.ordered_served]
-    (out / f"{surface.PROTOCOL_MODULE}.py").write_text(
+    (out / f"{PROTOCOL_MODULE}.py").write_text(
         ast.unparse(protocol_module(model)) + "\n")
-    (out / f"{surface.RPC_MODULE}.py").write_text(
+    (out / f"{RPC_MODULE}.py").write_text(
         ast.unparse(rpc_module(model)) + "\n")
-    print(f"generated {surface.PROTOCOL_MODULE}.py and "
-          f"{surface.RPC_MODULE}.py for {len(served)} class(es)")
-    (out / "__init__.py").write_text(
-        ast.unparse(init_module(served, free_names)) + "\n")
+    print(f"generated {PROTOCOL_MODULE}.py and {RPC_MODULE}.py for "
+          f"{len(model.ordered_served)} class(es)")
+    (out / "__init__.py").write_text(ast.unparse(init_module(model)) + "\n")
 
     # Type stubs for the bindings themselves (huggorm#27). The bindings
     # are compiled extensions, so a typechecker reads no signatures out

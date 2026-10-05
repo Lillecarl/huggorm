@@ -179,7 +179,6 @@ No hand-written source, like the other leaf. The emitter it runs is
     ir.py                 the typed model every stage reads (#29)
     contracts.py          the rules the build refuses to break
     pygen/spell.py        how one module writes a type, and its imports
-    pygen/surface.py      names for the PYTHON surface
     pygen/grpc_schema.py  the FileDescriptorSet
     pygen/emitter.py      the model -> Python, via ast.unparse
     pygen/fmt.py          ruff sorts and lays out what the emitters wrote

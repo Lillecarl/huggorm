@@ -231,9 +231,7 @@ def emit(out_dir: str, model: ir.Model) -> str:
 
     have = corpus()
     bindings = [n for names in pyinit.exports(have).values() for n in names]
-    free = [n for n in sorted(model.functions)
-            if model.functions[n].wrapped]
-    generated = package_exports([c.name for c in model.ordered_served], free)
+    generated = package_exports(model)
     unions = sorted(model.unions)
 
     target = pathlib.Path(out_dir) / "__init__.py"
