@@ -64,7 +64,7 @@ import re
 import types
 import typing
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
 
@@ -329,6 +329,9 @@ class Type:
     # Recorded while the reader holds the class, so no later stage
     # reads it back out of `python`.
     module: str = ""
+    # How an ASYNC surface spells this leaf, from `Async(...)` on the
+    # alias: "anyio.Path" for `Path`. Empty for most types.
+    twin: str = ""
 
     @property
     def optional(self) -> bool:
@@ -827,9 +830,11 @@ def type_of(ann: object, node: ast.AST, home: Mapping[str, Any]) -> Type:
                     node, "a union is named by the alias it is assigned "
                           "to, and this one is not a global of the file.")
             return Type(python=name, bound=True)
+        twin = next((m.spelling for m in meta
+                     if isinstance(m, declare.Async)), "")
         for m in meta:
             if isinstance(m, Cxx):
-                return _undeclared(held, m)
+                return replace(_undeclared(held, m), twin=twin)
         raise DeclarationError(
             node, f"'{ann}' carries no C++ spelling. Annotate the alias "
                   f"with Cxx(...) in declare.py.")

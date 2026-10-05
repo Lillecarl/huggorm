@@ -63,13 +63,17 @@ class Spelling:
         # `import module`, for a type written dotted.
         self.modules: set[str] = set()
 
-    def __call__(self, t: TypeRef, proxy: Rename | None = None) -> str:
+    def __call__(self, t: TypeRef, proxy: Rename | None = None,
+                 twin: bool = False) -> str:
         if t.optional:
-            return f"{self(t.args[0], proxy)} | None"
+            return f"{self(t.args[0], proxy, twin)} | None"
         if t.origin == "list":
-            return f"list[{self(t.args[0], proxy)}]"
+            return f"list[{self(t.args[0], proxy, twin)}]"
         if t.origin == "dict":
-            return f"dict[str, {self(t.args[0], proxy)}]"
+            return f"dict[str, {self(t.args[0], proxy, twin)}]"
+        if twin and t.twin:
+            self.module(t.twin)
+            return t.twin
         return self._leaf(t, proxy or self._proxy)
 
     def _leaf(self, t: TypeRef, proxy: Rename | None) -> str:

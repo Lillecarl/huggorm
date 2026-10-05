@@ -84,6 +84,27 @@ def _adopting(call: str, async_name: str, runner: str, optional: bool) -> str:
     return f"result = await {call}\nreturn {adopt}"
 
 
+def _twinned(call: str, t: ir.TypeRef) -> str:
+    """The body that hands back a forward in its async spelling.
+
+    anyio.Path takes any path-like, so the wrapper constructs one
+    rather than casting: a cast would claim the awaitable methods
+    without adding them."""
+    twin = t.leaf.twin
+    if not t.origin:
+        return f"return {twin}(await {call})"
+    if t.args[0].origin:
+        raise TypeError(f"{t.spelling}: an async twin is spelled under one "
+                        f"`| None` or `list[...]`, and this nests deeper")
+    if t.optional:
+        return (f"result = await {call}\n"
+                f"return None if result is None else {twin}(result)")
+    if t.origin == "list":
+        return f"return [{twin}(item) for item in await {call}]"
+    raise TypeError(f"{t.spelling}: an async twin has no spelling inside "
+                    f"a {t.origin}")
+
+
 RUNNER_BY_THREADING = {
     "affine": "AffineRunner",
     "pool": "PoolRunner",
@@ -404,11 +425,10 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
         params = [spell(p.type) for p in m.params]
         if _adopted(model, m) is not None:
             ret = spell.returns(m.returns, _as_async)
-        elif (twin := model.twins.get(m.return_spelling)) is not None:
-            spell.module(twin)
-            ret = twin
+        elif m.returns is not None:
+            ret = spell(m.returns, _as_binding, twin=True)
         else:
-            ret = spell.returns(m.returns, _as_binding)
+            ret = "None"
         methods[m.name] = (params, ret)
         spell.defaults(m.params)
     return spell, ctor, methods
@@ -425,11 +445,8 @@ def _hop_method(cls: ast.ClassDef, model: ir.Model,
     if (adopted := _adopted(model, m)) is not None:
         body = _adopting(call, f"{ASYNC}{adopted.name}", "self._runner",
                          m.returns is not None and m.returns.optional)
-    elif (twin := model.twins.get(m.return_spelling)) is not None:
-        # Same value, other spelling. anyio.Path takes any path-like,
-        # so the wrapper constructs one rather than casting: a cast
-        # would claim the awaitable methods without adding them.
-        body = f"return {twin}(await {call})"
+    elif m.returns is not None and m.returns.leaf.twin:
+        body = _twinned(call, m.returns)
     else:
         body = _forwarded(call, m.return_spelling)
     cls.body.append(_def(

@@ -248,8 +248,8 @@ def test_every_name_the_model_DECLARES_reaches_the_front_door() -> None:
     is a test the next table is born outside of. So this names none.
 
     A NAME TABLE is a mapping field whose keys are all identifiers.
-    That separates the four from `twins` (whose key is `pathlib.Path`)
-    and from `errors`, which is one record rather than a table."""
+    That separates the four from `errors`, which is one record rather
+    than a table."""
     import dataclasses
     from collections.abc import Mapping
 

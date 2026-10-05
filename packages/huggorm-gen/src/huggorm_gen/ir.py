@@ -178,6 +178,8 @@ class TypeRef:
     # Empty on a hand-built shape.
     cxx: str = ""
     caster: str | None = None
+    # How an async surface spells this leaf: "anyio.Path".
+    twin: str = ""
 
     @property
     def optional(self) -> bool:
@@ -305,6 +307,7 @@ def type_ref(t: Type, resolver: Resolver) -> TypeRef:
         name=name,
         width=t.cxx.width if t.cxx is not None and not t.origin else "",
         cxx=spelled, caster=caster,
+        twin=t.twin,
     )
 
 
@@ -1223,9 +1226,6 @@ class Model:
     unions: Mapping[str, UnionModel]
     # The classes that are HANDED BACK rather than constructed.
     returned: frozenset[str]
-    # A type the async surface spells differently: `pathlib.Path` is
-    # `anyio.Path` there - same value, awaitable methods.
-    twins: Mapping[str, str]
     enums: Mapping[str, EnumModel]
     errors: Errors
     # Each declaration file. Not a name table: a module name is not

@@ -1131,10 +1131,10 @@ async def test_the_async_wrapper_hands_back_an_anyio_path(
     it - and anyio.Path is a wrapper around the same value, so the two
     name the same place.
 
-    Declared by the bindings, in _async_twins, not known by the
-    huggorm_gen.pygen. Nothing about the wire changes: pathlib.Path has no
-    protobuf field either way, so this is one annotation and one
-    constructor call in the in-process wrapper."""
+    Declared by `Async(...)` on the `Path` alias. Nothing about the
+    wire changes: pathlib.Path has no protobuf field either way, so
+    this is one annotation and one constructor call in the in-process
+    wrapper."""
     import anyio
 
     from huggorm_generated import AsyncStore
@@ -1148,6 +1148,28 @@ async def test_the_async_wrapper_hands_back_an_anyio_path(
     assert str(real) == str(Store(str(tmp_path)).real_path(path))
     assert await (real / "a.txt").read_text() == "hello\n"
     await store.aclose()
+
+
+async def test_an_optional_path_is_twinned_too(tmp_path: pathlib.Path) -> None:
+    """`Path | None` is an anyio.Path when present, and None when not.
+
+    The twin was looked up by the return's whole spelling, so only a
+    bare `pathlib.Path` matched and every `| None` accessor handed
+    back a plain pathlib.Path (huggorm#118)."""
+    import anyio
+
+    from huggorm_generated import AsyncStore
+
+    chroot = AsyncStore(str(tmp_path))
+    dummy = AsyncStore("dummy://")
+    try:
+        root = await chroot.root_dir()
+        assert isinstance(root, anyio.Path)
+        assert str(root) == str(tmp_path)
+        assert await dummy.root_dir() is None
+    finally:
+        await chroot.aclose()
+        await dummy.aclose()
 
 
 # --- realisations ---------------------------------------------------

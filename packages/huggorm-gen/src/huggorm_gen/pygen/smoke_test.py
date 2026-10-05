@@ -48,7 +48,7 @@ def _cls(name: str, *, threading: str = "pool", blocking: bool = True,
 def _model(*classes: Any, enums: tuple[str, ...] = ()) -> Any:
     from huggorm_gen import ir
 
-    return ir.Model({c.name: c for c in classes}, {}, {}, frozenset(), {},
+    return ir.Model({c.name: c for c in classes}, {}, {}, frozenset(),
                     {n: ir.EnumModel(n, "pkg.mod", (), "")
                      for n in enums},
                     ir.Errors("", {}))
@@ -532,7 +532,6 @@ def test_conformance(out: pathlib.Path) -> None:
     # protocol name -> the class it speaks for, so a protocol-typed
     # return can be checked against each implementation's own form.
     speaks_for = {c.protocol_name: n for n, c in served.items()}
-    twins = dict(model.twins)
     found = _emitted_classes(out)
 
     def no_wire_of(c: Any) -> set[str]:
@@ -601,7 +600,12 @@ def test_conformance(out: pathlib.Path) -> None:
                     # wrapper hands back the twin and that is not
                     # drift. The remote client keeps the plain one: it
                     # has no local file either way.
-                    expected = twins.get(expected, expected)
+                    # A protocol method the declaration does not
+                    # declare, such as `close`, returns no twin.
+                    returned = {x.name: x.returns for x in cls.methods}.get(m)
+                    if returned is not None and returned.leaf.twin:
+                        expected = expected.replace(returned.leaf.name,
+                                                    returned.leaf.twin)
                 if sig["returns"] != expected:
                     failures.append(
                         f"{cls_name}.{m}: {label} returns {sig['returns']}, "

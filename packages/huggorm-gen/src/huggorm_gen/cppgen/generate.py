@@ -77,7 +77,7 @@ def declared_model() -> ir.Model:
         for vocab in map(have.module, have.vocabularies))
     enums = {e.name: e for vocab in vocabularies for e in vocab.enums}
     return ir.Model(classes, functions, unions, ir.returned_names(seen),
-                    declare.twins(), enums, _errors(), tuple(modules),
+                    enums, _errors(), tuple(modules),
                     vocabularies)
 
 
