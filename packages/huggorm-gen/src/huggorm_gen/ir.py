@@ -413,6 +413,85 @@ def blockers(params: Sequence[ParamModel], returns: TypeRef | None,
 
 
 @dataclass(frozen=True)
+class ArmTest:
+    """The test that a tagged union holds one arm: `hold->ask == tag`."""
+
+    hold: str
+    ask: str
+    tag: str
+
+
+@dataclass(frozen=True)
+class Tagged:
+    """`@tagged`: how a handle reaches the tagged union it wraps, how it
+    asks which arm the union holds, and each arm as (word, enumerator),
+    in declared order."""
+
+    hold: str
+    ask: str
+    arms: tuple[tuple[str, str], ...]
+
+    @classmethod
+    def of(cls, decl: Decl) -> Tagged | None:
+        if decl.tagged is None:
+            return None
+        hold, ask, table = decl.tagged
+        return cls(hold, ask, tuple(table.items()))
+
+    def test(self, word: str, where: str) -> ArmTest:
+        tag = dict(self.arms).get(word)
+        if tag is None:
+            raise ValueError(
+                f"{where} names no arm; @tagged offers "
+                f"{sorted(w for w, _ in self.arms)}")
+        return ArmTest(self.hold, self.ask, tag)
+
+
+@dataclass(frozen=True)
+class Fill:
+    """`@fills(maker, arm)`: the first parameter, `target`, is a builder
+    `maker` made for that arm."""
+
+    maker: str
+    target: str
+    arm: ArmTest
+
+
+def _tagged(owner: Class, m: Method) -> Tagged | None:
+    """The owner's union, for a method that `@guard`s or `@names` it."""
+    if not (m.guard or m.names):
+        return None
+    tagged = Tagged.of(owner.decl)
+    if tagged is None:
+        raise ValueError(
+            f"{owner.name}.{m.name}: needs @tagged(reach, ask, ...) on the "
+            f"class to say how to reach the union, how to ask which arm "
+            f"it holds, and what the arms are called")
+    return tagged
+
+
+def _fill(owner: Class, m: Method, params: Sequence[ParamModel],
+          resolver: Resolver) -> Fill | None:
+    """A `@fills` method's target check. The TARGET's class holds the
+    arm table, not the owner's: `list_append` is declared on the
+    evaluator and fills a Value."""
+    if m.fills is None:
+        return None
+    where = f"{owner.name}.{m.name}"
+    maker, arm = m.fills
+    if not params:
+        raise ValueError(f"{where}: @fills needs a target")
+    held = resolver.known.get(params[0].type.spelling)
+    tagged = Tagged.of(held.decl) if held is not None else None
+    if tagged is None:
+        raise ValueError(
+            f"{where}: @fills needs its target's class to "
+            f"carry @tagged, to check the arm being filled")
+    return Fill(maker, params[0].name,
+                tagged.test(arm, f'{where}: @fills(..., "{arm}")'))
+
+
+@dataclass(frozen=True)
 class MethodModel:
     name: str
     params: tuple[ParamModel, ...]
@@ -428,14 +507,13 @@ class MethodModel:
     cxx_body: str = ""
     # The data member it reads (`@reads`), or "".
     reads: str = ""
-    # The union arm it needs (`@guard`), or "".
-    guard: str = ""
-    # `@names`: it answers the name of the arm the union holds.
-    names: bool = False
+    # The arm it needs (`@guard`).
+    guard: ArmTest | None = None
+    # `@names`: it answers the name of the arm this union holds.
+    names: Tagged | None = None
     # The initialiser a producer calls (`@produces`), or "".
     produces: str = ""
-    # `@fills(maker, arm)`: its first parameter is a builder of that arm.
-    fills: tuple[str, str] | None = None
+    fills: Fill | None = None
     # `@local`: bound on the object and kept off the wire.
     local: bool = False
     # `@property`, which the binding refuses (huggorm#76).
@@ -450,18 +528,24 @@ class MethodModel:
     spells: tuple[str, ...] = ()
 
     @classmethod
-    def of(cls, m: Method, resolver: Resolver) -> MethodModel:
+    def of(cls, m: Method, owner: Class, resolver: Resolver) -> MethodModel:
         handle = cxx.handle(m.ret, resolver.known)
         ret = m.ret.required if m.ret is not None else None
         word = (None if ret is None or ret.origin
                 else resolver.known.get(ret.python))
-        return cls(m.name,
-                   tuple(ParamModel.of(p, resolver) for p in m.params),
+        params = tuple(ParamModel.of(p, resolver) for p in m.params)
+        tagged = _tagged(owner, m)
+        where = f'{owner.name}.{m.name}: @guard("{m.guard}")'
+        guard = (tagged.test(m.guard, where)
+                 if tagged is not None and m.guard else None)
+        return cls(m.name, params,
                    type_ref(m.ret, resolver) if m.ret is not None else None,
                    _clean(m.doc), m.blocks, instant=m.instant,
                    cxx_name=m.cxx_name, cxx_body=m.cxx_body, reads=m.reads,
-                   guard=m.guard, names=m.names, produces=m.produces,
-                   fills=m.fills, local=m.local, prop=m.prop,
+                   guard=guard, names=tagged if m.names else None,
+                   produces=m.produces,
+                   fills=_fill(owner, m, params, resolver),
+                   local=m.local, prop=m.prop,
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
                                  and bool(word.decl.enumerated)),
@@ -597,12 +681,12 @@ class ClassModel:
                 for f, m in c.parts if m.ret is not None),
             ctor=tuple(ParamModel.of(p, resolver)
                        for p in _ctor_params(c, functions)),
-            bound=tuple(MethodModel.of(m, resolver) for m in c.methods),
-            init=(MethodModel.of(c.ctor, resolver)
+            bound=tuple(MethodModel.of(m, c, resolver) for m in c.methods),
+            init=(MethodModel.of(c.ctor, c, resolver)
                   if c.ctor is not None else None),
             factory=(FunctionModel.of(made, package, module, resolver)
                      if (made := _factory(c, functions)) else None),
-            from_parts=(MethodModel.of(c.from_parts, resolver)
+            from_parts=(MethodModel.of(c.from_parts, c, resolver)
                         if c.from_parts is not None else None),
         )
 

@@ -780,6 +780,61 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
         nbemit.Emitter(model, unit, {}).bind_function(unit.classes[0])
 
 
+TAGGED = '''"""A tagged union, and an accessor declared against it."""
+
+from huggorm_dsl.declare import I64, binding, fills, guard, header, names, tagged
+
+
+@header("nix/expr/value.hh")
+@tagged("get()", "type<true>()", int="nix::nInt", list="nix::nList")
+@binding(cxx="nix::Value", threading="pool", blocking=False)
+class Held:
+    """A union, for a test that never compiles one."""
+
+
+@header("nix/expr/value.hh")
+@binding(cxx="nix::Value", threading="pool", blocking=False)
+class Bare:
+    """The same, with no @tagged to check against."""
+
+
+@header("nix/expr/eval.hh")
+@binding(cxx="nix::EvalState", threading="pool", blocking=False)
+class State:
+    """The owner of every method under test."""
+
+{method}
+'''
+
+
+@pytest.mark.parametrize(("method", "refusal"), [
+    ('    @guard("int")\n    def integer(self) -> I64:\n        """."""',
+     "needs @tagged"),
+    ('    @names\n    def kind(self) -> str:\n        """."""',
+     "needs @tagged"),
+    ('    @fills("make", "list")\n    def append(self) -> None:\n'
+     '        """."""', "@fills needs a target"),
+    ('    @fills("make", "list")\n    def append(self, to: Bare) -> None:\n'
+     '        """."""', "carry @tagged"),
+    ('    @fills("make", "set")\n    def append(self, to: Held) -> None:\n'
+     '        """."""', "names no arm"),
+])
+def test_the_model_refuses_an_arm_it_cannot_check(
+        tmp_path: pathlib.Path, method: str, refusal: str) -> None:
+    """A union accessor whose arm test cannot be written is refused by
+    the MODEL, not by the C++ emitter.
+
+    Refused only at emission, it reached the stubs and the Python
+    surfaces first, built from a model the binding later rejected
+    (huggorm#115)."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    module = read(_declaration(tmp_path, TAGGED.format(method=method)))
+    with pytest.raises(ValueError, match=refusal):
+        ir.ModuleModel.of(module, "")
+
+
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     """A directory shaped like `decl/`: two declarations and two
     things that are not one.

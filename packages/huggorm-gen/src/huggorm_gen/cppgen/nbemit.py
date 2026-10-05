@@ -933,15 +933,14 @@ class Emitter:
             ]
 
         head = self._guard_head(cls, m)
-        if m.guard or m.names:
-            hold, ask, table = cls.decl.tagged  # type: ignore[misc]
-            reach = f"{obj}.{hold}->"
-        if m.names:
+        if m.guard is not None:
+            reach = f"{obj}.{m.guard.hold}->"
+        if m.names is not None:
             # The arm table, read the other way. One switch, so the names
             # a caller sees and the names @guard checks cannot drift.
-            _, _, table = cls.decl.tagged  # type: ignore[misc]
-            lines = [f"{INDENT * 4}switch ({reach}{ask}) {{"]
-            for name, enum in table.items():
+            lines = [f"{INDENT * 4}switch ({obj}.{m.names.hold}->"
+                     f"{m.names.ask}) {{"]
+            for name, enum in m.names.arms:
                 lines.append(f'{INDENT * 4}case {enum}: return "{name}";')
             lines.append(f"{INDENT * 4}}}")
             # Every enumerator is named above, and a compiler still wants
@@ -1011,58 +1010,29 @@ class Emitter:
         to DO once the arm is known; the check that the arm IS known is
         the same either way, and writing it inside twelve bodies is what
         this exists to stop."""
-        if m.fills:
+        if m.fills is not None:
             # The FIRST parameter is the value being filled. A method that
             # fills takes its target first, which is what makes this
             # derivable rather than another thing to name.
-            maker, arm = m.fills
-            if not m.params:
-                raise ValueError(f"{cls.name}.{m.name}: @fills needs a target")
-            target = m.params[0].name
-            # The TARGET's class holds the arm table, not this one:
-            # `list_append` is declared on the evaluator and fills a Value.
-            filled = m.params[0].type.spelling
-            held = (self.model.classes.get(filled) if self._decl(filled)
-                    else None)
-            if held is None or held.decl.tagged is None:
-                raise ValueError(
-                    f"{cls.name}.{m.name}: @fills needs its target's class to "
-                    f"carry @tagged, to check the arm being filled")
-            hold, ask, table = held.decl.tagged
-            if arm not in table:
-                raise ValueError(
-                    f'{cls.name}.{m.name}: @fills(..., "{arm}") names no arm; '
-                    f"@tagged offers {sorted(table)}")
+            target, arm = m.fills.target, m.fills.arm
             return [
                 # The arm FIRST. A builder of the wrong kind passes the
                 # builder test and then reads the wrong union member,
                 # which is undefined rather than an error.
-                f"{INDENT * 4}if ({target}.{hold}->{ask} != {table[arm]})",
-                f"{INDENT * 5}{_wrong_arm(target, hold, table[arm])}",
+                f"{INDENT * 4}if ({target}.{arm.hold}->{arm.ask} != {arm.tag})",
+                f"{INDENT * 5}{_wrong_arm(target, arm.hold, arm.tag)}",
                 f"{INDENT * 4}if (!{target}.is_builder())",
                 f"{INDENT * 5}throw std::invalid_argument(",
-                f'{INDENT * 6}"this value did not come from {maker}, and a "',
+                f'{INDENT * 6}"this value did not come from {m.fills.maker}, and a "',
                 f'{INDENT * 6}"Nix value is immutable: filling it would "',
                 f'{INDENT * 6}"rewrite memory the evaluator produced");',
             ]
-        if not (m.guard or m.names):
+        if m.guard is None:
             return []
-        if cls.decl.tagged is None:
-            raise ValueError(
-                f"{cls.name}.{m.name}: needs @tagged(reach, ask, ...) on the "
-                f"class to say how to reach the union, how to ask which arm "
-                f"it holds, and what the arms are called")
-        hold, ask, table = cls.decl.tagged
-        if not m.guard:
-            return []
-        if m.guard not in table:
-            raise ValueError(
-                f'{cls.name}.{m.name}: @guard("{m.guard}") names no arm; '
-                f"@tagged offers {sorted(table)}")
-        obj = _self(cls)
+        obj, arm = _self(cls), m.guard
         return [
-            f"{INDENT * 4}if ({obj}.{hold}->{ask} != {table[m.guard]})",
-            f"{INDENT * 5}{_wrong_arm(obj, hold, table[m.guard])}",
+            f"{INDENT * 4}if ({obj}.{arm.hold}->{arm.ask} != {arm.tag})",
+            f"{INDENT * 5}{_wrong_arm(obj, arm.hold, arm.tag)}",
         ]
 
     def _returns(self, m: ir.MethodModel) -> str:
