@@ -1168,6 +1168,35 @@ class Model:
     def module(self, name: str) -> ModuleModel:
         return next(m for m in self.modules if m.name == name)
 
+    @property
+    def exports(self) -> dict[str, list[str]]:
+        """Every name `huggorm_bindings` offers, by the module it comes
+        from, both sorted. The real `__init__.py` and its stub both
+        say this, so it is said once.
+
+        A declaration's CLASSES and its exported FREE FUNCTIONS come
+        from the module it compiles to. A VOCABULARY's words come from
+        the plain-Python module the enum emitter writes.
+
+        A FACTORY is not among the functions, and it must not be.
+        `nbemit` binds one as its class's constructor and as no module
+        function, so a front door naming it fails to import. Measured:
+        keeping it makes the package raise `cannot import name
+        'open_store'`. `ModuleModel.exported` holds that rule, and its
+        edge: only a factory whose class declares a constructor is
+        dropped, so `parse_store_reference` stays a function."""
+        out: dict[str, list[str]] = {}
+        for unit in self.modules:
+            names = [c.name for c in unit.classes]
+            names += [f.name for f in unit.exported]
+            if names:
+                out[unit.name] = names
+        for vocab in self.vocabularies:
+            if vocab.enums:
+                out.setdefault(vocab.name, []).extend(
+                    e.name for e in vocab.enums)
+        return {m: sorted(out[m]) for m in sorted(out)}
+
     def declared(self, t: TypeRef
                  ) -> ClassModel | UnionModel | EnumModel | None:
         """The model behind one leaf, or None for a builtin, a module

@@ -93,45 +93,6 @@ libexpr now, and the stand-in is deleted (huggorm#60).
 '''
 
 
-def exports(model: ir.Model) -> dict[str, list[str]]:
-    """Every name the package offers, by the module it comes from.
-
-    Three sources and one subtraction.
-
-    A declaration's CLASSES and its exported FREE FUNCTIONS come from
-    the module it compiles to, named after the declaration's stem -
-    the same fact that names the `.cpp` file.
-
-    A VOCABULARY's words come from the plain-Python module the enum
-    emitter writes, which is named the same way. They are not classes
-    a binding compiles, so they are read from the vocabulary group
-    rather than found among the rest.
-
-    Then a FACTORY is dropped, and it has to be. `nbemit` binds one as
-    its class's constructor and as no module-level function, so a
-    front door naming it does not merely offer a second spelling -
-    it fails to import. Measured: keeping it makes the emitted package
-    raise `cannot import name 'open_store'`.
-
-    `ModuleModel.exported` decides which functions those are, and this
-    reads it rather than restating it. The rule has an edge a copy misses:
-    only a factory whose class declares a constructor is dropped.
-    `parse_store_reference` makes a `StoreReference`, which has none,
-    so it stays a module function, and the stub and `__all__` must
-    both say so.
-    """
-    out: dict[str, list[str]] = {}
-    for unit in model.modules:
-        names = [c.name for c in unit.classes]
-        names += [f.name for f in unit.exported]
-        if names:
-            out[unit.name] = names
-    for vocab in model.vocabularies:
-        if vocab.enums:
-            out.setdefault(vocab.name, []).extend(e.name for e in vocab.enums)
-    return {m: sorted(out[m]) for m in sorted(out)}
-
-
 def module(model: ir.Model) -> str:
     """The package's `__init__.py`, as source.
 
@@ -148,7 +109,7 @@ def module(model: ir.Model) -> str:
     a typechecker a name is re-exported when there is no `__all__`;
     there is one here, and it says the same thing once.
     """
-    by_module = exports(model)
+    by_module = model.exports
     body: list[ast.stmt] = [ast.Expr(value=ast.Constant(value=DOC))]
     for name, names in by_module.items():
         body.append(ast.ImportFrom(

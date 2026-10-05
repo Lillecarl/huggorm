@@ -1091,18 +1091,9 @@ def stub_package(model: ir.Model) -> dict[str, ast.Module]:
     modules = sorted({c.qualified_module for c in model.classes.values()}
                      | {f.module for f in model.functions.values()})
     out: dict[str, ast.Module] = {}
-    exported: dict[str, list[str]] = {}
     for module in modules:
         out[f"{module.rsplit('.', 1)[-1]}.pyi"] = stub_module(model, module)
-        exported[module] = (
-            [c.name for c in (*model.handed_back, *model.constructed)
-             if c.qualified_module == module]
-            + [n for n in sorted(model.functions)
-               if model.functions[n].module == module])
-    for name, enum in sorted(model.enums.items()):
-        exported.setdefault(enum.module, []).append(name)
-    out["__init__.pyi"] = stub_init_module(
-        {m: exported[m] for m in sorted(exported)})
+    out["__init__.pyi"] = stub_init_module(model.exports)
     return out
 
 
@@ -1117,7 +1108,7 @@ def stub_init_module(by_module: dict[str, list[str]]) -> ast.Module:
         # `X as X` is what marks a name re-exported from a stub; a plain
         # import is private to the stub and invisible to consumers.
         mod.body.append(ast.ImportFrom(
-            module=module.rsplit(".", 1)[-1],
+            module=module,
             names=[ast.alias(name=n, asname=n) for n in exported], level=1))
         names += exported
     mod.body.append(ast.Assign(

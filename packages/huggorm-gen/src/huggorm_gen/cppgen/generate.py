@@ -680,7 +680,7 @@ def main(out_dir: str) -> int:
     # order is for a reader rather than for correctness.
     target = out / "__init__.py"
     target.write_text(pyinit.module(declared_model()) + "\n")
-    names = sum(len(v) for v in pyinit.exports(declared_model()).values())
+    names = sum(len(v) for v in declared_model().exports.values())
     print(f"front door -> {target}: {names} name(s)")
     census_cpp(set(have.module_names))
     census_markers(have)

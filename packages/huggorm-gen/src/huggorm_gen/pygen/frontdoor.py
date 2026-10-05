@@ -11,9 +11,8 @@ are derived.
 
 ## What is derived, and from what
 
-- Everything `huggorm_bindings` exports, which `cppgen/pyinit.py`
-  already derives from the declarations. Read from there rather than
-  computed again.
+- Everything `huggorm_bindings` exports, which `Model.exports`
+  already derives. Read from there rather than computed again.
 - Everything `huggorm_generated` exports, which `emitter.package_exports`
   already derives from the model. Read from there for the same
   reason. `RPC_CLASSES` is dropped: it is a registry the client uses
@@ -225,10 +224,9 @@ def emit(out_dir: str, model: ir.Model) -> str:
     """Write `__init__.py` into the package directory, and say where."""
     import pathlib
 
-    from huggorm_gen.cppgen import pyinit
     from huggorm_gen.pygen.emitter import package_exports
 
-    bindings = [n for names in pyinit.exports(model).values() for n in names]
+    bindings = [n for names in model.exports.values() for n in names]
     generated = package_exports(model)
     unions = sorted(model.unions)
 
