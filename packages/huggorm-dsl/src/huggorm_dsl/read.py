@@ -63,7 +63,7 @@ import pathlib
 import re
 import types
 import typing
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
@@ -750,7 +750,7 @@ def _vocabulary(tree: ast.Module) -> dict[str, str]:
 
 
 
-def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
+def type_of(ann: object, node: ast.AST, home: Mapping[str, Any]) -> Type:
     """One annotation, as the object the import resolved it to.
 
     Nothing here reads text. Python 3.14 defers annotations, and
@@ -760,10 +760,10 @@ def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
     `T | None` as the generics they are. `get_origin` and `get_args`
     say the structure; the reader never parses a spelling to find it.
 
-    `fn` is the function the annotation belongs to. Its globals are
-    where a UNION alias gets its name: a union is an `Annotated` object
-    and does not know what it is called, so the name is whichever
-    global of the declaring file IS that object.
+    `home` is the globals of the file the annotation is written in.
+    They are where a UNION alias gets its name: a union is an
+    `Annotated` object and does not know what it is called, so the
+    name is whichever global of the declaring file IS that object.
 
     Refused, each for its own reason: a string (the quote is what made
     this reader parse text, and 3.14 needs none), a name the file never
@@ -783,7 +783,7 @@ def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
     if origin is Annotated:
         held, *meta = get_args(ann)
         if any(isinstance(m, declare.Variant) for m in meta):
-            name = next((k for k, v in fn.__globals__.items() if v is ann),
+            name = next((k for k, v in home.items() if v is ann),
                         None)
             if name is None:
                 raise DeclarationError(
@@ -803,12 +803,12 @@ def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
             raise DeclarationError(
                 node, f"'{ann}': an annotation holds `T | None` and no other "
                       f"union. A sum type is a named alias with Variant(...).")
-        inner = type_of(present[0], node, fn)
+        inner = type_of(present[0], node, home)
         return Type(python=f"{inner.python} | None", origin="optional",
                     args=(inner,))
     if origin is list:
         (item,) = get_args(ann)
-        inner = type_of(item, node, fn)
+        inner = type_of(item, node, home)
         return Type(python=f"list[{inner.python}]", origin="list",
                     args=(inner,))
     if origin is dict:
@@ -817,7 +817,7 @@ def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
             raise DeclarationError(
                 node, f"'{ann}': a map is keyed by str. The wire has no "
                       f"other key, and a Nix attribute name is one.")
-        inner = type_of(value, node, fn)
+        inner = type_of(value, node, home)
         return Type(python=f"dict[str, {inner.python}]", origin="dict",
                     args=(inner,))
     if origin is not None:
@@ -825,7 +825,7 @@ def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
             node, f"'{ann}': no binding carries a {origin.__name__}. A "
                   f"declaration holds list, dict[str, ...] and T | None.")
     if isinstance(ann, type):
-        if _declared(ann, fn):
+        if _declared(ann, home):
             return Type(python=ann.__name__, bound=True)
         return Type(python=_spelled(ann))
     raise DeclarationError(node, f"'{ann!r}' is not a type.")
@@ -875,7 +875,7 @@ def _spelled(cls: type) -> str:
     return f"{cls.__module__}.{cls.__name__}"
 
 
-def _declared(cls: type, fn: Callable[..., Any]) -> bool:
+def _declared(cls: type, home: Mapping[str, Any]) -> bool:
     """Whether a class comes from a declaration, and so is BOUND.
 
     By where it was written, not by its name: a class defined in a file
@@ -883,14 +883,16 @@ def _declared(cls: type, fn: Callable[..., Any]) -> bool:
     exceptions in `errors.py` are declared this way too, and carry no
     marker of their own.
 
-    The function's own module first: `load` runs a declaration under a
+    The file's own module first: `load` runs a declaration under a
     name `sys.modules` does not hold, so `inspect.getfile` cannot find
     a class the file being read defines."""
-    if cls.__module__ == fn.__module__:
+    if cls.__module__ == home.get("__name__"):
         return True
+    file = home.get("__file__")
     with contextlib.suppress(TypeError):
-        here = pathlib.Path(inspect.getfile(fn)).resolve().parent
-        return pathlib.Path(inspect.getfile(cls)).resolve().parent == here
+        if file:
+            here = pathlib.Path(file).resolve().parent
+            return pathlib.Path(inspect.getfile(cls)).resolve().parent == here
     return False
 
 
@@ -1159,7 +1161,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                 arg, f"{node.name}({arg.arg}): every parameter states its "
                      f"type.")
         default = signature.parameters[arg.arg].default
-        declared = type_of(anns[arg.arg], arg, fn)
+        declared = type_of(anns[arg.arg], arg, fn.__globals__)
         if default is None and not declared.optional:
             # An implicit Optional: every surface but the C++ then says
             # `| None` where the declaration did not (huggorm#104).
@@ -1174,7 +1176,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
 
     ret: Type | None = None
     if node.returns is not None and anns.get("return") is not None:
-        ret = type_of(anns["return"], node.returns, fn)
+        ret = type_of(anns["return"], node.returns, fn.__globals__)
 
     # A method decorator writes an attribute on the function, and the
     # import already ran it, so the markers are read off `fn`.

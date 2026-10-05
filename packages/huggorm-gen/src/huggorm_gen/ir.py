@@ -305,18 +305,6 @@ class FieldModel:
         crossable(t, name)
         return cls(name, type_ref(t, resolver))
 
-    @classmethod
-    def spelled(cls, name: str, spelling: str, resolver: Resolver) -> FieldModel:
-        """A part an error declares as a `_wire_fields` string: a name,
-        or a name and `?` for one that may be None."""
-        held = spelling.removesuffix("?")
-        if not held.isidentifier():
-            raise TypeError(
-                f"_wire_fields {name!r} is {spelling!r}: an error's part is a "
-                f"declared name, with a trailing '?' if it may be None")
-        t = TypeRef.named(held, resolver.kind(held))
-        return cls(name, TypeRef.optional_of(t) if held != spelling else t)
-
 
 def crossable(t: Type | None, where: str) -> None:
     """Refuse a container of a C++ width.

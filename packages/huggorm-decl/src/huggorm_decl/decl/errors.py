@@ -60,8 +60,8 @@ class NixError(Exception):
     # same thing - the parts this object can be rebuilt from - though
     # an error travels in the gRPC status details rather than as a
     # response message of its own (huggorm#36).
-    _wire_fields: tuple[tuple[str, str], ...] = (
-        ("message", "str"), ("colored", "str"), ("info", "ErrorInfo?"))
+    _wire_fields: tuple[tuple[str, object], ...] = (
+        ("message", str), ("colored", str), ("info", ErrorInfo | None))
 
     def __init__(self, message: str, colored: str | None = None,
                  info: ErrorInfo | None = None) -> None:
@@ -320,7 +320,7 @@ class Interrupted(BaseException):
     cxx = "nix::Interrupted"
     header = "nix/util/signals.hh"
 
-    _wire_fields = (("message", "str"), ("colored", "str"))
+    _wire_fields = (("message", str), ("colored", str))
 
     def __init__(self, message: str, colored: str | None = None) -> None:
         super().__init__(message)
@@ -362,8 +362,8 @@ class BuildError(NixError):
     that nothing here saw evidence otherwise.
     """
 
-    _wire_fields = (("message", "str"), ("colored", "str"),
-                    ("status", "str"), ("is_non_deterministic", "bool"))
+    _wire_fields = (("message", str), ("colored", str),
+                    ("status", str), ("is_non_deterministic", bool))
 
     def __init__(self, message: str, colored: str | None = None,
                  status: str = "misc-failure",

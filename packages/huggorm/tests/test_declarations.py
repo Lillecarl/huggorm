@@ -116,11 +116,14 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
 
 
 READERLESS = '''
+from huggorm_decl.decl.path import ErrorInfo
+
+
 class NixError(Exception):
     cxx = "nix::Error"
     header = "nix/util/error.hh"
-    _wire_fields = (("message", "str"), ("colored", "str"),
-                    ("info", "ErrorInfo?"))
+    _wire_fields = (("message", str), ("colored", str),
+                    ("info", ErrorInfo | None))
 
 
 class Read(NixError):

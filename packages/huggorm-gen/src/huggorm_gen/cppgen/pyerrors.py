@@ -42,9 +42,10 @@ evaluate and no `NIX_VERSION` to import.
 
 import ast
 import copy
-from types import ModuleType
+from types import ModuleType, UnionType
+from typing import Union, get_args, get_origin
 
-from huggorm_dsl.read import DECLARATIONS, DeclarationError
+from huggorm_dsl.read import DECLARATIONS, DeclarationError, type_of
 from huggorm_gen import ir
 
 # The attribute a declared exception uses to name its C++ class. Not a
@@ -221,12 +222,12 @@ def entries(tree: ast.Module, mod: ModuleType,
     The IMPORT says what each one INHERITS, and that is the half a
     tree cannot give.
 
-    `_wire_fields` is declared once, on NixError, and eight classes
-    below it carry the same two strings. An earlier version of this
-    walked the declared base chain to find them, which recomputed
-    what Python had already computed while executing the file - and
-    would have got it wrong the first time a hierarchy branched,
-    because a tree walk follows the first base and an MRO does not.
+    `_wire_fields` is declared once, on NixError, and the classes
+    below it inherit it through the MRO. A tree walk would follow the
+    first base, and an MRO does not, so the import answers it.
+
+    Each part's type is the object the file wrote, read by the same
+    `type_of` a method's annotation goes through.
 
     Bases INSIDE this file only. `Exception` is Python's and says
     nothing about the hierarchy a caller catches by; the reflected
@@ -241,18 +242,21 @@ def entries(tree: ast.Module, mod: ModuleType,
     reason Python gave rather than only that there was one
     (huggorm#82).
     """
-    declared = [n.name for n in _body(tree) if isinstance(n, ast.ClassDef)]
+    nodes = {n.name: n for n in _body(tree) if isinstance(n, ast.ClassDef)}
+    declared = list(nodes)
     here = mod.__name__
     out = {}
     for name in sorted(declared):
         kls = getattr(mod, name)
+        node = nodes[name]
         out[name] = ir.ErrorModel(
             name,
             tuple(b.__name__ for b in kls.__bases__ if b.__module__ == here),
             # Through the MRO, so a class states its parts once and
             # every class below it carries them.
-            tuple(ir.FieldModel.spelled(f[0], f[1], resolver)
-                  for f in getattr(kls, WIRE_FIELDS, ())))
+            tuple(ir.FieldModel(part, ir.type_ref(type_of(t, node, vars(mod)),
+                                                  resolver))
+                  for part, t in getattr(kls, WIRE_FIELDS, ())))
     return out
 
 
@@ -278,8 +282,14 @@ def _readers(node: ast.ClassDef, kls: type, namespace: str) -> str:
                   f"{[f for f, _ in extra]} beyond the message, and no "
                   f"`reader = \"...\"` says which C++ reads them off the "
                   f"caught exception.")
-    return "".join(f", {reader}<{namespace}::{ftype.removesuffix('?')}>"
-                   for _, ftype in extra)
+    return "".join(f", {reader}<{namespace}::{_record(t)}>" for _, t in extra)
+
+
+def _record(t: object) -> str:
+    """The record class a part holds, `T` or `T | None`, by name."""
+    if get_origin(t) in (UnionType, Union):
+        (t,) = (a for a in get_args(t) if a is not type(None))
+    return getattr(t, "__name__", repr(t))
 
 
 def chain(tree: ast.Module, mod: ModuleType, raise_as: str, module: str,
