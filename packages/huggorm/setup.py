@@ -16,11 +16,11 @@ import os
 
 from setuptools import setup
 
+from huggorm_gen.cppgen.generate import declared_model
 from huggorm_gen.pygen.frontdoor import emit
-from huggorm_gen.pygen.generate import build_manifest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-print("front door ->", emit(os.path.join(HERE, "huggorm"), build_manifest()))
+print("front door ->", emit(os.path.join(HERE, "huggorm"), declared_model()))
 
 setup()

@@ -6,7 +6,7 @@ emitter needs arrives in the protocol dict a declaration produced.
 """
 
 import ast
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from huggorm_gen import ir
@@ -365,7 +365,7 @@ def policy_module(model: ir.Model) -> str:
         ast.Module(body=body, type_ignores=[]))) + "\n"
 
 
-def unions_module(unions: dict[str, list[str]]) -> str:
+def unions_module(unions: Mapping[str, Sequence[str]]) -> str:
     """`_unions.py`: one alias per declared sum type.
 
     Nothing but aliases, and every one derived from the manifest - so

@@ -48,7 +48,8 @@ already do with their own output.
 """
 
 import ast
-from typing import Any
+
+from huggorm_gen import ir
 
 # The names this package offers that no declaration knows about.
 #
@@ -219,27 +220,20 @@ def module(bindings: list[str], generated: list[str],
     return ast.unparse(out)
 
 
-def emit(out_dir: str, manifest: Any) -> str:
-    """Write `__init__.py` into the package directory, and say where.
-
-    Takes the manifest rather than building one: the caller is a
-    `setup.py`, which pays for the read once and would otherwise pay
-    twice.
-    """
+def emit(out_dir: str, model: ir.Model) -> str:
+    """Write `__init__.py` into the package directory, and say where."""
     import pathlib
 
     from huggorm_decl import corpus
     from huggorm_gen.cppgen import pyinit
-    from huggorm_gen.pygen import surface
     from huggorm_gen.pygen.emitter import package_exports
 
     have = corpus()
     bindings = [n for names in pyinit.exports(have).values() for n in names]
-    ordered = surface.order(manifest)
-    free = [name for name, proto in manifest["free_functions"].items()
-            if proto["wrapped"]]
-    generated = package_exports([p["name"] for p in ordered], free)
-    unions = sorted(manifest["unions"])
+    free = [n for n in sorted(model.functions)
+            if model.functions[n].wrapped]
+    generated = package_exports([c.name for c in model.ordered_served], free)
+    unions = sorted(model.unions)
 
     target = pathlib.Path(out_dir) / "__init__.py"
     target.write_text(module(bindings, generated, unions) + "\n")

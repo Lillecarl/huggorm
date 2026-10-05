@@ -15,7 +15,7 @@ from typing import Any
 
 from huggorm_decl import corpus
 from huggorm_dsl import declare
-from huggorm_gen import contracts
+from huggorm_gen import contracts, ir
 from huggorm_gen.cppgen.generate import (
     declared_entries,
     declared_enums,
@@ -29,7 +29,6 @@ from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
     STUB_PACKAGE,
-    emitter_protocol_names,
     emitter_union_names,
     free_function_module,
     init_module,
@@ -245,16 +244,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"{rule}: {why}", file=sys.stderr)
     if broken:
         sys.exit(1)
-    manifest = build_manifest()
-    protos = list(manifest["wrappers"].values())
-    returned_protos = list(manifest["returned_types"].values())
-    # Read back off the manifest rather than threaded out of the
-    # derivation. Every one of these WAS a local up there, and passing
-    # six of them across the split would have made the boundary a
-    # tuple nobody could read.
     model = declared_model()
-    emitter_protocol_names({c.protocol_name for c in model.ordered_served})
-    unions = manifest["unions"]
 
     # The in-process wrappers. Emitted here rather than mid-derivation:
     # a contract that fails now fails before any file is written.
@@ -278,27 +268,15 @@ def main(argv: list[str] | None = None) -> None:
         print(f"generated {FREE_MODULE}.py for {len(free_names)} free "
               f"function(s): {', '.join(free_names)}")
 
-    ordered = surface.order(manifest)
+    served = [c.name for c in model.ordered_served]
     (out / f"{surface.PROTOCOL_MODULE}.py").write_text(
-        ast.unparse(protocol_module(declared_model())) + "\n")
+        ast.unparse(protocol_module(model)) + "\n")
     (out / f"{surface.RPC_MODULE}.py").write_text(
-        ast.unparse(rpc_module(declared_model())) + "\n")
-    withheld = [
-        f"{proto['name']}.{m['name']}"
-        for proto in ordered for m in proto["methods"] if m["protocol_blockers"]
-    ]
+        ast.unparse(rpc_module(model)) + "\n")
     print(f"generated {surface.PROTOCOL_MODULE}.py and "
-          f"{surface.RPC_MODULE}.py for {len(ordered)} class(es)")
-    for name in withheld:
-        proto_name, _, m_name = name.partition(".")
-        proto = next(p for p in ordered if p["name"] == proto_name)
-        m = next(m for m in proto["methods"] if m["name"] == m_name)
-        for why in m["protocol_blockers"]:
-            print(f"warning: {name} is not on the protocol - {why}")
-
-    all_names = [p["name"] for p in ordered]
+          f"{surface.RPC_MODULE}.py for {len(served)} class(es)")
     (out / "__init__.py").write_text(
-        ast.unparse(init_module(all_names, free_names)) + "\n")
+        ast.unparse(init_module(served, free_names)) + "\n")
 
     # Type stubs for the bindings themselves (huggorm#27). The bindings
     # are compiled extensions, so a typechecker reads no signatures out
@@ -326,25 +304,18 @@ def main(argv: list[str] | None = None) -> None:
     print(f"generated {STUB_PACKAGE}/ for {len(modules)} binding module(s): "
           + ", ".join(modules))
 
-    # No manifest.json. It was a serialisation of `build_manifest()`,
-    # and every reader calls the function instead - the emitters here,
-    # and the suite, which used to hold the emitted code against a
-    # second artifact of the same build (065).
-    print(f"derived {len(protos)} wrapper(s) and {len(returned_protos)} "
-          f"returned type(s)")
-
-    for fname, proto in manifest["free_functions"].items():
-        for why in proto["wire_blockers"]:
-            print(f"warning: {fname} has no RPC surface - {why}")
-    # The same for methods. A method with no rpc keeps its in-process
-    # wrapper and leaves the protocol, which is a quiet change if the
-    # build does not say it out loud.
-    for group in ("wrappers", "returned_types"):
-        for cls_name, proto in manifest[group].items():
-            for m in proto["methods"]:
-                for why in m.get("wire_blockers", ()):
-                    print(f"warning: {cls_name}.{m['name']} has no RPC "
-                          f"surface - {why}")
+    print(f"derived {len(model.constructed)} constructed and "
+          f"{len(model.handed_back)} returned class(es)")
+    # A call with no rpc keeps its in-process form and leaves the
+    # protocol, which is a quiet change unless the build says it.
+    for fn in model.functions.values():
+        for why in model.function_blockers(fn):
+            print(f"warning: {fn.name} has no RPC surface - {why}")
+    for c in model.ordered_served:
+        for m in c.methods:
+            for why in ir.blockers(m.params, m.returns, model.served):
+                print(f"warning: {c.name}.{m.name} has no RPC surface "
+                      f"and is not on the protocol - {why}")
 
     (out / "grpc_schema.pb").write_bytes(build_fdset(model))
     print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
@@ -357,12 +328,12 @@ def main(argv: list[str] | None = None) -> None:
     # alias is Python and the module binding its arms is a compiled
     # extension. Written from the manifest, so the declaration states
     # `DerivedPath = StorePath | DerivedPathBuilt` once.
-    (out / "_unions.py").write_text(unions_module(unions))
+    (out / "_unions.py").write_text(unions_module(model.unions))
     # ...and the wire policy of every declared type, which the codec
     # reads and no caller does.
-    (out / "_policy.py").write_text(policy_module(declared_model()))
-    print(f"generated _unions.py for {len(unions)} sum type(s): "
-          f"{', '.join(unions) or 'none'}")
+    (out / "_policy.py").write_text(policy_module(model))
+    print(f"generated _unions.py for {len(model.unions)} sum type(s): "
+          f"{', '.join(model.unions) or 'none'}")
     # The codec reads declared type strings at run time and the schema
     # builder reads them at build time. One definition, copied, rather
     # than two that agree until one of them changes.
