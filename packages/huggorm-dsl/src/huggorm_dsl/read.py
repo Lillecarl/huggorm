@@ -314,6 +314,11 @@ class Type:
     # emitter walks these and never reads `python` to find them.
     origin: str = ""
     args: tuple[Type, ...] = ()
+    # The module an undeclared class comes from: "pathlib" for
+    # `pathlib.Path`. Empty for a builtin and for a declared class.
+    # Recorded while the reader holds the class, so no later stage
+    # reads it back out of `python`.
+    module: str = ""
 
     @property
     def optional(self) -> bool:
@@ -792,7 +797,7 @@ def type_of(ann: object, node: ast.AST, home: Mapping[str, Any]) -> Type:
             return Type(python=name, bound=True)
         for m in meta:
             if isinstance(m, Cxx):
-                return Type(python=_spelled(held), cxx=m)
+                return _undeclared(held, m)
         raise DeclarationError(
             node, f"'{ann}' carries no C++ spelling. Annotate the alias "
                   f"with Cxx(...) in declare.py.")
@@ -827,7 +832,7 @@ def type_of(ann: object, node: ast.AST, home: Mapping[str, Any]) -> Type:
     if isinstance(ann, type):
         if _declared(ann, home):
             return Type(python=ann.__name__, bound=True)
-        return Type(python=_spelled(ann))
+        return _undeclared(ann)
     raise DeclarationError(node, f"'{ann!r}' is not a type.")
 
 
@@ -865,14 +870,16 @@ def _member(ann: object, value: object) -> str:
                  if not k.startswith("_") and v == value), "")
 
 
-def _spelled(cls: type) -> str:
-    """How a caller names a class that no declaration declares:
-    bare when it is a builtin, and by its module otherwise, because
-    `Path` alone is ambiguous and `pathlib.Path` is what an annotation
-    has to say to typecheck."""
+def _undeclared(cls: type, cxx: Cxx | None = None) -> Type:
+    """A class no declaration declares.
+
+    Spelled bare when it is a builtin, and by its module otherwise,
+    because `Path` alone is ambiguous and `pathlib.Path` is what an
+    annotation has to say to typecheck."""
     if cls.__module__ == "builtins":
-        return cls.__name__
-    return f"{cls.__module__}.{cls.__name__}"
+        return Type(python=cls.__name__, cxx=cxx)
+    return Type(python=f"{cls.__module__}.{cls.__name__}", cxx=cxx,
+                module=cls.__module__)
 
 
 def _declared(cls: type, home: Mapping[str, Any]) -> bool:
@@ -1931,7 +1938,7 @@ def _scalar_arm(arm: object, union: str, node: ast.AST) -> Type | None:
     cxx = next((m for m in meta if isinstance(m, Cxx)), None)
     if cxx is None:
         return None
-    return Type(python=_spelled(held), cxx=cxx)
+    return _undeclared(held, cxx)
 
 
 def _variant(name: str, meta: tuple[object, ...], arms: tuple[str, ...],

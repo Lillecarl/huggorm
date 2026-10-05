@@ -128,12 +128,9 @@ class Resolver:
         return cls(module.known)
 
     def kind(self, name: str) -> Kind:
+        """What a builtin or a declared name is."""
         if name in SCALAR_NAMES:
             return "scalar"
-        if "." in name:
-            # `pathlib.Path`, `datetime.timedelta`: a type in a module,
-            # imported as itself.
-            return "module"
         if name == "object":
             return "opaque"
         cls = self.known.get(name)
@@ -286,7 +283,9 @@ def type_ref(t: Type, resolver: Resolver) -> TypeRef:
         spelling=t.python,
         origin=t.origin,
         args=tuple(type_ref(a, resolver) for a in t.args),
-        kind=resolver.kind(name),
+        # `pathlib.Path`, `datetime.timedelta`: a type in a module,
+        # imported as itself.
+        kind="module" if t.leaf.module else resolver.kind(name),
         name=name,
         width=t.cxx.width if t.cxx is not None and not t.origin else "",
     )
