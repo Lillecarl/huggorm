@@ -49,7 +49,6 @@ neither exists in the tree.
 ### Reading what the build produced
 
     nix run --file . show                # where everything landed
-    nix run --file . show -- manifest    # the contract between stages
     nix run --file . show -- proto       # the whole wire schema, as text
     nix run --file . show -- surface     # every emitted Python module
 

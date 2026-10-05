@@ -449,13 +449,11 @@ rec {
     '';
   };
 
-  # nix run --file . show -- [files|manifest|proto|surface]
+  # nix run --file . show -- [files|proto|surface]
   #
   # Read what the build produced, without knowing where the store put
-  # it. Four stages come out of one generator run and only one of them
-  # is a Python module a reader can open: the manifest is the contract
-  # between them, and the schema is a binary FileDescriptorSet that no
-  # editor renders.
+  # it. The schema is a binary FileDescriptorSet that no editor
+  # renders, and the package sits at a store path nobody types.
   #
   # So this exists for a reader rather than for the build. `proto`
   # especially: the wire is generated from declarations next to the
@@ -465,7 +463,6 @@ rec {
     name = "show";
     runtimeInputs = [
       pkgs.grpcurl
-      pkgs.jq
       ourPython
     ];
     text = ''
@@ -478,18 +475,6 @@ rec {
                 echo
                 echo "binding stubs: $pkg/huggorm_bindings-stubs"
                 ls -1 "$pkg/huggorm_bindings-stubs"
-                ;;
-              manifest)
-                # Derived, not read: there is no manifest.json any more
-                # (065). This calls the same function the emitters do.
-                #
-                # stdout is captured because the derivation narrates its
-                # progress there - useful in a build log, and not JSON.
-                python3 -c 'import contextlib, io, json
-      from huggorm_gen.pygen.generate import build_manifest
-      with contextlib.redirect_stdout(io.StringIO()):
-          m = build_manifest()
-      print(json.dumps(m, indent=2))' | jq .
                 ;;
               proto)
                 # Every service and every message, as .proto text. The names
@@ -520,7 +505,7 @@ rec {
                 done
                 ;;
               *)
-                echo "usage: show [files|manifest|proto|surface]" >&2
+                echo "usage: show [files|proto|surface]" >&2
                 exit 2
                 ;;
             esac
