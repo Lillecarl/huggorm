@@ -29,6 +29,7 @@ from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
     STUB_PACKAGE,
+    emitter_protocol_names,
     emitter_union_names,
     free_function_module,
     init_module,
@@ -468,6 +469,7 @@ def main(argv: list[str] | None = None) -> None:
                        for p in returned_protos + protos
                        if p["wire"] == "proxy"}
     async_types = set(served_policies)
+    emitter_protocol_names({surface.protocol_name(n) for n in async_types})
     async_twins = manifest["async_twins"]
     unions = manifest["unions"]
 

@@ -73,6 +73,21 @@ def _no_proxy(handle_id: str) -> Any:
         f"expected")
 
 
+def _handle_of(obj: Any) -> str:
+    """A proxy argument's handle id.
+
+    A protocol-typed parameter admits an in-process object statically,
+    so the location is checked here (huggorm#26): the server could not
+    reach that object, and an AttributeError would not say why."""
+    if not hasattr(obj, "handle_id"):
+        raise TypeError(
+            f"{type(obj).__name__} is not a handle on this server: a "
+            f"remote call takes an object the server holds")
+    if obj.handle_id is None:
+        raise ValueError(f"this {type(obj).__name__} was already released")
+    return str(obj.handle_id)
+
+
 class NixClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 50051) -> None:
         self.pool = schema.load_pool()
@@ -394,7 +409,7 @@ class NixClient:
             if val is None:
                 continue  # optional, left at the proto3 default
             self.codec.encode(req, a.name, a.type, val,
-                              lambda obj: obj.handle_id)
+                              _handle_of)
         resp = await self._rpc(spec.path, req, "Handle")
         return self.proxy(cls_name, resp.id)
 
@@ -603,7 +618,7 @@ class NixClient:
         req = self.msg(spec.req)()
         for a, val in zip(spec.args, args, strict=True):
             self.codec.encode(req, a.name, a.type, val,
-                              lambda obj: obj.handle_id)
+                              _handle_of)
         resp = await self._rpc(spec.path, req, spec.resp)
         returned, _ = self.codec.split_optional(spec.returns)
         return self.codec.decode(
@@ -636,7 +651,7 @@ class NixClient:
         # parts, a scalar goes in as itself.
         for p, val in zip(m.args, args, strict=True):
             self.codec.encode(req, p.name, p.type, val,
-                              lambda obj: obj.handle_id)
+                              _handle_of)
 
         resp = await self._rpc(m.path, req, m.resp)
 

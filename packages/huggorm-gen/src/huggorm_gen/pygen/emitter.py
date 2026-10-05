@@ -6,7 +6,7 @@ emitter needs arrives in the protocol dict a declaration produced.
 """
 
 import ast
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from huggorm_gen.payload.wiretypes import (
@@ -41,6 +41,15 @@ def _param_ann(type_str: str, async_types: set[str]) -> str:
     type alone was a lie - in-process callers pass wrappers (that is
     the whole surface), the RPC server passes sync objects. Say both."""
     return f"{type_str} | Async{type_str}" if type_str in async_types else type_str
+
+
+def _method_param_ann(type_str: str, async_types: set[str]) -> str:
+    """A METHOD parameter: the protocol's spelling, which every surface
+    shares. A constructor and a free function are on no protocol, so
+    they keep `_param_ann`."""
+    from huggorm_gen.pygen.surface import like_spelling
+
+    return like_spelling(type_str, async_types)
 
 
 def _arguments(leading: list[ast.arg], params: list[Proto],
@@ -125,7 +134,7 @@ def _emitted_annotations(proto: Proto, async_types: set[str],
     into the module as an unused import."""
     out = [_param_ann(p["type"], async_types) for p in proto.get("ctor", ())]
     for m in proto["methods"]:
-        out += [_param_ann(p["type"], async_types) for p in m["params"]]
+        out += [_method_param_ann(p["type"], async_types) for p in m["params"]]
         out.append(_return_ann(m["return_type"], bound_policies, twins))
     return out
 
@@ -193,6 +202,19 @@ def emitter_union_names(unions: dict[str, list[str]]) -> None:
     _UNION_NAMES.update(unions)
     _UNION_ARMS.clear()
     _UNION_ARMS.update(unions)
+
+
+# The protocols, by name. A proxy parameter is annotated with one on
+# every surface, and the generated `protocols` module defines them.
+PROTOCOLS_MODULE = ".protocols"
+_PROTOCOL_NAMES: set[str] = set()
+
+
+def emitter_protocol_names(names: set[str]) -> None:
+    """Which annotation names are protocols. Told once, as the unions
+    are, before anything is written."""
+    _PROTOCOL_NAMES.clear()
+    _PROTOCOL_NAMES.update(names)
 
 
 def _admits_none(annotation: ast.expr) -> bool:
@@ -268,16 +290,19 @@ def _huggorm_bindings_import(names: set[str]) -> list[ast.ImportFrom]:
         if n not in _BUILTIN_TYPES and not n.startswith("Async")
     )
     out = []
-    bound = [n for n in usable if n not in _UNION_NAMES]
+    bound = [n for n in usable
+             if n not in _UNION_NAMES and n not in _PROTOCOL_NAMES]
     if bound:
         out.append(ast.ImportFrom(
             module="huggorm_bindings",
             names=[ast.alias(name=n) for n in bound], level=0))
-    aliases = [n for n in usable if n in _UNION_NAMES]
-    if aliases:
-        out.append(ast.ImportFrom(
-            module=UNIONS_MODULE.lstrip("."),
-            names=[ast.alias(name=n) for n in aliases], level=1))
+    for module, group in ((UNIONS_MODULE, _UNION_NAMES),
+                          (PROTOCOLS_MODULE, _PROTOCOL_NAMES)):
+        local = [n for n in usable if n in group]
+        if local:
+            out.append(ast.ImportFrom(
+                module=module.lstrip("."),
+                names=[ast.alias(name=n) for n in local], level=1))
     return out
 
 
@@ -758,7 +783,7 @@ def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
     __init__ ran."""
     params = _arguments(
         [ast.arg(arg="self")], m["params"],
-        [_param_ann(p["type"], async_types) for p in m["params"]],
+        [_method_param_ann(p["type"], async_types) for p in m["params"]],
         f"{svc}.{m['name']}")
     body: list[ast.stmt] = []
     if m["doc"]:
@@ -1070,12 +1095,13 @@ def _sync_imports(annotations: list[str], defined_here: set[str],
     return _huggorm_bindings_import(used)
 
 
-def _params(m: Proto, cls_name: str, ann: dict[str, str]) -> ast.arguments:
-    """`self` plus one typed argument per declared parameter. `ann` maps
-    a declared type to the annotation this module writes for it."""
+def _params(m: Proto, cls_name: str,
+            spell: Callable[[str], str] = str) -> ast.arguments:
+    """`self` plus one typed argument per declared parameter. `spell`
+    turns a declared type into the annotation this module writes."""
     return _arguments(
         [ast.arg(arg="self")], m["params"],
-        [ann.get(p["type"], p["type"]) for p in m["params"]],
+        [spell(p["type"]) for p in m["params"]],
         f"{cls_name}.{m['name']}")
 
 
@@ -1085,16 +1111,18 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
     program against without knowing whether the object answering is in
     this process or on the far side of a socket.
 
-    Methods with a proxy parameter are absent, and the manifest says
-    why for each of them (see surface.protocol_blockers). Everything
-    else is here, including every method whose types huggorm#25 made
-    identical on both sides."""
-    from huggorm_gen.pygen.surface import ACLOSE, protocol_name
+    Methods with no rpc are absent, and the manifest says why for each
+    of them (see surface.protocol_blockers). A proxy parameter is
+    spelled as its protocol, here and on both implementations."""
+    from huggorm_gen.pygen.surface import ACLOSE, like_spelling, protocol_name
 
     defined = {protocol_name(p["name"]) for p in ordered}
 
     def ret_ann(rt: str) -> str:
         return respell(rt, {n: protocol_name(n) for n in adoptable})
+
+    def like(t: str) -> str:
+        return like_spelling(t, adoptable)
 
     annotations: list[str] = []
     defaults: list[str] = []
@@ -1102,7 +1130,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
         for m in proto["methods"]:
             if m["protocol_blockers"]:
                 continue
-            annotations += [p["type"] for p in m["params"]]
+            annotations += [like(p["type"]) for p in m["params"]]
             defaults += _default_names(m["params"])
             annotations.append(ret_ann(m["return_type"]))
 
@@ -1148,7 +1176,7 @@ def protocol_module(manifest: Proto, ordered: list[Proto],
             body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
             cls.body.append(ast.AsyncFunctionDef(
                 name=m["name"],
-                args=_params(m, name, {}),
+                args=_params(m, name, like),
                 body=body,
                 decorator_list=[],
                 returns=_ann(ret_ann(m["return_type"]), f"{name}.{m['name']}"),
@@ -1297,15 +1325,22 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
     handle addresses a real object on the server, and the base is a
     perfectly good view of it - which is the common case, since a
     caller usually does not care which store answered."""
-    from huggorm_gen.pygen.surface import ACLOSE, REGISTRY, rpc_class_name
+    from huggorm_gen.pygen.surface import (
+        ACLOSE,
+        REGISTRY,
+        like_spelling,
+        rpc_class_name,
+    )
 
     defined = {rpc_class_name(p["name"]) for p in ordered}
 
-    # A proxy is an RPC class on BOTH sides here: a remote caller holds
-    # a handle, never a local object. That is the divergence keeping a
-    # method with a proxy parameter off the protocol - the in-process
-    # wrapper needs the local object instead.
+    # A returned proxy is an RPC class: the server leased a handle. A
+    # proxy PARAMETER is spelled as the protocol, as on every surface,
+    # and the client refuses an in-process object when it encodes one.
     ann = {n: rpc_class_name(n) for n in served}
+
+    def like(t: str) -> str:
+        return like_spelling(t, served)
 
     annotations = ["str"]
     defaults: list[str] = []
@@ -1313,7 +1348,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
         # The methods this module will WRITE, so a type named only by a
         # method with no rpc does not become an unused import.
         for m in (m for m in proto["methods"] if "rpc" in m):
-            annotations += [ann.get(p["type"], p["type"]) for p in m["params"]]
+            annotations += [like(p["type"]) for p in m["params"]]
             defaults += _default_names(m["params"])
             annotations.append(respell(m["return_type"], ann))
 
@@ -1449,7 +1484,7 @@ def rpc_module(manifest: Proto, ordered: list[Proto],
                 keywords=[]), respell(m["return_type"], ann)))
             cls.body.append(ast.AsyncFunctionDef(
                 name=m["name"],
-                args=_params(m, name, ann),
+                args=_params(m, name, like),
                 body=body,
                 decorator_list=[],
                 returns=_ann(respell(m["return_type"], ann),
@@ -1784,7 +1819,7 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
                     and same["return_type"] == m["return_type"]):
                 continue  # inherited unchanged; the base declares it
             cls.body.append(ast.FunctionDef(
-                name=m["name"], args=_params(m, name, {}),
+                name=m["name"], args=_params(m, name),
                 body=_stub_body(m["doc"]), decorator_list=[],
                 returns=_ann(m["return_type"], f"{name}.{m['name']}"),
                 type_params=[]))

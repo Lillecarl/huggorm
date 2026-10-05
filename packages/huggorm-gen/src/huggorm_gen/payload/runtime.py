@@ -276,6 +276,12 @@ def _check_isolation(callee: Any, args: Iterable[Any]) -> None:
     for x in args:
         r = getattr(x, "_runner", None)
         if r is None:
+            # A protocol-typed parameter admits a remote handle
+            # statically, so the location is checked here (huggorm#26).
+            if hasattr(x, "handle_id"):
+                raise TypeError(
+                    f"{type(x).__name__} is a handle on a server, and an "
+                    f"in-process call needs the object itself")
             continue
         if getattr(x, "_wire", "proxy") == "value":
             # A wire value crosses as a COPY, so it carries no tie to
