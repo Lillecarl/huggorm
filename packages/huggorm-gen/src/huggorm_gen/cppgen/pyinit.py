@@ -34,7 +34,6 @@ describes is generated, so there is nowhere in that file to keep it.
 import ast
 
 from huggorm_dsl.corpus import Corpus
-from huggorm_gen.cppgen import nbemit
 
 # What `huggorm_bindings/__init__.py` says about itself. Prose only:
 # every name and every import below it is derived.
@@ -114,7 +113,7 @@ def exports(have: Corpus) -> dict[str, list[str]]:
     it fails to import. Measured: keeping it makes the emitted package
     raise `cannot import name 'open_store'`.
 
-    `nbemit.public` decides which functions those are, and this reads
+    `Module.exported` decides which functions those are, and this reads
     it rather than restating it. The rule has an edge a copy misses:
     only a factory whose class declares a constructor is dropped.
     `parse_store_reference` makes a `StoreReference`, which has none,
@@ -124,7 +123,7 @@ def exports(have: Corpus) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for mod in have.modules:
         names = [c.name for c in mod.classes]
-        names += [f.name for f in nbemit.public(mod.exported, mod.classes)]
+        names += [f.name for f in mod.exported]
         if names:
             out[mod.name] = sorted(names)
     for name in have.vocabularies:

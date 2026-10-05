@@ -715,9 +715,17 @@ class Module:
         A startup hook and a translator are declared here because
         this is where a module's C++ facts live, and neither is
         surface: one runs before a caller exists and the other runs
-        instead of one."""
+        instead of one.
+
+        Nor is a factory whose class declares a constructor. It is
+        bound as that class's `__new__`, so `Store(uri)` is the one
+        way in, and exporting it beside that would be a second
+        spelling of the same call. `parse_store_reference` makes a
+        `StoreReference`, which declares none, so it stays."""
+        made = {c.decl.factory for c in self.classes if c.ctor is not None}
         return tuple(fn for fn in self.functions
-                     if not (fn.startup or fn.translator))
+                     if not (fn.startup or fn.translator)
+                     and fn.name not in made)
 
     @property
     def known(self) -> dict[str, Class]:

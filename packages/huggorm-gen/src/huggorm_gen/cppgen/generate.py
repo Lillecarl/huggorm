@@ -31,7 +31,7 @@ from huggorm_dsl import declare
 from huggorm_dsl.read import FROM_PARTS, Class, Module, reading
 from huggorm_gen import cxx, ir
 from huggorm_gen.cppgen import nbemit, pyenum, pyerrors, pyinit
-from huggorm_gen.cppgen.nbemit import bindable, extension
+from huggorm_gen.cppgen.nbemit import extension
 
 # Which package the emitted bindings land in. The one fact a
 # declaration does not carry: where a binding is installed is the
@@ -65,11 +65,7 @@ def declared_model() -> ir.Model:
         modules.append(unit)
         classes.update((c.name, c) for c in unit.classes)
         seen += [(mod.known, cls) for cls in mod.classes]
-        every = {fn.name: fn for fn in unit.functions}
-        # `nbemit.public` drops a startup hook, a translator and a
-        # factory bound as its class's constructor: none is surface.
-        for fn in nbemit.public(mod.exported, mod.classes):
-            functions[fn.name] = every[fn.name]
+        functions.update((fn.name, fn) for fn in unit.exported)
     unions = {}
     for mod in have.modules:
         resolver = ir.Resolver.of(mod)
@@ -184,7 +180,8 @@ def _code_lines(text: str) -> int:
 BOUND_NAME = re.compile(r'def\("([^"]+)"')
 
 
-def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
+def census_written(mod: Module, bound: Sequence[ir.ClassModel],
+                   text: str) -> None:
     """Every method the reader kept is a name the emitter wrote.
 
     The SECOND of the two seams huggorm#81 names. `census_read` asks
@@ -204,9 +201,9 @@ def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
     and `text` is what it wrote.
 
     Three exemptions, each read off the declaration rather than
-    listed. A `@startup` hook is emitted as a CALL at module init and
-    a `@translator` as a registration, so neither is a bound name -
-    `Module.exported` already draws that line. And a function marked
+    listed, and `Module.exported` draws all three. A `@startup` hook
+    is emitted as a CALL at module init and a `@translator` as a
+    registration, so neither is a bound name. And a function marked
     `@constructs(cls)` is emitted as that class's constructor:
     `open_store` is `Store`'s `nb::new_`, and a caller writes
     `Store(uri)`.
@@ -216,15 +213,13 @@ def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
     different fact from an emitter losing one method of a class it
     did bind."""
     wrote = set(BOUND_NAME.findall(text))
-    factories = {c.decl.factory for c in mod.classes
-                 if c.decl.factory and c.ctor is not None}
     bad = []
     for cls in bound:
-        for m in cls.methods:
+        for m in cls.bound:
             if m.name not in wrote:
                 bad.append(f"{cls.name}.{m.name}()")
     for fn in mod.exported:
-        if fn.name not in wrote and fn.name not in factories:
+        if fn.name not in wrote:
             bad.append(f"{fn.name}()")
     if bad:
         raise TypeError(
@@ -255,17 +250,18 @@ def emit_module(mod: Module, dotted: str, out: str,
     shape inside a package, and it is also what lets a module import
     the sibling whose types it names."""
     decl = f"{mod.name}.py"
-    bound = bindable(mod)
+    unit = declared_model().module(mod.name)
+    bound = unit.bindable()
     if not bound and not mod.functions:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    written = extension(mod, dotted, declared_model(), corpus().producers,
+    written = extension(unit, dotted, declared_model(), corpus().producers,
                         chain=chain,
                         errors=errors_module(),
                         error_headers=headers or ())
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(written)
-    header = nbemit.records_header(mod, PACKAGE, declared_model())
+    header = nbemit.records_header(unit, PACKAGE, declared_model())
     if header is not None:
         target = pathlib.Path(out).with_name(f"{mod.name}_records.hpp")
         target.write_text(header + "\n")
@@ -277,14 +273,14 @@ def emit_module(mod: Module, dotted: str, out: str,
     # measures becomes the place the real code lives - and a number
     # in a build log is cheaper than a review that has to notice.
     for cls in bound:
-        c = nbemit.census(declared_model().classes[cls.name])
+        c = nbemit.census(cls)
         hatch = (f", {c['hatched']} hatched ({c['hatch_lines']} lines)"
                  if c["hatched"] else "")
         print(f"  {cls.name}: {c['derived']} derived{hatch}")
     # What was left out, and why. A declaration under way declares
     # more than the emitter can carry, and a count that only ever
     # goes up is the honest way to see how much is left.
-    skipped = [c.name for c in mod.classes if c not in bound]
+    skipped = [c.name for c in unit.classes if c not in bound]
     if skipped:
         print(f"  not bound: {', '.join(skipped)}")
     # ...and the C++ this repo WROTE for the module, which the

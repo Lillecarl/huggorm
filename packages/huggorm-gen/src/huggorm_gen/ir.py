@@ -778,6 +778,8 @@ class ModuleModel:
     # Every function it declares: startup hooks, translators and
     # factories too, which `Model.functions` leaves out.
     functions: tuple[FunctionModel, ...]
+    # The ones a caller imports: `Module.exported`.
+    exported: tuple[FunctionModel, ...]
     # Every name the unit can resolve, its own and its imports', with
     # the declaration behind it.
     visible: Mapping[str, Decl]
@@ -785,18 +787,33 @@ class ModuleModel:
     @classmethod
     def of(cls, mod: Module, package: str) -> ModuleModel:
         resolver = Resolver.of(mod)
+        functions = {fn.name: FunctionModel.of(fn, package, mod.name, resolver)
+                     for fn in mod.functions}
         return cls(
             mod.name, mod.doc,
             tuple(ClassModel.of(c, package, mod.name, resolver, mod.functions)
                   for c in mod.classes),
-            tuple(FunctionModel.of(fn, package, mod.name, resolver)
-                  for fn in mod.functions),
+            tuple(functions.values()),
+            tuple(functions[fn.name] for fn in mod.exported),
             {name: c.decl for name, c in mod.known.items()})
 
     def bindable(self) -> tuple[ClassModel, ...]:
-        """The classes this unit binds: a C++ type, or a record the
-        emitter declares."""
+        """The classes nanobind binds: a C++ type, or a record the
+        emitter declares.
+
+        A vocabulary has no C++ object: it crosses as the string its
+        member already is. A produced value with no `@binding(cxx=...)`
+        has no C++ type either, until the emitter declares its struct.
+        `generate.emit_module` prints what this leaves out."""
         return tuple(c for c in self.classes if c.decl.cxx or c.is_value)
+
+    @property
+    def startup(self) -> tuple[FunctionModel, ...]:
+        return tuple(fn for fn in self.functions if fn.startup)
+
+    @property
+    def translators(self) -> tuple[FunctionModel, ...]:
+        return tuple(fn for fn in self.functions if fn.translator)
 
 
 @dataclass(frozen=True)

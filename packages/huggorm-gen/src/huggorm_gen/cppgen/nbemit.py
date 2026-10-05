@@ -2,7 +2,8 @@
 Declaration -> nanobind C++.
 
 The one backend, and the reason the declaration exists. It reads a
-`read.Class` and writes one C++ function. The declaration is not C++
+class off the typed model (`ir.ClassModel`) and writes one C++
+function. The declaration is not C++
 and does not know it is being turned into any: an emitter reads it,
 and the declaration never learns which one.
 
@@ -53,7 +54,6 @@ becomes the place the real code lives.
 from collections.abc import Iterator, Mapping, Sequence
 
 from huggorm_dsl.declare import Decl
-from huggorm_dsl.read import Class, Method, Module
 from huggorm_gen import cxx, ir
 from huggorm_gen.cxx import NAMESPACE
 from huggorm_gen.cxx import held as _held
@@ -397,20 +397,19 @@ def records_include(module: str, package: str) -> str:
     return f"{package}/{name}" if package else name
 
 
-def records_header(mod: Module, package: str,
+def records_header(unit: ir.ModuleModel, package: str,
                    model: ir.Model) -> str | None:
     """The header a module's records are emitted into, or None.
 
     A HEADER, not the unit, because a record is a C++ type another unit
     can name: `eval`'s `LogRecord` holds `path`'s `ErrorInfo`. A struct
     emitted into its own unit is visible nowhere else (huggorm#103)."""
-    unit = model.module(mod.name)
     values = [c for c in unit.bindable() if c.is_value]
     if not values:
         return None
     emit = Emitter(model, unit, {})
     others = [m for m in emit.records_named(values, ())
-              if m != mod.name]
+              if m != unit.name]
     structs = emit.records(values)
     # What the fields SPELL, read off the structs as `includes` reads
     # a body: `std::int64_t` needs <cstdint>, and no caster names it.
@@ -610,22 +609,6 @@ def markers(cls: ir.ClassModel) -> list[str]:
 
 
 
-def public(fns: Sequence[Method],
-           classes: Sequence[Class]) -> tuple[Method, ...]:
-    """The free functions the MODULE exports.
-
-    A function some class names as its factory is not one. It is
-    bound as that class's `__new__` instead, so `Store(uri)` is the
-    one way in - and exporting it beside that would be a second
-    spelling of the same call.
-
-    Derived from `@constructs(cls)`, which already had to name it.
-    A declaration that wants the function public as well says so by
-    not marking it."""
-    made = {cls.decl.factory for cls in classes if cls.ctor is not None}
-    return tuple(fn for fn in fns if fn.name not in made)
-
-
 # The two conversions a CONTAINER needs, and the only ones.
 #
 # libstore answers with std::set and takes std::set; the binding
@@ -731,22 +714,6 @@ def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:
                     if node.origin == "dict":
                         return True
     return False
-
-
-def bindable(mod: Module) -> tuple[Class, ...]:
-    """The classes in this declaration nanobind can bind today.
-
-    A vocabulary has no C++ object, so there is nothing to bind: it
-    crosses as the string its member already is. A produced value has
-    no C++ type either - the emitter declares its struct from the
-    fields it declares - so it has no
-    `nb::class_` to be until the declaration names the type it came
-    from.
-
-    Skipping is honest here rather than quiet, because
-    `generate.emit_module` prints what it left out beside what it
-    wrote."""
-    return tuple(c for c in mod.classes if c.decl.cxx or c.is_value)
 
 
 class Emitter:
@@ -2119,7 +2086,7 @@ class Emitter:
                       if exported else "")
 
 
-def imports(mod: Module) -> list[str]:
+def imports(unit: ir.ModuleModel, model: ir.Model) -> list[str]:
     """The other extensions whose types this one names.
 
     nanobind keeps ONE type registry for the whole process, so a
@@ -2128,16 +2095,16 @@ def imports(mod: Module) -> list[str]:
     an extension cannot rely on a caller to have done that.
 
     So the module imports what it needs, and the list is derived: a
-    class arrives through `mod.uses` only because the declaration
-    imported it, and it needs binding only if it has C++ behind it or
-    is a record the emitter declares. A
-    vocabulary is filtered out here, which is why importing
-    `HashAlgorithm` costs nothing."""
-    return sorted({c.module for c in mod.uses.values()
-                   if (c.decl.cxx or c.is_value) and c.module != mod.name})
+    class is visible only because the declaration imported it, and it
+    needs binding only if it has C++ behind it or is a record the
+    emitter declares. A vocabulary is filtered out here, which is why
+    importing `HashAlgorithm` costs nothing."""
+    return sorted({c.module for name in unit.visible
+                   if (c := model.classes.get(name)) is not None
+                   and (c.decl.cxx or c.is_value) and c.module != unit.name})
 
 
-def extension(mod: Module, dotted: str, model: ir.Model,
+def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
               producers: Mapping[str, Sequence[str]],
               chain: list[str] | None = None,
               errors: str = "",
@@ -2157,21 +2124,18 @@ def extension(mod: Module, dotted: str, model: ir.Model,
     or `huggorm_bindings.path` inside a package. It is the one fact
     here no declaration carries, and it is what turns a sibling
     declaration's name into an import a running interpreter can
-    follow. `producers` is the set's, as `Emitter` takes it, and
-    `model` holds the free functions this module exports."""
-    classes = bindable(mod)
+    follow. `producers` is the set's, as `Emitter` takes it."""
+    classes = unit.bindable()
     package = dotted.rpartition(".")[0]
     reached = [f'{INDENT}nb::module_::import_("'
                f'{f"{package}." if package else ""}{stem}");'
-               for stem in imports(mod)]
-    translators = [translator(fn, chain) for fn in mod.translators]
-    unit = model.module(mod.name)
+               for stem in imports(unit, model)]
+    translators = [translator(fn, chain) for fn in unit.translators]
     # Only a unit that HAS a translator catches anything, so only that
     # unit needs the headers behind the chain.
     return "\n".join([
         Emitter(model, unit, producers).module(
-            unit.bindable(), unit.functions,
-            [model.functions[fn.name] for fn in public(mod.exported, classes)],
+            classes, unit.functions, unit.exported,
             errors,
             error_headers if translators else (), package),
         *translators,
@@ -2179,28 +2143,27 @@ def extension(mod: Module, dotted: str, model: ir.Model,
         # The declaration file's own docstring, which is the only
         # description of this module anyone wrote. Without it
         # `help(huggorm_bindings.path)` answers with nothing.
-        *([f'{INDENT}m.doc() = "{_doc(mod.doc)}";'] if _doc(mod.doc) else []),
+        *([f'{INDENT}m.doc() = "{_doc(unit.doc)}";'] if _doc(unit.doc) else []),
         # A startup hook goes ahead of everything, imports included -
         # an import runs another module's initialisation, and a
         # library that demands initialisation is entitled to it
         # before any of its code runs. libstore does not raise when
         # it has not been initialised; it aborts the process.
-        *[f"{INDENT}{fn.binds}();" for fn in mod.startup],
+        *[f"{INDENT}{fn.cxx_name}();" for fn in unit.startup],
         # Then the other modules: a signature naming a type from one
         # of them is built as the binding is defined, so the class has
         # to already be registered.
         *reached,
         *[f"{INDENT}register_{fn.name.lstrip('_')}();"
-          for fn in mod.translators],
+          for fn in unit.translators],
         *[f"{INDENT}bind_{cls.name.lower()}(m);" for cls in classes],
-        *([f"{INDENT}bind_functions(m);"]
-          if public(mod.exported, classes) else []),
+        *([f"{INDENT}bind_functions(m);"] if unit.exported else []),
         "}",
         "",
     ])
 
 
-def translator(fn: Method, chain: list[str] | None = None) -> str:
+def translator(fn: ir.FunctionModel, chain: list[str] | None = None) -> str:
     """The module's exception translator, registered once.
 
     ONCE for the module, and it runs for any binding in it. The
@@ -2222,7 +2185,7 @@ def translator(fn: Method, chain: list[str] | None = None) -> str:
     listed before its subclass swallows it. Python inheritance
     already says which is which."""
     body = (chr(10).join(chain) if chain
-            else f"{INDENT * 4}{fn.binds}();")
+            else f"{INDENT * 4}{fn.cxx_name}();")
     return f"""
 static void register_{fn.name.lstrip("_")}() {{
     nb::register_exception_translator(
