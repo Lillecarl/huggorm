@@ -972,11 +972,8 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
     cls.body.append(ast.Expr(value=ast.Constant(value=(
         c.doc or f"Binding for the C++ {c.binds}. Threading "
                  f"'{c.decl.threading}', wire '{c.wire}'."))))
-    # The declarations the codegen itself reads. They are real class
-    # attributes, so a stub that omitted them would make every
-    # reader of them an error.
-    for attr in ("_threading", "_wire", "_binds"):
-        cls.body.append(_code(f"{attr}: str"))
+    # The one class attribute the runtime reads off a binding.
+    cls.body.append(_code("_wire: str"))
     if produced:
         cls.body.append(_def(
             "def __init__(self) -> NoReturn",

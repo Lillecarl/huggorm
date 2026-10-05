@@ -20,7 +20,7 @@ is that class's constructor: `open_store` builds a Store, so a caller
 types `Store("auto")` and never the factory's name.
 
 That subtraction is not a convention this file invented. `nbemit`
-binds a producer as `Store._ctor_from` and as NO module-level
+binds a producer as its class's constructor and as NO module-level
 function, so `huggorm_bindings.store` has no `open_store` in it at
 all - measured, by dropping the subtraction and watching the emitted
 front door fail to import. The hand-written file omitted the name
@@ -83,7 +83,7 @@ where it goes, and a word's async spelling sits beside its C++ one in
 
 `open_store`. `Store` names it with `@produced(by="open_store")`,
 which makes it the store's constructor - so a caller writes
-`Store("auto")`, and the factory is bound as `Store._ctor_from`
+`Store("auto")`, and the factory is bound as that constructor
 rather than as a function of its own.
 
 ## The mock

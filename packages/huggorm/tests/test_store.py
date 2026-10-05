@@ -1625,6 +1625,12 @@ def _wire_values() -> dict[str, str]:
             if c.wire == "value"}
 
 
+def _wire_field_names(name: str) -> list[str]:
+    from conftest import load_model
+
+    return [f.name for f in load_model().classes[name].wire_fields]
+
+
 def _rebuild(kind: Any, *parts: Any) -> Any:
     """`_from_parts`, reached the one way a typechecker allows.
 
@@ -1989,7 +1995,7 @@ def test_every_wire_value_survives_its_own_round_trip(
 
     for name in sorted(declared):
         built, extra = samples[name]
-        fields = [f for f, _ in type(built)._wire_fields]
+        fields = _wire_field_names(name)
         cases = [built._parts(), *extra]
         for parts in cases:
             back = type(built)._from_parts(*parts)._parts()
@@ -2120,7 +2126,7 @@ def test_a_real_store_object_survives_its_own_round_trip(
     assert built.registration_time() is not None
 
     parts = built._parts()
-    fields = [f for f, _ in type(built)._wire_fields]
+    fields = _wire_field_names(type(built).__name__)
     back = type(built)._from_parts(*parts)._parts()
     lost = [f for f, sent, got in zip(fields, parts, back, strict=True)
             if sent != got]

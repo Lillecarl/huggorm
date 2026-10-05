@@ -2068,77 +2068,45 @@ def _round_trip(cls: Class) -> list[str]:
 
 
 def markers(cls: Class) -> list[str]:
-    """The facts every layer above reads off the compiled class.
+    """The class attributes the runtime reads off a compiled object.
 
-    Every one comes off the declaration, and the generated layer -
-    the async wrappers, the protocols, the RPC stubs, the type stubs -
-    reads them off the compiled class rather than being told twice.
-
-    `_binds` is NOT here, and its absence is information. It named the
-    pxd declaration a pyx class bound, so it was a fact about Cython
-    rather than about the binding: there is no pxd, so there is
-    nothing to name.
-
-    `_wire_fields` comes from wherever the value keeps them. A
-    CONSTRUCTED value declares its fields, because the field name and
-    the accessor need not agree. A PRODUCED one declares none and
-    needs none: every accessor IS a field."""
+    `_wire`, which `unwrap_arg` reads to copy a value rather than hand
+    over a handle, and `_from_parts` for a constructed value. Every
+    other fact about a class reaches the layers above through the
+    model, not through the compiled class."""
     decl = cls.decl
-    out = [f'{INDENT}cls.attr("_threading") = "{decl.threading}";',
-           f'{INDENT}cls.attr("_blocking") = '
-           f'{"true" if decl.blocking else "false"};']
     # The EFFECTIVE value, not the declared one. "proxy" is the safe
     # default on both sides - stateful until a declaration proves
     # otherwise - and writing it out means a reader of the compiled
     # class is told rather than left to know the default.
-    out.append(f'{INDENT}cls.attr("_wire") = "{decl.wire or "proxy"}";')
-    if decl.abstract:
-        # A base that is GENERATED but never constructed. It still
-        # gets an async wrapper and a wire identity - a caller holds
-        # the base far more often than a leaf.
-        out.append(f'{INDENT}cls.attr("_abstract") = true;')
-    if cls.is_produced:
-        out.append(f'{INDENT}cls.attr("_produced") = true;')
-    elif decl.built_by:
-        # Which free function makes one. A handle rather than a
-        # value: a value is produced and has no factory to name.
-        out.append(f'{INDENT}cls.attr("_ctor_from") = "{decl.built_by}";')
+    out = [f'{INDENT}cls.attr("_wire") = "{decl.wire or "proxy"}";']
     fields = wire_fields(cls)
-    if fields or cls.decl.unit:
-        pairs = ", ".join(f'nb::make_tuple("{n}", "{t.wire}")'
-                          for n, t, _ in fields)
-        out.append(f'{INDENT}cls.attr("_wire_fields") = '
-                   f"nb::make_tuple({pairs});")
-        if not cls.is_value and cls.ctor is not None:
-            # The other half of the round trip, and for a CONSTRUCTED
-            # value it is the class.
-            #
-            # `_from_parts` takes one value per _wire_fields entry, in
-            # order, and hands back the value they make. That is
-            # exactly what the constructor takes, so naming the class
-            # is the whole helper and it cannot drift from the
-            # constructor.
-            #
-            # A PRODUCED value has no public constructor to name: its
-            # `__init__` raises, and `_from_parts` is bound beside it
-            # as a static method.
-            #
-            # Naming the class CLAIMS the constructor takes the wire
-            # fields, in order. Nothing checked that, and it is exactly
-            # what a forgotten `@local` breaks: an accessor joins the
-            # wire by existing, `_parts` grows a value, and the
-            # constructor does not - which surfaced as `__init__():
-            # incompatible function arguments` from a test rather than
-            # as a sentence from the build.
-            if len(cls.ctor.params) != len(fields):
-                raise TypeError(
-                    f"{cls.name}: `_from_parts` is the constructor, which "
-                    f"takes {len(cls.ctor.params)} parameter(s), and "
-                    f"{len(fields)} accessor(s) cross the wire: "
-                    f"{[n for n, _, _ in fields]}. An accessor joins the "
-                    f"wire by existing - mark the ones that should not "
-                    f"@local, or give the constructor what they send.")
-            out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
+    if (fields or cls.decl.unit) and not cls.is_value and cls.ctor is not None:
+        # The other half of the round trip, and for a CONSTRUCTED value
+        # it is the class.
+        #
+        # `_from_parts` takes one value per wire field, in order, and
+        # hands back the value they make. That is exactly what the
+        # constructor takes, so naming the class is the whole helper and
+        # it cannot drift from the constructor.
+        #
+        # A PRODUCED value has no public constructor to name: its
+        # `__init__` raises, and `_from_parts` is bound beside it as a
+        # static method.
+        #
+        # Naming the class CLAIMS the constructor takes the wire fields,
+        # in order. A forgotten `@local` breaks exactly that: an accessor
+        # joins the wire by existing, `_parts` grows a value, and the
+        # constructor does not.
+        if len(cls.ctor.params) != len(fields):
+            raise TypeError(
+                f"{cls.name}: `_from_parts` is the constructor, which "
+                f"takes {len(cls.ctor.params)} parameter(s), and "
+                f"{len(fields)} accessor(s) cross the wire: "
+                f"{[n for n, _, _ in fields]}. An accessor joins the "
+                f"wire by existing - mark the ones that should not "
+                f"@local, or give the constructor what they send.")
+        out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
     return out
 
 
