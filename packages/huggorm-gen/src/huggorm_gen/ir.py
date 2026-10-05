@@ -387,6 +387,10 @@ class ParamModel:
     collection: str = ""
     # The member a HANDLE parameter is unwrapped through, or "".
     via: str = ""
+    # The declared default is None: the parameter may be omitted, and
+    # an absent argument is a fact the surfaces spell. Distinct from
+    # `default is None`, which says there is no default at all.
+    defaults_to_none: bool = False
 
     @classmethod
     def of(cls, p: Param, resolver: Resolver) -> ParamModel:
@@ -411,7 +415,8 @@ class ParamModel:
                    spelled, caster, absent=cxx.absent(p),
                    parsed_by=cxx.parsed_by(p.type, resolver.known),
                    collection=cxx.collection(p.type, resolver.known),
-                   via=handle.decl.via if handle is not None else "")
+                   via=handle.decl.via if handle is not None else "",
+                   defaults_to_none=p.has_default and p.default is None)
 
 
 def blockers(params: Sequence[ParamModel], returns: TypeRef | None,

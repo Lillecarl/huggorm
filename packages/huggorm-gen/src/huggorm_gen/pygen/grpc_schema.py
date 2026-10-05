@@ -291,7 +291,7 @@ def _add_service(file_dp: Any, model: ir.Model, c: ir.ClassModel,
             # with optional=True, so the field has to be able to say
             # "absent" rather than lean on an empty string.
             _add_typed_field(req, param.name, n, param.type,
-                             optional=param.default == "None")
+                             optional=param.defaults_to_none)
         rpc = svc.method.add()
         rpc.name = ACQUIRE
         rpc.input_type = f".{PKG}.{req.name}"

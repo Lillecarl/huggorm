@@ -979,7 +979,7 @@ def test_a_declared_type_is_the_type_nanobind_BINDS(
                       # std::optional so an explicit None works, and
                       # nanobind says so. The declaration says it with
                       # the default.
-                      + (" | None" if p.default == "None"
+                      + (" | None" if p.defaults_to_none
                          and not p.type.optional else "")
                       for p in meth.params]
             want = f"({', '.join(params)}) -> {_same(meth.return_spelling)}"

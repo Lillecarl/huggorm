@@ -127,7 +127,7 @@ def _arguments(leading: list[ast.arg], params: Sequence[ir.ParamModel],
     defaults: list[ast.expr] = []
     for p, type_str in zip(params, types, strict=True):
         annotation = _ann(type_str, f"{where}:{p.name}")
-        if p.default == "None" and not _admits_none(annotation):
+        if p.defaults_to_none and not _admits_none(annotation):
             # A parameter that may be omitted is spelled `T | None`.
             # `output: str = None` is implicit Optional, which strict
             # typecheckers reject and which misdescribes the default
@@ -701,7 +701,7 @@ def _directory(model: ir.Model) -> list[ast.stmt]:
             c.name, c.acquire.path,
             _args([(p.name, p.type) for p in c.ctor]),
             sum(1 for p in c.ctor if p.default is None),
-            tuple(p.name for p in c.ctor if p.default == "None"))))
+            tuple(p.name for p in c.ctor if p.defaults_to_none))))
     functions = [model.functions[n] for n in sorted(model.functions)]
     free = [(fn.name, _spec(fn.name, fn.rpc, fn.params, fn.returns))
             for fn in functions if not model.function_blockers(fn)]
