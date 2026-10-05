@@ -1332,7 +1332,8 @@ def test_the_emitter_must_write_every_method_the_reader_kept() -> None:
     have = corpus()
     mod = have.module("pathinfo.py")
     bound = bindable(mod)
-    text = extension(mod, "huggorm_bindings.pathinfo", have.producers, chain=[], errors="")
+    text = extension(mod, "huggorm_bindings.pathinfo", generate.declared_model(),
+                     have.producers, chain=[], errors="")
     generate.census_written(mod, bound, text)
 
     lost = text.replace('def("nar_size"', 'def("not_that_one"')
@@ -1363,7 +1364,9 @@ def test_a_function_the_emitter_writes_another_way_is_not_missing() -> None:
                          ("path", {"_init_libstore", "_translate_nix_error"})):
         mod = have.module(f"{stem}.py")
         assert shapes <= {f.name for f in mod.functions}
-        text = extension(mod, f"huggorm_bindings.{stem}", have.producers, chain=[], errors="")
+        text = extension(mod, f"huggorm_bindings.{stem}",
+                         generate.declared_model(), have.producers,
+                         chain=[], errors="")
         assert 'def("open_store"' not in text, "it is a constructor, not a name"
         generate.census_written(mod, bindable(mod), text)
 
@@ -1405,6 +1408,7 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
     it asks for none of them."""
     from huggorm_decl import corpus
     from huggorm_gen.cppgen import pyerrors
+    from huggorm_gen.cppgen.generate import declared_model
     from huggorm_gen.cppgen.nbemit import extension
 
     have = corpus()
@@ -1418,12 +1422,14 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
 
     mod = have.module("path.py")
     assert mod.translators, "the control below means nothing otherwise"
-    text = extension(mod, "huggorm_bindings.path", have.producers, chain=[],
-                     errors="", error_headers=headers)
+    text = extension(mod, "huggorm_bindings.path", declared_model(),
+                     have.producers, chain=[], errors="",
+                     error_headers=headers)
     for h in headers:
         assert f'#include "{h}"' in text, h
 
-    without = extension(mod, "huggorm_bindings.path", have.producers, chain=[], errors="")
+    without = extension(mod, "huggorm_bindings.path", declared_model(),
+                        have.producers, chain=[], errors="")
     assert '#include "nix/store/store-dir-config.hh"' not in without, \
         "the headers come from the derivation, not from a fixed list"
 
@@ -1540,16 +1546,18 @@ def test_a_body_brings_its_own_standard_header() -> None:
     `<utility>` and NOT `<stdexcept>` - which is what says the
     derivation reads the body rather than adding a fixed list."""
     from huggorm_decl import corpus
+    from huggorm_gen.cppgen.generate import declared_model
     from huggorm_gen.cppgen.nbemit import extension
 
     have = corpus()
     text = extension(have.module("eval.py"), "huggorm_bindings.eval",
-                     have.producers, chain=[], errors="")
+                     declared_model(), have.producers, chain=[], errors="")
     assert "#include <stdexcept>" in text
     assert "std::invalid_argument" in text, "the body that needs it"
 
     other = extension(have.module("pathinfo.py"),
-                      "huggorm_bindings.pathinfo", have.producers, chain=[], errors="")
+                      "huggorm_bindings.pathinfo", declared_model(),
+                      have.producers, chain=[], errors="")
     assert "#include <cstdint>" in other
     assert "#include <stdexcept>" not in other, \
         "nothing in pathinfo throws, so nothing asks for it"

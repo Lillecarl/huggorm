@@ -5,9 +5,10 @@ as a parameter, and the caster each spelling needs. One answer for
 every stage that writes C++.
 """
 
+import json
 from collections.abc import Mapping
 
-from huggorm_dsl.read import Class, Type
+from huggorm_dsl.read import Class, Param, Type
 
 # How a declared type is spelled in a C++ signature, and which caster
 # has to be included for it to cross. Nothing here is guessed from a
@@ -273,3 +274,63 @@ def param(t: Type, known: Mapping[str, Class]) -> tuple[str, str | None]:
             f"'{t.python}' has no C++ parameter spelling. A bound class "
             f"names types through an Annotated alias in declare.py.")
     return CXX_PARAM[t.cxx.spelling]
+
+
+def absent(pr: Param) -> bool:
+    """Whether this parameter's absence is spelled `None`.
+
+    A CONTAINER whose declared default is None. The declaration's own
+    docstring says what that means - a repeated field has no presence
+    and needs none, so an absent container IS an empty one - and a
+    caller passing None explicitly means the same thing.
+
+    It matters because nanobind's vector caster refuses None: it asks
+    for a sequence, and None is not one. So a parameter that reads
+    None has to say so in its own type."""
+    if not pr.has_default or pr.default is not None:
+        return False
+    return pr.type.required.origin == "list"
+
+
+def default(pr: Param) -> str:
+    """A Python default, as C++ spells the same value.
+
+    Two cases the table cannot hold, because both need the
+    declaration to resolve them.
+
+    A VOCABULARY member is a name in Python and a string in C++:
+    `HashAlgorithm.SHA256` is `"sha256"`, and only the vocabulary
+    knows which. Emitting the Python spelling put an undeclared
+    identifier in the C++.
+
+    `None` on a CONTAINER is an empty one. A repeated field has no
+    presence and needs none - an absent container IS an empty one,
+    which is what the declaration's own docstring says - so `nullptr`
+    would be a null reference where a value belongs."""
+    if not pr.has_default:
+        return ""
+    value = pr.default
+    if pr.member:
+        # A vocabulary member IS the string a Nix parser takes.
+        return json.dumps(value)
+    if value is None and pr.type.optional:
+        # An optional parameter, absent. `nullptr`, what a bare None
+        # becomes below, is a null POINTER, which a std::optional
+        # parameter cannot take.
+        return "nb::none()"
+    if absent(pr):
+        # None, and the signature says so. The parameter arrives as a
+        # std::optional and an emitted line turns it into an empty
+        # container - so a caller who passes nothing and a caller who
+        # passes None get the same answer.
+        return "nb::none()"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "nullptr"
+    if isinstance(value, str):
+        # Double quotes: `'auto'` in C++ is a character literal.
+        return json.dumps(value)
+    if isinstance(value, int):
+        return str(value)
+    raise TypeError(f"{pr.name}: no C++ spelling for the default {value!r}")

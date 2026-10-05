@@ -49,6 +49,7 @@ def nanobind_modules() -> tuple[str, ...]:
 
 
 @functools.cache
+@functools.cache
 def declared_model() -> ir.Model:
     """The declaration set as the typed model, built once.
 
@@ -259,7 +260,8 @@ def emit_module(mod: Module, dotted: str, out: str,
     if not bound and not mod.functions:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    written = extension(mod, dotted, corpus().producers, chain=chain,
+    written = extension(mod, dotted, declared_model(), corpus().producers,
+                        chain=chain,
                         errors=errors_module(),
                         error_headers=headers or ())
     census_written(mod, bound, written)

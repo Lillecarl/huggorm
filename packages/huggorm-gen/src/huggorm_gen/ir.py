@@ -20,6 +20,7 @@ from typing import Literal
 
 from huggorm_dsl.declare import Decl
 from huggorm_dsl.read import Class, Method, Module, Param, Type, is_surface
+from huggorm_gen import cxx
 from huggorm_gen.payload import callspec
 from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED
 
@@ -164,6 +165,10 @@ class TypeRef:
     # The wire scalar a leaf's C++ width needs: "uint" for a uint64_t.
     # Python has one int; only the crossing has two (huggorm#79).
     width: str = ""
+    # How nanobind spells it by value, and the caster that needs.
+    # Empty on a hand-built shape.
+    cxx: str = ""
+    caster: str | None = None
 
     @property
     def optional(self) -> bool:
@@ -280,6 +285,7 @@ def type_ref(t: Type, resolver: Resolver) -> TypeRef:
     # The vocabulary already says the Python half: `Bint` is
     # `Annotated[bool, Cxx("bint")]`, so `python` is `bool`.
     name = t.leaf.python
+    spelled, caster = cxx.value(t, resolver.known)
     return TypeRef(
         spelling=t.python,
         origin=t.origin,
@@ -289,6 +295,7 @@ def type_ref(t: Type, resolver: Resolver) -> TypeRef:
         kind="module" if t.leaf.module else resolver.kind(name),
         name=name,
         width=t.cxx.width if t.cxx is not None and not t.origin else "",
+        cxx=spelled, caster=caster,
     )
 
 
@@ -340,6 +347,13 @@ class ParamModel:
     # The vocabulary a member default names, which a module writing the
     # default has to import, or "".
     default_class: str = ""
+    # The default as C++ spells it, or "" when there is none.
+    cxx_default: str = ""
+    # How nanobind spells the parameter, and the caster that needs. A
+    # fact about the parameter, not the type: a by-value type is often
+    # passed by reference.
+    cxx: str = ""
+    caster: str | None = None
 
     @classmethod
     def of(cls, p: Param, resolver: Resolver) -> ParamModel:
@@ -357,8 +371,10 @@ class ParamModel:
             default = f"{p.type.python}.{p.member}"
         else:
             default = repr(p.default)
+        spelled, caster = cxx.param(p.type, resolver.known)
         return cls(p.name, type_ref(declared, resolver), default,
-                   p.type.python if p.member else "")
+                   p.type.python if p.member else "", cxx.default(p),
+                   spelled, caster)
 
 
 def blockers(params: Sequence[ParamModel], returns: TypeRef | None,
@@ -404,7 +420,12 @@ class FunctionModel:
     doc: str
     # The binding this calls, when it is not the function of the same
     # name: `Input.fingerprint` for `input_fingerprint`.
-    binds: str = ""
+    calls: str = ""
+    # The C++ it binds by name (`@binds`), or the body it carries.
+    cxx_name: str = ""
+    cxx_body: str = ""
+    blocks: bool = False
+    instant: bool = False
 
     @classmethod
     def of(cls, fn: Method, package: str, module: str,
@@ -417,7 +438,8 @@ class FunctionModel:
         return cls(fn.name, f"{package}.{module}", policy,
                    tuple(ParamModel.of(p, resolver) for p in fn.params),
                    type_ref(fn.ret, resolver) if fn.ret is not None else None,
-                   _clean(fn.doc))
+                   _clean(fn.doc), cxx_name=fn.binds, cxx_body=fn.cxx_body,
+                   blocks=fn.blocks, instant=fn.instant)
 
     @property
     def wrapped(self) -> bool:
@@ -667,7 +689,7 @@ class Model:
                 out.append(FunctionModel(
                     name, c.qualified_module, c.decl.threading,
                     (ParamModel(_snake(c.name), me, None), *m.params),
-                    m.returns, m.doc, binds=f"{c.name}.{m.name}"))
+                    m.returns, m.doc, calls=f"{c.name}.{m.name}"))
         return out
 
     @property

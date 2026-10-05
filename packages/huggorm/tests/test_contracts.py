@@ -574,7 +574,7 @@ def test_a_blocking_method_on_a_value_gets_a_coroutine(
 
     from huggorm_gen.pygen.emitter import package_exports
 
-    found = {f.binds: f.name for f in model.blocking_methods}
+    found = {f.calls: f.name for f in model.blocking_methods}
     assert found.get("Input.fingerprint") == "input_fingerprint", found
     assert "input_fingerprint" in package_exports(model)
 

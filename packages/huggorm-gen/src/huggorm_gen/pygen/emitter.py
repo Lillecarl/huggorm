@@ -881,8 +881,8 @@ def free_function_module(model: ir.Model) -> ast.Module:
     spell = Spelling()
     signatures = {}
     for fn in fns:
-        if fn.binds:
-            spell.need(fn.binds.partition(".")[0], BINDINGS)
+        if fn.calls:
+            spell.need(fn.calls.partition(".")[0], BINDINGS)
         params = [_widened(spell, model, p.type) for p in fn.params]
         r = fn.returns
         ret = (spell.returns(r, _as_async)
@@ -902,14 +902,14 @@ def free_function_module(model: ir.Model) -> ast.Module:
     mod.body.append(ast.ImportFrom(
         module="huggorm_bindings",
         names=[ast.alias(name=f.name, asname="_" + f.name)
-               for f in fns if not f.binds],
+               for f in fns if not f.calls],
         level=0))
     runtime_names = ["call_function"] + (["PoolRunner"] if pool_parent else [])
     mod.body.append(import_from("_runtime", *runtime_names, level=1))
 
     for fn in fns:
         params, ret = signatures[fn.name]
-        call = (f"call_function({fn.binds or '_' + fn.name}, "
+        call = (f"call_function({fn.calls or '_' + fn.name}, "
                 f"[{', '.join(p.name for p in fn.params)}])")
         r = fn.returns
         if r is not None and r.kind == "proxy":
@@ -1049,7 +1049,7 @@ def stub_module(model: ir.Model, module: str) -> ast.Module:
     produced = {c.name for c in classes
                 if c.name in model.returned or c.produced}
     short = module.rsplit(".", 1)[-1]
-    coroutines = {f.binds: f.name for f in model.blocking_methods}
+    coroutines = {f.calls: f.name for f in model.blocking_methods}
     defs: list[ast.stmt] = [_stub_class(c, spell, c.name in produced,
                                         coroutines)
                             for c in classes]

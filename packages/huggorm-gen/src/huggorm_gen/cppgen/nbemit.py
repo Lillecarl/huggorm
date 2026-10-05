@@ -50,12 +50,11 @@ A shape it cannot derive stops with a reason. The escape hatch is
 becomes the place the real code lives.
 """
 
-import json
 from collections.abc import Iterator, Mapping, Sequence
 
 from huggorm_dsl.declare import Field
 from huggorm_dsl.read import Class, Method, Module, Param, Type
-from huggorm_gen import cxx
+from huggorm_gen import cxx, ir
 from huggorm_gen.cxx import NAMESPACE
 from huggorm_gen.cxx import held as _held
 
@@ -912,47 +911,7 @@ class Emitter:
         return out
 
     def _default(self, pr: Param) -> str:
-        """A Python default, as C++ spells the same value.
-
-        Two cases the table cannot hold, because both need the
-        declaration to resolve them.
-
-        A VOCABULARY member is a name in Python and a string in C++:
-        `HashAlgorithm.SHA256` is `"sha256"`, and only the vocabulary
-        knows which. Emitting the Python spelling put an undeclared
-        identifier in the C++.
-
-        `None` on a CONTAINER is an empty one. A repeated field has no
-        presence and needs none - an absent container IS an empty one,
-        which is what the declaration's own docstring says - so `nullptr`
-        would be a null reference where a value belongs."""
-        if not pr.has_default:
-            return ""
-        value = pr.default
-        if pr.member:
-            # A vocabulary member IS the string a Nix parser takes.
-            return json.dumps(value)
-        if value is None and pr.type.optional:
-            # An optional parameter, absent. `nullptr`, what a bare None
-            # becomes below, is a null POINTER, which a std::optional
-            # parameter cannot take.
-            return "nb::none()"
-        if self.absent(pr):
-            # None, and the signature says so. The parameter arrives as a
-            # std::optional and an emitted line turns it into an empty
-            # container - so a caller who passes nothing and a caller who
-            # passes None get the same answer.
-            return "nb::none()"
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if value is None:
-            return "nullptr"
-        if isinstance(value, str):
-            # Double quotes: `'auto'` in C++ is a character literal.
-            return json.dumps(value)
-        if isinstance(value, int):
-            return str(value)
-        raise TypeError(f"{pr.name}: no C++ spelling for the default {value!r}")
+        return cxx.default(pr)
 
     def _extras(self, cls: Class, m: Method) -> str:
         """The annotations that follow a `.def`, in nanobind's order.
@@ -1279,19 +1238,7 @@ class Emitter:
                 f"{self._extras(cls, m)}{tail})"]
 
     def absent(self, pr: Param) -> bool:
-        """Whether this parameter's absence is spelled `None`.
-
-        A CONTAINER whose declared default is None. The declaration's own
-        docstring says what that means - a repeated field has no presence
-        and needs none, so an absent container IS an empty one - and a
-        caller passing None explicitly means the same thing.
-
-        It matters because nanobind's vector caster refuses None: it asks
-        for a sequence, and None is not one. So a parameter that reads
-        None has to say so in its own type."""
-        if not pr.has_default or pr.default is not None:
-            return False
-        return pr.type.required.origin == "list"
+        return cxx.absent(pr)
 
     def _signature(self, cls: Class, m: Method) -> tuple[str, list[str]]:
         """A lambda's parameter list, and the lines that open its body.
@@ -2110,7 +2057,7 @@ class Emitter:
             body[-1] += ";"
         return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
 
-    def free_function(self, fn: Method) -> list[str]:
+    def free_function(self, fn: ir.FunctionModel) -> list[str]:
         """One `m.def`, for a function that belongs to no class.
 
         nanopynix has 72 of these and they are one shape:
@@ -2122,7 +2069,7 @@ class Emitter:
 
         `blocking` has no class to come from here, so a free function says
         `@blocks` for itself."""
-        if not (fn.binds or fn.cxx_body):
+        if not (fn.cxx_name or fn.cxx_body):
             raise TypeError(
                 f"{fn.name}: a free function names the C++ it binds, or "
                 f'carries it. Use @binds("cxx_name") or @cxx_body(...).')
@@ -2131,24 +2078,26 @@ class Emitter:
             extras.append("nb::call_guard<nb::gil_scoped_release>()")
         for pr in fn.params:
             arg = f'"{pr.name}"_a'
-            if pr.has_default:
-                arg += f" = {self._default(pr)}"
+            if pr.cxx_default:
+                arg += f" = {pr.cxx_default}"
             extras.append(arg)
         tail = "".join(f", {x}" for x in extras)
         if not fn.cxx_body:
-            return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
+            return [f'{INDENT}m.def("{fn.name}", &{fn.cxx_name}{tail});']
         # A body, for a function whose C++ is assembled rather than named.
         # `gc_stats` reads five counters out of gc.h and hands back one
         # dict; there is no upstream function with that shape to point at.
         #
-        # `_lambda_head` writes the opening, so a free body and a factory
-        # body spell one the same way - the return type included.
+        # The opening spells the return type, as `_lambda_head` does for
+        # a factory body: one rule for both kinds of body.
         body = [f"{INDENT * 2}{ln}".rstrip()
                 for ln in fn.cxx_body.strip().splitlines()]
-        return [f'{INDENT}m.def("{fn.name}", {self._lambda_head(fn)}', *body,
+        args = ", ".join(f"{pr.cxx} {pr.name}" for pr in fn.params)
+        ret = f" -> {fn.returns.cxx}" if fn.returns is not None else ""
+        return [f'{INDENT}m.def("{fn.name}", []({args}){ret} {{', *body,
                 f"{INDENT}}}{tail});"]
 
-    def free_functions(self, fns: tuple[Method, ...]) -> str:
+    def free_functions(self, fns: Sequence[ir.FunctionModel]) -> str:
         """Every free binding, in one function the module can call.
 
         The same seam a class gets. nanopynix's NB_MODULE already calls
@@ -2186,6 +2135,7 @@ class Emitter:
 
     def module(self, classes: Sequence[Class],
                functions: Sequence[Method],
+               exported: Sequence[ir.FunctionModel],
                errors: str = "",
                error_headers: Sequence[str] = (),
                package: str = "") -> str:
@@ -2241,8 +2191,6 @@ class Emitter:
             head += ["}  // namespace nanobind::detail", ""]
         out = "\n".join(head) + "\n" + "\n".join(
             self.bind_function(cls, functions) for cls in classes)
-        exported = public([fn for fn in functions
-                           if not (fn.startup or fn.translator)], classes)
         return out + ("\n" + self.free_functions(exported)
                       if exported else "")
 
@@ -2265,7 +2213,7 @@ def imports(mod: Module) -> list[str]:
                    if (c.decl.cxx or c.is_value) and c.module != mod.name})
 
 
-def extension(mod: Module, dotted: str,
+def extension(mod: Module, dotted: str, model: ir.Model,
               producers: Mapping[str, Sequence[str]],
               chain: list[str] | None = None,
               errors: str = "",
@@ -2285,7 +2233,8 @@ def extension(mod: Module, dotted: str,
     or `huggorm_bindings.path` inside a package. It is the one fact
     here no declaration carries, and it is what turns a sibling
     declaration's name into an import a running interpreter can
-    follow. `producers` is the set's, as `Emitter` takes it."""
+    follow. `producers` is the set's, as `Emitter` takes it, and
+    `model` holds the free functions this module exports."""
     classes = bindable(mod)
     package = dotted.rpartition(".")[0]
     reached = [f'{INDENT}nb::module_::import_("'
@@ -2296,7 +2245,9 @@ def extension(mod: Module, dotted: str,
     # unit needs the headers behind the chain.
     return "\n".join([
         Emitter(mod.known, producers).module(
-            classes, mod.functions, errors,
+            classes, mod.functions,
+            [model.functions[fn.name] for fn in public(mod.exported, classes)],
+            errors,
             error_headers if translators else (), package),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
@@ -2403,7 +2354,7 @@ if __name__ == "__main__":
         for cls in mod.classes:
             emit = Emitter(mod.known,
                            producers(mod.known.values(), mod.functions))
-            print(emit.module([cls], ()) if len(mod.classes) == 1
+            print(emit.module([cls], (), ()) if len(mod.classes) == 1
                   else emit.bind_function(cls))
             c = census(cls)
             total = c["derived"] + c["hatched"]
