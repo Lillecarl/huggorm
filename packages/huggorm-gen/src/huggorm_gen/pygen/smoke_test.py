@@ -44,7 +44,7 @@ def _cls(name: str, *, threading: str = "pool", blocking: bool = True,
                   wire=wire),
         is_value=wire == "value", produced=False, constructs=True,
         wire_fields=fields, ctor=(),
-        methods=tuple(ir.MethodModel(m, (), t, "") for m, t in returns))
+        bound=tuple(ir.MethodModel(m, (), t, "") for m, t in returns))
 
 
 def _model(*classes: Any, enums: tuple[str, ...] = ()) -> Any:

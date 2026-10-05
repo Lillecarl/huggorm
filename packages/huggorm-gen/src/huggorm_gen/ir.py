@@ -462,7 +462,9 @@ class ClassModel:
     constructs: bool
     wire_fields: tuple[FieldModel, ...]
     ctor: tuple[ParamModel, ...]
-    methods: tuple[MethodModel, ...]
+    # Every method the binding binds, private ones included: the tree
+    # walk calls those. `methods` is the surface every other stage reads.
+    bound: tuple[MethodModel, ...]
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -486,11 +488,14 @@ class ClassModel:
                               for f, m in c.parts if m.ret is not None),
             ctor=tuple(ParamModel.of(p, resolver)
                        for p in _ctor_params(c, functions)),
-            # SURFACE only. A private method is bound because the tree
-            # walk calls it, and nothing generated describes it.
-            methods=tuple(MethodModel.of(m, resolver) for m in c.methods
-                          if is_surface(m.name)),
+            bound=tuple(MethodModel.of(m, resolver) for m in c.methods),
         )
+
+    @property
+    def methods(self) -> tuple[MethodModel, ...]:
+        """The SURFACE. A private method is bound because the tree walk
+        calls it, and nothing generated describes it."""
+        return tuple(m for m in self.bound if is_surface(m.name))
 
     def method(self, name: str) -> MethodModel:
         return next(m for m in self.methods if m.name == name)
