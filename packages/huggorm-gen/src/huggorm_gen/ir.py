@@ -1367,6 +1367,15 @@ class Model:
         """Every class with a service behind its handles: every proxy."""
         return frozenset(n for n, c in self.classes.items() if c.served)
 
+    def adopted(self, t: TypeRef | None) -> ClassModel | None:
+        """The served class a return of `t` is adopted as - `X` or
+        `X | None` - or None. Every layer attaches a runner to ONE
+        object, so a container of them is never adopted."""
+        if t is None or t.required.origin or t.leaf.kind != "proxy":
+            return None
+        cls = self.classes.get(t.leaf.name)
+        return cls if cls is not None and cls.served else None
+
     @property
     def constructed(self) -> list[ClassModel]:
         """Every class a caller builds, by name."""

@@ -378,16 +378,6 @@ def _ann(type_str: str, context: str) -> ast.expr:
 
 
 
-def _adopted(model: ir.Model, m: ir.MethodModel) -> ir.TypeRef | None:
-    """The served class a method hands back, to be adopted into its
-    async form - itself or `| None` - or None when it returns none."""
-    r = m.returns
-    if (r is not None and r.kind == "proxy" and r.name in model.served
-            and r.origin in ("", "optional")):
-        return r.required
-    return None
-
-
 def _as_binding(t: ir.TypeRef) -> tuple[str, Source | None]:
     return t.name, BINDINGS
 
@@ -423,7 +413,7 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
     methods: dict[str, tuple[list[str], str]] = {}
     for m in c.methods:
         params = [spell(p.type) for p in m.params]
-        if _adopted(model, m) is not None:
+        if model.adopted(m.returns) is not None:
             ret = spell.returns(m.returns, _as_async)
         elif m.returns is not None:
             ret = spell(m.returns, _as_binding, twin=True)
@@ -442,7 +432,7 @@ def _hop_method(cls: ast.ClassDef, model: ir.Model,
     params, returns = signature
     call = (f"self._runner.call({m.name!r}, "
             f"[{', '.join(p.name for p in m.params)}])")
-    if (adopted := _adopted(model, m)) is not None:
+    if (adopted := model.adopted(m.returns)) is not None:
         body = _adopting(call, f"{ASYNC}{adopted.name}", "self._runner",
                          m.returns is not None and m.returns.optional)
     elif m.returns is not None and m.returns.leaf.twin:
@@ -492,7 +482,7 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
     # A forward hands back Any, and cast is where the declared type is
     # claimed. An adopted return builds a real object instead, and a
     # None return does not return.
-    if any(m.returns is not None and _adopted(model, m) is None
+    if any(m.returns is not None and model.adopted(m.returns) is None
            for m in c.methods):
         typing_names = typing_names | {"cast"}
     # Docstring FIRST: anything before it demotes it to a dead
@@ -869,32 +859,9 @@ def free_function_module(model: ir.Model) -> ast.Module:
     coroutine can take its plain name.
 
     A returned served class is adopted through `_adopt`, as a method's
-    return is. Only a POOL class can be: an affine one needs a home
-    thread and a free function has none. Refused here, at generation,
-    because the alternative is a coroutine that hands a sync object to
-    an async caller and a server that leases one."""
+    return is. `contracts.free_functions` refuses one that cannot be."""
     fns = async_functions(model)
-    pool_parent = False
-    for fn in fns:
-        r = fn.returns
-        adopted = (r.required if r is not None and r.kind == "proxy"
-                   and r.origin in ("", "optional") else None)
-        if adopted is None:
-            if r is not None and r.leaf.kind == "proxy":
-                raise ValueError(
-                    f"free function {fn.name} returns {r.spelling}, and "
-                    f"{r.leaf.name} cannot be adopted into an async form "
-                    f"from a free function. Return a served class on its "
-                    f"own or as `X | None`.")
-            continue
-        policy = model.classes[adopted.name].threading
-        if policy != "pool":
-            raise ValueError(
-                f"free function {fn.name} returns {adopted.name}, which is "
-                f"{policy}: it needs a home thread and a free function has "
-                f"none. Return it from a method of the class that owns the "
-                f"thread instead.")
-        pool_parent = True
+    pool_parent = any(model.adopted(fn.returns) is not None for fn in fns)
 
     spell = Spelling()
     signatures = {}
@@ -904,7 +871,7 @@ def free_function_module(model: ir.Model) -> ast.Module:
         params = [_widened(spell, model, p.type) for p in fn.params]
         r = fn.returns
         ret = (spell.returns(r, _as_async)
-               if r is not None and r.kind == "proxy"
+               if model.adopted(r) is not None
                else spell.returns(r, _as_binding))
         signatures[fn.name] = (params, ret)
         spell.defaults(fn.params)
@@ -914,7 +881,8 @@ def free_function_module(model: ir.Model) -> ast.Module:
         value="Generated async wrappers for the bindings' module-level "
               "functions - do not edit. Built via ast at Nix build time.")))
     mod.body.append(_future_annotations())
-    if any(f.returns is not None and f.returns.kind != "proxy" for f in fns):
+    if any(f.returns is not None and model.adopted(f.returns) is None
+           for f in fns):
         mod.body.append(import_from("typing", "cast"))
     mod.body.extend(spell.imports())
     mod.body.append(ast.ImportFrom(
@@ -930,11 +898,11 @@ def free_function_module(model: ir.Model) -> ast.Module:
         call = (f"call_function({fn.calls or '_' + fn.name}, "
                 f"[{', '.join(p.name for p in fn.params)}])")
         r = fn.returns
-        if r is not None and r.kind == "proxy":
+        if (adopted := model.adopted(r)) is not None:
             # A pool policy ignores the parent, so a fresh PoolRunner
             # stands in for the producer a method would pass.
-            body = _adopting(call, f"{ASYNC}{r.name}", "PoolRunner(None)",
-                             r.optional)
+            body = _adopting(call, f"{ASYNC}{adopted.name}",
+                             "PoolRunner(None)", r is not None and r.optional)
         else:
             body = _forwarded(call, r.spelling if r is not None else "None")
         mod.body.append(_def(f"async def {fn.name}() -> {ret}", body, fn.doc,

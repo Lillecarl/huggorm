@@ -10,14 +10,6 @@ from __future__ import annotations
 from huggorm_gen import ir
 
 
-def _adopted(t: ir.TypeRef | None, names: set[str]) -> str | None:
-    """The class a return of `t` adopts into a runner - itself or
-    `| None` - when it is one of `names`."""
-    if t is None or t.origin not in ("", "optional"):
-        return None
-    return t.name if t.name in names else None
-
-
 def wrap(model: ir.Model) -> list[str]:
     """An unwrapped class must be self-contained.
 
@@ -25,7 +17,6 @@ def wrap(model: ir.Model) -> list[str]:
     So it may not be affine - there is no thread to hop to - and it may
     not hand back an object that IS wrapped: the caller would get a
     bare sync instance with no runner and no await to get one."""
-    wrapped = {n for n, c in model.classes.items() if c.wrapped}
     bad = []
     for c in model.classes.values():
         if c.wrapped:
@@ -34,7 +25,7 @@ def wrap(model: ir.Model) -> list[str]:
             bad.append(f"{c.name}: an unwrapped class must be threading "
                        f"'pool', not {c.threading!r}")
         for m in c.methods:
-            if _adopted(m.returns, wrapped) is not None:
+            if (a := model.adopted(m.returns)) is not None and a.wrapped:
                 bad.append(
                     f"{c.name}.{m.name} returns {m.return_spelling}, which "
                     f"needs a wrapper. An unwrapped class cannot attach "
@@ -59,7 +50,7 @@ def collection(model: ir.Model) -> list[str]:
         f"the caller walk it, or realize it as a value tree (huggorm#30)."
         for c in model.classes.values() for m in c.methods
         if m.returns is not None and m.returns.name in wrapped
-        and _adopted(m.returns, wrapped) is None
+        and m.returns.required.origin
     ]
 
 
@@ -71,15 +62,44 @@ def affine_from_pool(model: ir.Model) -> list[str]:
     thread nothing owns. Every pool class is checked, so a chain is
     covered too: any path from pool to affine has one such edge
     (huggorm#8)."""
-    affine = {n for n, c in model.classes.items()
-              if c.wrapped and c.threading == "affine"}
     return [
         f"{c.name}.{m.name} returns {m.return_spelling}, which is affine, "
         f"from a pool class: it would live on a thread nothing owns. "
         f"Return it from an affine class instead."
         for c in model.classes.values() if c.threading == "pool"
-        for m in c.methods if _adopted(m.returns, affine) is not None
+        for m in c.methods
+        if (a := model.adopted(m.returns)) is not None
+        and a.wrapped and a.threading == "affine"
     ]
+
+
+def free_functions(model: ir.Model) -> list[str]:
+    """A free function's served return must be adoptable from the pool.
+
+    Its coroutine adopts the return as a method's is, so it must be one
+    object, `X` or `X | None`. And only a POOL class: an affine one
+    needs a home thread, and a free function has none. Otherwise the
+    coroutine hands a sync object to an async caller."""
+    bad = []
+    for fn in (*(f for f in model.functions.values() if f.wrapped),
+               *model.blocking_methods):
+        r = fn.returns
+        if r is None or r.leaf.kind != "proxy":
+            continue
+        adopted = model.adopted(r)
+        if adopted is None:
+            bad.append(
+                f"free function {fn.name} returns {r.spelling}, and "
+                f"{r.leaf.name} cannot be adopted into an async form "
+                f"from a free function. Return a served class on its "
+                f"own or as `X | None`.")
+        elif adopted.threading != "pool":
+            bad.append(
+                f"free function {fn.name} returns {adopted.name}, which is "
+                f"{adopted.threading}: it needs a home thread and a free "
+                f"function has none. Return it from a method of the class "
+                f"that owns the thread instead.")
+    return bad
 
 
 def wire(model: ir.Model) -> list[str]:
@@ -132,5 +152,6 @@ def complaints(model: ir.Model) -> list[tuple[str, str]]:
             for rule, check in (("wrap contract", wrap),
                                 ("collection contract", collection),
                                 ("policy", affine_from_pool),
+                                ("free function contract", free_functions),
                                 ("wire contract", wire))
             for why in check(model)]

@@ -165,6 +165,32 @@ def test_an_optional_return_names_a_value_or_nothing(
     assert contracts.affine_from_pool(_model(state)) == []
 
 
+def test_a_free_function_adopts_one_pool_object() -> None:
+    """A free function's coroutine adopts its return through the pool,
+    so an affine return, or a container of served objects, is refused
+    before anything is emitted."""
+    import dataclasses
+
+    from huggorm_gen import contracts, ir
+
+    def fn(name: str, returns: Any) -> Any:
+        return ir.FunctionModel(name, "pkg.mod", "pool", (), returns, "")
+
+    pool = ir.TypeRef.named("Pool", "proxy")
+    state = ir.TypeRef.named("State", "proxy")
+    model = _model(_cls("Pool"), _cls("State", threading="affine"))
+    for good in (pool, ir.TypeRef.optional_of(pool)):
+        functions = {"make": fn("make", good)}
+        assert contracts.free_functions(
+            dataclasses.replace(model, functions=functions)) == []
+    for bad, why in ((state, "needs a home thread"),
+                     (ir.TypeRef.list_of(pool), "cannot be adopted")):
+        functions = {"make": fn("make", bad)}
+        complaints = contracts.free_functions(
+            dataclasses.replace(model, functions=functions))
+        assert len(complaints) == 1 and why in complaints[0], complaints
+
+
 def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference
     the runtime only via `from _runtime import X`; a rename on either
