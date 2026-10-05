@@ -286,12 +286,11 @@ async def test_ping_reports_a_swept_connection(swept: Swept) -> None:
     from huggorm.grpc_pb import PKG
 
     c = swept.doomed_client
-    ack = await c._rpc(f"/{PKG}.Session/Ping", c.msg("PingReq")(), "AckResp")
+    ack = await c._rpc(f"/{PKG}.Session/Ping")
     assert ack.ok is False
 
     async with remote.connect(HOST, swept.port) as fresh:
-        ok = await fresh._rpc(
-            f"/{PKG}.Session/Ping", fresh.msg("PingReq")(), "AckResp")
+        ok = await fresh._rpc(f"/{PKG}.Session/Ping")
         assert ok.ok is True
 
 

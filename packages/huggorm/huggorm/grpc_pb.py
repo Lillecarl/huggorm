@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+from dataclasses import dataclass
+from typing import Any
 
-from google.protobuf import descriptor_pb2, descriptor_pool
+import grpclib.const
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 import huggorm_generated
 from huggorm_generated._policy import PKG as _PKG
@@ -53,3 +56,41 @@ def load_pool() -> descriptor_pool.DescriptorPool:
 # an emitted constant, so no other generator can supply a different
 # one and nothing needs to check it at load time.
 PKG = _PKG
+
+
+def session(name: str) -> str:
+    """The gRPC path of one hand-written Session rpc."""
+    return f"/{PKG}.Session/{name}"
+
+
+@dataclass(frozen=True)
+class Rpc:
+    """One rpc as the schema states it.
+
+    Read by path on both sides, so neither restates a message name: a
+    request built as the wrong message would decode as default fields,
+    not fail."""
+
+    req: Any
+    resp: Any
+    cardinality: grpclib.const.Cardinality
+
+
+class Rpcs:
+    """Every rpc in one pool, by gRPC path, each read once."""
+
+    def __init__(self, pool: descriptor_pool.DescriptorPool) -> None:
+        self.pool = pool
+        self._read: dict[str, Rpc] = {}
+
+    def __getitem__(self, path: str) -> Rpc:
+        if (found := self._read.get(path)) is not None:
+            return found
+        m = self.pool.FindMethodByName(  # type: ignore[no-untyped-call]
+            path.lstrip("/").replace("/", "."))
+        found = self._read[path] = Rpc(
+            message_factory.GetMessageClass(m.input_type),  # type: ignore[no-untyped-call]
+            message_factory.GetMessageClass(m.output_type),  # type: ignore[no-untyped-call]
+            grpclib.const.Cardinality.UNARY_STREAM if m.server_streaming
+            else grpclib.const.Cardinality.UNARY_UNARY)
+        return found

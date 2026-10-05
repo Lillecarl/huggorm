@@ -22,7 +22,6 @@ import grpclib
 import grpclib.const
 import grpclib.exceptions
 import grpclib.server
-from google.protobuf import message_factory
 from grpclib.reflection.service import ServerReflection
 
 from huggorm_generated._callspec import Acquire, Call, Tree
@@ -460,6 +459,7 @@ class Dispatcher:
         the same for every method. What differs is the spec, and the
         build writes that."""
         self.pool = pool
+        self.rpcs = schema.Rpcs(pool)
         # Two task groups, and which one a task goes in is decided
         # by whether it ENDS. `serve` explains the split; both OWN
         # their children, so nothing here retains a set of tasks by
@@ -593,9 +593,12 @@ class Dispatcher:
         self._log_fanouts.pop(id(obj), None)
         self.tasks.start_soon(_close)
 
-    def msg(self, name: str) -> Any:
-        return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-            self.pool.FindMessageTypeByName(f"{schema.PKG}.{name}"))
+    def _route(self, path: str, handler: Handler) -> None:
+        """Dispatch `path` to `handler`, with the message types and the
+        cardinality the schema states for it."""
+        r = self.rpcs[path]
+        self.mapping[path] = grpclib.const.Handler(
+            handler, r.cardinality, r.req, r.resp)
 
     # -- handles ---------------------------------------------------------
     def put(self, obj: Any, token: str,
@@ -701,8 +704,7 @@ class Dispatcher:
             self._acquire(cls_name)
 
         for m in METHODS.get(cls_name, ()):
-            req_cls = self.msg(m.req)
-            resp_cls = self.msg(m.resp)
+            resp_cls = self.rpcs[m.path].resp
             override = self._method_overrides.get(m.name)
 
             async def handler(stream: Any, m: Call = m,
@@ -728,9 +730,7 @@ class Dispatcher:
                     lambda obj: self.put(obj, token, parents=[req.self.id]))
                 await stream.send_message(resp)
 
-            self.mapping[m.path] = grpclib.const.Handler(
-                self._wrap(handler, f"{cls_name}.{m.name}"),
-                grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
+            self._route(m.path, self._wrap(handler, f"{cls_name}.{m.name}"))
 
     def _acquire(self, cls_name: str) -> None:
         """Construct one instance, from typed constructor arguments.
@@ -745,8 +745,7 @@ class Dispatcher:
 
         spec = ACQUIRE[cls_name]
         wrapper_cls = getattr(flg, "Async" + cls_name)
-        req_cls = self.msg(spec.req)
-        handle_cls = self.msg("Handle")
+        handle_cls = self.rpcs[spec.path].resp
 
         async def handler(stream: Any, wrapper_cls: Any = wrapper_cls,
                           spec: Acquire = spec,
@@ -761,9 +760,7 @@ class Dispatcher:
             resp.id = self.put(wrapper_cls(*args), token)
             await stream.send_message(resp)
 
-        self.mapping[spec.path] = grpclib.const.Handler(
-            self._wrap(handler, f"{cls_name}.Acquire"),
-            grpclib.const.Cardinality.UNARY_UNARY, req_cls, handle_cls)
+        self._route(spec.path, self._wrap(handler, f"{cls_name}.Acquire"))
 
     def _free_service(self) -> None:
         """Module-level functions, on one shared service.
@@ -777,8 +774,7 @@ class Dispatcher:
 
         for fname, spec in FREE.items():
             fn = getattr(flg, fname)
-            req_cls = self.msg(spec.req)
-            resp_cls = self.msg(spec.resp)
+            resp_cls = self.rpcs[spec.path].resp
             override = self._free_overrides.get(fname)
 
             async def handler(stream: Any, fn: Any = fn,
@@ -800,9 +796,7 @@ class Dispatcher:
                                   lambda obj: self.put(obj, token))
                 await stream.send_message(resp)
 
-            self.mapping[spec.path] = grpclib.const.Handler(
-                self._wrap(handler, f"Functions.{fname}"),
-                grpclib.const.Cardinality.UNARY_UNARY, req_cls, resp_cls)
+            self._route(spec.path, self._wrap(handler, f"Functions.{fname}"))
 
     def _session(self) -> None:
         from huggorm_generated._runtime import InternalError
@@ -826,6 +820,9 @@ class Dispatcher:
                         f"Session/{fn.__name__} failed", cause=e)) from e
             return guarded
 
+        def reply(rpc: str) -> Any:
+            return self.rpcs[schema.session(rpc)].resp
+
         async def release_many(stream: Any) -> None:
             """Best-effort batch release for handles the client dropped.
 
@@ -844,7 +841,7 @@ class Dispatcher:
                     released += 1
                 except (KeyError, ValueError):
                     unknown += 1
-            resp = self.msg("ReleaseManyResp")()
+            resp = reply("ReleaseMany")()
             resp.released, resp.unknown = released, unknown
             await stream.send_message(resp)
 
@@ -852,7 +849,7 @@ class Dispatcher:
             req = await stream.recv_message()
             self.table.release(_tok(stream),
                                req.self.id if hasattr(req, "self") else req.id)
-            await stream.send_message(self.msg("Handle")())
+            await stream.send_message(reply("Release")())
 
         digest = schema.schema_digest()
 
@@ -868,14 +865,14 @@ class Dispatcher:
                     f"not this server's {digest[:12]}: rebuild the client "
                     f"from the server's huggorm")
             claim = req.claim_token or None
-            resp = self.msg("ConnResp")()
+            resp = reply("Bind")()
             resp.token = self.table.bind(claim)
             resp.lease_ttl = self.table.ttl or 0.0
             await stream.send_message(resp)
 
         async def ping(stream: Any) -> None:
             await stream.recv_message()
-            ack = self.msg("AckResp")()
+            ack = reply("Ping")()
             # `ok` finally means something. It was always True, which
             # is why nobody noticed that the lookup behind it CREATED
             # the connection it was meant to be checking.
@@ -895,7 +892,7 @@ class Dispatcher:
             req = await stream.recv_message()
             self.table.share(_tok(stream), req.to_token,
                              req.handle.id, mode=req.mode or "copy")
-            ack = self.msg("AckResp")()
+            ack = reply("Share")()
             ack.ok = True
             await stream.send_message(ack)
 
@@ -906,7 +903,7 @@ class Dispatcher:
             if hid is None and not req.all:
                 raise ValueError("detach needs a target handle or all=true")
             moved = self.table.detach(token, hid)
-            ack = self.msg("AckResp")()
+            ack = reply("Detach")()
             ack.ok = moved > 0
             await stream.send_message(ack)
 
@@ -936,7 +933,7 @@ class Dispatcher:
                             req.budget if req.budget > 0 else DEFAULT_BUDGET)
             # ONE hop for the whole tree, on the value's own thread.
             tree = await target._runner.run(lambda obj: walk.node(obj, 0))
-            resp = self.msg("RealizeResp")()
+            resp = reply("Realize")()
             # Every node the walk stopped at leases to the caller and
             # pins the root, exactly as a proxy return does.
             self.codec.tree_to_msg(
@@ -1007,8 +1004,7 @@ class Dispatcher:
 
             reader = await fan.join(capacity, level)
             try:
-                await _pump(stream, reader, self.msg("LogsResp"), self.codec,
-                            alive)
+                await _pump(stream, reader, reply("Logs"), self.codec, alive)
             except grpclib.exceptions.StreamTerminatedError:
                 # The client is gone. There is nobody to tell.
                 return
@@ -1049,7 +1045,7 @@ class Dispatcher:
 
             reader = await self._process_fanout.join(capacity, level)
             try:
-                await _pump(stream, reader, self.msg("LogsResp"), self.codec,
+                await _pump(stream, reader, reply("ProcessLogs"), self.codec,
                             lambda: None)
             except grpclib.exceptions.StreamTerminatedError:
                 return
@@ -1073,36 +1069,26 @@ class Dispatcher:
                 raise TypeError(
                     f"{req.state.id[:8]} runs no call of its own, so no "
                     f"marker can end its records")
-            resp = self.msg("LogsBarrierResp")()
+            resp = reply("LogsBarrier")()
             resp.request = request
             await stream.send_message(resp)
 
-        Handle = self.msg("Handle")
-        self.mapping[f"/{schema.PKG}.Session/Logs"] = grpclib.const.Handler(
-            guard_untyped(logs), grpclib.const.Cardinality.UNARY_STREAM,
-            self.msg("LogsReq"), self.msg("LogsResp"))
-        self.mapping[f"/{schema.PKG}.Session/ProcessLogs"] = \
-            grpclib.const.Handler(
-                guard_untyped(process_logs),
-                grpclib.const.Cardinality.UNARY_STREAM,
-                self.msg("ProcessLogsReq"), self.msg("LogsResp"))
-        for name, fn, req_cls, resp_cls in (
-            ("Realize", realize, self.msg("RealizeReq"),
-             self.msg("RealizeResp")),
-            ("LogsBarrier", logs_barrier, self.msg("LogsBarrierReq"),
-             self.msg("LogsBarrierResp")),
-            ("Release", release, Handle, Handle),
-            ("ReleaseMany", release_many, self.msg("ReleaseManyReq"),
-             self.msg("ReleaseManyResp")),
-            ("Bind", bind, self.msg("BindReq"), self.msg("ConnResp")),
-            ("Ping", ping, self.msg("PingReq"), self.msg("AckResp")),
-            ("Share", share, self.msg("ShareReq"), self.msg("AckResp")),
-            ("Detach", detach, self.msg("DetachReq"), self.msg("AckResp")),
-        ):
-            self.mapping[f"/{schema.PKG}.Session/{name}"] = grpclib.const.Handler(
-                guard_untyped(fn), grpclib.const.Cardinality.UNARY_UNARY,
-                req_cls, resp_cls)
-
+        handlers: dict[str, Handler] = {
+            "Bind": bind, "Ping": ping, "Share": share, "Detach": detach,
+            "Release": release, "ReleaseMany": release_many,
+            "Realize": realize, "Logs": logs, "ProcessLogs": process_logs,
+            "LogsBarrier": logs_barrier,
+        }
+        # An rpc the schema declares and nothing serves would answer
+        # UNIMPLEMENTED at its first call, so the server refuses to start.
+        declared = {m.name for m in self.pool.FindServiceByName(  # type: ignore[no-untyped-call]
+            f"{schema.PKG}.Session").methods}
+        if declared != handlers.keys():
+            raise RuntimeError(
+                f"Session rpcs {sorted(declared)} and handlers "
+                f"{sorted(handlers)} disagree")
+        for name, fn in handlers.items():
+            self._route(schema.session(name), guard_untyped(fn))
 
 async def serve(host: str = "127.0.0.1", port: int = 50051,
                 lease_ttl: float = 120.0) -> None:

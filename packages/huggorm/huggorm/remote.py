@@ -27,7 +27,7 @@ import contextlib
 import logging
 import threading
 import weakref
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 import anyio
@@ -35,7 +35,6 @@ import grpclib
 import grpclib.client
 import grpclib.const
 import grpclib.exceptions
-from google.protobuf import message_factory
 
 from huggorm_generated._callspec import Call
 from huggorm_generated._policy import ACQUIRE, FREE, LOG_RECORDS, NO_RPC
@@ -114,13 +113,11 @@ class NixClient:
         self._refs: dict[str, int] = {}
         self._dropped: list[str] = []
         self._ref_lock = threading.Lock()
+        self.rpcs = schema.Rpcs(self.pool)
 
-        def msg(name: str) -> Any:
-            return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-                self.pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-                    f"{schema.PKG}.{name}"))
-
-        self.msg: Callable[[str], Any] = msg
+    def request(self, path: str, /, **fields: Any) -> Any:
+        """A request for the rpc at `path`, as the schema types it."""
+        return self.rpcs[path].req(**fields)
 
     def proxy(self, cls_name: str, handle_id: str) -> Any:
         """A client-side object for one remote handle.
@@ -189,24 +186,23 @@ class NixClient:
             self._dropped.clear()
         if not queued:
             return 0
-        req = self.msg("ReleaseManyReq")()
-        for hid in queued:
-            req.handles.add().id = hid
         resp = await self._rpc(
-            f"/{schema.PKG}.Session/ReleaseMany", req, "ReleaseManyResp")
+            schema.session("ReleaseMany"), handles=[{"id": h} for h in queued])
         # protobuf fields are Any; the schema says what this one is.
         return int(resp.released)
 
-    async def _rpc(self, path: str, req: Any, reply_name: str) -> Any:
+    async def _rpc(self, path: str, req: Any = None, /, **fields: Any) -> Any:
+        """One unary call. `req`, or a request built from `fields`."""
+        if req is None:
+            req = self.request(path, **fields)
         if self._expired:
             raise ConnectionExpired(
                 f"connection {self.token!r} was swept by the server; its "
                 f"handles are gone. Call bind() and re-acquire.")
-        Reply = self.msg(reply_name)
         metadata = {TOKEN_HEADER: self.token} if self.token else None
         stream = self.channel.request(
-            path, grpclib.const.Cardinality.UNARY_UNARY, type(req), Reply,
-            metadata=metadata)
+            path, grpclib.const.Cardinality.UNARY_UNARY, type(req),
+            self.rpcs[path].resp, metadata=metadata)
         try:
             async with stream as s:
                 await s.send_message(req)
@@ -260,10 +256,9 @@ class NixClient:
         """Adopt or create a connection identity; claims escrowed
         handles when presenting a detached session's token. The server
         reports its lease TTL so pings can keep pace with it."""
-        req = self.msg("BindReq")(schema_digest=schema.schema_digest())
-        if claim_token:
-            req.claim_token = claim_token
-        resp = await self._rpc(f"/{schema.PKG}.Session/Bind", req, "ConnResp")
+        resp = await self._rpc(schema.session("Bind"),
+                               schema_digest=schema.schema_digest(),
+                               claim_token=claim_token or "")
         was_new = self.token is None or self._pinger is None
         self.token = resp.token
         ttl = getattr(resp, "lease_ttl", 0) or 0
@@ -307,10 +302,8 @@ class NixClient:
         while True:
             await anyio.sleep(interval)
             try:
-                req = self.msg("PingReq")()
                 with anyio.fail_after(5):
-                    ack = await self._rpc(
-                        f"/{schema.PKG}.Session/Ping", req, "AckResp")
+                    ack = await self._rpc(schema.session("Ping"))
                 if not ack.ok:
                     # Swept. Say so once, loudly, and stop - the next
                     # call raises ConnectionExpired rather than
@@ -360,8 +353,7 @@ class NixClient:
         """
         try:
             with anyio.fail_after(5):
-                ack = await self._rpc(
-                    f"/{schema.PKG}.Session/Ping", self.msg("PingReq")(), "AckResp")
+                ack = await self._rpc(schema.session("Ping"))
             return bool(ack.ok)
         except (ConnectionExpired, TimeoutError, OSError,
                 grpclib.exceptions.GRPCError,
@@ -371,18 +363,17 @@ class NixClient:
 
     async def share(self, obj: Any, to_token: str,
                     mode: str = "copy") -> None:
-        req = self.msg("ShareReq")(mode=mode)
-        req.handle.id = obj.handle_id
-        req.to_token = to_token
-        await self._rpc(f"/{schema.PKG}.Session/Share", req, "AckResp")
+        await self._rpc(schema.session("Share"), handle={"id": obj.handle_id},
+                        to_token=to_token, mode=mode)
 
     async def detach(self, obj: Any = None, all: bool = False) -> bool:
         """Hand our claim back as escrow under our own token. With no
         target and all=True, detaches every lease we hold."""
-        req = self.msg("DetachReq")(all=all)
+        path = schema.session("Detach")
+        req = self.request(path, all=all)
         if obj is not None:
             req.target.id = obj.handle_id
-        resp = await self._rpc(f"/{schema.PKG}.Session/Detach", req, "AckResp")
+        resp = await self._rpc(path, req)
         return bool(resp.ok)
 
     async def acquire(self, cls_name: str, *args: Any) -> Any:
@@ -404,13 +395,13 @@ class NixClient:
                 f"argument(s) ({', '.join(a.name for a in spec.args)}), "
                 f"got {len(args)}")
 
-        req = self.msg(spec.req)()
+        req = self.request(spec.path)
         for a, val in zip(spec.args, args, strict=False):
             if val is None:
                 continue  # optional, left at the proto3 default
             self.codec.encode(req, a.name, a.type, val,
                               _handle_of)
-        resp = await self._rpc(spec.path, req, "Handle")
+        resp = await self._rpc(spec.path, req)
         return self.proxy(cls_name, resp.id)
 
     async def release(self, obj: Any) -> None:
@@ -420,8 +411,7 @@ class NixClient:
             # answered "no lease on ''" and the caller saw a plausible
             # error about the wrong handle.
             raise ValueError("handle already released through this object")
-        req = self.msg("Handle")(id=obj.handle_id)
-        await self._rpc(f"/{schema.PKG}.Session/Release", req, "Handle")
+        await self._rpc(schema.session("Release"), id=obj.handle_id)
         self._untrack(obj.handle_id)
         obj.handle_id = None
 
@@ -447,11 +437,9 @@ class NixClient:
         server's default."""
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
-        req = self.msg("RealizeReq")()
-        req.handle.id = obj.handle_id
-        req.depth, req.budget = depth, budget
-        resp = await self._rpc(f"/{schema.PKG}.Session/Realize", req,
-                               "RealizeResp")
+        resp = await self._rpc(schema.session("Realize"),
+                               handle={"id": obj.handle_id},
+                               depth=depth, budget=budget)
         return self.codec.tree_from_msg(resp.root, self.proxy)
 
     async def logs(self, obj: Any, capacity: int = 0,
@@ -495,8 +483,7 @@ class NixClient:
         arrives only after the work it was meant to report."""
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
-        req = self.msg("LogsReq")()
-        req.state.id = obj.handle_id
+        req = self.request(schema.session("Logs"), state={"id": obj.handle_id})
         self._log_options(req, capacity, level)
         async for batch in self._log_stream("Logs", req):
             yield batch
@@ -510,10 +497,8 @@ class NixClient:
         A reader that sees the marker holds all of it."""
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
-        req = self.msg("LogsBarrierReq")()
-        req.state.id = obj.handle_id
-        resp = await self._rpc(f"/{schema.PKG}.Session/LogsBarrier", req,
-                               "LogsBarrierResp")
+        resp = await self._rpc(schema.session("LogsBarrier"),
+                               state={"id": obj.handle_id})
         return int(resp.request)
 
     async def process_logs(self, capacity: int = 0,
@@ -544,7 +529,7 @@ class NixClient:
 
         Batches, `dropped` and the empty first message all mean what
         they mean in `logs`."""
-        req = self.msg("ProcessLogsReq")()
+        req = self.request(schema.session("ProcessLogs"))
         self._log_options(req, capacity, level)
         async for batch in self._log_stream("ProcessLogs", req):
             yield batch
@@ -573,10 +558,10 @@ class NixClient:
                 f"connection {self.token!r} was swept by the server; its "
                 f"handles are gone. Call bind() and re-acquire.")
         metadata = {TOKEN_HEADER: self.token} if self.token else None
+        path = schema.session(rpc)
         stream = self.channel.request(
-            f"/{schema.PKG}.Session/{rpc}",
-            grpclib.const.Cardinality.UNARY_STREAM,
-            type(req), self.msg("LogsResp"), metadata=metadata)
+            path, grpclib.const.Cardinality.UNARY_STREAM,
+            type(req), self.rpcs[path].resp, metadata=metadata)
         try:
             async with stream as s:
                 await s.send_message(req)
@@ -615,11 +600,11 @@ class NixClient:
                 f"{name!r} is not a binding function; the bindings offer "
                 f"{sorted(FREE)}")
 
-        req = self.msg(spec.req)()
+        req = self.request(spec.path)
         for a, val in zip(spec.args, args, strict=True):
             self.codec.encode(req, a.name, a.type, val,
                               _handle_of)
-        resp = await self._rpc(spec.path, req, spec.resp)
+        resp = await self._rpc(spec.path, req)
         returned = spec.returns
         return self.codec.decode(
             resp, "result", returned,
@@ -642,8 +627,7 @@ class NixClient:
             # message about a str field; this says what happened.
             raise ValueError(
                 f"{m.path}: this handle was already released")
-        req = self.msg(m.req)()
-        req.self.id = handle_id
+        req = self.request(m.path, self={"id": handle_id})
 
         # Wire names and wire policies both come out of `_policy`, so
         # this method mentions no concrete type: a proxy arg contributes
@@ -653,7 +637,7 @@ class NixClient:
             self.codec.encode(req, p.name, p.type, val,
                               _handle_of)
 
-        resp = await self._rpc(m.path, req, m.resp)
+        resp = await self._rpc(m.path, req)
 
         # Proxies stay remote behind a handle; values come back as real
         # local objects.

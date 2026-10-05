@@ -797,6 +797,29 @@ async def test_concurrent_first_calls_build_one_object(client: Any) -> None:
         assert await store.is_valid_path(p), p
 
 
+def test_a_session_rpc_nothing_serves_stops_the_server() -> None:
+    """The server reads each Session rpc's messages from the schema, so
+    an rpc the schema declares and no handler serves would answer
+    UNIMPLEMENTED at its first call. It refuses to start instead."""
+    from google.protobuf import descriptor_pb2, descriptor_pool
+
+    from huggorm import grpc_pb
+    from huggorm.server import Dispatcher
+
+    fds = descriptor_pb2.FileDescriptorSet.FromString(  # type: ignore[attr-defined]
+        (grpc_pb._pkg_dir() / "grpc_schema.pb").read_bytes())
+    session = next(s for s in fds.file[0].service if s.name == "Session")
+    extra = session.method.add()
+    extra.name = "Unserved"
+    extra.input_type = extra.output_type = f".{grpc_pb.PKG}.PingReq"
+    pool = descriptor_pool.DescriptorPool()
+    for file_dp in fds.file:
+        pool.Add(file_dp)  # type: ignore[no-untyped-call]
+
+    with pytest.raises(RuntimeError, match="Unserved"):
+        Dispatcher(pool, None, None)
+
+
 async def test_bind_refuses_a_client_of_another_schema(client: Any) -> None:
     """Field numbers are positional, so a client from another build
     would decode every answer wrongly and without an error. Bind
@@ -808,8 +831,7 @@ async def test_bind_refuses_a_client_of_another_schema(client: Any) -> None:
     from huggorm.grpc_pb import PKG
 
     for digest in ("0" * 64, ""):
-        req = client.msg("BindReq")(schema_digest=digest)
         with pytest.raises(grpclib.exceptions.GRPCError) as refused:
-            await client._rpc(f"/{PKG}.Session/Bind", req, "ConnResp")
+            await client._rpc(f"/{PKG}.Session/Bind", schema_digest=digest)
         assert refused.value.status is grpclib.const.Status.FAILED_PRECONDITION
         assert "rebuild the client" in str(refused.value.message)
