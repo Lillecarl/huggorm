@@ -1015,9 +1015,7 @@ def _directory(model: ir.Model) -> list[ast.stmt]:
     argument - and a class only a call hands back is never built
     remotely."""
     acquires = []
-    for c in model.ordered_served:
-        if c.name in model.returned:
-            continue
+    for c in model.acquirable:
         acquires.append((c.name, ast.Call(
             func=ast.Name(id="Acquire"),
             args=[ast.Constant(value=c.name),

@@ -248,11 +248,7 @@ def annotate(manifest: Proto, model: ir.Model) -> Proto:
             # rather than the wrapper set.
             if proto["wire"] != "proxy":
                 continue
-            typed_cls = model.classes[cls_name]
-            proto["service"] = typed_cls.service
-            if group == "wrappers":
-                proto["acquire"] = {"path": typed_cls.acquire.path,
-                                    "req": typed_cls.acquire.req}
+            proto["service"] = model.classes[cls_name].service
 
     # Which classes a handle can be USED with: every proxy.
     served = model.served
@@ -421,24 +417,24 @@ def _add_common(file_dp: Any, model: ir.Model) -> None:
             f.oneof_index = 0
 
 
-def _add_service(file_dp: Any, model: ir.Model, c: ir.ClassModel) -> None:
+def _add_service(file_dp: Any, model: ir.Model, c: ir.ClassModel,
+                 acquirable: bool) -> None:
     svc = file_dp.service.add()
     svc.name = c.service
 
-    # EVERY served class, the returned ones included: a returned proxy
-    # gets an Acquire rpc here that `_policy.ACQUIRE` never offers.
-    req = file_dp.message_type.add()
-    req.name = c.acquire.req
-    for n, param in enumerate(c.ctor, start=1):
-        # The client skips a None argument and the server decodes
-        # with optional=True, so the field has to be able to say
-        # "absent" rather than lean on an empty string.
-        _add_typed_field(req, param.name, n, param.type,
-                         optional=param.default == "None")
-    rpc = svc.method.add()
-    rpc.name = ACQUIRE
-    rpc.input_type = f".{PKG}.{req.name}"
-    rpc.output_type = f".{PKG}.{HANDLE}"
+    if acquirable:
+        req = file_dp.message_type.add()
+        req.name = c.acquire.req
+        for n, param in enumerate(c.ctor, start=1):
+            # The client skips a None argument and the server decodes
+            # with optional=True, so the field has to be able to say
+            # "absent" rather than lean on an empty string.
+            _add_typed_field(req, param.name, n, param.type,
+                             optional=param.default == "None")
+        rpc = svc.method.add()
+        rpc.name = ACQUIRE
+        rpc.input_type = f".{PKG}.{req.name}"
+        rpc.output_type = f".{PKG}.{HANDLE}"
 
     for m in c.methods:
         if not model.offered(m):
@@ -775,8 +771,9 @@ def build_fdset(model: ir.Model) -> bytes:
     _add_session(f, _wire_kinds(model))
     # Returned types expose methods through handles as well: their
     # operations run wherever the producing wrapper put them.
+    acquirable = {c.name for c in model.acquirable}
     for c in (*model.constructed, *model.handed_back):
         if c.served:
-            _add_service(f, model, c)
+            _add_service(f, model, c, c.name in acquirable)
     _add_free_service(f, model)
     return bytes(fds.SerializeToString())

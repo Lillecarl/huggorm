@@ -546,10 +546,6 @@ class ClassModel:
         decl = self.decl
         wire_names: dict[str, Any] = ({
             "service": self.service,
-            "acquire": {
-                "path": self.acquire.path,
-                "req": self.acquire.req,
-            },
             "protocol": self.protocol_name,
             "async_class": self.async_name,
             "rpc_class": self.rpc_name,
@@ -672,6 +668,13 @@ class Model:
         """Every class only a call hands back, by name."""
         return [self.classes[n] for n in sorted(self.classes)
                 if n in self.returned]
+
+    @property
+    def acquirable(self) -> list[ClassModel]:
+        """Every served class a remote caller constructs, by name. A
+        class only a call hands back has no Acquire: there is nothing
+        to build one from."""
+        return [c for c in self.constructed if c.served]
 
     @property
     def ordered_served(self) -> list[ClassModel]:

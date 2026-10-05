@@ -69,6 +69,23 @@ def test_a_declared_error_crosses_as_its_own_message(
         == [f"{PKG}.Fault"]
 
 
+def test_the_schema_offers_acquire_exactly_where_the_server_routes_it(
+) -> None:
+    """The server registers Acquire for `_policy.ACQUIRE` and nothing
+    else, so an Acquire rpc the schema names beyond that is one a
+    reflecting client can call and nothing answers."""
+    from huggorm.grpc_pb import PKG, load_pool
+    from huggorm_generated._policy import ACQUIRE
+
+    pool = load_pool()
+    api = pool.FindFileContainingSymbol(  # type: ignore[no-untyped-call]
+        f"{PKG}.Handle")
+    offered = {svc.name.removesuffix("Service")
+               for svc in api.services_by_name.values()
+               if "Acquire" in svc.methods_by_name}
+    assert offered == set(ACQUIRE), offered ^ set(ACQUIRE)
+
+
 def test_an_error_s_info_survives_the_wire() -> None:
     """The record part crosses as a message, and comes back equal.
 
