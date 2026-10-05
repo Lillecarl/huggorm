@@ -33,8 +33,9 @@ python3Packages.buildPythonPackage {
   # mapping of Python names onto the two packages behind it, so it is
   # derived rather than tracked by hand (huggorm#64).
   #
-  # protobuf comes with it: `build_manifest()` reaches the schema
-  # builder, which builds a FileDescriptorSet.
+  # ruff lays the front door out, as it does the generated package.
+  nativeBuildInputs = [ ruff ];
+
   build-system = with python3Packages; [
     setuptools
     protobuf

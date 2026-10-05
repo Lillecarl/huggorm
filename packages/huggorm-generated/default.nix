@@ -3,6 +3,7 @@
   python3Packages,
   huggorm-bindings,
   zuban,
+  ruff,
   # The declarations, and the reader that turns one into a manifest
   # entry. A build input: pygen imports it and calls it instead of
   # reflecting on a compiled class.
@@ -42,6 +43,9 @@ python3Packages.buildPythonPackage {
   # pathlib.Path in process and an anyio.Path from the wrapper, so the
   # emitted module imports anyio (huggorm#40).
   propagatedBuildInputs = [ huggorm-bindings python3Packages.anyio ];
+
+  # pygen lays its output out with `ruff format`.
+  nativeBuildInputs = [ ruff ];
 
   # The surface describes the Nix the bindings link (huggorm#55).
   env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;

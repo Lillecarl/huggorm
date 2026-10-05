@@ -50,6 +50,7 @@ already do with their own output.
 import ast
 
 from huggorm_gen import ir
+from huggorm_gen.pygen.fmt import format_paths
 
 # The names this package offers that no declaration knows about.
 #
@@ -237,4 +238,5 @@ def emit(out_dir: str, model: ir.Model) -> str:
 
     target = pathlib.Path(out_dir) / "__init__.py"
     target.write_text(module(bindings, generated, unions) + "\n")
+    format_paths(target)
     return str(target)

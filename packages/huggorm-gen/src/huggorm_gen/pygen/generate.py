@@ -28,6 +28,7 @@ from huggorm_gen.pygen.emitter import (
     unions_module,
     wrapper_module,
 )
+from huggorm_gen.pygen.fmt import format_paths
 from huggorm_gen.pygen.grpc_schema import build_fdset
 
 # Nothing here imports huggorm_bindings.
@@ -47,6 +48,10 @@ from huggorm_gen.pygen.grpc_schema import build_fdset
 # One of them was already dead. `_wrapper_classes` excluded a class
 # whose `_async` was False, and nothing has emitted `_async` since
 # the mock was deleted.
+
+
+# The payload modules, copied into the package as written.
+VENDORED = {"_runtime.py", "_wiretypes.py", "_callspec.py"}
 
 
 def _vendor(src: pathlib.Path, dst: pathlib.Path) -> None:
@@ -175,6 +180,10 @@ def main(argv: list[str] | None = None) -> None:
     (out / "_policy.py").write_text(policy_module(model))
     print(f"generated _unions.py for {len(model.unions)} sum type(s): "
           f"{', '.join(model.unions) or 'none'}")
+    # Not the payload: it is hand-written and keeps its source's layout.
+    # By file, because setuptools runs this twice and the second run
+    # finds the first run's copy in `out`.
+    format_paths(stub_dir, *(f for f in out.glob("*.py") if f.name not in VENDORED))
     # The codec reads declared type strings at run time and the schema
     # builder reads them at build time. One definition, copied, rather
     # than two that agree until one of them changes.

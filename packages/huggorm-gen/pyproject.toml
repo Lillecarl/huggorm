@@ -11,9 +11,10 @@ dependencies = ["huggorm-dsl", "huggorm-decl"]
 
 # protobuf is pygen's alone - it builds a FileDescriptorSet - and the
 # C++ build has no use for it. An extra rather than a dependency, so
-# compiling the bindings does not drag a protobuf runtime in.
+# compiling the bindings does not drag a protobuf runtime in. pygen
+# also runs the `ruff` binary, which a build puts on PATH.
 [project.optional-dependencies]
-proto = ["protobuf"]
+pygen = ["protobuf"]
 
 [project.scripts]
 huggorm-cppgen = "huggorm_gen.cppgen.generate:main"
