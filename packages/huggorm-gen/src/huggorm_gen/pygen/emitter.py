@@ -5,7 +5,9 @@ the model.
 """
 
 import ast
+import textwrap
 from collections.abc import Mapping, Sequence
+from string import Template
 from typing import Any
 
 from huggorm_gen import ir
@@ -19,6 +21,20 @@ from huggorm_gen.pygen.spell import Spelling, import_from
 Proto = dict[str, Any]
 
 ASYNC = ir.ASYNC
+
+def _code(src: str, args: ast.arguments | None = None,
+          **subst: str) -> ast.stmt:
+    """One statement from a source template.
+
+    `$name` is replaced as text and the result is parsed, so a bad
+    substitution fails here. `args` replaces a def's parameters, for a
+    signature `_arguments` spells per surface."""
+    node = ast.parse(Template(textwrap.dedent(src)).substitute(subst)).body[0]
+    if args is not None:
+        assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        node.args = args
+    return node
+
 
 RUNNER_BY_THREADING = {
     "affine": "AffineRunner",
@@ -411,6 +427,56 @@ _POLICY_DOC = {
 }
 
 
+def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
+                  class_doc: str, init: ast.stmt, typing_names: set[str],
+                  runtime_names: set[str]) -> ast.Module:
+    """`Async<X>`: the skeleton both async modules share. `init` is
+    how an instance comes to hold an object."""
+    spell, _, methods = _async_spelling(model, c)
+    # `__init__` or `_adopt` names the sync class it takes.
+    spell.bindings.add(c.name)
+    cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], decorator_list=[], body=[
+        ast.Expr(value=ast.Constant(value=class_doc)),
+        _code("_wire = $wire", wire=repr(c.wire)),
+        _code("_runner: BaseRunner"),
+        init,
+        _code("""
+            @classmethod
+            def _adopt(cls, obj: $svc, runner: BaseRunner) -> Self:
+                adopted = cls.__new__(cls)
+                adopted._runner = attach_runner(obj, runner, $execution)
+                return adopted
+            """, svc=c.name, execution=repr(c.execution)),
+    ])
+    for m in c.methods:
+        _hop_method(cls, model, m, c.name, methods[m.name])
+    cls.body.append(_code("""
+        async def aclose(self) -> None:
+            await self._runner.aclose()
+        """))
+    # A forward hands back Any, and cast is where the declared type is
+    # claimed. An adopted return builds a real object instead, and a
+    # None return does not return.
+    if any(m.returns is not None and _adopted(model, m) is None
+           for m in c.methods):
+        typing_names = typing_names | {"cast"}
+    # Docstring FIRST: anything before it demotes it to a dead
+    # expression and leaves the module with no __doc__.
+    mod = ast.Module(type_ignores=[], body=[
+        ast.Expr(value=ast.Constant(value=doc)),
+        _future_annotations(),
+        import_from("typing", "Self", *typing_names),
+        import_from("_runtime", "BaseRunner", "attach_runner", *runtime_names,
+                    level=1),
+        # A value that produces values names its OWN async class, which
+        # is defined right here: importing it would be a self-import.
+        *spell.imports(own=c.async_name),
+        cls,
+    ])
+    ast.fix_missing_locations(mod)
+    return mod
+
+
 def returned_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     """Async<X> for a class some call hands back.
 
@@ -418,62 +484,18 @@ def returned_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     thread, and `attach_runner` picks the execution its own policy
     says. A returned class can produce another one - a Value holds
     Values - and that return is adopted too."""
-    svc = c.name
     policy = c.decl.threading
-    execution = c.execution
-    spell, _, methods = _async_spelling(model, c)
-    # The constructor takes the produced object, typed as what it is.
-    spell.bindings.add(svc)
-
-    mod = ast.Module(body=[], type_ignores=[])
-    mod.body.append(ast.Expr(value=ast.Constant(value=(
-        f"Generated async wrapper for returned type {svc} "
-        f"(threading: {policy}) - do not edit."))))
-    mod.body.append(_future_annotations())
-    typing_names = {"Self"}
-    if any(m.returns is not None for m in c.methods):
-        typing_names.add("cast")
-    mod.body.append(import_from("typing", *typing_names))
-    mod.body.append(import_from("_runtime", "BaseRunner", "attach_runner", level=1))
-    # A value that produces values names its OWN async class, which is
-    # defined right here: importing it would be a self-import.
-    mod.body.extend(spell.imports(own=c.async_name))
-
-    cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], body=[],
-                       decorator_list=[])
-    cls.body.append(ast.Expr(value=ast.Constant(value=(
-        f"Async handle over a {svc} produced by another wrapper. "
-        f"Policy '{policy}': " + _POLICY_DOC[execution]))))
-    cls.body.append(ast.Assign(targets=[ast.Name(id="_wire")],
-                               value=ast.Constant(value=c.wire)))
-    cls.body.append(_runner_decl())
-    cls.body.append(ast.FunctionDef(
-        name="__init__",
-        args=ast.arguments(
-            posonlyargs=[],
-            args=[ast.arg(arg="self"),
-                  ast.arg(arg="obj", annotation=_ann(svc, f"{svc}.__init__")),
-                  ast.arg(arg="runner",
-                          annotation=_ann("BaseRunner", f"{svc}.__init__"))],
-            vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
-            defaults=[]),
-        body=[ast.Assign(
-            targets=[ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
-            value=ast.Call(
-                func=ast.Name(id="attach_runner"),
-                args=[ast.Name(id="obj"), ast.Name(id="runner"),
-                      ast.Constant(value=execution)],
-                keywords=[]))],
-        decorator_list=[],
-        returns=_ann("None", f"{svc}.__init__"),
-        type_params=[]))
-    cls.body.append(_adopt_method(svc, execution))
-    mod.body.append(cls)
-    for m in c.methods:
-        _hop_method(cls, model, m, svc, methods[m.name])
-    cls.body.append(_aclose_method())
-    ast.fix_missing_locations(mod)
-    return mod
+    init = _code("""
+        def __init__(self, obj: $svc, runner: BaseRunner) -> None:
+            self._runner = attach_runner(obj, runner, $execution)
+        """, svc=c.name, execution=repr(c.execution))
+    return _async_module(
+        model, c,
+        f"Generated async wrapper for returned type {c.name} "
+        f"(threading: {policy}) - do not edit.",
+        f"Async handle over a {c.name} produced by another wrapper. "
+        f"Policy '{policy}': " + _POLICY_DOC[c.execution],
+        init, set(), set())
 
 
 def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
@@ -484,117 +506,46 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     be built and is only ever received from a call."""
     svc = c.name
     threading = c.decl.threading
-    runner = RUNNER_BY_THREADING[threading]
-    spell, ctor, methods = _async_spelling(model, c)
-    # `_adopt` names the sync class it takes.
-    spell.bindings.add(svc)
-
-    mod = ast.Module(body=[], type_ignores=[])
-    # Docstring FIRST: anything before it demotes it to a dead
-    # expression and leaves the module with no __doc__.
-    mod.body.append(ast.Expr(value=ast.Constant(value=(
-        f"Generated async wrapper for {svc} (threading: {threading}) - "
-        f"do not edit. Built via ast at Nix build time."))))
-    mod.body.append(_future_annotations())
-
-    typing_names = {"Self"}
-    if not c.constructs:
-        typing_names.add("Any")  # the refusing __init__ takes *args/**kwargs
-    # A forward hands back Any, and cast is where the declared type is
-    # claimed. An adopted return builds a real object instead, and a
-    # None return does not return.
-    if any(m.returns is not None and _adopted(model, m) is None
-           for m in c.methods):
-        typing_names.add("cast")
-    runtime_names = {"BaseRunner", "attach_runner"}
-    if c.constructs:
-        runtime_names.add(runner)
-    if c.ctor and c.constructs:
-        # Only the factory calls it, so a constructor taking nothing
-        # would leave the import unused - which the smoke gate rejects.
-        runtime_names.add("unwrap_arg")
-    mod.body.append(import_from("typing", *typing_names))
-    mod.body.append(import_from("_runtime", *runtime_names, level=1))
-    mod.body.extend(spell.imports(own=c.async_name))
-
-    cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], body=[],
-                       decorator_list=[])
-    cls.body.append(ast.Expr(value=ast.Constant(value=(
-        f"Async in-process wrapper over {svc}. The object is constructed "
-        f"lazily on its runner thread." if c.constructs else
-        f"Async base over {svc}: the surface every subclass guarantees. "
-        f"Hold one when you do not care which implementation answered; "
-        f"construct a subclass to get one."))))
-    cls.body.append(ast.Assign(targets=[ast.Name(id="_wire")],
-                               value=ast.Constant(value=c.wire)))
-    cls.body.append(_runner_decl())
-    cls.body.append(_adopt_method(svc, c.execution))
-
+    doc = (f"Generated async wrapper for {svc} (threading: {threading}) - "
+           f"do not edit. Built via ast at Nix build time.")
     if not c.constructs:
         # No runner and no target: there is no way in, so there is
         # nothing to construct lazily. Keyed on the DOOR rather than on
         # `abstract`, which is the C++ fact - nix::Store is abstract and
         # still constructs, through its factory (huggorm#61).
-        cls.body.append(ast.FunctionDef(
-            name="__init__",
-            args=ast.arguments(
-                posonlyargs=[], args=[ast.arg(arg="self")],
-                vararg=ast.arg(arg="args",
-                               annotation=_ann("Any", f"{svc}.__init__")),
-                kwonlyargs=[], kw_defaults=[],
-                kwarg=ast.arg(arg="kwargs",
-                              annotation=_ann("Any", f"{svc}.__init__")),
-                defaults=[]),
-            body=[ast.Raise(exc=ast.Call(
-                func=ast.Name(id="TypeError"),
-                args=[ast.Constant(value=(
-                    f"{c.async_name} has no constructor: nothing declared "
-                    f"makes one. Receive one from a call that returns "
-                    f"{svc}."))],
-                keywords=[]))],
-            decorator_list=[], returns=_ann("None", f"{svc}.__init__"),
-            type_params=[]))
-    else:
-        init_kwargs = []
-        if threading == "affine":
-            init_kwargs.append(ast.keyword(
-                arg="name", value=ast.Constant(value=f"huggorm-affine-{svc}")))
-        entries = c.ctor
-        # A zero-argument lambda over __init__'s parameters, so the
-        # object is built on the runner's thread, not the caller's.
-        # Each argument goes through unwrap_arg: a wrapper passed in
-        # contributes its target object, not the async shell.
-        factory = ast.Lambda(
-            args=ast.arguments(posonlyargs=[], args=[], vararg=None,
-                               kwonlyargs=[], kw_defaults=[], kwarg=None,
-                               defaults=[]),
-            body=ast.Call(
-                func=ast.Name(id=svc),
-                args=[ast.Call(func=ast.Name(id="unwrap_arg"),
-                               args=[ast.Name(id=p.name)], keywords=[])
-                      for p in c.ctor],
-                keywords=[]))
-        cls.body.append(ast.FunctionDef(
-            name="__init__",
-            args=_arguments([ast.arg(arg="self")], entries, ctor,
-                            f"{svc}.__init__"),
-            body=[ast.Assign(
-                targets=[ast.Attribute(value=ast.Name(id="self"),
-                                       attr="_runner")],
-                value=ast.Call(func=ast.Name(id=runner), args=[factory],
-                               keywords=init_kwargs))],
-            decorator_list=[],
-            returns=_ann("None", f"{svc}.__init__"),
-            type_params=[]))
-
-    for m in c.methods:
-        _hop_method(cls, model, m, svc, methods[m.name])
-    cls.body.append(_aclose_method())
-    mod.body.append(cls)
-    ast.fix_missing_locations(mod)
-    return mod
-
-
+        init = _code("""
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                raise TypeError($message)
+            """, message=repr(
+                f"{c.async_name} has no constructor: nothing declared makes "
+                f"one. Receive one from a call that returns {svc}."))
+        return _async_module(
+            model, c, doc,
+            f"Async base over {svc}: the surface every subclass guarantees. "
+            f"Hold one when you do not care which implementation answered; "
+            f"construct a subclass to get one.",
+            init, {"Any"}, set())
+    runner = RUNNER_BY_THREADING[threading]
+    name = (f", name={f'huggorm-affine-{svc}'!r}" if threading == "affine"
+            else "")
+    _, ctor, _ = _async_spelling(model, c)
+    # A zero-argument lambda over __init__'s parameters, so the object
+    # is built on the runner's thread, not the caller's. Each argument
+    # goes through unwrap_arg: a wrapper passed in contributes its
+    # target object, not the async shell.
+    init = _code("""
+        def __init__(self) -> None:
+            self._runner = $runner(lambda: $svc($values)$name)
+        """, _arguments([ast.arg(arg="self")], c.ctor, ctor, f"{svc}.__init__"),
+        runner=runner, svc=svc, name=name,
+        values=", ".join(f"unwrap_arg({p.name})" for p in c.ctor))
+    # `unwrap_arg` only when the factory calls it: an unused import is
+    # what the smoke gate rejects.
+    return _async_module(
+        model, c, doc,
+        f"Async in-process wrapper over {svc}. The object is constructed "
+        f"lazily on its runner thread.",
+        init, set(), {runner} | ({"unwrap_arg"} if c.ctor else set()))
 
 
 def _hop_call(method_name: str,
@@ -632,93 +583,6 @@ def _forward(call: ast.expr, return_type: str) -> ast.stmt:
 def _hop_return(method_name: str, params: Sequence[ir.ParamModel],
                 return_type: str = "None") -> ast.stmt:
     return _forward(_hop_call(method_name, params), return_type)
-
-
-def _runner_decl() -> ast.AnnAssign:
-    """The attribute every emitted method reaches through.
-
-    Declared, not merely assigned: the abstract base never assigns it -
-    its __init__ refuses - so without this its own method bodies read
-    an attribute a typechecker cannot see."""
-    return ast.AnnAssign(target=ast.Name(id="_runner"),
-                         annotation=ast.Name(id="BaseRunner"),
-                         value=None, simple=1)
-
-
-def _adopt_method(svc: str, execution: str) -> ast.FunctionDef:
-    """`Async<svc>._adopt(obj, runner)`: an object some call produced,
-    in its async form.
-
-    Every served class has it, and every adoption calls it. A wrapper
-    class's `__init__` is its constructor and takes the constructor's
-    arguments, so adoption cannot go through `__init__`; `__new__`
-    skips it, and `attach_runner` picks the runner from the class's
-    own execution policy."""
-    where = f"{svc}._adopt"
-    return ast.FunctionDef(
-        name="_adopt",
-        args=ast.arguments(
-            posonlyargs=[],
-            args=[ast.arg(arg="cls"),
-                  ast.arg(arg="obj", annotation=_ann(svc, where)),
-                  ast.arg(arg="runner", annotation=_ann("BaseRunner", where))],
-            vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
-            defaults=[]),
-        body=[
-            ast.Assign(
-                targets=[ast.Name(id="adopted")],
-                value=ast.Call(
-                    func=ast.Attribute(value=ast.Name(id="cls"), attr="__new__"),
-                    args=[ast.Name(id="cls")], keywords=[])),
-            ast.Assign(
-                targets=[ast.Attribute(value=ast.Name(id="adopted"),
-                                       attr="_runner")],
-                value=ast.Call(
-                    func=ast.Name(id="attach_runner"),
-                    args=[ast.Name(id="obj"), ast.Name(id="runner"),
-                          ast.Constant(value=execution)],
-                    keywords=[])),
-            ast.Return(value=ast.Name(id="adopted")),
-        ],
-        decorator_list=[ast.Name(id="classmethod")],
-        returns=_ann("Self", where),
-        type_params=[])
-
-
-
-
-
-
-def _aclose_method() -> ast.AsyncFunctionDef:
-    return ast.AsyncFunctionDef(
-        name="aclose",
-        args=ast.arguments(
-            posonlyargs=[],
-            args=[ast.arg(arg="self", annotation=None)],
-            vararg=None,
-            kwonlyargs=[],
-            kw_defaults=[],
-            kwarg=None,
-            defaults=[],
-        ),
-        body=[
-            ast.Expr(
-                value=ast.Await(
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
-                            attr="aclose",
-                        ),
-                        args=[],
-                        keywords=[],
-                    )
-                )
-            )
-        ],
-        decorator_list=[],
-        returns=ast.parse("None", mode="eval").body,
-        type_params=[],
-    )
 
 
 def _future_annotations() -> ast.ImportFrom:
