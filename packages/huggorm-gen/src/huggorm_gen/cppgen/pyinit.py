@@ -33,7 +33,7 @@ describes is generated, so there is nowhere in that file to keep it.
 
 import ast
 
-from huggorm_dsl.corpus import Corpus
+from huggorm_gen import ir
 
 # What `huggorm_bindings/__init__.py` says about itself. Prose only:
 # every name and every import below it is derived.
@@ -93,7 +93,7 @@ libexpr now, and the stand-in is deleted (huggorm#60).
 '''
 
 
-def exports(have: Corpus) -> dict[str, list[str]]:
+def exports(model: ir.Model) -> dict[str, list[str]]:
     """Every name the package offers, by the module it comes from.
 
     Three sources and one subtraction.
@@ -113,28 +113,26 @@ def exports(have: Corpus) -> dict[str, list[str]]:
     it fails to import. Measured: keeping it makes the emitted package
     raise `cannot import name 'open_store'`.
 
-    `Module.exported` decides which functions those are, and this reads
-    it rather than restating it. The rule has an edge a copy misses:
+    `ModuleModel.exported` decides which functions those are, and this
+    reads it rather than restating it. The rule has an edge a copy misses:
     only a factory whose class declares a constructor is dropped.
     `parse_store_reference` makes a `StoreReference`, which has none,
     so it stays a module function, and the stub and `__all__` must
     both say so.
     """
     out: dict[str, list[str]] = {}
-    for mod in have.modules:
-        names = [c.name for c in mod.classes]
-        names += [f.name for f in mod.exported]
+    for unit in model.modules:
+        names = [c.name for c in unit.classes]
+        names += [f.name for f in unit.exported]
         if names:
-            out[mod.name] = sorted(names)
-    for name in have.vocabularies:
-        mod = have.module(name)
-        words = [c.name for c in mod.classes if c.is_words]
-        if words:
-            out.setdefault(mod.name, []).extend(sorted(words))
+            out[unit.name] = names
+    for vocab in model.vocabularies:
+        if vocab.enums:
+            out.setdefault(vocab.name, []).extend(e.name for e in vocab.enums)
     return {m: sorted(out[m]) for m in sorted(out)}
 
 
-def module(have: Corpus) -> str:
+def module(model: ir.Model) -> str:
     """The package's `__init__.py`, as source.
 
     Built with `ast` rather than by formatting strings, like every
@@ -150,7 +148,7 @@ def module(have: Corpus) -> str:
     a typechecker a name is re-exported when there is no `__all__`;
     there is one here, and it says the same thing once.
     """
-    by_module = exports(have)
+    by_module = exports(model)
     body: list[ast.stmt] = [ast.Expr(value=ast.Constant(value=DOC))]
     for name, names in by_module.items():
         body.append(ast.ImportFrom(

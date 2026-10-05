@@ -225,12 +225,10 @@ def emit(out_dir: str, model: ir.Model) -> str:
     """Write `__init__.py` into the package directory, and say where."""
     import pathlib
 
-    from huggorm_decl import corpus
     from huggorm_gen.cppgen import pyinit
     from huggorm_gen.pygen.emitter import package_exports
 
-    have = corpus()
-    bindings = [n for names in pyinit.exports(have).values() for n in names]
+    bindings = [n for names in pyinit.exports(model).values() for n in names]
     generated = package_exports(model)
     unions = sorted(model.unions)
 

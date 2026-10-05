@@ -1051,6 +1051,17 @@ class EnumModel:
                    c.decl.parsed_by)
 
 @dataclass(frozen=True)
+class VocabularyModel:
+    """One vocabulary declaration: the plain-Python module its words
+    are emitted into, and the vocabularies it declares."""
+
+    name: str
+    # RAW, as the file wrote it.
+    doc: str
+    enums: tuple[EnumModel, ...]
+
+
+@dataclass(frozen=True)
 class ErrorModel:
     """One declared exception class. It crosses as its name and its
     wire fields, which it inherits through the MRO."""
@@ -1141,6 +1152,8 @@ class Model:
     # Each declaration file. Not a name table: a module name is not
     # a name a caller imports.
     modules: tuple[ModuleModel, ...] = ()
+    # Each vocabulary declaration, which compiles to nothing.
+    vocabularies: tuple[VocabularyModel, ...] = ()
 
     def __post_init__(self) -> None:
         # A produced class has no way in but a call that returns it,

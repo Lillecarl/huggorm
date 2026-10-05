@@ -70,11 +70,15 @@ def declared_model() -> ir.Model:
         resolver = ir.Resolver.of(mod)
         for u in mod.unions:
             unions[u.name] = ir.UnionModel.of(u, resolver)
-    enums = {cls.name: ir.EnumModel.of(cls, PACKAGE, vocab.name)
-             for vocab in map(have.module, have.vocabularies)
-             for cls in vocab.classes if cls.is_words}
+    vocabularies = tuple(
+        ir.VocabularyModel(vocab.name, vocab.doc, tuple(
+            ir.EnumModel.of(cls, PACKAGE, vocab.name)
+            for cls in vocab.classes if cls.is_words))
+        for vocab in map(have.module, have.vocabularies))
+    enums = {e.name: e for vocab in vocabularies for e in vocab.enums}
     return ir.Model(classes, functions, unions, ir.returned_names(seen),
-                    declare.twins(), enums, _errors(), tuple(modules))
+                    declare.twins(), enums, _errors(), tuple(modules),
+                    vocabularies)
 
 
 def _errors() -> ir.Errors:
@@ -675,8 +679,8 @@ def main(out_dir: str) -> int:
     # Nothing reads it during the build - setuptools does - so the
     # order is for a reader rather than for correctness.
     target = out / "__init__.py"
-    target.write_text(pyinit.module(have) + "\n")
-    names = sum(len(v) for v in pyinit.exports(have).values())
+    target.write_text(pyinit.module(declared_model()) + "\n")
+    names = sum(len(v) for v in pyinit.exports(declared_model()).values())
     print(f"front door -> {target}: {names} name(s)")
     census_cpp(set(have.module_names))
     census_markers(have)
