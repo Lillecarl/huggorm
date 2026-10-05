@@ -767,3 +767,21 @@ async def test_acquire_refuses_the_wrong_number_of_arguments(
     with pytest.raises(TypeError) as short:
         await client.acquire("EvalState")
     assert "store" in str(short.value), str(short.value)
+
+
+async def test_bind_refuses_a_client_of_another_schema(client: Any) -> None:
+    """Field numbers are positional, so a client from another build
+    would decode every answer wrongly and without an error. Bind
+    compares schema digests first, and a missing one is refused too
+    (huggorm#22)."""
+    import grpclib.const
+    import grpclib.exceptions
+
+    from huggorm.grpc_pb import PKG
+
+    for digest in ("0" * 64, ""):
+        req = client.msg("BindReq")(schema_digest=digest)
+        with pytest.raises(grpclib.exceptions.GRPCError) as refused:
+            await client._rpc(f"/{PKG}.Session/Bind", req, "ConnResp")
+        assert refused.value.status is grpclib.const.Status.FAILED_PRECONDITION
+        assert "rebuild the client" in str(refused.value.message)

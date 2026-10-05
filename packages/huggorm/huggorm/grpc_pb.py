@@ -8,6 +8,7 @@ what the build decided - keeps its own (065).
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 
 from google.protobuf import descriptor_pb2, descriptor_pool
@@ -18,6 +19,17 @@ from huggorm_generated._policy import PKG as _PKG
 
 def _pkg_dir() -> pathlib.Path:
     return pathlib.Path(huggorm_generated.__file__).parent
+
+
+def schema_digest() -> str:
+    """What a client and a server must share before any other call.
+
+    Field numbers are positional, so two builds can number one field
+    differently, and proto3 decodes a wrong field as a default rather
+    than an error. Bind compares this digest and refuses a different
+    one (huggorm#22)."""
+    return hashlib.sha256(
+        (_pkg_dir() / "grpc_schema.pb").read_bytes()).hexdigest()
 
 
 def load_pool() -> descriptor_pool.DescriptorPool:

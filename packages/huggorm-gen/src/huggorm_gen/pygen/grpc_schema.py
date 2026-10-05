@@ -608,6 +608,10 @@ def _add_session(f: Any, kinds: dict[str, str]) -> None:
     bind_req = f.message_type.add()
     bind_req.name = "BindReq"
     _field(bind_req, "claim_token", 1, proto_type=_scalar_const("string"))
+    # The digest of the whole schema, which bind compares before it
+    # answers (huggorm#22). Its number must never move: it is the one
+    # field two different schemas have to agree on.
+    _field(bind_req, "schema_digest", 2, proto_type=_scalar_const("string"))
     bnd = sess.method.add()
     bnd.name = "Bind"
     bnd.input_type = f".{PKG}.BindReq"

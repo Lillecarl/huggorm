@@ -850,8 +850,19 @@ class Dispatcher:
                                req.self.id if hasattr(req, "self") else req.id)
             await stream.send_message(self.msg("Handle")())
 
+        digest = schema.schema_digest()
+
         async def bind(stream: Any) -> None:
             req = await stream.recv_message()
+            # A client built from another schema numbers fields its own
+            # way, and every later call would decode wrongly without an
+            # error. Refused here, before it holds anything (huggorm#22).
+            if req.schema_digest != digest:
+                raise grpclib.exceptions.GRPCError(
+                    grpclib.const.Status.FAILED_PRECONDITION,
+                    f"client schema {req.schema_digest[:12] or 'none'} is "
+                    f"not this server's {digest[:12]}: rebuild the client "
+                    f"from the server's huggorm")
             claim = req.claim_token or None
             resp = self.msg("ConnResp")()
             resp.token = self.table.bind(claim)

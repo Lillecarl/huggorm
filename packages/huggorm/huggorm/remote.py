@@ -260,7 +260,7 @@ class NixClient:
         """Adopt or create a connection identity; claims escrowed
         handles when presenting a detached session's token. The server
         reports its lease TTL so pings can keep pace with it."""
-        req = self.msg("BindReq")()
+        req = self.msg("BindReq")(schema_digest=schema.schema_digest())
         if claim_token:
             req.claim_token = claim_token
         resp = await self._rpc(f"/{schema.PKG}.Session/Bind", req, "ConnResp")
