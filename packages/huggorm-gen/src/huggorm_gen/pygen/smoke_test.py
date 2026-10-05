@@ -225,6 +225,10 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
         assert wire_blocker(good, kinds) is None, good
     blocker = wire_blocker("list[StorePath] | None", kinds)
     assert blocker is not None and "IS an empty one" in blocker, blocker
+    # The element's own None, not a missing type: StorePath is a value.
+    for shape in ("dict[str, StorePath | None]", "list[StorePath | None]"):
+        blocker = wire_blocker(shape, kinds)
+        assert blocker is not None and "has no presence" in blocker, blocker
 
     assert adoptee("Store", {"Store"}) == ("Store", False)
     assert adoptee("Store | None", {"Store"}) == ("Store", True)

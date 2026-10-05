@@ -287,6 +287,13 @@ def wire_blocker(type_str: str, kinds: dict[str, str],
     for element in (value_type, item_type):
         if element is None:
             continue
+        try:
+            optional_element = optional_value(element)
+        except TypeError as e:
+            return str(e)
+        if optional_element is not None:
+            return (f"{type_str}: an element of a map or a repeated field "
+                    f"has no presence, so {element} cannot say None there")
         if kinds.get(element) == "proxy":
             return (f"{type_str}: a container of proxies would grant one "
                     f"lease per element, and nothing grants leases in bulk "
