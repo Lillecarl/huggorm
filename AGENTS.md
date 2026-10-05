@@ -89,8 +89,11 @@ In order:
      and any surface twin, so no emitter keeps a mapping table.
    - Prefer typed structure over strings at every stage, the
      runtime codec included.
-   - Refactor gate: byte-identical output. A real bug fix gets its
-     own commit and gate, with the output diff named.
+   - Output gate: every change to the emitted code is DELIBERATE.
+     Diff the outputs against the PARENT commit's, never a fixed
+     baseline. A restructure shows an empty diff; an improvement
+     shows its diff and the commit names it. Never keep worse output
+     to keep a diff empty - make the improvement its own commit.
 1. A defect that can corrupt a value, or drop one silently. This
    repo's named failure mode is the SILENT SKIP - an emitter skips
    what it does not recognise, and a skip is indistinguishable from an
