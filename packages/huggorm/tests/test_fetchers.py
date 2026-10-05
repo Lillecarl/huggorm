@@ -7,6 +7,9 @@ import pytest
 # Every fetcher scheme but `path` sits behind the `flakes` feature.
 pytestmark = pytest.mark.usefixtures("flakes")
 
+# The SHA-256 of nothing.
+NAR_HASH = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+
 
 def test_a_url_parses_into_its_attributes() -> None:
     from huggorm_bindings import input_from_url
@@ -44,3 +47,26 @@ def test_a_path_input_names_its_contents(tmp_path: pathlib.Path) -> None:
     source = input_from_attrs({"type": "path", "path": str(tmp_path / "src")})
     first = source.fingerprint(store)
     assert first == source.fingerprint(store)
+
+
+async def test_a_blocking_method_on_a_value_is_awaitable() -> None:
+    """`Input.fingerprint` blocks, and `Input` is a value with no
+    wrapper, so its async form is a free coroutine. It takes the
+    store as either form, as every free coroutine does (huggorm#25).
+
+    A tarball with a narHash is named by that hash, so the answer is
+    known without a fetch."""
+    from huggorm_bindings import Store, input_from_attrs
+    from huggorm_generated import AsyncStore, input_fingerprint
+
+    source = input_from_attrs({"type": "tarball",
+                               "url": "https://example.invalid/src.tar.gz",
+                               "narHash": NAR_HASH})
+    expected = source.fingerprint(Store("dummy://"))
+    assert expected == NAR_HASH
+    assert await input_fingerprint(source, Store("dummy://")) == expected
+    store = AsyncStore("dummy://")
+    try:
+        assert await input_fingerprint(source, store) == expected
+    finally:
+        await store.aclose()

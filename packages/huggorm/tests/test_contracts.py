@@ -562,19 +562,21 @@ def test_the_stubs_promise_the_same_order_the_model_does(
     assert checked, "no stubbed class was found in the model"
 
 
-def test_a_blocking_method_with_no_async_form_says_so(
+def test_a_blocking_method_on_a_value_gets_a_coroutine(
         model: ir.Model) -> None:
-    """`@blocks` on a class with no async form is named, not hidden.
+    """`@blocks` on a value is awaitable, as a free coroutine.
 
-    The binding releases the GIL for it, but there is no awaitable
-    form, so an async caller stalls its event loop. The build warns,
-    and the stub tells a caller what to do instead (huggorm#25).
-    `Input.fingerprint` hashes a path input's tree, and `Input` is a
-    wire value, which has no wrapper."""
+    A value has no wrapper, so without one an async caller stalls its
+    event loop (huggorm#25). `Input.fingerprint` hashes a path input's
+    tree. Its async form is `input_fingerprint(input, store)`, the
+    package exports it, and the method's stub names it."""
     import sys
 
-    found = {(c.name, m.name) for c, m in model.blocking_unwrapped}
-    assert ("Input", "fingerprint") in found, found
+    from huggorm_gen.pygen.emitter import package_exports
+
+    found = {f.binds: f.name for f in model.blocking_methods}
+    assert found.get("Input.fingerprint") == "input_fingerprint", found
+    assert "input_fingerprint" in package_exports(model)
 
     stubs = next(pathlib.Path(entry) / "huggorm_bindings-stubs"
                  for entry in sys.path
@@ -584,7 +586,7 @@ def test_a_blocking_method_with_no_async_form_says_so(
                if isinstance(n, ast.ClassDef) and n.name == "Input")
     method = next(n for n in cls.body
                   if isinstance(n, ast.FunctionDef) and n.name == "fingerprint")
-    assert "anyio.to_thread.run_sync" in (ast.get_docstring(method) or "")
+    assert "huggorm.input_fingerprint" in (ast.get_docstring(method) or "")
 
 
 def test_a_class_with_no_door_refuses_to_be_built(

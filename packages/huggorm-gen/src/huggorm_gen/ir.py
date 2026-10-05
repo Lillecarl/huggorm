@@ -13,6 +13,7 @@ Each rule a stage needs is a property here, stated once.
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -324,6 +325,10 @@ def _clean(text: str) -> str:
     return inspect.cleandoc(text) if text else ""
 
 
+def _snake(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
 @dataclass(frozen=True)
 class ParamModel:
     name: str
@@ -397,6 +402,9 @@ class FunctionModel:
     params: tuple[ParamModel, ...]
     returns: TypeRef | None
     doc: str
+    # The binding this calls, when it is not the function of the same
+    # name: `Input.fingerprint` for `input_fingerprint`.
+    binds: str = ""
 
     @classmethod
     def of(cls, fn: Method, package: str, module: str,
@@ -628,12 +636,36 @@ class Model:
     errors: Errors
 
     @property
-    def blocking_unwrapped(self) -> list[tuple[ClassModel, MethodModel]]:
-        """Every `@blocks` method on a class with no async form. An
-        async caller calls it synchronously and stalls its event loop
-        (huggorm#25)."""
-        return [(c, m) for c in self.classes.values() if not c.wrapped
-                for m in c.methods if m.blocks]
+    def blocking_methods(self) -> list[FunctionModel]:
+        """The async form of each `@blocks` method on a value: a free
+        coroutine, `input_fingerprint(input, store)`.
+
+        A value has no wrapper (huggorm#17), so its methods run on the
+        caller's thread. That is right for a read and wrong for a call
+        that waits, so a method that blocks gets the pool hop a free
+        function gets (huggorm#25)."""
+        out = []
+        for c in self.classes.values():
+            for m in c.methods:
+                if not m.blocks or c.wrapped:
+                    continue
+                if c.served:
+                    raise TypeError(
+                        f"{c.name}.{m.name} is @blocks, and {c.name} is "
+                        f"served but not wrapped, so its async form calls it "
+                        f"on the event loop. Declare {c.name} "
+                        f"@binding(blocking=True).")
+                name = f"{_snake(c.name)}_{m.name}"
+                if name in self.functions:
+                    raise TypeError(
+                        f"{c.name}.{m.name}: its async form is named {name}, "
+                        f"and a declared free function has that name.")
+                me = TypeRef(c.name, "", (), "value", c.name)
+                out.append(FunctionModel(
+                    name, c.qualified_module, c.decl.threading,
+                    (ParamModel(_snake(c.name), me, None), *m.params),
+                    m.returns, m.doc, binds=f"{c.name}.{m.name}"))
+        return out
 
     @property
     def served(self) -> frozenset[str]:

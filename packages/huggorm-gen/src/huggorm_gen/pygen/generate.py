@@ -157,9 +157,6 @@ def main(argv: list[str] | None = None) -> None:
     for fn in model.functions.values():
         for why in model.function_blockers(fn):
             print(f"warning: {fn.name} has no RPC surface - {why}")
-    for c, m in model.blocking_unwrapped:
-        print(f"warning: {c.name}.{m.name} blocks, and {c.name} has no async "
-              f"form - an async caller blocks its event loop (huggorm#25)")
     for c in model.ordered_served:
         for m in c.methods:
             for why in ir.blockers(m.params, m.returns, model.served):

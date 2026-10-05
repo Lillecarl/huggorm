@@ -855,8 +855,7 @@ def free_function_module(model: ir.Model) -> ast.Module:
     thread and a free function has none. Refused here, at generation,
     because the alternative is a coroutine that hands a sync object to
     an async caller and a server that leases one."""
-    fns = sorted((f for f in model.functions.values() if f.wrapped),
-                 key=lambda f: f.name)
+    fns = async_functions(model)
     pool_parent = False
     for fn in fns:
         r = fn.returns
@@ -882,6 +881,8 @@ def free_function_module(model: ir.Model) -> ast.Module:
     spell = Spelling()
     signatures = {}
     for fn in fns:
+        if fn.binds:
+            spell.need(fn.binds.partition(".")[0], BINDINGS)
         params = [_widened(spell, model, p.type) for p in fn.params]
         r = fn.returns
         ret = (spell.returns(r, _as_async)
@@ -900,14 +901,16 @@ def free_function_module(model: ir.Model) -> ast.Module:
     mod.body.extend(spell.imports())
     mod.body.append(ast.ImportFrom(
         module="huggorm_bindings",
-        names=[ast.alias(name=f.name, asname="_" + f.name) for f in fns],
+        names=[ast.alias(name=f.name, asname="_" + f.name)
+               for f in fns if not f.binds],
         level=0))
     runtime_names = ["call_function"] + (["PoolRunner"] if pool_parent else [])
     mod.body.append(import_from("_runtime", *runtime_names, level=1))
 
     for fn in fns:
         params, ret = signatures[fn.name]
-        call = f"call_function(_{fn.name}, [{', '.join(p.name for p in fn.params)}])"
+        call = (f"call_function({fn.binds or '_' + fn.name}, "
+                f"[{', '.join(p.name for p in fn.params)}])")
         r = fn.returns
         if r is not None and r.kind == "proxy":
             # A pool policy ignores the parent, so a fresh PoolRunner
@@ -964,8 +967,8 @@ def _stub_dunders(name: str, dunders: list[str]) -> list[ast.stmt]:
     return out
 
 
-def _stub_class(c: ir.ClassModel, spell: Spelling,
-                produced: bool) -> ast.ClassDef:
+def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
+                coroutines: Mapping[str, str]) -> ast.ClassDef:
     name = c.name
     cls = ast.ClassDef(name=name, bases=[], keywords=[], body=[],
                        decorator_list=[], type_params=[])
@@ -991,10 +994,10 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
         spell.defaults(m.params)
         params = [spell(p.type) for p in m.params]
         doc = m.doc
-        if m.blocks and not c.wrapped:
+        if (coroutine := coroutines.get(f"{name}.{m.name}")) is not None:
             doc = (f"{doc}\n\n" if doc else "") + (
-                f"Blocks, and {name} has no async form: from async code, "
-                f"call it through `anyio.to_thread.run_sync` (huggorm#25).")
+                f"Blocks. From async code, await `huggorm.{coroutine}` "
+                f"(huggorm#25).")
         cls.body.append(_def(
             f"def {m.name}() -> {spell.returns(m.returns)}", doc=doc,
             signature=_arguments([ast.arg(arg="self")], m.params, params,
@@ -1046,7 +1049,9 @@ def stub_module(model: ir.Model, module: str) -> ast.Module:
     produced = {c.name for c in classes
                 if c.name in model.returned or c.produced}
     short = module.rsplit(".", 1)[-1]
-    defs: list[ast.stmt] = [_stub_class(c, spell, c.name in produced)
+    coroutines = {f.binds: f.name for f in model.blocking_methods}
+    defs: list[ast.stmt] = [_stub_class(c, spell, c.name in produced,
+                                        coroutines)
                             for c in classes]
     defs += [_stub_function(fn, spell, f"{short}.{fn.name}")
              for fn in functions]
@@ -1157,9 +1162,16 @@ def init_module(model: ir.Model) -> ast.Module:
     return mod
 
 
+def async_functions(model: ir.Model) -> list[ir.FunctionModel]:
+    """Every module-level coroutine, by name: each free function with an
+    async form, and the async form of each method a value blocks in."""
+    return sorted([*(f for f in model.functions.values() if f.wrapped),
+                   *model.blocking_methods], key=lambda f: f.name)
+
+
 def wrapped_functions(model: ir.Model) -> list[str]:
-    """Every free function with an async form, by name."""
-    return [n for n in sorted(model.functions) if model.functions[n].wrapped]
+    """Every module-level coroutine's name."""
+    return [f.name for f in async_functions(model)]
 
 
 def package_exports(model: ir.Model) -> list[str]:
