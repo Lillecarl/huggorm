@@ -344,7 +344,7 @@ def test_a_produced_class_nothing_returns_fails_the_build(
     mod = read(_declaration(tmp_path, WIRE_READ.replace("{local}", "@local")))
     unit = ir.ModuleModel.of(mod, "")
     with pytest.raises(TypeError, match=r"^Line: declared @produced"):
-        ir.Model({c.name: c for c in unit.classes}, {}, {}, frozenset(),
+        ir.Model({c.name: c for c in unit.classes}, {}, {},
                  {}, ir.Errors("", {}), (unit,))
 
     assert declared_model().producers["PathInfo"] == (
@@ -735,7 +735,7 @@ def test_a_service_parameter_says_which_64_bit_integer_it_is(
     limit = typed.method("fits").params[0].type
     assert (limit.spelling, limit.scalar) == ("int", "uint")
 
-    model = ir.Model({cls.name: typed}, {}, {}, frozenset(), {},
+    model = ir.Model({cls.name: typed}, {}, {}, {},
                      ir.Errors("", {}))
     fds = descriptor_pb2.FileDescriptorSet()  # type: ignore[attr-defined]
     fds.ParseFromString(build_fdset(model))
@@ -971,7 +971,7 @@ def test_a_part_read_elsewhere_is_rebuilt_from_its_own_parameter(
 
     unit = ir.ModuleModel.of(
         read(_declaration(tmp_path, HELD_ELSEWHERE)), "")
-    model = ir.Model({c.name: c for c in unit.classes}, {}, {}, frozenset(),
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {},
                      {}, ir.Errors("", {}), (unit,))
     text = nbemit.Emitter(model, unit).bind_function(unit.classes[0])
     assert "as_set<nix::StringSet>(paths)" in text, text

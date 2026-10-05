@@ -58,12 +58,10 @@ def declared_model() -> ir.Model:
     classes: dict[str, ir.ClassModel] = {}
     functions: dict[str, ir.FunctionModel] = {}
     modules: list[ir.ModuleModel] = []
-    seen: list[tuple[dict[str, Any], Any]] = []
     for mod in have.modules:
         unit = ir.ModuleModel.of(mod, PACKAGE)
         modules.append(unit)
         classes.update((c.name, c) for c in unit.classes)
-        seen += [(mod.known, cls) for cls in mod.classes]
         functions.update((fn.name, fn) for fn in unit.exported)
     unions = {}
     for mod in have.modules:
@@ -76,8 +74,7 @@ def declared_model() -> ir.Model:
             for cls in vocab.classes if cls.is_words))
         for vocab in map(have.module, have.vocabularies))
     enums = {e.name: e for vocab in vocabularies for e in vocab.enums}
-    return ir.Model(classes, functions, unions, ir.returned_names(seen),
-                    enums, _errors(), tuple(modules),
+    return ir.Model(classes, functions, unions, enums, _errors(), tuple(modules),
                     vocabularies)
 
 

@@ -1224,8 +1224,6 @@ class Model:
     functions: Mapping[str, FunctionModel]
     # Every union alias, its arms in declared order.
     unions: Mapping[str, UnionModel]
-    # The classes that are HANDED BACK rather than constructed.
-    returned: frozenset[str]
     enums: Mapping[str, EnumModel]
     errors: Errors
     # Each declaration file. Not a name table: a module name is not
@@ -1320,6 +1318,13 @@ class Model:
                     out.setdefault(name, []).append(fn.name)
         return {name: tuple(sorted(calls)) for name, calls in out.items()}
 
+    @cached_property
+    def returned(self) -> frozenset[str]:
+        """The classes a call hands back and nothing builds: produced,
+        and in `producers`."""
+        return frozenset(n for n in self.producers
+                         if n in self.classes and self.classes[n].produced)
+
     @property
     def blocking_methods(self) -> list[FunctionModel]:
         """The async form of each `@blocks` method on a value: a free
@@ -1393,29 +1398,3 @@ class Model:
         if not fn.wrapped:
             return [NO_POLICY]
         return blockers(fn.params, fn.returns, self.served)
-
-
-def returned_names(module_classes: Sequence[tuple[Mapping[str, Class],
-                                                  Class]]) -> frozenset[str]:
-    """The classes some declared method hands back and nothing builds.
-
-    Every name a return type holds counts: `list[StorePath]` hands back
-    StorePaths as surely as `StorePath` does. A class a caller can
-    construct is an entry point that happens to be returned, so it is
-    not one; `@produced` with no `__init__` is the whole test."""
-    out: set[str] = set()
-    for known, cls in module_classes:
-        for m in cls.methods:
-            if m.ret is None:
-                continue
-            ret = m.ret.required
-            if ret.origin == "list":
-                ret = ret.element
-            name = ret.python
-            if ret.origin or name not in known or known[name].is_words:
-                continue
-            held = known[name]
-            if held.decl.produced and held.ctor is None:
-                out.add(name)
-    return frozenset(out)
-
