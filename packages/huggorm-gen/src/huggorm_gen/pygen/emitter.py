@@ -502,7 +502,7 @@ def returned_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     thread, and `attach_runner` picks the execution its own policy
     says. A returned class can produce another one - a Value holds
     Values - and that return is adopted too."""
-    policy = c.decl.threading
+    policy = c.threading
     init = _code("""
         def __init__(self, obj: $svc, runner: BaseRunner) -> None:
             self._runner = attach_runner(obj, runner, $execution)
@@ -523,7 +523,7 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     declared constructor's arguments. A class with no door refuses to
     be built and is only ever received from a call."""
     svc = c.name
-    threading = c.decl.threading
+    threading = c.threading
     doc = (f"Generated async wrapper for {svc} (threading: {threading}) - "
            f"do not edit. Built via ast at Nix build time.")
     if not c.constructs:
@@ -870,7 +870,7 @@ def free_function_module(model: ir.Model) -> ast.Module:
                     f"from a free function. Return a served class on its "
                     f"own or as `X | None`.")
             continue
-        policy = model.classes[adopted.name].decl.threading
+        policy = model.classes[adopted.name].threading
         if policy != "pool":
             raise ValueError(
                 f"free function {fn.name} returns {adopted.name}, which is "
@@ -975,7 +975,7 @@ def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
                        decorator_list=[], type_params=[])
     cls.body.append(ast.Expr(value=ast.Constant(value=(
         c.doc or f"Binding for the C++ {c.binds}. Threading "
-                 f"'{c.decl.threading}', wire '{c.wire}'."))))
+                 f"'{c.threading}', wire '{c.wire}'."))))
     # The one class attribute the runtime reads off a binding.
     cls.body.append(_code("_wire: str"))
     if produced:

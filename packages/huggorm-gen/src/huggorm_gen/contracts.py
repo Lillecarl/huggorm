@@ -30,9 +30,9 @@ def wrap(model: ir.Model) -> list[str]:
     for c in model.classes.values():
         if c.wrapped:
             continue
-        if c.decl.threading != "pool":
+        if c.threading != "pool":
             bad.append(f"{c.name}: an unwrapped class must be threading "
-                       f"'pool', not {c.decl.threading!r}")
+                       f"'pool', not {c.threading!r}")
         for m in c.methods:
             if _adopted(m.returns, wrapped) is not None:
                 bad.append(
@@ -72,12 +72,12 @@ def affine_from_pool(model: ir.Model) -> list[str]:
     covered too: any path from pool to affine has one such edge
     (huggorm#8)."""
     affine = {n for n, c in model.classes.items()
-              if c.wrapped and c.decl.threading == "affine"}
+              if c.wrapped and c.threading == "affine"}
     return [
         f"{c.name}.{m.name} returns {m.return_spelling}, which is affine, "
         f"from a pool class: it would live on a thread nothing owns. "
         f"Return it from an affine class instead."
-        for c in model.classes.values() if c.decl.threading == "pool"
+        for c in model.classes.values() if c.threading == "pool"
         for m in c.methods if _adopted(m.returns, affine) is not None
     ]
 
@@ -95,17 +95,17 @@ def wire(model: ir.Model) -> list[str]:
                 bad.append(f"{c.name}: proxy types travel as handles, drop "
                            f"_wire_fields")
             continue
-        if not c.wire_fields and not c.decl.unit:
+        if not c.wire_fields and not c.semantics.unit:
             bad.append(f"{c.name}: wire-value needs _wire_fields describing "
                        f"its message, or @wire_value(unit=True) if it has "
                        f"none")
-        if c.wire_fields and c.decl.unit:
+        if c.wire_fields and c.semantics.unit:
             bad.append(f"{c.name}: a unit value has no parts, drop unit=True")
-        if c.decl.threading != "pool":
+        if c.threading != "pool":
             # A value that may not leave its thread cannot be
             # serialised off it.
             bad.append(f"{c.name}: wire-value must be threading 'pool', "
-                       f"not {c.decl.threading!r}")
+                       f"not {c.threading!r}")
         for f in c.wire_fields:
             bad += _field(model, c.name, f)
     return bad

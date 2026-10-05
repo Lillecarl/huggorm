@@ -700,7 +700,6 @@ class ClassModel:
     package: str
     module: str
     doc: str
-    decl: Decl
     is_value: bool
     produced: bool
     constructs: bool
@@ -718,6 +717,29 @@ class ClassModel:
     # The header that declares its C++ type, or "".
     header: str = ""
     semantics: Semantics = Semantics()
+    # "proxy" unless the declaration proves the class is a value:
+    # stateful is the safe default on both sides.
+    wire: str = "proxy"
+    threading: str = "pool"
+    blocking: bool = True
+    # `@produced`: a call that returns one makes it. `produced` adds
+    # that the declaration offers no way in besides.
+    made_elsewhere: bool = False
+    # The C++ type `@binding(cxx=...)` names, or "" for a record the
+    # emitter declares.
+    cxx: str = ""
+    # The member a method is called through, or "".
+    via: str = ""
+    # Headers the class's carried C++ needs.
+    headers: tuple[str, ...] = ()
+    # Carried C++, verbatim, appended to the binding.
+    custom: tuple[str, ...] = ()
+    # A `PyType_Slot[]` the binding names, or "".
+    gc_slots: str = ""
+    # The declared factory's name, whether this module binds it or not.
+    factory_name: str = ""
+    # How a value that holds values is walked, or None.
+    tree: callspec.Tree | None = None
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -740,7 +762,7 @@ class ClassModel:
         return cls(
             name=c.name, package=package, module=module,
             # RAW: the stubs carry the indentation the source had.
-            doc=c.doc, decl=decl, is_value=c.is_value,
+            doc=c.doc, is_value=c.is_value,
             produced=c.is_produced, constructs=c.constructs,
             wire_fields=tuple(
                 FieldModel.of(f.name, m.ret, resolver, f.read,
@@ -758,6 +780,17 @@ class ClassModel:
                         if c.from_parts is not None else None),
             header=decl.header,
             semantics=Semantics.of(decl),
+            wire=decl.wire or "proxy",
+            threading=decl.threading,
+            blocking=decl.blocking,
+            made_elsewhere=decl.produced,
+            cxx=decl.cxx,
+            via=decl.via,
+            headers=decl.headers,
+            custom=tuple(decl.custom.values()),
+            gc_slots=decl.gc_slots,
+            factory_name=decl.factory,
+            tree=_tree(decl),
         )
 
     @property
@@ -778,29 +811,18 @@ class ClassModel:
         return sorted(name for name, fact in DUNDERS if facts[fact])
 
     @property
-    def tree(self) -> callspec.Tree | None:
-        """How a value that holds values is walked, or None.
-
-        The declaration states it as `@tree(...)` keywords. A list has
-        `item` and an attribute set has `name` and `value`; `value`
-        reads the child in both, so the walker has one shape."""
-        spec = self.decl.tree
-        if not spec:
-            return None
-
-        def walk(how: Mapping[str, str]) -> callspec.Walk:
-            return callspec.Walk(how["size"], how.get("value") or how["item"],
-                                 how.get("name", ""))
-
-        return callspec.Tree(spec["kind"], spec.get("identity", ""),
-                             {k: tuple(v) for k, v in spec["scalars"].items()},
-                             walk(spec["list"]), walk(spec["attrs"]))
+    def held(self) -> str:
+        """The C++ type this class binds: the one `cxx` names, or the
+        record the emitter declares."""
+        return self.cxx or f"{cxx.NAMESPACE}::{self.name}"
 
     @property
-    def wire(self) -> str:
-        """"proxy" unless the declaration proves the class is a value:
-        stateful is the safe default on both sides."""
-        return self.decl.wire or "proxy"
+    def bindable(self) -> bool:
+        """nanobind binds it: a C++ type, or a record the emitter
+        declares. A vocabulary has no C++ object, and a produced value
+        with no `@binding(cxx=...)` has none until the emitter declares
+        its struct."""
+        return bool(self.cxx) or self.is_value
 
     @property
     def served(self) -> bool:
@@ -810,7 +832,7 @@ class ClassModel:
     def wrapped(self) -> bool:
         """A hop onto a home thread, or a released GIL around a call
         that waits. A pool class that cannot block needs neither."""
-        return self.decl.threading == "affine" or self.decl.blocking
+        return self.threading == "affine" or self.blocking
 
     @property
     def execution(self) -> str:
@@ -819,7 +841,7 @@ class ClassModel:
         inline - a hop buys nothing, and a request would push a
         "finalized" marker from a pool thread into the process queue
         for a call no reader made."""
-        return self.decl.threading if self.wrapped else "inline"
+        return self.threading if self.wrapped else "inline"
 
     @property
     def qualified_module(self) -> str:
@@ -858,6 +880,23 @@ class ClassModel:
     @property
     def message(self) -> str:
         return f"{self.name}Msg"
+
+def _tree(decl: Decl) -> callspec.Tree | None:
+    """`@tree(...)`, resolved. A list has `item` and an attribute set
+    has `name` and `value`; `value` reads the child in both, so the
+    walker has one shape."""
+    spec = decl.tree
+    if not spec:
+        return None
+
+    def walk(how: Mapping[str, str]) -> callspec.Walk:
+        return callspec.Walk(how["size"], how.get("value") or how["item"],
+                             how.get("name", ""))
+
+    return callspec.Tree(spec["kind"], spec.get("identity", ""),
+                         {k: tuple(v) for k, v in spec["scalars"].items()},
+                         walk(spec["list"]), walk(spec["attrs"]))
+
 
 def _shaped(cls: ClassModel) -> ClassModel:
     """`cls`, refused when its value shape cannot round-trip.
@@ -1069,11 +1108,8 @@ class ModuleModel:
         """The classes nanobind binds: a C++ type, or a record the
         emitter declares.
 
-        A vocabulary has no C++ object: it crosses as the string its
-        member already is. A produced value with no `@binding(cxx=...)`
-        has no C++ type either, until the emitter declares its struct.
         `generate.emit_module` prints what this leaves out."""
-        return tuple(c for c in self.classes if c.decl.cxx or c.is_value)
+        return tuple(c for c in self.classes if c.bindable)
 
     @property
     def startup(self) -> tuple[FunctionModel, ...]:
@@ -1110,7 +1146,8 @@ class Model:
         # A produced class has no way in but a call that returns it,
         # and its refusing `__init__` names those calls.
         if missing := sorted(n for n, c in self.classes.items()
-                             if c.decl.produced and n not in self.producers):
+                             if c.made_elsewhere
+                             and n not in self.producers):
             raise TypeError(
                 f"{', '.join(missing)}: declared @produced, and no declared "
                 f"call returns one. Declare the call that makes it.")
@@ -1189,7 +1226,7 @@ class Model:
                         f"and a declared free function has that name.")
                 me = TypeRef(c.name, "", (), "value", c.name)
                 out.append(FunctionModel(
-                    name, c.qualified_module, c.decl.threading,
+                    name, c.qualified_module, c.threading,
                     (ParamModel(_snake(c.name), me, None), *m.params),
                     m.returns, m.doc, calls=f"{c.name}.{m.name}"))
         return out

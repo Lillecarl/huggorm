@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> None:
         emit = (returned_module if cls.name in model.returned
                 else wrapper_module)
         (out / fname).write_text(ast.unparse(emit(model, cls)) + "\n")
-        print(f"generated {fname} for {cls.name} ({cls.decl.threading})")
+        print(f"generated {fname} for {cls.name} ({cls.threading})")
 
     free_names = wrapped_functions(model)
     if free_names:

@@ -35,13 +35,11 @@ def _cls(name: str, *, threading: str = "pool", blocking: bool = True,
          returns: tuple[tuple[str, Any], ...] = ()) -> Any:
     """One class model, built by hand for a contract the corpus does
     not break."""
-    from huggorm_dsl.declare import Decl
     from huggorm_gen import ir
 
     return ir.ClassModel(
         name=name, package="pkg", module="mod", doc="",
-        decl=Decl(name=name, threading=threading, blocking=blocking,
-                  wire=wire),
+        wire=wire or "proxy", threading=threading, blocking=blocking,
         is_value=wire == "value", produced=False, constructs=True,
         wire_fields=fields, ctor=(),
         bound=tuple(ir.MethodModel(m, (), t, "") for m, t in returns))
@@ -275,7 +273,7 @@ def test_wrapping_and_wire_policy_are_separate_axes() -> None:
     assert cls["PathInfo"].wire == "value"
     assert cls["EvalState"].wire == "proxy"
     for name in ("StorePath", "PathInfo"):
-        assert not cls[name].decl.blocking and not cls[name].wrapped, name
+        assert not cls[name].blocking and not cls[name].wrapped, name
         assert not hasattr(flg, f"Async{name}"), f"Async{name} must not be generated"
         # With no handle to address, an rpc on it could never be called.
         assert not cls[name].served, name

@@ -53,9 +53,8 @@ becomes the place the real code lives.
 
 from collections.abc import Iterator, Sequence
 
-from huggorm_gen import cxx, ir
+from huggorm_gen import ir
 from huggorm_gen.cxx import NAMESPACE
-from huggorm_gen.cxx import held as _held
 
 INDENT = "    "
 
@@ -104,11 +103,6 @@ def _doc(text: str) -> str:
 # Invisible to a caller either way. It names a C++ lambda argument, and
 # `self` is not a C++ keyword.
 SELF = "self"
-
-
-def _self(cls: cxx.Declared) -> str:
-    """The lambda's parameter name for the bound object."""
-    return SELF
 
 
 
@@ -201,7 +195,7 @@ def _bodies(classes: Sequence[ir.ClassModel],
             yield cls.init.cxx_body
         if cls.from_parts is not None:
             yield cls.from_parts.cxx_body
-        yield from cls.decl.custom.values()
+        yield from cls.custom
     for fn in functions:
         yield fn.cxx_body
 
@@ -217,7 +211,7 @@ def waits(cls: ir.ClassModel,
     of a string already in memory is a loss."""
     if m.instant:
         return False
-    return cls.decl.blocking or m.blocks
+    return cls.blocking or m.blocks
 
 
 
@@ -312,8 +306,8 @@ def _value_semantics(cls: ir.ClassModel) -> list[str]:
     Every comparison carries `nb::is_operator()`. That is not a style
     choice: without it, comparing against an unrelated type raises
     TypeError where Python's protocol wants NotImplemented."""
-    obj = _self(cls)
-    held = _held(cls)
+    obj = SELF
+    held = cls.held
     ref = f"const {held} &{obj}"
     out: list[str] = []
 
@@ -699,7 +693,7 @@ class Emitter:
                            else "objects come from another call, not from "
                                 "a constructor")
         return [
-            f'{INDENT * 2}.def("__init__", []({_held(cls)} *) {{',
+            f'{INDENT * 2}.def("__init__", []({cls.held} *) {{',
             f"{INDENT * 3}throw nb::type_error(",
             f'{INDENT * 4}"{cls.name} {said}");',
             f"{INDENT * 2}}})",
@@ -795,7 +789,7 @@ class Emitter:
         wanted |= {other.header for _, t in _sites(classes, functions)
                    if t is not None
                    and (other := self.model.declared(t.leaf)) is not None}
-        wanted |= {h for cls in classes for h in cls.decl.headers}
+        wanted |= {h for cls in classes for h in cls.headers}
         wanted |= {h for cls in classes for m in cls.bound for h in m.headers}
         wanted |= {h for cls in classes if cls.from_parts is not None
                    for h in cls.from_parts.headers}
@@ -853,12 +847,12 @@ class Emitter:
         # and a pointer binding has nowhere to put it.
         wants_list = (m.returns is not None
                       and m.returns.origin in ("list", "dict"))
-        if not (cls.decl.via or m.returns_handle or m.reads or m.guard
+        if not (cls.via or m.returns_handle or m.reads or m.guard
                 or m.names or m.produces or wants_list
                 or any(pr.via for pr in m.params)):
             return None
-        obj = _self(cls)
-        reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
+        obj = SELF
+        reach = f"{obj}.{cls.via}->" if cls.via else f"{obj}."
         # The GUARD, for an accessor on a tagged union.
         #
         # Written here, once, from two declared facts: the class says how
@@ -976,7 +970,7 @@ class Emitter:
             ]
         if m.guard is None:
             return []
-        obj, arm = _self(cls), m.guard
+        obj, arm = SELF, m.guard
         return [
             f"{INDENT * 4}if ({obj}.{arm.hold}->{arm.ask} != {arm.tag})",
             f"{INDENT * 5}{_wrong_arm(obj, arm.hold, arm.tag)}",
@@ -1027,10 +1021,10 @@ class Emitter:
         tail = f', "{doc}"' if doc else ""
         if m.cxx_body:
             # A method the declaration could not derive, carried verbatim.
-            obj = _self(cls)
+            obj = SELF
             args, opening = self._signature(m.params)
             head = (f'{INDENT * 2}.def("{m.name}", '
-                    f"[]({_held(cls)} &{obj}{args}){self._returns(m)} {{")
+                    f"[]({cls.held} &{obj}{args}){self._returns(m)} {{")
             body = [f"{INDENT * 4}{ln}".rstrip()
                     for ln in m.cxx_body.strip().splitlines()]
             # The tag check goes in FRONT of a declared body. A body says
@@ -1042,14 +1036,14 @@ class Emitter:
         extras = self._extras(waits(cls, m), m.params)
         derived = self._derived(cls, m)
         if derived is not None:
-            obj = _self(cls)
+            obj = SELF
             args, opening = self._signature(m.params)
             return [f'{INDENT * 2}.def("{m.name}", '
-                    f"[]({_held(cls)} &{obj}{args}){self._returns(m)} {{",
+                    f"[]({cls.held} &{obj}{args}){self._returns(m)} {{",
                     *opening, *derived,
                     f"{INDENT * 2}}}{extras}{tail})"]
         spelled = m.cxx_name or m.name
-        return [f'{INDENT * 2}.def("{m.name}", &{_held(cls)}::{spelled}'
+        return [f'{INDENT * 2}.def("{m.name}", &{cls.held}::{spelled}'
                 f"{extras}{tail})"]
 
     def _signature(self, params: Sequence[ir.ParamModel],
@@ -1182,12 +1176,12 @@ class Emitter:
             # compile time, and which constructor to call is a decision
             # about a VALUE - an OutputsSpec means all outputs when it says
             # so and a named set when it carries names.
-            obj = _self(cls)
+            obj = SELF
             args, opening = self._signature(init.params)
             body = [f"{INDENT * 4}{ln}".rstrip()
                     for ln in init.cxx_body.strip().splitlines()]
             head = (f'{INDENT * 2}.def("__init__", '
-                    f"[]({_held(cls)} *{obj}{args}) {{")
+                    f"[]({cls.held} *{obj}{args}) {{")
             tail = f"{INDENT * 2}}}{names}"
             if not init.doc:
                 return [head, *opening, *body, tail + ")"]
@@ -1268,8 +1262,7 @@ class Emitter:
         for _, t in _sites(classes, functions):
             for node in _nodes(t):
                 held = self.model.declared(node)
-                if (isinstance(held, ir.ClassModel) and held.decl.produced
-                        and not held.decl.cxx):
+                if isinstance(held, ir.ClassModel) and held.is_value:
                     out.add(held.module)
         return sorted(out)
 
@@ -1467,7 +1460,7 @@ class Emitter:
 
         `__ne__` is not here and does not need to be. Python fills the
         slot as soon as `__eq__` exists."""
-        held = _held(cls)
+        held = cls.held
         return [
             f'{INDENT * 2}.def("__eq__", [](const {held} &a, const {held} &b)',
             f"{INDENT * 3} {{ return a == b; }}, nb::is_operator())",
@@ -1496,7 +1489,7 @@ class Emitter:
             # converted back. `_from_parts` initialises POSITIONALLY, so
             # the model checks the parts are the members, in member order.
             return [*self._produced_ctor(cls), *self._from_parts(cls)]
-        held = _held(cls)
+        held = cls.held
         # `.none()` on an `nb::object` part, and nothing else needs it.
         # nanobind refuses None for a parameter unless the argument says
         # it takes one, and an `nb::object` caster accepts anything - so
@@ -1691,7 +1684,7 @@ class Emitter:
                 else self._rebuilt(f) or n
                 for (n, _, _), f, t in zip(fields, cls.wire_fields, types,
                                            strict=True))
-            body = [f"{INDENT * 3}return {_held(cls)}({names});"]
+            body = [f"{INDENT * 3}return {cls.held}({names});"]
         doc = _doc(written.doc) if written is not None and written.doc \
             else FROM_PARTS_DOC
         return [f'{INDENT * 2}.def_static("_from_parts", []({args}) {{',
@@ -1705,11 +1698,10 @@ class Emitter:
         has: `nanopynix_module.cpp` calls `nanopynix_bind_store(store)`
         and friends. Generated code drops in beside hand-written code, one
         class at a time, and NB_MODULE does not change."""
-        decl = cls.decl
-        if not decl.cxx and not cls.is_value:
+        if not cls.bindable:
             raise TypeError(
                 f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
-        held = _held(cls)
+        held = cls.held
         holds = [held]
         # A WIRE VALUE is final, and that is a contract rather than a
         # preference. Such a class crosses as its declared parts, so a
@@ -1737,8 +1729,8 @@ class Emitter:
         # member no declaration describes. Without it a class that stores
         # a callable leaks itself as soon as that callable closes over it
         # (huggorm#93).
-        slots = (f", nb::type_slots({decl.gc_slots})"
-                 if decl.gc_slots else "")
+        slots = (f", nb::type_slots({cls.gc_slots})"
+                 if cls.gc_slots else "")
         lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
                  f'{INDENT}auto cls = nb::class_<{", ".join(holds)}>'
                  f'(m, "{cls.name}"{shown}{final}{slots})']
@@ -1747,7 +1739,7 @@ class Emitter:
             # is a member and the whole binding is derived from the field
             # list.
             body = self._record_ctor(cls)
-            obj = _self(cls)
+            obj = SELF
             # METHODS, not `def_ro` properties. The declaration writes
             # `def path(self) -> StorePath`, so a caller writes
             # `info.path()`. A property would read better and would be a
@@ -1803,10 +1795,10 @@ class Emitter:
             # `__init__`, and one that is honestly abstract with nothing
             # to open it. `_produced_ctor` supplies the third wording
             # itself, from the calls that return the class.
-            body = self._produced_ctor(cls, "" if cls.decl.produced else (
+            body = self._produced_ctor(cls, "" if cls.made_elsewhere else (
                 "declares no constructor" if cls.init is None
                 else "is abstract, and no factory opens one"))
-        elif decl.factory:
+        elif cls.factory_name:
             # A factory this module BINDS - `open_store` becomes
             # `Store.__new__`.
             body = self._factory(cls)
@@ -1820,7 +1812,7 @@ class Emitter:
             if cls.init is None:
                 body += self._from_parts(cls)
         body += _value_semantics(cls)
-        for source in decl.custom.values():
+        for source in cls.custom:
             body += [f"{INDENT * 2}{line}".rstrip()
                      for line in source.splitlines()]
         if body:
@@ -1975,7 +1967,7 @@ def imports(unit: ir.ModuleModel, model: ir.Model) -> list[str]:
     importing `HashAlgorithm` costs nothing."""
     return sorted({c.module for name in unit.visible
                    if (c := model.classes.get(name)) is not None
-                   and (c.decl.cxx or c.is_value) and c.module != unit.name})
+                   and c.bindable and c.module != unit.name})
 
 
 def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
