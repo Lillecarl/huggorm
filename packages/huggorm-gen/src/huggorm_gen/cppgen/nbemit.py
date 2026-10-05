@@ -53,7 +53,6 @@ becomes the place the real code lives.
 
 from collections.abc import Iterator, Sequence
 
-from huggorm_dsl.declare import Decl
 from huggorm_gen import cxx, ir
 from huggorm_gen.cxx import NAMESPACE
 from huggorm_gen.cxx import held as _held
@@ -683,10 +682,6 @@ class Emitter:
         self.model = model
         self.unit = unit
 
-    def _decl(self, name: str) -> Decl | None:
-        """The declaration this unit sees behind a name, or None."""
-        return self.unit.visible.get(name)
-
     def _produced_ctor(self, cls: ir.ClassModel,
                        because: str = "") -> list[str]:
         """The `__init__` of a class nothing constructs.
@@ -743,7 +738,7 @@ class Emitter:
                 note(arg)
             # ...and a UNION's arms, for the same reason: the variant
             # caster casts each arm with that arm's own.
-            if not t.origin and t.kind == "union" and self._decl(t.name):
+            if not t.origin and t.kind == "union":
                 for arm in self.model.unions[t.name].arms:
                     note(arm)
 
@@ -784,7 +779,7 @@ class Emitter:
         # Sorted and de-duplicated, because two methods needing one
         # header is normal and the order of a declaration's methods is
         # not an order for includes.
-        wanted = {cls.decl.header for cls in classes}
+        wanted = {cls.header for cls in classes}
         # A union's own type, which no `@header` names: the alias carries
         # it, because a unit that only PASSES one declares none of its
         # arms and would otherwise include nothing that spells it.
@@ -793,14 +788,14 @@ class Emitter:
         # A vocabulary's enum, for the same reason. `hash.cpp` returns a
         # HashAlgorithm and declares no class from `nix/util/hash.hh`
         # beyond its own - the words live in another declaration file.
-        wanted |= {v.decl.header for v in self._vocabularies_used(
+        wanted |= {v.header for v in self._vocabularies_used(
             classes, functions)}
         # A class from ANOTHER declaration that a signature names. nanobind
         # casts by type, so a forward declaration is not enough:
         # `registry.cpp` names `nix::Store` only as a parameter.
         wanted |= {other.header for _, t in _sites(classes, functions)
                    if t is not None
-                   and (other := self._decl(t.leaf.name)) is not None}
+                   and (other := self.model.declared(t.leaf)) is not None}
         wanted |= {h for cls in classes for h in cls.decl.headers}
         wanted |= {h for cls in classes for m in cls.bound for h in m.headers}
         wanted |= {h for cls in classes if cls.from_parts is not None
@@ -1273,9 +1268,10 @@ class Emitter:
         out = {c.module for c in classes if c.is_value}
         for _, t in _sites(classes, functions):
             for node in _nodes(t):
-                held = None if node.origin else self._decl(node.name)
-                if held is not None and held.produced and not held.cxx:
-                    out.add(self.model.classes[node.name].module)
+                held = self.model.declared(node)
+                if (isinstance(held, ir.ClassModel) and held.decl.produced
+                        and not held.decl.cxx):
+                    out.add(held.module)
         return sorted(out)
 
     def _unions_used(self, classes: Sequence[ir.ClassModel],
@@ -1289,10 +1285,10 @@ class Emitter:
         out: dict[str, ir.UnionModel] = {}
         for _, t in _sites(classes, functions):
             for node in _nodes(t):
-                decl = None if node.origin else self._decl(node.name)
-                if (decl is not None and decl.kind == "union"
-                        and decl.variant is not None):
-                    out[node.name] = self.model.unions[node.name]
+                held = self.model.declared(node)
+                if (isinstance(held, ir.UnionModel)
+                        and held.decl.variant is not None):
+                    out[node.name] = held
         return [out[name] for name in sorted(out)]
 
     def _vocabularies_used(self, classes: Sequence[ir.ClassModel],
@@ -1312,21 +1308,20 @@ class Emitter:
         vocabulary named twice is converted once, and the order two
         methods happen to be declared in is not an order for a
         translation unit."""
-        out: dict[str, ir.EnumModel] = {}
-        spelled = [node.name for _, t in _sites(classes, functions)
-                   for node in _nodes(t) if not node.origin]
+        out = {node.name: held for _, t in _sites(classes, functions)
+               for node in _nodes(t)
+               if isinstance(held := self.model.declared(node), ir.EnumModel)
+               and held.decl.enumerated}
         # ...and what a BODY spells, from `@spells`. A signature does not
         # reach everything: `KeyedBuildResult.error` builds an exception
         # carrying a failure word, and `-> BuildError | None` says
-        # nothing about it.
-        spelled += [n for cls in classes for m in cls.bound for n in m.spells]
+        # nothing about it. The model checked each is an enumerated
+        # vocabulary.
+        spelled = [n for cls in classes for m in cls.bound for n in m.spells]
         spelled += [n for cls in classes if cls.from_parts is not None
                     for n in cls.from_parts.spells]
         spelled += [n for fn in functions for n in fn.spells]
-        for name in spelled:
-            decl = self._decl(name)
-            if decl is not None and decl.kind == "words" and decl.enumerated:
-                out[name] = self.model.enums[name]
+        out.update((name, self.model.enums[name]) for name in spelled)
         return [out[name] for name in sorted(out)]
 
     def _alternative(self, cls: ir.UnionModel, arm: str) -> tuple[str, str]:
@@ -1915,11 +1910,8 @@ class Emitter:
         RuntimeError. So the emitter states it once per unit that needs
         it, and the declaration's body reads it by name."""
         for _, t in _sites(classes, functions):
-            if t is None:
-                continue
-            decl = (None if t.required.origin
-                    else self._decl(t.required.name))
-            if decl is not None and decl.kind == "error":
+            if (t is not None and not t.required.origin
+                    and t.required.kind == "error"):
                 return True
         return False
 

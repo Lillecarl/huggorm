@@ -696,6 +696,8 @@ class ClassModel:
     # A declared `_from_parts`, which a value carries when its C++ type
     # cannot be rebuilt from the parts as they are.
     from_parts: MethodModel | None = None
+    # The header that declares its C++ type, or "".
+    header: str = ""
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -734,6 +736,7 @@ class ClassModel:
                      if (made := _factory(c, functions)) else None),
             from_parts=(MethodModel.of(c.from_parts, c, resolver)
                         if c.from_parts is not None else None),
+            header=decl.header,
         )
 
     @property
@@ -882,6 +885,7 @@ class UnionModel:
     name: str
     decl: Decl
     arms: tuple[TypeRef, ...]
+    header: str = ""
 
     @classmethod
     def of(cls, u: Class, resolver: Resolver) -> UnionModel:
@@ -892,7 +896,7 @@ class UnionModel:
             arms.append(replace(TypeRef.named(a, resolver.kind(a)),
                                 cxx=cxx.arm(u, a, resolver.known),
                                 caster=caster))
-        return cls(u.name, u.decl, tuple(arms))
+        return cls(u.name, u.decl, tuple(arms), u.decl.header)
 
 
 @dataclass(frozen=True)
@@ -912,12 +916,14 @@ class EnumModel:
     members: tuple[WordModel, ...]
     doc: str
     decl: Decl
+    # The header that declares its C++ enum, or "".
+    header: str = ""
 
     @classmethod
     def of(cls, c: Class, package: str, module: str) -> EnumModel:
         return cls(c.name, f"{package}.{module}",
                    tuple(WordModel(m.name, m.value) for m in c.members),
-                   _clean(c.doc), c.decl)
+                   _clean(c.doc), c.decl, c.decl.header)
 
 @dataclass(frozen=True)
 class ErrorModel:
@@ -956,9 +962,9 @@ class ModuleModel:
     functions: tuple[FunctionModel, ...]
     # The ones a caller imports: `Module.exported`.
     exported: tuple[FunctionModel, ...]
-    # Every name the unit can resolve, its own and its imports', with
-    # the declaration behind it.
-    visible: Mapping[str, Decl]
+    # Every declared name the unit can resolve, its own and its
+    # imports'. The model behind one is `Model.declared`.
+    visible: frozenset[str]
 
     @classmethod
     def of(cls, mod: Module, package: str) -> ModuleModel:
@@ -971,7 +977,7 @@ class ModuleModel:
                   for c in mod.classes),
             tuple(functions.values()),
             tuple(functions[fn.name] for fn in mod.exported),
-            {name: c.decl for name, c in mod.known.items()})
+            frozenset(mod.known))
 
     def bindable(self) -> tuple[ClassModel, ...]:
         """The classes nanobind binds: a C++ type, or a record the
@@ -1025,6 +1031,23 @@ class Model:
 
     def module(self, name: str) -> ModuleModel:
         return next(m for m in self.modules if m.name == name)
+
+    def declared(self, t: TypeRef
+                 ) -> ClassModel | UnionModel | EnumModel | None:
+        """The model behind one leaf, or None for a builtin, a module
+        type or an exception, which carry no C++ of their own here.
+
+        Keyed by the leaf's resolved KIND, so a name is never read as
+        the wrong sort of declaration."""
+        if t.origin:
+            return None
+        if t.kind in ("value", "proxy"):
+            return self.classes[t.name]
+        if t.kind == "union":
+            return self.unions[t.name]
+        if t.kind == "enum":
+            return self.enums[t.name]
+        return None
 
     @cached_property
     def producers(self) -> dict[str, tuple[str, ...]]:
