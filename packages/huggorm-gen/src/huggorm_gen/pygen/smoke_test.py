@@ -279,9 +279,9 @@ async def test_behavior() -> None:
     def added(name: str, body: bytes) -> tuple[str, bytes]:
         return name, body
 
-    from huggorm_gen.pygen.generate import build_manifest
+    from huggorm_gen.cppgen.generate import declared_model
 
-    manifest = build_manifest()
+    model = declared_model()
     # The emitted package, for the wrapper sources this reads back.
     pkg_file = importlib.import_module("huggorm_generated").__file__
     assert pkg_file is not None
@@ -382,12 +382,13 @@ async def test_behavior() -> None:
     # constructor. Typed parameters make that hazard structurally
     # impossible - there is no **kwargs to forward - so the check moves
     # to what can still go wrong: a parameter the emitter forgot to
-    # unwrap, or a signature that drifted from the manifest.
+    # unwrap, or a signature that drifted from the declaration.
     checked_ctors = 0
     abstract, not_wrapped = [], []
-    for cls_name, proto in manifest["wrappers"].items():
+    for c in model.constructed:
+        cls_name = c.name
         py = pkg_dir / f"async_{cls_name.lower()}.py"
-        if proto["wire"] != "proxy":
+        if c.wire != "proxy":
             # No handle was emitted, so there is no emitted __init__
             # to check. What must hold instead is that nothing was
             # emitted at all.
@@ -400,7 +401,7 @@ async def test_behavior() -> None:
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == "__init__"
         )
-        if not proto["constructs"]:
+        if not c.constructs:
             # A class with no door has no constructor to check - it has
             # one that refuses. Pin the refusal instead.
             #
@@ -417,10 +418,10 @@ async def test_behavior() -> None:
         assert init.args.vararg is None and init.args.kwarg is None, (
             f"{py.name}.__init__ still takes *args/**kwargs"
         )
-        declared = [p["name"] for p in proto["ctor"]]
+        declared = [p.name for p in c.ctor]
         emitted = [a.arg for a in init.args.args[1:]]  # drop self
         assert emitted == declared, (
-            f"{py.name}.__init__ takes {emitted}, manifest declares {declared}"
+            f"{py.name}.__init__ takes {emitted}, the declaration says {declared}"
         )
         unwrapped = {
             c.args[0].id
@@ -433,13 +434,13 @@ async def test_behavior() -> None:
             f"must unwrap every declared parameter {declared}"
         )
         # Optional parameters must actually be optional.
-        n_optional = sum(1 for p in proto["ctor"] if p["default"] is not None)
+        n_optional = sum(1 for p in c.ctor if p.default is not None)
         assert len(init.args.defaults) == n_optional, (
             f"{py.name}.__init__ has {len(init.args.defaults)} default(s), "
-            f"manifest declares {n_optional} optional parameter(s)"
+            f"the declaration says {n_optional} optional parameter(s)"
         )
         checked_ctors += 1
-    expected = len(manifest["wrappers"]) - len(abstract) - len(not_wrapped)
+    expected = len(model.constructed) - len(abstract) - len(not_wrapped)
     assert checked_ctors == expected, (
         f"checked {checked_ctors} wrapper ctors, expected {expected} "
         f"(abstract, so skipped: {abstract}; unwrapped: {not_wrapped})"
@@ -466,27 +467,13 @@ async def test_behavior() -> None:
     assert isinstance(spool, StorePath)
     assert isinstance(drv, AsyncValue)
 
-    # Wire policy lands in the manifest (the future RPC IDL) and on
-    # generated classes: immutable types are wire-values, everything
-    # else proxies.
-    def proto_of(name: str) -> dict[str, Any]:
-        """One class's manifest entry, whichever group holds it.
-
-        Which group a class lands in is a fact about how it is made -
-        `@produced(by=...)` moves one - and naming the group here
-        would restate that, so a rename of the producer breaks a test
-        about wire policy. Ask for the name.
-        """
-        for group in ("wrappers", "returned_types"):
-            if name in manifest[group]:
-                entry: dict[str, Any] = manifest[group][name]
-                return entry
-        raise AssertionError(f"{name} is in no manifest group")
-
-    assert proto_of("StorePath")["wire"] == "value"
-    assert proto_of("Value")["wire"] == "proxy"
-    assert proto_of("PathInfo")["wire"] == "value"
-    assert proto_of("EvalState")["wire"] == "proxy"
+    # Wire policy lands in the model and on generated classes:
+    # immutable types are wire-values, everything else proxies.
+    cls = model.classes
+    assert cls["StorePath"].wire == "value"
+    assert cls["Value"].wire == "proxy"
+    assert cls["PathInfo"].wire == "value"
+    assert cls["EvalState"].wire == "proxy"
     assert local._wire == "proxy" and spool._wire == "value"
 
     # Wrapping is a SEPARATE axis from wire policy, and the rule is:
@@ -496,20 +483,16 @@ async def test_behavior() -> None:
     # no await in front of a substring read (huggorm#25).
     import huggorm_generated as flg_names
     for name in ("StorePath", "PathInfo"):
-        proto = proto_of(name)
-        assert proto["blocking"] is False and proto["wrapped"] is False, proto
+        assert not cls[name].decl.blocking and not cls[name].wrapped, name
         assert not hasattr(flg_names, f"Async{name}"), (
             f"Async{name} must not be generated")
         # ...and nothing remote either: with no handle to address, an
-        # rpc on it could never be called.
-        assert "service" not in proto and "acquire" not in proto, proto
-        assert all("rpc" not in m for m in proto["methods"]), proto["methods"]
-        # It still has a wire message: it crosses as a value.
-        assert proto["message"], proto
+        # rpc on it could never be called. It crosses as a value.
+        assert not cls[name].served, name
     # The control: an affine class and a blocking pool class both stay
     # wrapped, so the rule is doing work rather than switching nothing.
-    assert proto_of("Value")["wrapped"] is True
-    assert proto_of("Store")["wrapped"] is True
+    assert cls["Value"].wrapped is True
+    assert cls["Store"].wrapped is True
 
     # C++ exceptions surface as InternalError with the cause attached.
     try:
@@ -589,16 +572,15 @@ async def test_behavior() -> None:
     assert born is not None and born.startswith("huggorm-affine"), (
         f"argument construction must stay on its own thread, not {born}")
     await untouched.aclose()
-    free = manifest["free_functions"]
-    assert free["collect_garbage"]["return_type"] == "None"
-    # ...and each one records whether the wire can carry it, with the
-    # reason when it cannot. gc_stats returns dict[str, int], which is
-    # a protobuf map now that the declaration says what the entries
-    # hold (huggorm#30).
-    assert not free["collect_garbage"]["wire_blockers"]
-    assert not free["gc_stats"]["wire_blockers"], free["gc_stats"]["wire_blockers"]
-    assert free["gc_stats"]["return_type"] == "dict[str, int]"
-    assert "rpc" in free["gc_stats"]
+    free = model.functions
+    assert free["collect_garbage"].returns is None
+    # ...and the wire can carry each. gc_stats returns dict[str, int],
+    # which is a protobuf map now that the declaration says what the
+    # entries hold (huggorm#30).
+    assert not model.function_blockers(free["collect_garbage"])
+    assert not model.function_blockers(free["gc_stats"])
+    stats = free["gc_stats"].returns
+    assert stats is not None and stats.spelling == "dict[str, int]"
 
     # gc_stats was the last function with no RPC surface, so the
     # blocker path now has nothing left to report. Exercise it
@@ -952,8 +934,8 @@ def _expr(src: str) -> str:
     return ast.unparse(ast.parse(src, mode="eval").body)
 
 
-def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
-    """The emitted surfaces against the MANIFEST, not each other.
+def test_the_declaration_is_what_got_written(out: pathlib.Path) -> None:
+    """The emitted surfaces against the DECLARATION, not each other.
 
     test_conformance compares the three modules to one another, which
     is the right question for drift BETWEEN them and blind to drift
@@ -973,52 +955,34 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
     The in-process wrapper is the surface picked, because it is the
     one that carries every method: the protocol drops what it cannot
     promise and the rpc client drops what cannot cross."""
-    from huggorm_gen.pygen.generate import build_manifest
-    from huggorm_gen.pygen.surface import served_names
+    from huggorm_gen.cppgen.generate import declared_model
 
-    manifest = build_manifest()
-    served = {
-        name: proto
-        for group in ("wrappers", "returned_types")
-        for name, proto in manifest[group].items()
-        if name in served_names(manifest)
-    }
+    model = declared_model()
+    served = model.ordered_served
     found = _emitted_classes(out)
 
-    def declared(name: str | None) -> dict[str, Any]:
-        """Every method the chain declares, leaf definitions winning.
-        018 splits a surface across a base and its subclasses, so one
-        class's own list is only part of what it offers."""
-        out_: dict[str, Any] = {}
-        while name is not None:
-            proto = served[name]
-            for m in proto["methods"]:
-                out_.setdefault(m["name"], m)
-            name = proto.get("async_base")
-        return out_
-
     failures, checked, ctor_checked = [], 0, 0
-    for cls_name, proto in served.items():
-        emitted = _resolved(found, proto["async_class"])
-        for name, m in declared(cls_name).items():
-            sig = emitted.get(name)
+    for c in served:
+        emitted = _resolved(found, c.async_name)
+        for m in c.methods:
+            sig = emitted.get(m.name)
             if sig is None:
-                failures.append(f"{cls_name}.{name}: declared, not emitted")
+                failures.append(f"{c.name}.{m.name}: declared, not emitted")
                 continue
             checked += 1
-            want_names = [p["name"] for p in m["params"]]
+            want_names = [p.name for p in m.params]
             if sig["params"] != want_names:
                 failures.append(
-                    f"{cls_name}.{name} takes {sig['params']}, the manifest "
-                    f"declares {want_names}")
+                    f"{c.name}.{m.name} takes {sig['params']}, the "
+                    f"declaration says {want_names}")
             # Defaults align to the END of the parameter list, the way
             # Python aligns them.
-            want_defaults = [_expr(p["default"]) for p in m["params"]
-                             if p["default"] is not None]
+            want_defaults = [_expr(p.default) for p in m.params
+                             if p.default is not None]
             if [_expr(d) for d in sig["defaults"]] != want_defaults:
                 failures.append(
-                    f"{cls_name}.{name} defaults to {sig['defaults']}, the "
-                    f"manifest declares {want_defaults}")
+                    f"{c.name}.{m.name} defaults to {sig['defaults']}, the "
+                    f"declaration says {want_defaults}")
 
     # ...and the CONSTRUCTORS, read off the stubs. That is where a
     # constructor default actually lands: the only class with one is a
@@ -1028,13 +992,9 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
     # and said nothing.
     from huggorm_gen.pygen.emitter import STUB_PACKAGE
 
-    # Every declared class, not only the wrapped ones: the stubs
-    # describe the BINDINGS, which the generated surface has filtered.
-    declared_classes = {
-        name: pr
-        for group in ("wrappers", "returned_types")
-        for name, pr in manifest[group].items()
-    }
+    # Every declared class, not only the served ones: the stubs
+    # describe the BINDINGS.
+    declared_classes = model.classes
     for pyi in sorted((out.parent / STUB_PACKAGE).glob("*.pyi")):
         tree = ast.parse(pyi.read_text(), filename=pyi.name)
         for node in tree.body:
@@ -1046,21 +1006,20 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
                          and f.name == "__init__"), None)
             if init is None:
                 continue
-            want = [_expr(p["default"])
-                    for p in declared_classes[node.name].get("ctor") or []
-                    if p["default"] is not None]
+            want = [_expr(p.default)
+                    for p in declared_classes[node.name].ctor
+                    if p.default is not None]
             got = [_expr(ast.unparse(d)) for d in init.args.defaults]
             if got != want:
                 failures.append(
                     f"{pyi.name}:{node.name}.__init__ defaults to {got}, "
-                    f"the manifest declares {want}")
+                    f"the declaration says {want}")
             ctor_checked += 1
 
-    assert not failures, ("the emitted surface and the manifest disagree:\n  "
-                          + "\n  ".join(failures))
-    assert any(p["default"] is not None
-               for pr in declared_classes.values()
-               for p in pr.get("ctor") or []), (
+    assert not failures, ("the emitted surface and the declaration "
+                          "disagree:\n  " + "\n  ".join(failures))
+    assert any(p.default is not None
+               for c in declared_classes.values() for p in c.ctor), (
         "no constructor declares a default; that half proves nothing")
     assert ctor_checked >= len(served) // 2, (
         f"checked only {ctor_checked} constructor(s) in the stubs")
@@ -1068,10 +1027,9 @@ def test_the_manifest_is_what_got_written(out: pathlib.Path) -> None:
         f"checked only {checked} method(s) across {len(served)} classes")
     # Non-vacuity: something must actually HAVE a default, or the
     # comparison is between two empty lists everywhere.
-    assert any(p["default"] is not None
-               for group in ("wrappers", "returned_types")
-               for pr in manifest[group].values()
-               for m in pr["methods"] for p in m["params"]), (
+    assert any(p.default is not None
+               for c in declared_classes.values()
+               for m in c.methods for p in m.params), (
         "no method declares a default; this gate now proves nothing")
 
 
@@ -1087,55 +1045,38 @@ def test_conformance(out: pathlib.Path) -> None:
 
     The rules:
       - the async and rpc implementations offer the same method names;
-      - the protocol offers those minus the ones the manifest blocked,
-        and blocks nothing else;
+      - the rpc client and the protocol offer those minus the ones
+        that cannot cross the wire;
       - parameter names and annotations are identical in all three
         (which is what huggorm#25 bought: after it, a method on the
         protocol mentions no type that differs by location);
       - a return is identical in all three, unless the protocol names
         another protocol - then each implementation must return ITS
         form of that same class, or of that class or None."""
+    from huggorm_gen.cppgen.generate import declared_model
     from huggorm_gen.payload.wiretypes import adoptee, respell
-    from huggorm_gen.pygen.generate import build_manifest
-    from huggorm_gen.pygen.surface import served_names
 
-    manifest = build_manifest()
-    # Served, not wrapped: every proxy has all three surfaces now,
-    # and the gate compares all three of each.
-    served = {
-        name: proto
-        for group in ("wrappers", "returned_types")
-        for name, proto in manifest[group].items()
-        if name in served_names(manifest)
-    }
+    model = declared_model()
+    # Served, not wrapped: every proxy has all three surfaces, and the
+    # gate compares all three of each.
+    served = {c.name: c for c in model.ordered_served}
     # protocol name -> the class it speaks for, so a protocol-typed
     # return can be checked against each implementation's own form.
-    speaks_for = {proto["protocol"]: name for name, proto in served.items()}
-    twins: dict[str, str] = manifest.get("async_twins") or {}
+    speaks_for = {c.protocol_name: n for n, c in served.items()}
+    twins = dict(model.twins)
     found = _emitted_classes(out)
 
-    def blocked_over_chain(name: str | None, key: str) -> set[str]:
-        """The methods `key` blocks, leaf definitions winning.
-
-        Two keys, and they nest. wire_blockers means the RPC client
-        cannot offer the method at all; protocol_blockers means the
-        protocol cannot declare it, and every wire blocker is one of
-        those - a protocol is what both implementations satisfy."""
-        out_: dict[str, list[str]] = {}
-        while name is not None:
-            proto = served[name]
-            for m in proto["methods"]:
-                out_.setdefault(m["name"], m[key])
-            name = proto.get("async_base")
-        return {n for n, why in out_.items() if why}
+    def no_wire_of(c: Any) -> set[str]:
+        """What the rpc client cannot offer - and so neither can the
+        protocol, which is what both implementations satisfy."""
+        return {m.name for m in c.methods if not model.offered(m)}
 
     failures, checked = [], 0
-    for cls_name, proto in served.items():
-        P = _resolved(found, proto["protocol"])
-        A = _resolved(found, proto["async_class"])
-        R = _resolved(found, proto["rpc_class"])
-        blocked = blocked_over_chain(cls_name, "protocol_blockers")
-        no_wire = blocked_over_chain(cls_name, "wire_blockers")
+    for cls_name, cls in served.items():
+        P = _resolved(found, cls.protocol_name)
+        A = _resolved(found, cls.async_name)
+        R = _resolved(found, cls.rpc_name)
+        no_wire = no_wire_of(cls)
 
         if set(R) != set(A) - no_wire:
             # The in-process surface is the larger one: a method the
@@ -1144,17 +1085,12 @@ def test_conformance(out: pathlib.Path) -> None:
             failures.append(
                 f"{cls_name}: in-process offers {sorted(set(A) - set(R))} "
                 f"the rpc client does not, and {sorted(set(R) - set(A))} "
-                f"the other way; the manifest blocks {sorted(no_wire)} "
-                f"from the wire")
-        if not no_wire <= blocked:
+                f"the other way; {sorted(no_wire)} cannot cross the wire")
+        if set(P) != set(A) - no_wire:
             failures.append(
-                f"{cls_name}: {sorted(no_wire - blocked)} cannot cross the "
-                f"wire and is still on the protocol")
-        if set(P) != set(A) - blocked:
-            failures.append(
-                f"{cls_name}: {proto['protocol']} offers {sorted(P)}; the "
-                f"implementations offer {sorted(A)} and the manifest blocks "
-                f"{sorted(blocked)}")
+                f"{cls_name}: {cls.protocol_name} offers {sorted(P)}; the "
+                f"implementations offer {sorted(A)} and {sorted(no_wire)} "
+                f"cannot cross the wire")
 
         for m in sorted(P):
             checked += 1
@@ -1166,11 +1102,11 @@ def test_conformance(out: pathlib.Path) -> None:
                 if sig["params"] != want["params"]:
                     failures.append(
                         f"{cls_name}.{m}: {label} takes {sig['params']}, "
-                        f"{proto['protocol']} declares {want['params']}")
+                        f"{cls.protocol_name} declares {want['params']}")
                 if sig["annotations"] != want["annotations"]:
                     failures.append(
                         f"{cls_name}.{m}: {label} annotates "
-                        f"{sig['annotations']}, {proto['protocol']} declares "
+                        f"{sig['annotations']}, {cls.protocol_name} declares "
                         f"{want['annotations']}")
                 if sig["defaults"] != want["defaults"]:
                     # A default is part of what a call MEANS. Three
@@ -1179,15 +1115,16 @@ def test_conformance(out: pathlib.Path) -> None:
                     # on where the object lives.
                     failures.append(
                         f"{cls_name}.{m}: {label} defaults to "
-                        f"{sig['defaults']}, {proto['protocol']} declares "
+                        f"{sig['defaults']}, {cls.protocol_name} declares "
                         f"{want['defaults']}")
                 if not sig["is_async"]:
                     failures.append(f"{cls_name}.{m}: {label} is not async")
                 expected = want["returns"]
                 if adoptee(expected, speaks_for) is not None:
-                    side = "async_class" if label == "in-process" else "rpc_class"
                     expected = respell(expected, {
-                        p: served[c][side] for p, c in speaks_for.items()})
+                        p: (served[c].async_name if label == "in-process"
+                            else served[c].rpc_name)
+                        for p, c in speaks_for.items()})
                 elif label == "in-process":
                     # A declared async twin is the same value in the
                     # other spelling - anyio.Path wraps a pathlib.Path
@@ -1208,12 +1145,9 @@ def test_conformance(out: pathlib.Path) -> None:
     assert checked >= 3 * len(served), (
         f"conformance checked only {checked} method(s) across "
         f"{len(served)} classes")
-    for key, what in (("protocol_blockers", "protocol"),
-                      ("wire_blockers", "wire")):
-        assert any(blocked_over_chain(n, key) for n in served), (
-            f"no method is blocked from the {what}; either the rule "
-            f"stopped working or the surface changed and this gate now "
-            f"proves nothing")
+    assert any(no_wire_of(c) for c in served.values()), (
+        "no method is blocked from the wire; either the rule stopped "
+        "working or the surface changed and this gate now proves nothing")
 
 
 def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
@@ -1223,12 +1157,11 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
     function. A coroutine annotated with the sync proxy hands a sync
     object to an async caller, and the server leases that object as a
     handle whose methods it then awaits."""
+    from huggorm_gen.cppgen.generate import declared_model
     from huggorm_gen.payload.wiretypes import adoptee, respell
-    from huggorm_gen.pygen.generate import build_manifest
 
-    manifest = build_manifest()
-    served = {n for group in ("returned_types", "wrappers")
-              for n, p in manifest[group].items() if p["wire"] == "proxy"}
+    model = declared_model()
+    served = model.served
     emitted = {
         node.name: ast.unparse(node.returns) if node.returns else "None"
         for node in ast.parse(
@@ -1236,10 +1169,10 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
         if isinstance(node, ast.AsyncFunctionDef)
     }
     failures, adopted = [], 0
-    for name, proto in manifest["free_functions"].items():
-        if not proto["wrapped"]:
+    for name, fn in model.functions.items():
+        if not fn.wrapped:
             continue
-        rt = proto["return_type"]
+        rt = fn.returns.spelling if fn.returns is not None else "None"
         expected = respell(rt, {n: f"Async{n}" for n in served})
         if adoptee(rt, served) is not None:
             adopted += 1
@@ -1467,20 +1400,20 @@ def _same(spelling: str) -> str:
     - a VOCABULARY is a StrEnum whose members ARE the strings
       libstore parses, so it crosses as `str` and nanobind says so.
       That is the whole point of declaring it as words rather than
-      binding it, and `_vocabularies` is read from the manifest
+      binding it, and `_VOCABULARIES` is read from the model
       rather than listed here.
     - a UNION is an alias, and nanobind renders the arms it actually
       binds. `SingleDerivedPath` is `StorePath |
       SingleDerivedPathBuilt` by declaration, so the alias expands to
       exactly that and the two sides meet. Expanded REPEATEDLY,
       because an arm may itself name one - `_UNIONS` is read from the
-      manifest, so nothing here lists an alias by hand.
+      model, so nothing here lists an alias by hand.
     - an EXCEPTION a value holds crosses as `nb::object`, so nanobind
       says `object` and can say nothing else: a Python exception is
       not a bound C++ type and has no signature to render. The `|
       None` goes with it, because `nb::none()` IS the absent value
       there and the emitter writes no `std::optional` around it.
-      `_ERRORS` is read from the manifest, like the two above.
+      `_ERRORS` is read from the model, like the two above.
 
     A DURATION needed none of this, which was measured rather than
     assumed. nanobind's chrono caster reads `datetime.timedelta |
@@ -1510,9 +1443,9 @@ def _same(spelling: str) -> str:
 
 
 _VOCABULARIES: set[str] = set()
-# {alias: [arm, ...]}, from the manifest. See `_same`.
+# {alias: [arm, ...]}, from the model. See `_same`.
 _UNIONS: dict[str, list[str]] = {}
-# Declared EXCEPTION classes, from the manifest. See `_same`.
+# Declared EXCEPTION classes, from the model. See `_same`.
 _ERRORS: set[str] = set()
 
 
@@ -1549,41 +1482,39 @@ def test_a_declared_type_is_the_type_nanobind_BINDS(
     nanobind renders each signature from the C++ it actually calls, so
     it is the honest side of this comparison. Where the two disagree,
     the declaration is the one to fix."""
-    from huggorm_gen.pygen.generate import build_manifest
+    from huggorm_gen.cppgen.generate import declared_model
 
-    manifest = build_manifest()
+    model = declared_model()
     _VOCABULARIES.clear()
-    _VOCABULARIES.update(manifest.get("enums", {}))
-    _UNIONS.update(manifest.get("unions", {}))
+    _VOCABULARIES.update(model.enums)
+    _UNIONS.clear()
+    _UNIONS.update({n: list(arms) for n, arms in model.unions.items()})
     _ERRORS.clear()
-    _ERRORS.update((manifest.get("errors") or {}).get("classes", {}))
+    _ERRORS.update(model.errors.classes)
 
     bad, checked = [], 0
-    for group in ("wrappers", "returned_types"):
-        for name, entry in manifest[group].items():
-            cls = getattr(importlib.import_module(entry["module"]), name)
-            for meth in entry["methods"]:
-                fn = getattr(cls, meth["name"], None)
-                sigs = getattr(fn, "__nb_signature__", None)
-                if not sigs:
-                    continue
-                params = [_same(str(p["type"]))
-                          # A parameter that reads None arrives as a
-                          # std::optional so an explicit None works,
-                          # and nanobind says so. The declaration
-                          # says it with the default.
-                          + (" | None" if p.get("default") == "None"
-                             and not str(p["type"]).endswith("None")
-                             else "")
-                          for p in meth["params"]]
-                want = (f"({', '.join(params)}) -> "
-                        f"{_same(str(meth['return_type']))}")
-                got = _rendered(sigs[0][0])
-                checked += 1
-                if got != want:
-                    bad.append(f"{name}.{meth['name']}\n"
-                               f"      nanobind: {got}\n"
-                               f"      declared: {want}")
+    for c in model.classes.values():
+        cls = getattr(importlib.import_module(c.qualified_module), c.name)
+        for meth in c.methods:
+            fn = getattr(cls, meth.name, None)
+            sigs = getattr(fn, "__nb_signature__", None)
+            if not sigs:
+                continue
+            params = [_same(p.type.spelling)
+                      # A parameter that reads None arrives as a
+                      # std::optional so an explicit None works, and
+                      # nanobind says so. The declaration says it with
+                      # the default.
+                      + (" | None" if p.default == "None"
+                         and not p.type.optional else "")
+                      for p in meth.params]
+            want = f"({', '.join(params)}) -> {_same(meth.return_spelling)}"
+            got = _rendered(sigs[0][0])
+            checked += 1
+            if got != want:
+                bad.append(f"{c.name}.{meth.name}\n"
+                           f"      nanobind: {got}\n"
+                           f"      declared: {want}")
     assert not bad, (
         "the declaration disagrees with the C++ nanobind binds. nanobind "
         "reads the real signature, so the declaration is what to fix:\n    "
@@ -1618,22 +1549,17 @@ def test_no_binding_leaks_a_cxx_type(out: pathlib.Path) -> None:
     rendered signature is always a caster the emitter did not include.
     A test would catch it for a method that has one; this catches it
     for every method at once."""
-    from huggorm_gen.pygen.generate import build_manifest
+    from huggorm_gen.cppgen.generate import declared_model
 
-    manifest = build_manifest()
     bad, seen = [], 0
-    for group in ("wrappers", "returned_types"):
-        for name, entry in manifest[group].items():
-            cls = getattr(importlib.import_module(entry["module"]), name)
-            methods = list(entry["methods"])
-            if entry.get("ctor"):
-                methods += entry["ctor"]
-            for meth in methods:
-                fn = getattr(cls, meth["name"], None)
-                for sig, *_ in getattr(fn, "__nb_signature__", None) or ():
-                    seen += 1
-                    if "::" in sig:
-                        bad.append(f"{name}.{meth['name']}: {sig}")
+    for c in declared_model().classes.values():
+        cls = getattr(importlib.import_module(c.qualified_module), c.name)
+        for name in [m.name for m in c.methods] + ["__init__"]:
+            fn = getattr(cls, name, None)
+            for sig, *_ in getattr(fn, "__nb_signature__", None) or ():
+                seen += 1
+                if "::" in sig:
+                    bad.append(f"{c.name}.{name}: {sig}")
     assert not bad, (
         "a bound signature names a C++ type, so nanobind has no caster "
         "for it and every call raises TypeError:\n  " + "\n  ".join(bad))
