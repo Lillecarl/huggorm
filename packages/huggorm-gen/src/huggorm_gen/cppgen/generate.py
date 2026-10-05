@@ -206,18 +206,18 @@ def census_written(mod: Module, bound: tuple[Any, ...], text: str) -> None:
     Three exemptions, each read off the declaration rather than
     listed. A `@startup` hook is emitted as a CALL at module init and
     a `@translator` as a registration, so neither is a bound name -
-    `Module.exported` already draws that line. And the function a
-    class names in `@produced(by=...)` is emitted as that class's
-    constructor: `open_store` is `Store`'s `nb::new_`, and a caller
-    writes `Store(uri)`.
+    `Module.exported` already draws that line. And a function marked
+    `@constructs(cls)` is emitted as that class's constructor:
+    `open_store` is `Store`'s `nb::new_`, and a caller writes
+    `Store(uri)`.
 
     Only BOUND classes. `bindable` drops the ones nanobind cannot
     bind yet and `emit_module` prints what it left out, which is a
     different fact from an emitter losing one method of a class it
     did bind."""
     wrote = set(BOUND_NAME.findall(text))
-    factories = {c.decl.built_by for c in mod.classes
-                 if c.decl.built_by and c.ctor is not None}
+    factories = {c.decl.factory for c in mod.classes
+                 if c.decl.factory and c.ctor is not None}
     bad = []
     for cls in bound:
         for m in cls.methods:
@@ -518,7 +518,7 @@ def census_markers(have: Any) -> None:
 
     Read off the DECORATOR NODES rather than the reader's output. The
     reader keeps what a marker MEANT and throws away which word said
-    it, and `@produced(by=...)` and `@binds` both end up as fields
+    it, and `@constructs(...)` and `@binds` both end up as fields
     that no longer name themselves.
 
     Printed rather than raised. A marker waiting for its user is a
@@ -649,7 +649,7 @@ def unmade(classes: Iterable[Class],
     Such a class has no way in at all, and its refusing `__init__`
     would name no call to use instead."""
     return sorted(c.name for c in classes
-                  if c.decl.built_by and c.name not in producers)
+                  if c.decl.produced and c.name not in producers)
 
 
 def main(out_dir: str) -> int:

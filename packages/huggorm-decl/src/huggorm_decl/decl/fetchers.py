@@ -27,7 +27,7 @@ from huggorm_dsl.declare import (
 )
 
 
-@produced(by="input_from_url")
+@produced
 @header("nix/fetchers/fetchers.hh")
 @binding(
     cxx="nix::fetchers::Input",

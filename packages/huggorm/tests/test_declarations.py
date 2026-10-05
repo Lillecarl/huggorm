@@ -297,7 +297,7 @@ from huggorm_dsl.declare import (
     I64, Bytes, Str, binding, local, produced, reads, wire_read, wire_value)
 
 
-@produced(by="Nothing.makes")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class Line:
@@ -1347,8 +1347,8 @@ def test_a_function_the_emitter_writes_another_way_is_not_missing() -> None:
 
     `_init_libstore` is `@startup`, emitted as a CALL at module init;
     `_translate_nix_error` is a `@translator`, emitted as a
-    registration; and `open_store` is what `Store` names in
-    `@produced(by=...)`, emitted as that class's `nb::new_` - a caller
+    registration; and `open_store` carries `@constructs(Store)`,
+    emitted as that class's `nb::new_` - a caller
     writes `Store(uri)` and never the function. `store.py` has the
     first and the third, and `path.py` the first two.
 

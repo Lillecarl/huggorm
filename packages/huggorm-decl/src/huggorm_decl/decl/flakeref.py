@@ -28,7 +28,7 @@ from huggorm_dsl.declare import (
 )
 
 
-@produced(by="parse_flake_ref")
+@produced
 @header("nix/flake/flakeref.hh")
 @binding(
     cxx="nix::FlakeRef",

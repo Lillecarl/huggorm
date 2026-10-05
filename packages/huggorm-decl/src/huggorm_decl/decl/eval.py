@@ -63,7 +63,7 @@ from huggorm_dsl.declare import (
 )
 
 
-@produced(by="EvalState")
+@produced
 @header("huggorm_decl/cpp/eval.hpp")
 @binding(
     # One state per thread, and its values belong to that thread. The
@@ -914,7 +914,7 @@ return huggorm::SourceLocation{physical->string(), line};
         """)
 
 
-@produced(by="Value.doc")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class Doc:
@@ -944,7 +944,7 @@ class Doc:
         """The line in that file, or 0 with no position."""
 
 
-@produced(by="Value.attr_doc")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class AttrDoc:
@@ -960,7 +960,7 @@ class AttrDoc:
         """The doc comment before the definition, or None."""
 
 
-@produced(by="Value.edit_location")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class SourceLocation:
@@ -979,7 +979,7 @@ class SourceLocation:
     threading="pool",
     blocking=False,
 )
-@produced(by="LogRecord.fields")
+@produced
 @wire_value()
 class LogField:
     """One field of one log record: an integer or a string.
@@ -1027,7 +1027,7 @@ class LogField:
     threading="pool",
     blocking=False,
 )
-@produced(by="LogStream.drain")
+@produced
 @wire_value()
 class LogRecord:
     """One thing Nix said while it worked.
@@ -1157,7 +1157,7 @@ class LogRecord:
     # It takes a mutex and moves a deque. Nothing waits.
     blocking=False,
 )
-@produced(by="EvalState.subscribe_logs")
+@produced
 class LogStream:
     """The records one subscriber has not read yet.
 
@@ -1191,7 +1191,7 @@ class LogStream:
         from being callable."""
 
 
-@produced(by="LockedFlake.find_input")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class LockedInput:
@@ -1207,7 +1207,7 @@ class LockedInput:
         """False for an input with `flake = false`."""
 
 
-@produced(by="EvalState.lock_flake")
+@produced
 @header("huggorm_decl/cpp/eval.hpp")
 @binding(
     # Locked for one state, and handed back to that state to call. The
@@ -1266,7 +1266,7 @@ flake.lockFilePath().invalidateCache();
             """)
 
 
-@produced(by="Repl.select")
+@produced
 @header("huggorm_decl/cpp/eval.hpp")
 @binding(threading="affine", blocking=False, cxx="huggorm::ReplSelection")
 class ReplSelection:
@@ -1282,7 +1282,7 @@ class ReplSelection:
         """`a.b`, evaluated, and not checked to be a set."""
 
 
-@produced(by="EvalState.repl")
+@produced
 @header("huggorm_decl/cpp/eval.hpp")
 @binding(
     # The environment belongs to one state, and its thunks evaluate

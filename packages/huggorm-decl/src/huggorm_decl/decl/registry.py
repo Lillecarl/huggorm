@@ -54,7 +54,7 @@ Attr = Annotated[
 """One fetcher attribute: a string, a count, or a flag."""
 
 
-@produced(by="registry_entries")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class RegistryEntry:
@@ -79,7 +79,7 @@ class RegistryEntry:
         the branch on."""
 
 
-@produced(by="registry_add")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class RegistryWrite:

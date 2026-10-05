@@ -31,7 +31,7 @@ from huggorm_dsl.declare import (
 )
 
 
-@produced(by="Store.query_path_info")
+@produced
 @header("nix/store/path-info.hh")
 @binding(
     cxx="nix::ValidPathInfo",

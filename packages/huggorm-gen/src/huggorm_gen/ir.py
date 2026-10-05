@@ -438,12 +438,10 @@ def _ctor_params(cls: Class,
                  functions: Sequence[Method] = ()) -> tuple[Param, ...]:
     """The parameters a caller passes to build one of these.
 
-    A `@produced(by=X)` class that declares `__init__` is built by X,
-    so X's parameters - defaults included - are the signature. Without
-    an `__init__`, X is a function whose ANSWER is this class, and a
-    caller never passes X's parameters to build one."""
-    if cls.decl.built_by and cls.ctor is not None:
-        made = next((f for f in functions if f.name == cls.decl.built_by),
+    A class with a factory is built by it, so the factory's
+    parameters - defaults included - are the signature."""
+    if cls.decl.factory and cls.ctor is not None:
+        made = next((f for f in functions if f.name == cls.decl.factory),
                     None)
         if made is not None:
             return tuple(made.params)
@@ -717,7 +715,7 @@ def returned_names(module_classes: Sequence[tuple[Mapping[str, Class],
     Every name a return type holds counts: `list[StorePath]` hands back
     StorePaths as surely as `StorePath` does. A class a caller can
     construct is an entry point that happens to be returned, so it is
-    not one; `@produced(by=...)` with no `__init__` is the whole test."""
+    not one; `@produced` with no `__init__` is the whole test."""
     out: set[str] = set()
     for known, cls in module_classes:
         for m in cls.methods:
@@ -730,7 +728,7 @@ def returned_names(module_classes: Sequence[tuple[Mapping[str, Class],
             if ret.origin or name not in known or known[name].is_words:
                 continue
             held = known[name]
-            if held.decl.built_by and held.ctor is None:
+            if held.decl.produced and held.ctor is None:
                 out.add(name)
     return frozenset(out)
 

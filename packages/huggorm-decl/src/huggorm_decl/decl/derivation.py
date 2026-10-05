@@ -182,7 +182,7 @@ class InputDrvNode:
         derivation the build needs."""
 
 
-@produced(by="Store.read_derivation")
+@produced
 @header("nix/store/derivations.hh")
 @binding(
     cxx="nix::Derivation",

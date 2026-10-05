@@ -91,7 +91,7 @@ class DrvOutput:
         base name on 2.35."""
 
 
-@produced(by="Store.query_realisation")
+@produced
 @header("nix/store/realisation.hh")
 @binding(
     cxx="nix::Realisation",
@@ -180,7 +180,7 @@ return nix::Realisation{
 
 
 if NIX_2_35:
-    @produced(by="BuildSuccess.built_outputs")
+    @produced
     @header("nix/store/realisation.hh")
     @binding(
         cxx="nix::UnkeyedRealisation",

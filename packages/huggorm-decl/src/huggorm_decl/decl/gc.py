@@ -212,7 +212,7 @@ return self.maxFreed;
     threading="pool",
     blocking=False,
 )
-@produced(by="Store.collect_garbage")
+@produced
 @wire_value()
 class GCResults:
     """What a collection found, or removed.

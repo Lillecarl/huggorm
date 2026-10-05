@@ -113,7 +113,7 @@ class StorePath:
 # imports this one, so its translator serves the whole process.
 
 
-@produced(by="NixError.info")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class Position:
@@ -140,7 +140,7 @@ class Position:
         """The bytes of `file`, exactly as the filesystem raised them."""
 
 
-@produced(by="ErrorInfo.traces")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class Trace:
@@ -164,7 +164,7 @@ class Trace:
         """The bytes of `hint`, exactly as Nix raised them."""
 
 
-@produced(by="NixError.info")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class ErrorInfo:

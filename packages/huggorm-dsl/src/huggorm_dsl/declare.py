@@ -339,7 +339,10 @@ class Decl:
     # says it once when several of its bodies reach the same place.
     headers: tuple[str, ...] = ()
     cxx: str = ""
-    built_by: str = ""
+    # Nothing a caller writes builds one: `@produced`.
+    produced: bool = False
+    # The free function bound as the constructor: `@constructs(cls)`.
+    factory: str = ""
     threading: str = "pool"
     blocking: bool = True
     wire: str = ""
@@ -488,7 +491,7 @@ MARKERS: dict[str, Marker] = {
     "custom": Marker(_t("class"), "once"),
     "gc_slots": Marker(_t("class"), "once"),
     "header": Marker(_t("class"), "once"),
-    "produced": Marker(_t("class"), "once"),
+    "produced": Marker(_t("class"), "flag"),
     "tree": Marker(_t("class"), "once"),
     "wire_value": Marker(_t("class"), "once"),
     "words": Marker(_t("class"), "once"),
@@ -513,6 +516,7 @@ MARKERS: dict[str, Marker] = {
     # On anything that names C++ it needs compiled beside it.
     "needs": Marker(_t("class", "method", "free"), "repeatable"),
     # On a module-level function only.
+    "constructs": Marker(_t("free"), "once"),
     "startup": Marker(_t("free"), "flag"),
     "translator": Marker(_t("free"), "flag"),
 }
@@ -587,7 +591,7 @@ def header(path: str) -> Callable[[type], type]:
     return apply
 
 
-def produced(by: str) -> Callable[[type], type]:
+def produced(cls: type) -> type:
     """This class is built by something else, never constructed.
 
     A produced value holds no C++ object at all: the object that made
@@ -597,12 +601,27 @@ def produced(by: str) -> Callable[[type], type]:
     that fills a __new__ instance because there is no constructor to
     call.
 
-    `by` names what makes one, and it is not decoration: it is the
-    sentence the refusing __init__ raises with, so a caller who
-    guesses wrong is told where to look."""
-    def apply(cls: type) -> type:
-        _decl(cls).built_by = by
-        return cls
+    What makes one is read off the return types, and the refusing
+    __init__ names each such call, so a caller who guesses wrong is
+    told where to look."""
+    _decl(cls).produced = True
+    return cls
+
+
+def constructs(cls: type) -> Callable[[F], F]:
+    """This free function is `cls`'s constructor.
+
+    `open_store` builds a Store, so a caller writes `Store("auto")`
+    and the function is bound as the class's `__new__`, never as a
+    name of its own. The function owns the signature; the class's
+    `__init__` holds only the prose.
+
+    On the function, not the class: the class is defined first, so
+    the function names an object that exists, where the class could
+    only name the function by a string."""
+    def apply(fn: F) -> F:
+        _decl(cls).factory = fn.__name__
+        return fn
     return apply
 
 

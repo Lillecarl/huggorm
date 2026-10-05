@@ -47,7 +47,7 @@ if NIX_2_35:
     from huggorm_decl.decl.realisation import UnkeyedRealisation
 
 
-@produced(by="Store.build_paths_with_results")
+@produced
 @header("nix/store/build-result.hh")
 @binding(
     # A nested struct, and its own type. `BuildResult::Success` is
@@ -104,7 +104,7 @@ return nix::BuildResult::Success{
         """)
 
 
-@produced(by="Store.build_paths_with_results")
+@produced
 @header("nix/store/build-result.hh")
 @binding(
     cxx="nix::KeyedBuildResult",

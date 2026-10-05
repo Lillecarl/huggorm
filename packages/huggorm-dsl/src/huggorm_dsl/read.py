@@ -39,10 +39,10 @@ type checker would.
 
 And it earns its import. A decorator's job is to write a field on a
 `Decl`, so rather than restate that mapping here - `header` sets
-`.header`, `produced(by=)` sets `.built_by` - this module APPLIES the
-real decorator to a throwaway object and reads the result. The
-mapping lives in one place, which is declare.py, and a decorator that
-gains an argument needs no edit here.
+`.header`, `constructs(Store)` sets Store's `.factory` - this module
+reads the `Decl` the import left on each class. The mapping lives in
+one place, which is declare.py, and a decorator that gains an
+argument needs no edit here.
 
 ## What it refuses
 
@@ -554,13 +554,13 @@ class Class:
         """Whether this class holds Python slots and no C++ at all.
 
         Two facts, not one, and an earlier version read `@produced`
-        as if it were both. `@produced(by=...)` says only that nothing
+        as if it were both. `@produced` says only that nothing
         constructs one. `@binding(cxx=...)` says there is a C++ object
         behind it. PathInfo has the first and not the second, so it is
         a value; nix::Store has both, so it is a handle a factory
         opens - and emitting it as a value produced a module with the
         class in it twice."""
-        return bool(self.decl.built_by) and not self.decl.cxx
+        return self.decl.produced and not self.decl.cxx
 
     @property
     def is_produced(self) -> bool:
@@ -568,7 +568,7 @@ class Class:
 
         Two halves, and `is_value` stood in for both until a produced
         value bound a real Nix type. Something else makes one -
-        `@produced(by=...)` - AND this declaration offers no way in.
+        `@produced` - AND this declaration offers no way in.
 
         `nix::Store` has the first half and not the second: it
         declares an `__init__`, and the emitter binds `open_store`
@@ -577,7 +577,7 @@ class Class:
         `ctor is None` is the same test the emitter makes when it
         decides whether to write a constructor at all, so the surface
         and this cannot disagree."""
-        return bool(self.decl.built_by) and self.ctor is None
+        return self.decl.produced and self.ctor is None
 
     @property
     def constructs(self) -> bool:
@@ -595,7 +595,7 @@ class Class:
 
         - no `__init__` at all, so nothing was declared to call;
         - `@abstract` with no factory, so there is nothing to make;
-        - `@produced(by=...)` and no `__init__`, which is the pair
+        - `@produced` and no `__init__`, which is the pair
           `is_produced` names - covered by the first test here.
 
         A FACTORY answers abstractness. `nix::Store` is abstract and
@@ -604,7 +604,7 @@ class Class:
         still true."""
         if self.ctor is None:
             return False
-        return bool(self.decl.built_by) or not self.decl.abstract
+        return bool(self.decl.factory) or not self.decl.abstract
 
     @property
     def parts(self) -> list[tuple[Field, Method]]:
@@ -1385,8 +1385,8 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             continue
         if item.name == "__init__":
             ctor = _method(item, vocab, fns)
-            if decl.built_by and ctor.params:
-                # A `@produced(by=X)` class is built by X, so X owns
+            if decl.factory and ctor.params:
+                # A class with a factory is built by it, so it owns
                 # the signature. Declaring it twice is how the
                 # `uri="auto"` default died: `open_store` carried it,
                 # `__init__` did not, and the emitter read the wrong
@@ -1401,10 +1401,10 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                 raise DeclarationError(
                     item,
                     f"{node.name}.__init__ declares parameters, but "
-                    f"@produced(by={decl.built_by!r}) says "
-                    f"{decl.built_by} builds one - so {decl.built_by} "
-                    f"owns the signature. Move them there and leave "
-                    f"the docstring here.")
+                    f"@constructs({node.name}) says {decl.factory} "
+                    f"builds one - so {decl.factory} owns the "
+                    f"signature. Move them there and leave the "
+                    f"docstring here.")
         elif item.name.startswith("__") and item.name not in DECLARED_DUNDERS:
             # Without this refusal, a SILENT SKIP. The loop would keep
             # the names that are not `__`-prefixed and drop the rest

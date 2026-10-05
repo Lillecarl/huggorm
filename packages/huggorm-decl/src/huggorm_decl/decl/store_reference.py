@@ -116,7 +116,7 @@ StoreReferenceVariant = Annotated[
 """Which kind of store a reference names."""
 
 
-@produced(by="parse_store_reference")
+@produced
 @header("nix/store/store-reference.hh")
 @binding(
     cxx="nix::StoreReference",

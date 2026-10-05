@@ -36,6 +36,7 @@ from huggorm_dsl.declare import (
     binding,
     binds,
     blocks,
+    constructs,
     cxx_name,
     header,
     instant,
@@ -47,7 +48,7 @@ from huggorm_dsl.declare import (
 )
 
 
-@produced(by="Store.find_roots")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class GcRoot:
@@ -65,7 +66,7 @@ class GcRoot:
         """The store path the root keeps alive."""
 
 
-@produced(by="Store.to_store_path")
+@produced
 @binding(threading="pool", blocking=False)
 @wire_value()
 class StoreLocation:
@@ -90,7 +91,7 @@ class StoreLocation:
         Empty when the path given WAS the store path. That is a real
         answer rather than a gap - there is nothing below it."""
 
-@produced(by="Store.query_missing")
+@produced
 @header("nix/store/store-api.hh")
 @binding(
     cxx="nix::MissingPaths",
@@ -146,7 +147,6 @@ class MissingPaths:
 # UDSRemoteStore - and it is still opened by `Store(uri)`, because
 # openStore answers the abstractness with a concrete subclass.
 @abstract
-@produced(by="open_store")
 @header("nix/store/store-api.hh")
 @binding(
     cxx="nix::Store",
@@ -165,8 +165,8 @@ class Store:
     `Store("dummy://")` is in-memory. `Store("auto")` is whatever the
     ambient configuration says, which usually means the daemon."""
 
-    # PROSE only, and the reader enforces that. `@produced(by=...)`
-    # above names `open_store` as what builds one, so `open_store`
+    # PROSE only, and the reader enforces that. `@constructs(Store)`
+    # below makes `open_store` what builds one, so `open_store`
     # owns the signature - its parameters and its defaults are what a
     # caller passes to `Store(...)`. Declaring them here too is how
     # the `uri="auto"` default died: two statements of one signature,
@@ -179,9 +179,8 @@ class Store:
         """Open a store from a URI.
 
         Not a C++ constructor. nix::Store is abstract and its
-        implementation is chosen by the URI, so `@produced(by=...)`
-        above names the factory that makes one - which is the same
-        fact the binding carries as `_ctor_from`."""
+        implementation is chosen by the URI, so `open_store` is the
+        factory that makes one, marked `@constructs(Store)`."""
 
     # Reads a string the config already holds. Releasing the GIL
     # around it would cost two thread-state transitions to save
@@ -1204,8 +1203,9 @@ return self.parseStorePath(path);
 
 # A FREE binding: it belongs to no class, because it is what makes a
 # class. `nix::openStore` picks an implementation from a URI, so
-# there is no constructor to declare and `@produced(by="open_store")`
-# on Store above names this function as the way in.
+# there is no constructor to declare, and `@constructs(Store)` makes
+# this function the way in.
+@constructs(Store)
 @needs("nix/store/store-open.hh")
 @blocks
 def open_store(uri: Str = "auto") -> Store:

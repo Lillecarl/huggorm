@@ -703,10 +703,10 @@ def public(fns: Sequence[Method],
     one way in - and exporting it beside that would be a second
     spelling of the same call.
 
-    Derived from `@produced(by=...)`, which already had to name it.
+    Derived from `@constructs(cls)`, which already had to name it.
     A declaration that wants the function public as well says so by
-    not naming it there."""
-    made = {cls.decl.built_by for cls in classes if cls.ctor is not None}
+    not marking it."""
+    made = {cls.decl.factory for cls in classes if cls.ctor is not None}
     return tuple(fn for fn in fns if fn.name not in made)
 
 
@@ -890,10 +890,10 @@ class Emitter:
             # so it crosses as one - a fact about the words rather than
             # about either binding.
             return "std::string"
-        if not cls.decl.cxx and not cls.decl.built_by:
+        if not cls.decl.cxx and not cls.decl.produced:
             raise TypeError(
                 f"'{cls.name}' has no C++ type behind it. Only a class with "
-                f"@binding(cxx=...) or @produced(by=...) can cross as one.")
+                f"@binding(cxx=...) or @produced can cross as one.")
         return _held(cls)
 
     def _arms_type(self, cls: Class) -> str:
@@ -2044,10 +2044,10 @@ class Emitter:
         handle, bound as `__new__`.
 
         Both halves are declared, in two places that already had to
-        agree. `@produced(by="open_store")` names the factory by its
-        PYTHON name; the free function called `open_store` names the C++
-        it binds. So this resolves one through the other and neither
-        declaration repeats the other's spelling.
+        agree. `@constructs(Store)` marks the factory; the free function
+        called `open_store` names the C++ it binds. So this resolves one
+        through the other and neither declaration repeats the other's
+        spelling.
 
         The extras come from the FACTORY, not from the `__init__` beside
         it, because the factory is what runs. `open_store` carries
@@ -2058,7 +2058,7 @@ class Emitter:
         where the declaration said it should work."""
         if cls.ctor is None:
             return []
-        made = next((f for f in functions if f.name == cls.decl.built_by), None)
+        made = next((f for f in functions if f.name == cls.decl.factory), None)
         if made is None:
             # A factory this declaration does not carry. The class is
             # still bound; it just offers no way in, which is the honest
@@ -2326,16 +2326,13 @@ class Emitter:
             # `__init__`, and one that is honestly abstract with nothing
             # to open it. `_produced_ctor` supplies the third wording
             # itself, from the calls that return the class.
-            body = self._produced_ctor(cls, "" if cls.decl.built_by else (
+            body = self._produced_ctor(cls, "" if cls.decl.produced else (
                 "declares no constructor" if cls.ctor is None
                 else "is abstract, and no factory opens one"))
-        elif decl.built_by:
-            # A factory this module BINDS, where the declaration names a
-            # free function - `open_store` becomes `Store.__new__`. Where
-            # it names a method instead, there is no factory to bind and
-            # nothing constructs one, so the constructor says so.
-            body = (self._factory(cls, functions)
-                    or (self._produced_ctor(cls) if cls.is_produced else []))
+        elif decl.factory:
+            # A factory this module BINDS - `open_store` becomes
+            # `Store.__new__`.
+            body = self._factory(cls, functions)
         else:
             body = self._ctor(cls)
         for m in cls.methods:

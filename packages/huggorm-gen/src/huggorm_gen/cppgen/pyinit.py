@@ -15,8 +15,8 @@ Everything the file says is already in the declarations:
   same fact `generate.py` uses to name the `.cpp` beside it.
 
 One name is derived by SUBTRACTION and it is the only rule here that
-is not a list. A free function a class names with `@produced(by=...)`
-is that class's constructor: `open_store` builds a Store, so a caller
+is not a list. A free function marked `@constructs(cls)` is that
+class's constructor: `open_store` builds a Store, so a caller
 types `Store("auto")` and never the factory's name.
 
 That subtraction is not a convention this file invented. `nbemit`
@@ -81,8 +81,8 @@ where it goes, and a word's async spelling sits beside its C++ one in
 
 ## What is declared and has no name of its own
 
-`open_store`. `Store` names it with `@produced(by="open_store")`,
-which makes it the store's constructor - so a caller writes
+`open_store`. It carries `@constructs(Store)`, which makes it the
+store's constructor - so a caller writes
 `Store("auto")`, and the factory is bound as that constructor
 rather than as a function of its own.
 
