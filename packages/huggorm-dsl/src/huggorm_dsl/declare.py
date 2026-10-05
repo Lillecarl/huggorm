@@ -538,7 +538,7 @@ def tree(**shape: object) -> Callable[[type], type]:
 
     Carried as the SOURCE of the literal, because it is data rather
     than a shape this vocabulary should learn to describe. The
-    emitter builds the same structure in the binding."""
+    emitter writes it into `_policy.TREES`, which the server reads."""
     def apply(cls: type) -> type:
         _decl(cls).tree = shape
         return cls

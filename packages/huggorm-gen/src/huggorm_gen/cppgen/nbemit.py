@@ -2113,21 +2113,6 @@ def markers(cls: Class) -> list[str]:
         # Which free function makes one. A handle rather than a
         # value: a value is produced and has no factory to name.
         out.append(f'{INDENT}cls.attr("_ctor_from") = "{decl.built_by}";')
-    if decl.tree:
-        # A LITERAL, parsed once at import.
-        #
-        # `_tree` is data: nested dicts, lists and strings that the
-        # RPC layer reads so no layer above the declaration knows what
-        # this type is or which of its methods do what. Building that
-        # structure with nb::dict and nb::list would take a dozen
-        # temporaries and would render as something a reader has to
-        # reassemble in their head.
-        #
-        # The declaration's dict, emitted as a Python literal that the
-        # binding parses once at import: `ast.literal_eval` is the
-        # inverse of `repr`, and it evaluates nothing else.
-        out.append(f'{INDENT}cls.attr("_tree") = nb::module_::import_("ast")')
-        out.append(f'{INDENT * 2}.attr("literal_eval")({json.dumps(repr(decl.tree))});')
     fields = wire_fields(cls)
     if fields or cls.decl.unit:
         pairs = ", ".join(f'nb::make_tuple("{n}", "{t.wire}")'
