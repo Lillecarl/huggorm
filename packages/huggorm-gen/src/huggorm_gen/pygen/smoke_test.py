@@ -132,20 +132,6 @@ def test_an_optional_return_names_a_value_or_nothing(
     because a body that adopts None builds a wrapper around nothing
     and fails only at the first await on it."""
     from huggorm_gen import ir
-    from huggorm_gen.payload.wiretypes import adoptee, optional_value, respell
-
-    assert optional_value("StorePath | None") == "StorePath"
-    assert optional_value("None | StorePath") == "StorePath"
-    assert optional_value("StorePath") is None
-    assert optional_value("list[StorePath]") is None
-
-    for bad in ("str | int", "str | int | None"):
-        try:
-            optional_value(bad)
-        except TypeError as e:
-            assert "no wire representation" in str(e), (bad, str(e))
-        else:
-            raise AssertionError(f"{bad!r} was accepted as an optional")
 
     T = ir.TypeRef
     path = T.named("StorePath", "value")
@@ -165,13 +151,6 @@ def test_an_optional_return_names_a_value_or_nothing(
     for shape in (lost, T.optional_of(lost)):
         blocker = ir.wire_blocker(shape, served)
         assert blocker is not None and "no service" in blocker, shape
-
-    assert adoptee("Store", {"Store"}) == ("Store", False)
-    assert adoptee("Store | None", {"Store"}) == ("Store", True)
-    assert adoptee("list[Store]", {"Store"}) is None
-    assert adoptee("str | int", {"Store"}) is None
-    assert respell("Store | None", {"Store": "AsyncStore"}) == "AsyncStore | None"
-    assert respell("str", {"Store": "AsyncStore"}) == "str"
 
     # The corpus has the case: a Repl may hand back no Value.
     emitted = (out / "async_repl.py").read_text()
@@ -1046,7 +1025,6 @@ def test_conformance(out: pathlib.Path) -> None:
         another protocol - then each implementation must return ITS
         form of that same class, or of that class or None."""
     from huggorm_gen.cppgen.generate import declared_model
-    from huggorm_gen.payload.wiretypes import adoptee, respell
 
     model = declared_model()
     # Served, not wrapped: every proxy has all three surfaces, and the
@@ -1112,11 +1090,11 @@ def test_conformance(out: pathlib.Path) -> None:
                 if not sig["is_async"]:
                     failures.append(f"{cls_name}.{m}: {label} is not async")
                 expected = want["returns"]
-                if adoptee(expected, speaks_for) is not None:
-                    expected = respell(expected, {
-                        p: (served[c].async_name if label == "in-process"
-                            else served[c].rpc_name)
-                        for p, c in speaks_for.items()})
+                held = expected.removesuffix(" | None")
+                if held in speaks_for:
+                    c = served[speaks_for[held]]
+                    expected = expected.replace(
+                        held, c.async_name if label == "in-process" else c.rpc_name)
                 elif label == "in-process":
                     # A declared async twin is the same value in the
                     # other spelling - anyio.Path wraps a pathlib.Path
@@ -1150,10 +1128,8 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
     object to an async caller, and the server leases that object as a
     handle whose methods it then awaits."""
     from huggorm_gen.cppgen.generate import declared_model
-    from huggorm_gen.payload.wiretypes import adoptee, respell
 
     model = declared_model()
-    served = model.served
     emitted = {
         node.name: ast.unparse(node.returns) if node.returns else "None"
         for node in ast.parse(
@@ -1164,10 +1140,12 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
     for name, fn in model.functions.items():
         if not fn.wrapped:
             continue
-        rt = fn.returns.spelling if fn.returns is not None else "None"
-        expected = respell(rt, {n: f"Async{n}" for n in served})
-        if adoptee(rt, served) is not None:
+        rt = fn.returns
+        expected = rt.spelling if rt is not None else "None"
+        if rt is not None and rt.origin in ("", "optional") \
+                and rt.kind == "proxy":
             adopted += 1
+            expected = expected.replace(rt.name, f"Async{rt.name}")
         if _expr(emitted[name]) != _expr(expected):
             failures.append(f"{name}: emitted {emitted[name]}, "
                             f"expected {expected}")

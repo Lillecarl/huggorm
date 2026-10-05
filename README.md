@@ -185,7 +185,8 @@ No hand-written source, like the other leaf. The emitter it runs is
     pygen/fmt.py          ruff sorts and lays out what the emitters wrote
     pygen/generate.py     the driver
     pygen/smoke_test.py   the gates that hold the surfaces to each other
-    payload/wiretypes.py  how a `_wire_fields` STRING is spelled
+    payload/wiretypes.py  the wire facts both the build and the codec state
+    payload/callspec.py   `Wire`, `Arg` and `Call`: each call and type, resolved
     payload/runtime.py    copied into the package as _runtime.py
 
 Read `ir.py` first: it is where a type is resolved to what it IS.
