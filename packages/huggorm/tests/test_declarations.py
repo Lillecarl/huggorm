@@ -770,11 +770,15 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
     two-row table of optional return spellings was never seen to be
     wrong (huggorm#75)."""
     from huggorm_dsl.read import read
+    from huggorm_gen import ir
     from huggorm_gen.cppgen import nbemit
 
-    cls = read(_declaration(tmp_path, ATTRIBUTE)).classes[0]
+    mod = read(_declaration(tmp_path, ATTRIBUTE))
+    cls = mod.classes[0]
+    model = ir.ClassModel.of(cls, "", mod.name, ir.Resolver.of(mod))
     with pytest.raises(TypeError, match="ATTRIBUTE"):
-        nbemit.Emitter({cls.name: cls}, {}).bind_function(cls)
+        nbemit.Emitter({cls.name: cls}, {},
+                       {cls.name: model}).bind_function(cls)
 
 
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:

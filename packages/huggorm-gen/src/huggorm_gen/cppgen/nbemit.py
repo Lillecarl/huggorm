@@ -99,7 +99,7 @@ def _doc(text: str) -> str:
 SELF = "self"
 
 
-def _self(cls: Class) -> str:
+def _self(cls: cxx.Declared) -> str:
     """The lambda's parameter name for the bound object."""
     return SELF
 
@@ -199,7 +199,8 @@ def _bodies(classes: Sequence[Class],
         yield fn.cxx_body
 
 
-def waits(cls: Class, m: Method) -> bool:
+def waits(cls: ir.ClassModel,
+          m: ir.MethodModel | ir.FunctionModel) -> bool:
     """Whether this call can block, and so needs the GIL released.
 
     The class states the general case and a method overrides it in
@@ -367,7 +368,7 @@ def _value_semantics(cls: Class) -> list[str]:
     return out
 
 
-def _attribute(cls: Class, m: Method) -> TypeError:
+def _attribute(cls: Class, m: ir.MethodModel) -> TypeError:
     """The refusal a `@property` accessor gets, and why it is one.
 
     `@property` says an accessor is an ATTRIBUTE rather than a call.
@@ -429,7 +430,7 @@ def records_header(mod: Module, package: str) -> str | None:
     values = [c for c in bindable(mod) if c.is_value]
     if not values:
         return None
-    emit = Emitter(mod.known, {})
+    emit = Emitter(mod.known, {}, {})
     others = [m for m in emit.records_named(values, ())
               if m != mod.name]
     structs = emit.records(values)
@@ -758,12 +759,15 @@ class Emitter:
     `known` is every class a type can resolve to: the module's own and
     those it imports. A name outside it is refused, never guessed.
     `producers` is each call that hands a class back, from the whole
-    set: what makes a `PathInfo` lives in another module."""
+    set: what makes a `PathInfo` lives in another module. `classes` is
+    the typed model of every class, which the methods bind from."""
 
     def __init__(self, known: dict[str, Class],
-                 producers: Mapping[str, Sequence[str]]) -> None:
+                 producers: Mapping[str, Sequence[str]],
+                 classes: Mapping[str, ir.ClassModel]) -> None:
         self.known = known
         self.producers = producers
+        self.classes = classes
 
     def _produced_ctor(self, cls: Class, because: str = "") -> list[str]:
         """The `__init__` of a class nothing constructs.
@@ -856,7 +860,7 @@ class Emitter:
             # only place that can know it will. Missed until a module had
             # one and nothing else optional in it - `store` had returns
             # to hide it, `derived_path` had not.
-            if pr is not None and self.absent(pr):
+            if pr is not None and cxx.absent(pr):
                 casters.add("optional")
         # A hook has no signature worth casting, and it still names the
         # header its C++ lives in. `wanted` below is where that lands.
@@ -910,10 +914,7 @@ class Emitter:
         out += [f'#include "{h}"' for h in sorted(wanted - {""})]
         return out
 
-    def _default(self, pr: Param) -> str:
-        return cxx.default(pr)
-
-    def _extras(self, cls: Class, m: Method) -> str:
+    def _extras(self, wait: bool, params: Sequence[ir.ParamModel]) -> str:
         """The annotations that follow a `.def`, in nanobind's order.
 
         `nb::call_guard<nb::gil_scoped_release>()` comes from one declared
@@ -926,64 +927,17 @@ class Emitter:
         when the declaration gave a default. Dropping a default would
         silently change the signature a caller sees."""
         out = []
-        if waits(cls, m):
+        if wait:
             out.append("nb::call_guard<nb::gil_scoped_release>()")
-        for pr in m.params:
+        for pr in params:
             arg = f'"{pr.name}"_a'
-            if pr.has_default:
-                arg += f" = {self._default(pr)}"
+            if pr.cxx_default:
+                arg += f" = {pr.cxx_default}"
             out.append(arg)
         return "".join(f", {x}" for x in out)
 
-    def _parsed_by(self, t: Type | None) -> str:
-        """The C++ that turns this vocabulary's string into its type.
-
-        `@words(parsed_by=...)` names it, and it was prose until this read
-        it: both `add_*` methods hand-wrote
-        `nix::ContentAddressMethod::parse(method)` in their bodies while
-        the declaration two files away already said what the parser is
-        called. Empty for anything that is not a vocabulary, and for a
-        vocabulary that declares no parser - which crosses as its string
-        and is parsed by whatever it is handed to."""
-        if t is None:
-            return ""
-        held = t.required
-        other = None if held.origin else self.known.get(held.python)
-        if other is None or not other.is_words:
-            return ""
-        if not other.decl.parsed_by and other.decl.enumerated:
-            # Upstream has no parser for this enum, so the emitter wrote
-            # one. `from_word` is a template because a return type does
-            # not overload - `as_word` going the other way needs no such
-            # thing, which is why the two names are not symmetrical.
-            return (f"{NAMESPACE}::from_word"
-                    f"<{other.decl.enumerated.held}>")
-        return other.decl.parsed_by
-
-    def _collection(self, t: Type | None) -> str:
-        """The C++ collection type for a declared `list[T]`, if T names one.
-
-        Empty for everything else, which is every list whose element type
-        is a primitive or whose class is happy with a vector."""
-        if t is None or t.origin != "list":
-            return ""
-        element = self.known.get(t.element.python)
-        return element.decl.collection if element else ""
-
-    def _handle(self, t: Type | None) -> Class | None:
-        """The declared class behind this type, when it binds a HANDLE.
-
-        A handle is a class whose `@binding` carries `via`: the bound C++
-        type owns a lifetime and the object worth calling is one step
-        further in. `None` for everything else, which is almost every
-        type - a bound class that binds its own methods is not a handle,
-        and neither is a str."""
-        if t is None or not t.required.bound:
-            return None
-        other = self.known.get(t.required.python)
-        return other if other is not None and other.decl.via else None
-
-    def _derived(self, cls: Class, m: Method) -> list[str] | None:
+    def _derived(self, cls: ir.ClassModel,
+                 m: ir.MethodModel) -> list[str] | None:
         """The body of a method the emitter can write itself, or None.
 
         Three mechanical things a HANDLE forces, and each of them was a
@@ -1002,17 +956,17 @@ class Emitter:
 
         None when this method needs none of the four. `_method` then
         binds it by pointer, which is the shorter and better line."""
-        ret_handle = self._handle(m.ret)
-        args = [(pr.name, self._handle(pr.type)) for pr in m.params]
         # A guarded accessor reaches through the union pair rather than
         # through `via`, so the two are read separately and `call` below
         # is rebuilt after the guard picks its reach.
         # A `list[T]` return needs a body too: the conversion below is
         # what makes a C++ set answer the list the declaration promised,
         # and a pointer binding has nowhere to put it.
-        wants_list = m.ret is not None and m.ret.origin in ("list", "dict")
-        if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
-                or m.produces or wants_list or any(h for _, h in args)):
+        wants_list = (m.returns is not None
+                      and m.returns.origin in ("list", "dict"))
+        if not (cls.decl.via or m.returns_handle or m.reads or m.guard
+                or m.names or m.produces or wants_list
+                or any(pr.via for pr in m.params)):
             return None
         obj = _self(cls)
         reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
@@ -1062,54 +1016,52 @@ class Emitter:
         # list either way; this is the two type systems disagreeing, not a
         # decision, so `as_set` is written here rather than at each site.
         passed = ", ".join(
-            f"as_set<{self._collection(pr.type)}>({pr.name})"
-            if self._collection(pr.type) else
-            (f"{pr.name}.{h.decl.via}" if h else pr.name)
-            for pr, (_, h) in zip(m.params, args, strict=True))
+            f"as_set<{pr.collection}>({pr.name})" if pr.collection else
+            (f"{pr.name}.{pr.via}" if pr.via else pr.name)
+            for pr in m.params)
         # A member is reached, not called. The declaration says which by
         # writing @reads, and an accessor that reads one takes no
         # parameters - so there is no argument list to spell either.
         call = (f"{reach}{m.reads}" if m.reads
                 else f"{reach}{m.cxx_name or m.name}({passed})")
-        if m.ret is None:
+        if m.returns is None:
             return [*head, f"{INDENT * 4}{call};"]
-        if ret_handle is not None:
-            return [*head, f"{INDENT * 4}return {_held(ret_handle)}({call});"]
+        if m.returns_handle:
+            return [*head, f"{INDENT * 4}return {m.returns_handle}({call});"]
         # A declared `Bytes` over a string, and the list of each. A string
         # is not one implicitly - `nb::bytes` takes only explicit
         # constructors - so the conversion is written here, once.
-        if self._cxx(m.ret)[0] in BYTES_SPELLINGS:
+        if m.returns.cxx in BYTES_SPELLINGS:
             return [*head, f"{INDENT * 4}return to_bytes({call});"]
         # A declared `list[T]` RETURN over a C++ collection that is not
         # a vector. libstore answers with a set almost everywhere, and the
         # declaration already said `list` - so nothing needs to say it
         # twice. `as_list` is a template over any range, so wrapping is
         # right whether the call answered a set or a vector.
-        if m.ret is not None and m.ret.origin == "list":
+        if m.returns.origin == "list":
             return [*head, f"{INDENT * 4}return as_list({call});"]
         # The same for a `dict[str, V]`: libstore keys many maps with a
         # transparent `std::less<>`, and nanobind casts only the plain one.
-        if m.ret is not None and m.ret.origin == "dict":
+        if m.returns.origin == "dict":
             return [*head, f"{INDENT * 4}return as_map({call});"]
         # A declared VOCABULARY return. The enumerator libstore answers
         # with is not the word Python has, and `as_word` is the switch
         # that says which - emitted beside this, not written by hand.
         # Before this, `Hash.algorithm` carried the conversion as a `Cxx`
         # body, which is a MAPPING written into a declaration.
-        voc = (None if m.ret.required.origin
-               else self.known.get(m.ret.required.python))
-        if voc is not None and voc.is_words and voc.decl.enumerated:
+        if m.returns_word:
             return [*head, f"{INDENT * 4}return {NAMESPACE}::as_word({call});"]
         # A width the DECLARATION spells. `size()` answers a size_t and
         # the declaration says I64, so the cast is what makes the emitted
         # C++ say what the declaration says rather than what this
         # library's version of the call happens to return.
-        spelled, _ = self._cxx(m.ret)
+        spelled = m.returns.cxx
         if spelled in ("std::int64_t", "std::uint64_t"):
             return [*head, f"{INDENT * 4}return static_cast<{spelled}>({call});"]
         return [*head, f"{INDENT * 4}return {call};"]
 
-    def _guard_head(self, cls: Class, m: Method) -> list[str]:
+    def _guard_head(self, cls: ir.ClassModel,
+                    m: ir.MethodModel) -> list[str]:
         """The tag check an accessor on a tagged union owes its caller.
 
         Separate from HOW the rest of the body reads, so a method with a
@@ -1127,7 +1079,7 @@ class Emitter:
             target = m.params[0].name
             # The TARGET's class holds the arm table, not this one:
             # `list_append` is declared on the evaluator and fills a Value.
-            held = self.known.get(m.params[0].type.python)
+            held = self.classes.get(m.params[0].type.spelling)
             if held is None or held.decl.tagged is None:
                 raise ValueError(
                     f"{cls.name}.{m.name}: @fills needs its target's class to "
@@ -1169,7 +1121,7 @@ class Emitter:
             f"{INDENT * 5}{_wrong_arm(obj, hold, table[m.guard])}",
         ]
 
-    def _returns(self, m: Method) -> str:
+    def _returns(self, m: ir.MethodModel) -> str:
         """A lambda's return type, SPELLED, for every body that has one.
 
         It started as an optional-only rule - a lambda with two return
@@ -1191,11 +1143,11 @@ class Emitter:
         builders' setters do, and a lambda with no return statement is
         void.
         """
-        if m.ret is None:
+        if m.returns is None:
             return ""
-        return f" -> {self._cxx(m.ret)[0]}"
+        return f" -> {m.returns.cxx}"
 
-    def _method(self, cls: Class, m: Method) -> list[str]:
+    def _method(self, cls: ir.ClassModel, m: ir.MethodModel) -> list[str]:
         """One `.def`, bound by POINTER wherever nanobind allows it.
 
         A method pointer costs no lambda and no closure, and it keeps the
@@ -1215,7 +1167,7 @@ class Emitter:
         if m.cxx_body:
             # A method the declaration could not derive, carried verbatim.
             obj = _self(cls)
-            args, opening = self._signature(cls, m)
+            args, opening = self._signature(m.params)
             head = (f'{INDENT * 2}.def("{m.name}", '
                     f"[]({_held(cls)} &{obj}{args}){self._returns(m)} {{")
             body = [f"{INDENT * 4}{ln}".rstrip()
@@ -1223,24 +1175,24 @@ class Emitter:
             # The tag check goes in FRONT of a declared body. A body says
             # what to do once the arm is known; @guard says the arm is
             # known, and the two are separate decisions.
+            extras = self._extras(waits(cls, m), m.params)
             return [head, *opening, *self._guard_head(cls, m), *body,
-                    f"{INDENT * 2}}}{self._extras(cls, m)}{tail})"]
+                    f"{INDENT * 2}}}{extras}{tail})"]
+        extras = self._extras(waits(cls, m), m.params)
         derived = self._derived(cls, m)
         if derived is not None:
             obj = _self(cls)
-            args, opening = self._signature(cls, m)
+            args, opening = self._signature(m.params)
             return [f'{INDENT * 2}.def("{m.name}", '
                     f"[]({_held(cls)} &{obj}{args}){self._returns(m)} {{",
                     *opening, *derived,
-                    f"{INDENT * 2}}}{self._extras(cls, m)}{tail})"]
+                    f"{INDENT * 2}}}{extras}{tail})"]
         spelled = m.cxx_name or m.name
         return [f'{INDENT * 2}.def("{m.name}", &{_held(cls)}::{spelled}'
-                f"{self._extras(cls, m)}{tail})"]
+                f"{extras}{tail})"]
 
-    def absent(self, pr: Param) -> bool:
-        return cxx.absent(pr)
-
-    def _signature(self, cls: Class, m: Method) -> tuple[str, list[str]]:
+    def _signature(self, params: Sequence[ir.ParamModel],
+                   ) -> tuple[str, list[str]]:
         """A lambda's parameter list, and the lines that open its body.
 
         Almost always the first alone. The lines exist for one case: a
@@ -1251,9 +1203,9 @@ class Emitter:
 
         The body then reads exactly what the declaration wrote."""
         args, opening = "", []
-        for pr in m.params:
-            spelled, _ = self._param(pr.type)
-            parser = self._parsed_by(pr.type)
+        for pr in params:
+            spelled = pr.cxx
+            parser = pr.parsed_by
             if parser:
                 # A VOCABULARY arrives as the string libstore's parser
                 # takes, and one call turns it into the C++ type. The
@@ -1265,10 +1217,10 @@ class Emitter:
                 opening.append(f"{INDENT * 4}const auto {pr.name} = "
                                f"{parser}({pr.name}_);")
                 continue
-            if not self.absent(pr):
+            if not pr.absent:
                 args += f", {spelled} {pr.name}"
                 continue
-            held, _ = self._cxx(pr.type.required)
+            held = pr.type.required.cxx
             args += f", const std::optional<{held}> & {pr.name}_"
             opening.append(f"{INDENT * 4}const {held} {pr.name} = "
                            f"{pr.name}_.value_or({held}{{}});")
@@ -1349,19 +1301,20 @@ class Emitter:
             f"{INDENT * 2}}})",
         ]
 
-    def _ctor(self, cls: Class) -> list[str]:
+    def _ctor(self, cls: ir.ClassModel) -> list[str]:
         """`nb::init<...>`, with the declared parameter named for Python.
 
         `"name"_a` is what makes the parameter usable as a keyword, so the
         declaration's parameter NAME reaches callers rather than being
         decoration."""
-        if cls.ctor is None:
+        init = cls.init
+        if init is None:
             return []
         names = "".join(
             f', "{pr.name}"_a'
-            + (f" = {self._default(pr)}" if pr.has_default else "")
-            for pr in cls.ctor.params)
-        if cls.ctor.cxx_body:
+            + (f" = {pr.cxx_default}" if pr.cxx_default else "")
+            for pr in init.params)
+        if init.cxx_body:
             # Placement new, because `__init__` is handed storage rather
             # than asked for an object. One Python signature over several
             # C++ constructors needs this: nb::init picks by C++ type at
@@ -1369,24 +1322,24 @@ class Emitter:
             # about a VALUE - an OutputsSpec means all outputs when it says
             # so and a named set when it carries names.
             obj = _self(cls)
-            args, opening = self._signature(cls, cls.ctor)
+            args, opening = self._signature(init.params)
             body = [f"{INDENT * 4}{ln}".rstrip()
-                    for ln in cls.ctor.cxx_body.strip().splitlines()]
+                    for ln in init.cxx_body.strip().splitlines()]
             head = (f'{INDENT * 2}.def("__init__", '
                     f"[]({_held(cls)} *{obj}{args}) {{")
             tail = f"{INDENT * 2}}}{names}"
-            if not cls.ctor.doc:
+            if not init.doc:
                 return [head, *opening, *body, tail + ")"]
-            doc = _doc(cls.ctor.doc)
+            doc = _doc(init.doc)
             return [head, *opening, *body, tail + ",",
                     f'{INDENT * 3}     "{doc}")']
-        types = ", ".join(self._param(pr.type)[0] for pr in cls.ctor.params)
+        types = ", ".join(pr.cxx for pr in init.params)
         line = f"{INDENT * 2}.def(nb::init<{types}>(){names}"
-        if not cls.ctor.doc:
+        if not init.doc:
             return [line + ")"]
         # One line, however the declaration wrapped it: a C++ string
         # literal has no continuation and gluing two is noise.
-        doc = _doc(cls.ctor.doc)
+        doc = _doc(init.doc)
         return [line + ",", f'{INDENT * 3}     "{doc}")']
 
     def record_fields(self, cls: Class) -> list[tuple[str, str]]:
@@ -1739,7 +1692,7 @@ class Emitter:
             f'{INDENT * 2}}}{args}, "{FROM_PARTS_DOC}")',
         ]
 
-    def _factory(self, cls: Class, functions: Sequence[Method]) -> list[str]:
+    def _factory(self, cls: ir.ClassModel) -> list[str]:
         """`nb::new_`, for a class something else makes.
 
         nix::Store is abstract and its implementation is chosen by a URI,
@@ -1761,10 +1714,8 @@ class Emitter:
         Reading them off the constructor instead dropped both: the call
         held the GIL for the length of an open, and `Store()` raised
         where the declaration said it should work."""
-        if cls.ctor is None:
-            return []
-        made = next((f for f in functions if f.name == cls.decl.factory), None)
-        if made is None:
+        made = cls.factory
+        if cls.init is None or made is None:
             # A factory this declaration does not carry. The class is
             # still bound; it just offers no way in, which is the honest
             # answer until the factory is declared too.
@@ -1778,10 +1729,10 @@ class Emitter:
         # helper in `cpp/`. That is how `huggorm::open_store` came to
         # exist: three lines wrapping one call, because the emitter could
         # not write it (huggorm#63).
-        extras = self._extras(cls, made)
-        doc = _doc(cls.ctor.doc) if cls.ctor.doc else ""
+        extras = self._extras(waits(cls, made), made.params)
+        doc = _doc(cls.init.doc) if cls.init.doc else ""
         if not made.cxx_body:
-            line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){extras}"
+            line = f"{INDENT * 2}.def(nb::new_(&{made.cxx_name}){extras}"
             if not doc:
                 return [line + ")"]
             # One line, however the declaration wrapped it: a C++ string
@@ -1795,7 +1746,7 @@ class Emitter:
             return [*lines, close + ")"]
         return [*lines, close + ",", f'{INDENT * 3}     "{doc}")']
 
-    def _lambda_head(self, fn: Method) -> str:
+    def _lambda_head(self, fn: ir.FunctionModel) -> str:
         """The opening of a lambda for a function that CARRIES its C++.
 
         The return type is SPELLED, for the reason `_method` spells one:
@@ -1816,9 +1767,8 @@ class Emitter:
         So this is consistency, not a fix. It is kept because the rule is
         real for bodies a person may write next, and because one rule
         spelled three ways is what this repo exists to avoid."""
-        args = ", ".join(f"{self._param(pr.type)[0]} {pr.name}"
-                         for pr in fn.params)
-        ret = f" -> {self._cxx(fn.ret)[0]}" if fn.ret is not None else ""
+        args = ", ".join(f"{pr.cxx} {pr.name}" for pr in fn.params)
+        ret = f" -> {fn.returns.cxx}" if fn.returns is not None else ""
         return f"[]({args}){ret} {{"
 
     def part_types(self, cls: Class) -> list[str]:
@@ -1865,7 +1815,7 @@ class Emitter:
         one - a virtual base, so it is not an aggregate at all."""
         if m is None or m.ret is None:
             return ""
-        held = m.member_collection or self._collection(m.ret)
+        held = m.member_collection or cxx.collection(m.ret, self.known)
         if not held:
             return ""
         return f"as_set<{held}>({m.name})"
@@ -1925,8 +1875,7 @@ class Emitter:
                 *body,
                 f'{INDENT * 2}}}{keywords}, "{doc}")']
 
-    def bind_function(self, cls: Class,
-                      functions: Sequence[Method] = ()) -> str:
+    def bind_function(self, cls: Class) -> str:
         """The whole `bind_<name>` function for one declared class.
 
         A function per class, because that is the seam nanopynix already
@@ -1937,6 +1886,7 @@ class Emitter:
         if not decl.cxx and not cls.is_value:
             raise TypeError(
                 f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
+        model = self.classes[cls.name]
         held = _held(cls)
         holds = [held]
         # A WIRE VALUE is final, and that is a contract rather than a
@@ -2002,9 +1952,9 @@ class Emitter:
             # needs a body or a `@reads`; with neither, `_method` names a
             # member that does not exist and the unit fails to compile,
             # which is the loud answer rather than a quiet absence.
-            for m in cls.methods:
-                if m.local:
-                    body += self._method(cls, m)
+            for mm in model.bound:
+                if mm.local:
+                    body += self._method(model, mm)
             if body:
                 body[-1] += ";"
             return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
@@ -2037,13 +1987,13 @@ class Emitter:
         elif decl.factory:
             # A factory this module BINDS - `open_store` becomes
             # `Store.__new__`.
-            body = self._factory(cls, functions)
+            body = self._factory(model)
         else:
-            body = self._ctor(cls)
-        for m in cls.methods:
-            if m.prop:
-                raise _attribute(cls, m)
-            body += self._method(cls, m)
+            body = self._ctor(model)
+        for mm in model.bound:
+            if mm.prop:
+                raise _attribute(cls, mm)
+            body += self._method(model, mm)
         if decl.wire == "value":
             body += self._identity_semantics(cls)
             body += _round_trip(cls)
@@ -2092,9 +2042,7 @@ class Emitter:
         # a factory body: one rule for both kinds of body.
         body = [f"{INDENT * 2}{ln}".rstrip()
                 for ln in fn.cxx_body.strip().splitlines()]
-        args = ", ".join(f"{pr.cxx} {pr.name}" for pr in fn.params)
-        ret = f" -> {fn.returns.cxx}" if fn.returns is not None else ""
-        return [f'{INDENT}m.def("{fn.name}", []({args}){ret} {{', *body,
+        return [f'{INDENT}m.def("{fn.name}", {self._lambda_head(fn)}', *body,
                 f"{INDENT}}}{tail});"]
 
     def free_functions(self, fns: Sequence[ir.FunctionModel]) -> str:
@@ -2190,7 +2138,7 @@ class Emitter:
                 head += self.caster(u)
             head += ["}  // namespace nanobind::detail", ""]
         out = "\n".join(head) + "\n" + "\n".join(
-            self.bind_function(cls, functions) for cls in classes)
+            self.bind_function(cls) for cls in classes)
         return out + ("\n" + self.free_functions(exported)
                       if exported else "")
 
@@ -2244,7 +2192,7 @@ def extension(mod: Module, dotted: str, model: ir.Model,
     # Only a unit that HAS a translator catches anything, so only that
     # unit needs the headers behind the chain.
     return "\n".join([
-        Emitter(mod.known, producers).module(
+        Emitter(mod.known, producers, model.classes).module(
             classes, mod.functions,
             [model.functions[fn.name] for fn in public(mod.exported, classes)],
             errors,
@@ -2351,9 +2299,14 @@ if __name__ == "__main__":
 
     for path in sys.argv[1:]:
         mod = read(path)
+        resolver = ir.Resolver.of(mod)
+        models = {c.name: ir.ClassModel.of(c, "", mod.name, resolver,
+                                           mod.functions)
+                  for c in mod.classes}
         for cls in mod.classes:
             emit = Emitter(mod.known,
-                           producers(mod.known.values(), mod.functions))
+                           producers(mod.known.values(), mod.functions),
+                           models)
             print(emit.module([cls], (), ()) if len(mod.classes) == 1
                   else emit.bind_function(cls))
             c = census(cls)

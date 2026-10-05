@@ -7,7 +7,9 @@ every stage that writes C++.
 
 import json
 from collections.abc import Mapping
+from typing import Protocol
 
+from huggorm_dsl.declare import Decl
 from huggorm_dsl.read import Class, Param, Type
 
 # How a declared type is spelled in a C++ signature, and which caster
@@ -74,7 +76,17 @@ CXX_BUILTIN = {
 NAMESPACE = "huggorm"
 
 
-def held(cls: Class) -> str:
+class Declared(Protocol):
+    """A declared class, read or resolved: both carry these two."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def decl(self) -> Decl: ...
+
+
+def held(cls: Declared) -> str:
     """The C++ type this class binds.
 
     Two sources, and which one applies is the difference between a
@@ -334,3 +346,54 @@ def default(pr: Param) -> str:
     if isinstance(value, int):
         return str(value)
     raise TypeError(f"{pr.name}: no C++ spelling for the default {value!r}")
+
+
+def parsed_by(t: Type | None, known: Mapping[str, Class]) -> str:
+    """The C++ that turns this vocabulary's string into its type.
+
+    `@words(parsed_by=...)` names it, and it was prose until this read
+    it: both `add_*` methods hand-wrote
+    `nix::ContentAddressMethod::parse(method)` in their bodies while
+    the declaration two files away already said what the parser is
+    called. Empty for anything that is not a vocabulary, and for a
+    vocabulary that declares no parser - which crosses as its string
+    and is parsed by whatever it is handed to."""
+    if t is None:
+        return ""
+    held = t.required
+    other = None if held.origin else known.get(held.python)
+    if other is None or not other.is_words:
+        return ""
+    if not other.decl.parsed_by and other.decl.enumerated:
+        # Upstream has no parser for this enum, so the emitter wrote
+        # one. `from_word` is a template because a return type does
+        # not overload - `as_word` going the other way needs no such
+        # thing, which is why the two names are not symmetrical.
+        return (f"{NAMESPACE}::from_word"
+                f"<{other.decl.enumerated.held}>")
+    return other.decl.parsed_by
+
+
+def collection(t: Type | None, known: Mapping[str, Class]) -> str:
+    """The C++ collection type for a declared `list[T]`, if T names one.
+
+    Empty for everything else, which is every list whose element type
+    is a primitive or whose class is happy with a vector."""
+    if t is None or t.origin != "list":
+        return ""
+    element = known.get(t.element.python)
+    return element.decl.collection if element else ""
+
+
+def handle(t: Type | None, known: Mapping[str, Class]) -> Class | None:
+    """The declared class behind this type, when it binds a HANDLE.
+
+    A handle is a class whose `@binding` carries `via`: the bound C++
+    type owns a lifetime and the object worth calling is one step
+    further in. `None` for everything else, which is almost every
+    type - a bound class that binds its own methods is not a handle,
+    and neither is a str."""
+    if t is None or not t.required.bound:
+        return None
+    other = known.get(t.required.python)
+    return other if other is not None and other.decl.via else None

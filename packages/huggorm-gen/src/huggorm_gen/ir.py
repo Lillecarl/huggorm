@@ -354,6 +354,15 @@ class ParamModel:
     # passed by reference.
     cxx: str = ""
     caster: str | None = None
+    # A container whose absence is spelled None: it arrives as an
+    # optional and the binding opens it to an empty container.
+    absent: bool = False
+    # The C++ call that parses a vocabulary's string, or "".
+    parsed_by: str = ""
+    # The C++ collection a `list[T]` becomes, or "" for a vector.
+    collection: str = ""
+    # The member a HANDLE parameter is unwrapped through, or "".
+    via: str = ""
 
     @classmethod
     def of(cls, p: Param, resolver: Resolver) -> ParamModel:
@@ -372,9 +381,13 @@ class ParamModel:
         else:
             default = repr(p.default)
         spelled, caster = cxx.param(p.type, resolver.known)
+        handle = cxx.handle(p.type, resolver.known)
         return cls(p.name, type_ref(declared, resolver), default,
                    p.type.python if p.member else "", cxx.default(p),
-                   spelled, caster)
+                   spelled, caster, absent=cxx.absent(p),
+                   parsed_by=cxx.parsed_by(p.type, resolver.known),
+                   collection=cxx.collection(p.type, resolver.known),
+                   via=handle.decl.via if handle is not None else "")
 
 
 def blockers(params: Sequence[ParamModel], returns: TypeRef | None,
@@ -395,13 +408,47 @@ class MethodModel:
     doc: str
     # Declared `@blocks`: the binding releases the GIL for it.
     blocks: bool = False
+    # Declared `@instant`: the binding keeps the GIL on a blocking class.
+    instant: bool = False
+    # The C++ member function it binds, when it is not `name`.
+    cxx_name: str = ""
+    # The C++ it carries, verbatim, or "".
+    cxx_body: str = ""
+    # The data member it reads (`@reads`), or "".
+    reads: str = ""
+    # The union arm it needs (`@guard`), or "".
+    guard: str = ""
+    # `@names`: it answers the name of the arm the union holds.
+    names: bool = False
+    # The initialiser a producer calls (`@produces`), or "".
+    produces: str = ""
+    # `@fills(maker, arm)`: its first parameter is a builder of that arm.
+    fills: tuple[str, str] | None = None
+    # `@local`: bound on the object and kept off the wire.
+    local: bool = False
+    # `@property`, which the binding refuses (huggorm#76).
+    prop: bool = False
+    # The C++ type of the HANDLE class it returns, or "".
+    returns_handle: str = ""
+    # It returns a vocabulary with a C++ enum behind it.
+    returns_word: bool = False
 
     @classmethod
     def of(cls, m: Method, resolver: Resolver) -> MethodModel:
+        handle = cxx.handle(m.ret, resolver.known)
+        ret = m.ret.required if m.ret is not None else None
+        word = (None if ret is None or ret.origin
+                else resolver.known.get(ret.python))
         return cls(m.name,
                    tuple(ParamModel.of(p, resolver) for p in m.params),
                    type_ref(m.ret, resolver) if m.ret is not None else None,
-                   _clean(m.doc), m.blocks)
+                   _clean(m.doc), m.blocks, instant=m.instant,
+                   cxx_name=m.cxx_name, cxx_body=m.cxx_body, reads=m.reads,
+                   guard=m.guard, names=m.names, produces=m.produces,
+                   fills=m.fills, local=m.local, prop=m.prop,
+                   returns_handle=cxx.held(handle) if handle else "",
+                   returns_word=(word is not None and word.is_words
+                                 and bool(word.decl.enumerated)))
 
     @property
     def return_spelling(self) -> str:
@@ -456,17 +503,23 @@ def dunders(decl: Decl) -> list[str]:
     return sorted(name for name, fact in DUNDERS if facts[fact])
 
 
+def _factory(cls: Class, functions: Sequence[Method]) -> Method | None:
+    """The free function that builds one of these, when this module
+    declares it and the class has an `__init__` for it to stand in for."""
+    if not cls.decl.factory or cls.ctor is None:
+        return None
+    return next((f for f in functions if f.name == cls.decl.factory), None)
+
+
 def _ctor_params(cls: Class,
                  functions: Sequence[Method] = ()) -> tuple[Param, ...]:
     """The parameters a caller passes to build one of these.
 
     A class with a factory is built by it, so the factory's
     parameters - defaults included - are the signature."""
-    if cls.decl.factory and cls.ctor is not None:
-        made = next((f for f in functions if f.name == cls.decl.factory),
-                    None)
-        if made is not None:
-            return tuple(made.params)
+    made = _factory(cls, functions)
+    if made is not None:
+        return tuple(made.params)
     return tuple(cls.ctor.params) if cls.ctor is not None else ()
 
 
@@ -487,6 +540,9 @@ class ClassModel:
     # Every method the binding binds, private ones included: the tree
     # walk calls those. `methods` is the surface every other stage reads.
     bound: tuple[MethodModel, ...]
+    # The declared `__init__`, and the factory that runs in its place.
+    init: MethodModel | None = None
+    factory: FunctionModel | None = None
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -511,6 +567,10 @@ class ClassModel:
             ctor=tuple(ParamModel.of(p, resolver)
                        for p in _ctor_params(c, functions)),
             bound=tuple(MethodModel.of(m, resolver) for m in c.methods),
+            init=(MethodModel.of(c.ctor, resolver)
+                  if c.ctor is not None else None),
+            factory=(FunctionModel.of(made, package, module, resolver)
+                     if (made := _factory(c, functions)) else None),
         )
 
     @property
