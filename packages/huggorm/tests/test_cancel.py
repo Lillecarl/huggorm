@@ -201,3 +201,33 @@ async def test_a_cancelled_await_stops_the_thread() -> None:
     assert await got.integer() == 2
     assert time.monotonic() - started < STOPPED_WITHIN
     await state.aclose()
+
+
+# Interruptible with no primop, which has no rpc: `toJSON` calls
+# `checkInterrupt` once per element. About 1s uncancelled on dynhetz.
+REMOTE_SLOW = ("builtins.stringLength (builtins.toJSON "
+               "(builtins.genList (x: x * x) 6000000))")
+
+
+async def test_a_dropped_remote_call_stops_its_work(client: Any) -> None:
+    """The rule Carl chose for huggorm#98: a client that drops a call
+    stops the Nix work under it on the server, so the state's thread
+    is free for the next call.
+
+    The uncancelled work is timed in the same run, and the next call
+    must answer in under half of it. A fast machine therefore cannot
+    pass this by finishing the work before anyone waits on it."""
+    state = await client.acquire(
+        "EvalState", await client.acquire("Store", URI))
+    started = time.monotonic()
+    await state.eval_expr(REMOTE_SLOW)
+    full = time.monotonic() - started
+
+    with anyio.move_on_after(CANCEL_AFTER) as scope:
+        await state.eval_expr(REMOTE_SLOW + " + 1")
+    assert scope.cancelled_caught, "the work ended before the cancel"
+    started = time.monotonic()
+    got = await state.eval_expr("1 + 1")
+    assert await got.integer() == 2
+    waited = time.monotonic() - started
+    assert waited < full / 2, (waited, full)
