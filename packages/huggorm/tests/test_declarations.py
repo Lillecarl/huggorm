@@ -902,6 +902,58 @@ def test_the_model_refuses_a_value_that_cannot_round_trip(
         ir.ModuleModel.of(module, "")
 
 
+HELD_ELSEWHERE = '''"""A record part read through a member another type holds."""
+
+from huggorm_dsl.declare import (
+    Str, binding, header, local, produced, reads, wire_read, wire_value)
+
+
+@produced
+@binding(threading="pool", blocking=False)
+@wire_value()
+class Collected:
+    """Collected paths, for a test that never compiles one."""
+
+    @wire_read("held")
+    def paths(self) -> list[Str]:
+        """The paths."""
+
+    @local
+    @reads("paths", collection="nix::StringSet")
+    def held(self) -> list[Str]:
+        """The same paths, as the member holds them."""
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """What makes one."""
+
+    def collect(self) -> Collected:
+        """."""
+'''
+
+
+def test_a_part_read_elsewhere_is_rebuilt_from_its_own_parameter(
+        tmp_path: pathlib.Path) -> None:
+    """`_from_parts` takes one parameter per part, named after the
+    part. A part read through another accessor is converted back from
+    THAT parameter, not from the accessor's name, which names nothing
+    inside the lambda. No corpus class has such a part with a
+    member collection, so only this test reaches the branch."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen import nbemit
+
+    unit = ir.ModuleModel.of(
+        read(_declaration(tmp_path, HELD_ELSEWHERE)), "")
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {}, frozenset(),
+                     {}, {}, ir.Errors("", {}), (unit,))
+    text = nbemit.Emitter(model, unit).bind_function(unit.classes[0])
+    assert "as_set<nix::StringSet>(paths)" in text, text
+    assert "as_set<nix::StringSet>(held)" not in text, text
+
+
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     """A directory shaped like `decl/`: two declarations and two
     things that are not one.

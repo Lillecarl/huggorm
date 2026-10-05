@@ -1661,7 +1661,9 @@ class Emitter:
         one - a virtual base, so it is not an aggregate at all."""
         if not f.collection:
             return ""
-        return f"as_set<{f.collection}>({f.read})"
+        # The lambda's parameter is the part's NAME. `f.read` names an
+        # accessor, which is nothing inside `_from_parts`.
+        return f"as_set<{f.collection}>({f.name})"
 
     def _from_parts(self, cls: ir.ClassModel) -> list[str]:
         """`_from_parts`, for a value nothing constructs.
