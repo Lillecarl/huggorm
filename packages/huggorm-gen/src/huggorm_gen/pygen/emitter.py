@@ -22,17 +22,17 @@ Proto = dict[str, Any]
 
 ASYNC = ir.ASYNC
 
-def _code(src: str, args: ast.arguments | None = None,
+def _code(src: str, signature: ast.arguments | None = None,
           **subst: str) -> ast.stmt:
     """One statement from a source template.
 
     `$name` is replaced as text and the result is parsed, so a bad
-    substitution fails here. `args` replaces a def's parameters, for a
-    signature `_arguments` spells per surface."""
+    substitution fails here. `signature` replaces a def's parameters,
+    which `_arguments` spells per surface."""
     node = ast.parse(Template(textwrap.dedent(src)).substitute(subst)).body[0]
-    if args is not None:
+    if signature is not None:
         assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        node.args = args
+        node.args = signature
     return node
 
 
@@ -825,141 +825,75 @@ def rpc_module(model: ir.Model) -> ast.Module:
     # it as a Protocol keeps the dependency pointing the right way: the
     # generated package describes what it requires, and the hand-written
     # client satisfies it without either importing the other.
-    client_p = ast.ClassDef(
-        name=CLIENT_PROTOCOL, bases=[ast.Name(id="Protocol")], keywords=[],
-        body=[ast.Expr(value=ast.Constant(value=(
-            "What an RPC class needs from its client. The client owns "
-            "the connection, the codec and the handle lifetime; these "
-            "classes own the surface.")))],
-        decorator_list=[], type_params=[])
-    for name, args, ret in (
-        # handle_id is Optional because release() blanks it. Passing a
-        # blanked one is a real mistake, and the client answers it with
-        # a message instead of a protobuf failure.
-        ("invoke", [("spec", "Call"), ("handle_id", "str | None"),
-                    ("args", "list[Any]")], "Any"),
-        ("release", [("obj", "Any")], "None"),
-    ):
-        client_p.body.append(ast.AsyncFunctionDef(
-            name=name,
-            args=ast.arguments(
-                posonlyargs=[],
-                args=[ast.arg(arg="self")]
-                + [ast.arg(arg=a, annotation=_ann(t, f"{CLIENT_PROTOCOL}.{name}"))
-                   for a, t in args],
-                vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
-                defaults=[]),
-            body=[ast.Expr(value=ast.Constant(value=Ellipsis))],
-            decorator_list=[],
-            returns=_ann(ret, f"{CLIENT_PROTOCOL}.{name}"), type_params=[]))
-    mod.body.append(client_p)
+    #
+    # handle_id is Optional because release() blanks it. Passing a
+    # blanked one is a real mistake, and the client answers it with a
+    # message instead of a protobuf failure.
+    mod.body.append(_code("""
+        class $client(Protocol):
+            $doc
+
+            async def invoke(self, spec: Call, handle_id: str | None,
+                             args: list[Any]) -> Any: ...
+
+            async def release(self, obj: Any) -> None: ...
+        """, client=CLIENT_PROTOCOL, doc=repr(
+            "What an RPC class needs from its client. The client owns the "
+            "connection, the codec and the handle lifetime; these classes "
+            "own the surface.")))
 
     for served_cls in ordered:
         name = served_cls.name
-        cls = ast.ClassDef(
-            name=served_cls.rpc_name, bases=[],
-            keywords=[], body=[], decorator_list=[], type_params=[])
-        cls.body.append(ast.Expr(value=ast.Constant(value=(
-            f"A {name} living behind a handle on a server. Same surface as "
-            f"{served_cls.async_name}, different location."))))
-        cls.body.append(ast.Assign(targets=[ast.Name(id="_wire")],
-                                   value=ast.Constant(value=served_cls.wire)))
-        for attr, kind in (("_client", CLIENT_PROTOCOL),
-                           ("handle_id", "str | None")):
-            cls.body.append(ast.AnnAssign(
-                target=ast.Name(id=attr),
-                annotation=_ann(kind, f"{name}.{attr}"),
-                value=None, simple=1))
+        cls = _code("""
+            class $rpc:
+                $doc
+                _wire = $wire
+                _client: $client
+                handle_id: str | None
 
+                def __init__(self, client: $client, handle_id: str) -> None:
+                    self._client = client
+                    self.handle_id = handle_id
+            """, rpc=served_cls.rpc_name, wire=repr(served_cls.wire),
+            client=CLIENT_PROTOCOL, doc=repr(
+                f"A {name} living behind a handle on a server. Same surface "
+                f"as {served_cls.async_name}, different location."))
+        assert isinstance(cls, ast.ClassDef)
         # Only the methods that HAVE an rpc. A method the wire cannot
         # carry keeps its in-process wrapper and is simply absent here;
         # `NO_RPC` says why, and the protocol drops it too.
-        callable_ = [m for m in served_cls.methods if model.offered(m)]
-
-        cls.body.append(ast.FunctionDef(
-            name="__init__",
-            args=ast.arguments(
-                posonlyargs=[],
-                args=[ast.arg(arg="self"),
-                      ast.arg(arg="client",
-                              annotation=_ann(CLIENT_PROTOCOL,
-                                              f"{name}.__init__")),
-                      ast.arg(arg="handle_id",
-                              annotation=_ann("str", f"{name}.__init__"))],
-                vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
-                defaults=[]),
-            body=[
-                ast.Assign(
-                    targets=[ast.Attribute(value=ast.Name(id="self"),
-                                           attr="_client")],
-                    value=ast.Name(id="client")),
-                ast.Assign(
-                    targets=[ast.Attribute(value=ast.Name(id="self"),
-                                           attr="handle_id")],
-                    value=ast.Name(id="handle_id")),
-            ],
-            decorator_list=[], returns=_ann("None", f"{name}.__init__"),
-            type_params=[]))
-
-        for m in callable_:
+        for m in served_cls.methods:
+            if not model.offered(m):
+                continue
             params, returns = signatures[(name, m.name)]
-            body: list[ast.stmt] = []
-            if m.doc:
-                body.append(ast.Expr(value=ast.Constant(value=m.doc)))
-            body.append(_forward(ast.Call(
-                func=ast.Attribute(
-                    value=ast.Attribute(value=ast.Name(id="self"),
-                                        attr="_client"),
-                    attr="invoke"),
-                args=[
-                    ast.Name(id=_spec_name(name, m.name)),
-                    ast.Attribute(value=ast.Name(id="self"), attr="handle_id"),
-                    ast.List(elts=[ast.Name(id=p.name) for p in m.params]),
-                ],
-                keywords=[]), returns))
-            cls.body.append(ast.AsyncFunctionDef(
-                name=m.name,
-                args=_arguments([ast.arg(arg="self")],
-                                m.params, params,
+            call = ("await self._client.invoke($spec, self.handle_id, [$args])")
+            method = _code(f"""
+                async def $method(self) -> $returns:
+                    {call if returns == "None" else f"return cast($returns, {call})"}
+                """, _arguments([ast.arg(arg="self")], m.params, params,
                                 f"{name}.{m.name}"),
-                body=body,
-                decorator_list=[],
-                returns=_ann(returns, f"{name}.{m.name}"),
-                type_params=[]))
-
-        cls.body.append(ast.AsyncFunctionDef(
-            name=ACLOSE,
-            args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
-                               vararg=None, kwonlyargs=[], kw_defaults=[],
-                               kwarg=None, defaults=[]),
-            body=[
-                ast.Expr(value=ast.Constant(value=(
-                    "Give the lease back. The in-process wrapper shuts "
-                    "its runner down here; there is no thread to shut "
-                    "down on this side, so the server's copy is what "
-                    "gets released."))),
-                ast.Expr(value=ast.Await(value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Attribute(value=ast.Name(id="self"),
-                                            attr="_client"),
-                        attr="release"),
-                    args=[ast.Name(id="self")], keywords=[]))),
-            ],
-            decorator_list=[], returns=_ann("None", f"{name}.{ACLOSE}"),
-            type_params=[]))
-
+                method=m.name, returns=returns, spec=_spec_name(name, m.name),
+                args=", ".join(p.name for p in m.params))
+            assert isinstance(method, ast.AsyncFunctionDef)
+            if m.doc:
+                method.body.insert(0, ast.Expr(value=ast.Constant(value=m.doc)))
+            cls.body.append(method)
+        cls.body.append(_code("""
+            async def $aclose(self) -> None:
+                $doc
+                await self._client.release(self)
+            """, aclose=ACLOSE, doc=repr(
+                "Give the lease back. The in-process wrapper shuts its runner "
+                "down here; there is no thread to shut down on this side, so "
+                "the server's copy is what gets released.")))
         mod.body.append(cls)
 
     # Annotated: the inferred value type is the join of every class in
     # it, which collapses to type[object] - and object takes no
     # constructor arguments, so a caller could not build one.
-    mod.body.append(ast.AnnAssign(
-        target=ast.Name(id=REGISTRY),
-        annotation=_ann("dict[str, type[Any]]", REGISTRY),
-        value=ast.Dict(
-            keys=[ast.Constant(value=c.name) for c in ordered],
-            values=[ast.Name(id=c.rpc_name) for c in ordered]),
-        simple=1))
+    mod.body.append(_code("$registry: dict[str, type[Any]] = {$items}",
+                          registry=REGISTRY, items=", ".join(
+                              f"{c.name!r}: {c.rpc_name}" for c in ordered)))
     ast.fix_missing_locations(mod)
     return mod
 
