@@ -182,7 +182,7 @@ Duration = Annotated[datetime.timedelta, Cxx("microseconds")]
 # says the C++ on the far side re-enters the interpreter - which is
 # `EvalState.register_primop` and nothing else today.
 #
-# It cannot cross a wire, and `manifest.UNCROSSABLE` refuses it there.
+# It cannot cross a wire, and `grpc_schema.NOT_DATA` says so there.
 # That is not a gap to fill later: a remote client registering a
 # primop would make the evaluator call BACK over the socket, on its
 # own evaluation thread, once per invocation - a distributed call in

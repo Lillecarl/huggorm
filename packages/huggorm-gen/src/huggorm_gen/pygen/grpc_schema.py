@@ -231,7 +231,7 @@ FREE_SERVICE = "Functions"
 # gaps a later change could close, and these are decisions that a
 # later change should not.
 #
-# Kept here rather than in `manifest.UNCROSSABLE`, which RAISES and
+# Kept here rather than in `ir.UNCROSSABLE`, which RAISES and
 # stops the build. A method taking one of these is a real in-process
 # method with no remote form - the same shape as `Store.real_path` -
 # so it is REPORTED, and the protocol withholds it.
@@ -366,7 +366,7 @@ def annotate(manifest: Proto) -> Proto:
     # Which classes a handle can be USED with: every proxy. This used
     # to be the wrapped classes, which is how an unwrapped proxy lost
     # its methods' rpc one by one. It is the same set `surface` serves
-    # protocols for, not a second answer. (`cppgen/manifest` puts a
+    # protocols for, not a second answer. (`ir.ClassModel.entry` puts a
     # `service` NAME on every proxy whether or not one is published,
     # so reading that back would defeat the check the way reading
     # `wrapped` did.)

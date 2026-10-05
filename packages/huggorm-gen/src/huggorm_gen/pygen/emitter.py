@@ -459,7 +459,7 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
 
     for group in ("wrappers", "returned_types"):
         for name, proto in manifest[group].items():
-            # SERVED, not merely wrapped. `cppgen/manifest` stamps an
+            # SERVED, not merely wrapped. `ir.ClassModel.entry` stamps an
             # `async_class` NAME on every proxy, and an unserved one
             # gets no such class emitted - so reading the key alone
             # put 'LogStream': 'AsyncLogStream' in this table with

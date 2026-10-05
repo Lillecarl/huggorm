@@ -600,13 +600,14 @@ def test_a_field_says_which_64_bit_integer_it_is(
     either way, and a stub that said `uint` would name a type Python
     does not have."""
     from huggorm_dsl.read import read
-    from huggorm_gen.cppgen import manifest
+    from huggorm_gen import ir
 
-    cls = read(_declaration(tmp_path, WIDTHS)).classes[0]
+    module = read(_declaration(tmp_path, WIDTHS))
+    cls = module.classes[0]
     assert [(f.name, m.ret.wire) for f, m in cls.parts
             if m.ret is not None] == [("total", "uint"), ("when", "int")]
 
-    entry = manifest.entry(cls, "pkg", "mod")
+    entry = ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module)).entry()
     assert entry["wire_fields"] == [["total", "uint"], ["when", "int"]]
     assert [(m["name"], m["return_type"]) for m in entry["methods"]] == [
         ("total", "int"), ("when", "int")]
@@ -625,12 +626,13 @@ def test_a_container_of_a_width_is_refused_rather_than_guessed(
     No declaration writes one today. That is why it is written here:
     the branch would otherwise be unread."""
     from huggorm_dsl.read import read
-    from huggorm_gen.cppgen import manifest
+    from huggorm_gen import ir
 
-    cls = read(_declaration(tmp_path, HELD)).classes[0]
-    # Refused where the wire spelling is rendered, which is the manifest.
+    module = read(_declaration(tmp_path, HELD))
+    # Refused where the wire spelling is rendered, which is the model.
     with pytest.raises(TypeError, match="huggorm#79"):
-        manifest.entry(cls, "pkg", "mod")
+        ir.ClassModel.of(module.classes[0], "pkg", "mod",
+                         ir.Resolver.of(module))
 
 
 def test_a_service_refuses_a_parameter_whose_width_it_cannot_spell(
@@ -649,12 +651,13 @@ def test_a_service_refuses_a_parameter_whose_width_it_cannot_spell(
     such a parameter, so the refusal costs nothing and the wrong
     answer would have been a silently truncated number."""
     from huggorm_dsl.read import read
-    from huggorm_gen.cppgen import manifest
+    from huggorm_gen import ir
 
-    cls = read(_declaration(tmp_path, TAKES)).classes[0]
+    module = read(_declaration(tmp_path, TAKES))
+    cls = module.classes[0]
     assert not cls.decl.wire, "a plain @binding is a proxy"
     with pytest.raises(TypeError, match="huggorm#79"):
-        manifest.entry(cls, "pkg", "mod")
+        ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module))
 
 
 def test_the_binding_refuses_an_accessor_declared_as_an_attribute(

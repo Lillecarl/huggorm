@@ -2,7 +2,7 @@
 The protocol dict, and the rules it has to obey.
 
 The dict shape is the contract between the declarations (which build
-it, in `huggorm_gen.cppgen.manifest`) and the emitter (emitter.py). This
+it, in `huggorm_gen.ir`) and the emitter (emitter.py). This
 file holds what neither of them owns: how one annotation is spelled,
 how one default is written back as source, and the `check_*` functions
 the build refuses to pass.
@@ -63,7 +63,7 @@ _PRIMITIVES = {
     "size_t": "int",
     "ssize_t": "int",
     # <stdint.h> spellings. A declaration says `I64` or `U64`, and
-    # `manifest.PYTHON` maps the C++ onto `int` before the name gets
+    # `ir.PYTHON` maps the C++ onto `int` before the name gets
     # here - so these are what a field type is checked against.
     "int8_t": "int",
     "int16_t": "int",

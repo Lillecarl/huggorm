@@ -28,7 +28,8 @@ from typing import Any
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
 from huggorm_dsl.read import FROM_PARTS, Module, reading
-from huggorm_gen.cppgen import manifest, nbemit, pyenum, pyerrors, pyinit
+from huggorm_gen import ir
+from huggorm_gen.cppgen import nbemit, pyenum, pyerrors, pyinit
 from huggorm_gen.cppgen.nbemit import bindable, extension
 
 # Which package the emitted bindings land in. The one fact a
@@ -73,11 +74,13 @@ def declared_entries() -> dict[str, dict[str, Any]]:
     construction, and an INCLUDES declaration is complete for the
     values it emits, which is what `is_value` already says."""
     out = {}
+    home = {cls.name: mod for mod in corpus().modules for cls in mod.classes}
     for mod in corpus().modules:
         known = mod.known
         for cls in mod.classes:
-            entry = manifest.entry(cls, PACKAGE, mod.name, final=False,
-                                   functions=mod.functions)
+            entry = ir.ClassModel.of(
+                cls, PACKAGE, mod.name, ir.Resolver.of(mod),
+                mod.functions).entry(final=False)
             # A SUBCLASS carries its base's methods, because that is
             # what deriving means on both sides of the binding: C++
             # inherits them and so does the Python class nanobind
@@ -92,8 +95,10 @@ def declared_entries() -> dict[str, dict[str, Any]]:
             base = known.get(cls.decl.base)
             if base is not None:
                 mine = {m["name"] for m in entry["methods"]}
-                inherited = manifest.entry(base, PACKAGE, base.module,
-                                           final=False)["methods"]
+                inherited = ir.ClassModel.of(
+                    base, PACKAGE, base.module,
+                    ir.Resolver.of(home[base.name])).entry(
+                        final=False)["methods"]
                 entry["methods"] = [m for m in inherited
                                     if m["name"] not in mine] + entry["methods"]
             out[cls.name] = entry
@@ -135,7 +140,8 @@ def declared_functions() -> dict[str, dict[str, Any]]:
     out = {}
     for mod in corpus().modules:
         for fn in nbemit.public(mod.exported, mod.classes):
-            out[fn.name] = manifest.function_entry(fn, PACKAGE, mod.name)
+            out[fn.name] = ir.FunctionModel.of(
+                fn, PACKAGE, mod.name, ir.Resolver.of(mod)).entry()
     return out
 
 
@@ -257,7 +263,7 @@ def declared_enums() -> dict[str, dict[str, Any]]:
         mod = have.module(name)
         for cls in mod.classes:
             if cls.is_words:
-                out[cls.name] = manifest.words_entry(cls, PACKAGE, mod.name)
+                out[cls.name] = ir.words_entry(cls, PACKAGE, mod.name)
     return out
 
 

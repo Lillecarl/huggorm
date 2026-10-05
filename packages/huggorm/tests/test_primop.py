@@ -6,8 +6,8 @@ of an evaluation, on its own thread, with the GIL reacquired.
 
 In-process only, and that is a decision rather than a gap. A remote
 registration would make the evaluator call back over the socket once
-per invocation on its evaluation thread, so `manifest.UNCROSSABLE`
-refuses to build an rpc for it - `test_no_rpc_surface` below is what
+per invocation on its evaluation thread, so `grpc_schema.NOT_DATA`
+keeps it from getting an rpc - `test_no_rpc_surface` below is what
 holds that.
 """
 
