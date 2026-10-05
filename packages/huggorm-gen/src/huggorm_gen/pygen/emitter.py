@@ -661,8 +661,8 @@ def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
     call reached the runtime, so every argument a spec describes is
     present, and carrying a default here would suggest the runtime
     fills one in."""
-    return cs.Call(name, rpc.path, rpc.req, rpc.resp,
-                   _args([(p.name, p.type) for p in params]), _wire(returns))
+    return cs.Call(name, rpc.path, _args([(p.name, p.type) for p in params]),
+                   _wire(returns))
 
 
 def _directory(model: ir.Model) -> list[ast.stmt]:
@@ -680,7 +680,7 @@ def _directory(model: ir.Model) -> list[ast.stmt]:
     acquires = []
     for c in model.acquirable:
         acquires.append((c.name, cs.Acquire(
-            c.name, c.acquire.path, c.acquire.req,
+            c.name, c.acquire.path,
             _args([(p.name, p.type) for p in c.ctor]),
             sum(1 for p in c.ctor if p.default is None),
             tuple(p.name for p in c.ctor if p.default == "None"))))

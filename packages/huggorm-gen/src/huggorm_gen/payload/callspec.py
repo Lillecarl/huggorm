@@ -78,17 +78,16 @@ class Arg:
 class Call:
     """One remote method, decided at build time.
 
-    `name` is the declared method, `path` is the gRPC route, `req` and
-    `resp` name the two messages in the descriptor pool, `args` is the
-    declared parameter list in order, and `returns` is the declared
-    return type.
+    `name` is the declared method, `path` is the gRPC route, `args` is
+    the declared parameter list in order, and `returns` is the declared
+    return type. The two messages are the schema's, read by `path`.
 
     Everything here is a constant. The client resolves nothing: it
-    fills `req` from `args`, sends it to `path`, and reads `result`
-    out of `resp` as `returns`, which is None for a call that answers
-    nothing. The server reads the same value the
-    other way round, and `name` is the one field only it needs - the
-    method to call on the object the handle resolved to.
+    fills the request from `args`, sends it to `path`, and reads
+    `result` out of the response as `returns`, which is None for a call
+    that answers nothing. The server reads the same value the other way
+    round, and `name` is the one field only it needs - the method to
+    call on the object the handle resolved to.
 
     One dataclass for both sides, not two that agree. The two ends of
     one call cannot disagree about its shape if there is only one
@@ -96,8 +95,6 @@ class Call:
 
     name: str
     path: str
-    req: str
-    resp: str
     args: tuple[Arg, ...]
     returns: Wire | None
 
@@ -117,7 +114,6 @@ class Acquire:
 
     cls: str
     path: str
-    req: str
     args: tuple[Arg, ...]
     # How many of `args` a caller MUST pass. A constructor parameter
     # may carry a default, and the far side fills one in - so the
