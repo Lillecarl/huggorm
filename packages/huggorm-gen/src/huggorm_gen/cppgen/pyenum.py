@@ -1,9 +1,10 @@
-"""Declaration -> a plain Python module, by transforming the tree.
+"""A vocabulary declaration -> a plain Python module.
 
-An emitter that TRANSFORMS rather than prints: the output is Python
-and the declaration is already Python. A vocabulary declaration is a class of `NAME = "value"`
-assignments with a docstring under each, which is a StrEnum body line
-for line. So this moves the declaration's own nodes and unparses them.
+A vocabulary is a class of `NAME = "value"` assignments with a
+docstring under each, which is a StrEnum body line for line. The model
+carries each word, its value and its docstring as written, and the
+reader refuses a body node that is none of those - so the module
+written from the model holds everything the declaration did.
 
 What changes is small and all of it derived:
 
@@ -14,9 +15,6 @@ What changes is small and all of it derived:
 - the module gains its one import and a line naming the C++ that
   parses each vocabulary, so a reader can check the list against
   upstream.
-
-Nothing else moves. The words, their order, and every docstring are
-the declaration's own nodes.
 
 There is no C++ IN THIS MODULE and nothing to compile. That is what
 makes a vocabulary worth declaring rather than binding:
@@ -31,42 +29,44 @@ reaches here - a member is still the word and nothing else.
 
 import ast
 
-from huggorm_dsl.read import Class, Module
+from huggorm_gen import ir
 
 
-def class_def(cls: Class, node: ast.ClassDef) -> ast.ClassDef:
-    """One vocabulary, as the StrEnum it is.
+def _text(value: str) -> ast.Expr:
+    return ast.Expr(value=ast.Constant(value=value))
 
-    The declaration's own body, unchanged. `@words` said this is a
-    StrEnum and the base says so; everything below it was already
-    written the way Python writes an enum."""
+
+def class_def(enum: ir.EnumModel) -> ast.ClassDef:
+    """One vocabulary, as the StrEnum it is: its docstring, then each
+    word and the docstring under it."""
+    body: list[ast.stmt] = [_text(enum.doc)] if enum.doc else []
+    for word in enum.members:
+        body.append(ast.Assign(targets=[ast.Name(id=word.name, ctx=ast.Store())],
+                               value=ast.Constant(value=word.value)))
+        if word.doc:
+            body.append(_text(word.doc))
     return ast.ClassDef(
-        name=cls.name,
+        name=enum.name,
         bases=[ast.Name(id="StrEnum", ctx=ast.Load())],
         keywords=[],
-        body=list(node.body),
+        body=body,
         decorator_list=[],
         type_params=[],
     )
 
 
-def module(mod: Module, tree: ast.Module, doc: str) -> str:
+def module(vocab: ir.VocabularyModel) -> str:
     """Every vocabulary in one declaration, as a module.
 
     A module docstring, one import, and the classes. The import is
     the only line here that no declaration wrote, and it is the same
     line for every vocabulary there will ever be."""
-    bodies = {node.name: node for node in tree.body
-              if isinstance(node, ast.ClassDef)}
     out: list[ast.stmt] = [
-        ast.Expr(value=ast.Constant(value=_doc(mod, doc))),
+        _text(_doc(vocab)),
         ast.ImportFrom(module="enum", names=[ast.alias(name="StrEnum")],
                        level=0),
+        *(class_def(enum) for enum in vocab.enums),
     ]
-    for cls in mod.classes:
-        if not cls.is_words:
-            continue
-        out.append(class_def(cls, bodies[cls.name]))
     return reflow(ast.unparse(
         ast.fix_missing_locations(ast.Module(body=out, type_ignores=[]))))
 
@@ -124,16 +124,17 @@ def _spaced(lines: list[str]) -> list[str]:
     return out
 
 
-def _doc(mod: Module, doc: str) -> str:
+def _doc(vocab: ir.VocabularyModel) -> str:
     """The module's docstring, with the parsers named under it.
 
     Which C++ takes each vocabulary is the one fact about the module
     that no member carries, and a reader checking the list against
     upstream needs it. `@words(parsed_by=...)` says it once per
     class; this collects them."""
-    named = [f"{cls.name} -> {cls.decl.parsed_by}"
-             for cls in mod.classes if cls.is_words and cls.decl.parsed_by]
-    lines = [doc.strip(), "", "GENERATED from the declaration - do not edit."]
+    named = [f"{enum.name} -> {enum.parsed_by}"
+             for enum in vocab.enums if enum.parsed_by]
+    lines = [vocab.doc.strip(), "",
+             "GENERATED from the declaration - do not edit."]
     if named:
         lines += ["", "The words go to:", *[f"- {line}" for line in named]]
     return "\n".join(lines) + "\n"

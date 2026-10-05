@@ -1012,6 +1012,8 @@ class WordModel:
     name: str
     value: str
     enumerator: str = ""
+    # RAW, as written under the word, or "".
+    doc: str = ""
 
 
 @dataclass(frozen=True)
@@ -1031,6 +1033,7 @@ class EnumModel:
     name: str
     module: str
     members: tuple[WordModel, ...]
+    # RAW: the emitted module carries the indentation the source had.
     doc: str
     # The header that declares its C++ enum, or "".
     header: str = ""
@@ -1044,9 +1047,10 @@ class EnumModel:
         enum = c.decl.enumerated
         return cls(c.name, f"{package}.{module}",
                    tuple(WordModel(m.name, m.value,
-                                   enum.enumerator(m.name) if enum else "")
+                                   enum.enumerator(m.name) if enum else "",
+                                   m.doc)
                          for m in c.members),
-                   _clean(c.doc), c.decl.header,
+                   c.doc, c.decl.header,
                    CxxEnum(enum.held, enum.reach) if enum else None,
                    c.decl.parsed_by)
 

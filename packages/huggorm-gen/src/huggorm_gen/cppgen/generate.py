@@ -668,13 +668,11 @@ def main(out_dir: str) -> int:
     target = out / f"{pathlib.Path(have.errors).stem}.py"
     target.write_text(pyerrors.module(tree, doc, PACKAGE) + "\n")
     print(f"{have.errors} -> {target}")
-    for name in have.vocabularies:
-        mod = have.module(name)
-        target = out / f"{mod.name}.py"
-        target.write_text(
-            pyenum.module(mod, have.tree(name), mod.doc) + "\n")
-        words = [c.name for c in mod.classes if c.is_words]
-        print(f"{name} -> {target}: {', '.join(words)}")
+    for vocab in declared_model().vocabularies:
+        target = out / f"{vocab.name}.py"
+        target.write_text(pyenum.module(vocab) + "\n")
+        words = ", ".join(e.name for e in vocab.enums)
+        print(f"{vocab.name}.py -> {target}: {words}")
     # LAST, because it re-exports what everything above emitted.
     # Nothing reads it during the build - setuptools does - so the
     # order is for a reader rather than for correctness.
