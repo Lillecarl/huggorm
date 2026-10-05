@@ -293,13 +293,6 @@ class DeclarationError(Exception):
         return err
 
 
-# The C++ integer spellings the wire distinguishes, and the wire name
-# for each. Only the unsigned 64-bit one is here: every other width a
-# declaration can name fits a sint64, so `int` is the whole truth
-# about it.
-WIDTHS = {"uint64_t": "uint"}
-
-
 @dataclass(frozen=True)
 class Type:
     """A declared type, from both sides of the boundary.
@@ -363,16 +356,13 @@ class Type:
         are still `int`; only the crossing knows the width
         (huggorm#79).
 
-        The name `uint` is `wiretypes.SCALAR_NAMES`', restated here
-        because this package may not import the generator's payload -
-        that file is copied into the generated package and must import
-        nothing of ours. A disagreement is not silent: `model.py`
-        checks every emitted field against `scalar_spelling` and
-        refuses one it does not know."""
+        The vocabulary says which: `U64` carries `Cxx(width="uint")`.
+        `uint` must be one of `wiretypes.SCALAR_NAMES`, and `model.py`
+        refuses an emitted field type it does not know."""
         held = self.required
         inner = held.python
         leaf = held.leaf
-        if leaf.cxx is not None and leaf.cxx.spelling in WIDTHS:
+        if leaf.cxx is not None and leaf.cxx.width:
             if held.origin:
                 # A CONTAINER of the width, such as `dict[str, U64]`.
                 # The alias's C++ spelling reaches here attached to
@@ -385,7 +375,7 @@ class Type:
                     f"'{inner}' holds a {leaf.cxx.spelling}, and a "
                     f"container of a width has no wire spelling yet. "
                     f"See huggorm#79.")
-            inner = WIDTHS[leaf.cxx.spelling]
+            inner = leaf.cxx.width
         return f"{inner}?" if self.optional else inner
 
 

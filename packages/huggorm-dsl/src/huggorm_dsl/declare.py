@@ -40,10 +40,15 @@ class Cxx:
     `copy` says what the boundary owes it. "view" means the value
     points into storage this binding does not own, so it is copied
     before it reaches Python - a view outliving its owner is a
-    dangling pointer, not an exception."""
+    dangling pointer, not an exception.
+
+    `width` is the wire scalar for an integer a sint64 cannot hold:
+    `uint` for a uint64_t. Python has one `int`, so only the crossing
+    needs it, and a service parameter cannot say it (huggorm#79)."""
 
     spelling: str
     copy: str = "value"
+    width: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,7 +159,7 @@ Bytes = Annotated[bytes, Cxx("string")]
 # and `registration_time` is a time_t the shim narrows to int64_t, so
 # a declaration that said `int` for both would leave the emitter to
 # guess, and it would guess the same for two fields that differ.
-U64 = Annotated[int, Cxx("uint64_t")]
+U64 = Annotated[int, Cxx("uint64_t", width="uint")]
 I64 = Annotated[int, Cxx("int64_t")]
 # A Nix float is a C++ double (`NixFloat`), and so is a Python float.
 F64 = Annotated[float, Cxx("double")]
@@ -182,7 +187,7 @@ Duration = Annotated[datetime.timedelta, Cxx("microseconds")]
 # says the C++ on the far side re-enters the interpreter - which is
 # `EvalState.register_primop` and nothing else today.
 #
-# It cannot cross a wire, and `grpc_schema.NOT_DATA` says so there.
+# It cannot cross a wire, and `ir.NOT_DATA` says so there.
 # That is not a gap to fill later: a remote client registering a
 # primop would make the evaluator call BACK over the socket, on its
 # own evaluation thread, once per invocation - a distributed call in

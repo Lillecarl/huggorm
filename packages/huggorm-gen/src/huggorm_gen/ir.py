@@ -110,18 +110,6 @@ DUNDERS: tuple[tuple[str, str], ...] = (
     ("__str__", "text"),
 )
 
-# The C++ spellings a service's message cannot carry. A field says its
-# width - `_wire_fields` spells `uint` - and a parameter does not, so a
-# uint64_t on a service would cross as a sint64 and lose half its range.
-# Refused, because nothing declares one (huggorm#79). A type that should
-# never cross belongs in `grpc_schema.NOT_DATA`, which reports instead.
-UNCROSSABLE = {
-    "uint64_t": (
-        "a service's message carries no width: every int parameter "
-        "crosses as sint64, which holds half of one. Teach the "
-        "manifest to spell a parameter's wire type - see huggorm#79."),
-}
-
 Kind = Literal["scalar", "enum", "union", "error", "value", "proxy",
                "module", "opaque"]
 
@@ -299,11 +287,11 @@ def crossable(t: Type | None, where: str) -> None:
     that acquire one - and not for a value's accessors, which cross as
     fields that say their width."""
     leaf = t.leaf if t is not None else None
-    if (leaf is not None and leaf.cxx is not None
-            and leaf.cxx.spelling in UNCROSSABLE):
+    if leaf is not None and leaf.cxx is not None and leaf.cxx.width:
         raise TypeError(
-            f"{where} is a {leaf.cxx.spelling}, and "
-            f"{UNCROSSABLE[leaf.cxx.spelling]}")
+            f"{where} is a {leaf.cxx.spelling}, and a service's message "
+            f"carries no width: every int parameter crosses as sint64, "
+            f"which holds half of one. See huggorm#79.")
 
 
 def _clean(text: str) -> str:
