@@ -864,6 +864,43 @@ def test_the_model_refuses_a_spelling_of_no_vocabulary(
         ir.ModuleModel.of(module, "")
 
 
+SHAPE = '''"""A wire value whose shape cannot round-trip."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header, wire_value
+
+
+@header("nix/store/path.hh")
+@binding(cxx="nix::Signature", threading="pool", blocking=False)
+@wire_value(text="{text}")
+class Signed:
+    """A value, for a test that never compiles one."""
+
+    def __init__(self, name: Str) -> None:
+        """."""
+        Cxx("new (self) nix::Signature{{name, {{}}}};")
+
+    def name(self) -> Str:
+        """."""
+{extra}'''
+
+
+@pytest.mark.parametrize(("text", "extra", "refusal"), [
+    ("nothing", "", "names no accessor"),
+    ("name", '    def sig(self) -> Str:\n        """."""\n', "@local"),
+])
+def test_the_model_refuses_a_value_that_cannot_round_trip(
+        tmp_path: pathlib.Path, text: str, extra: str, refusal: str) -> None:
+    """A `text=` that names no accessor, and a constructor that does not
+    take every wire field, are refused by the model (huggorm#115)."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    source = SHAPE.format(text=text, extra=extra)
+    module = read(_declaration(tmp_path, source))
+    with pytest.raises(TypeError, match=refusal):
+        ir.ModuleModel.of(module, "")
+
+
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     """A directory shaped like `decl/`: two declarations and two
     things that are not one.

@@ -699,6 +699,11 @@ class ClassModel:
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
            functions: Sequence[Method] = ()) -> ClassModel:
+        return _shaped(cls._of(c, package, module, resolver, functions))
+
+    @classmethod
+    def _of(cls, c: Class, package: str, module: str, resolver: Resolver,
+            functions: Sequence[Method]) -> ClassModel:
         decl = c.decl
         if (decl.wire or "proxy") == "proxy":
             # A proxy is reached through a service, so its methods ARE
@@ -820,6 +825,52 @@ class ClassModel:
     @property
     def message(self) -> str:
         return f"{self.name}Msg"
+
+def _shaped(cls: ClassModel) -> ClassModel:
+    """`cls`, refused when its value shape cannot round-trip.
+
+    Each check is one the binding depends on: `text=` renders through
+    an accessor, and `_from_parts` rebuilds a value from its wire
+    fields, in order."""
+    decl = cls.decl
+    if decl.text and not any(m.name == decl.text for m in cls.bound):
+        raise TypeError(
+            f"{cls.name}: \"{decl.text}\" names no accessor on this class.")
+    fields = [f.name for f in cls.wire_fields]
+    if (decl.wire == "value" and (fields or decl.unit) and not cls.is_value
+            and cls.init is not None and len(cls.init.params) != len(fields)):
+        # `_from_parts` IS the constructor here. A forgotten `@local`
+        # breaks that: an accessor joins the wire by existing, `_parts`
+        # grows a value, and the constructor does not.
+        raise TypeError(
+            f"{cls.name}: `_from_parts` is the constructor, which "
+            f"takes {len(cls.init.params)} parameter(s), and "
+            f"{len(fields)} accessor(s) cross the wire: "
+            f"{fields}. An accessor joins the "
+            f"wire by existing - mark the ones that should not "
+            f"@local, or give the constructor what they send.")
+    if not cls.is_value:
+        return cls
+    if cls.from_parts is not None:
+        if not cls.from_parts.cxx_body:
+            raise TypeError(
+                f"{cls.name}: declares `_from_parts` with no body. Write "
+                f"one, or drop the declaration and let the aggregate "
+                f"build it.")
+        return cls
+    members = [m.name for m in cls.bound
+               if m.returns is not None and not m.local]
+    if (any(f.read != f.name for f in cls.wire_fields)
+            and fields != members):
+        # A part read through another accessor arrives as that
+        # accessor's type, and `_from_parts` initialises the record
+        # POSITIONALLY: a part out of member order lands in the wrong
+        # member.
+        raise TypeError(
+            f"{cls.name}: its parts {fields} are not its members "
+            f"{members}, in order.")
+    return cls
+
 
 @dataclass(frozen=True)
 class UnionModel:

@@ -293,9 +293,6 @@ def _render(cls: ir.ClassModel, accessor: str) -> str:
     `nix::Hash::to_string` takes a format and a flag, so the emitted
     `self.to_string()` did not compile. The declaration's `to_string`
     is the BOUND one, and this is how to reach it."""
-    if not any(m.name == accessor for m in cls.bound):
-        raise TypeError(
-            f"{cls.name}: \"{accessor}\" names no accessor on this class.")
     return f'nb::str(h.attr("{accessor}")())'
 
 
@@ -561,17 +558,7 @@ def markers(cls: ir.ClassModel) -> list[str]:
         # static method.
         #
         # Naming the class CLAIMS the constructor takes the wire fields,
-        # in order. A forgotten `@local` breaks exactly that: an accessor
-        # joins the wire by existing, `_parts` grows a value, and the
-        # constructor does not.
-        if len(cls.init.params) != len(fields):
-            raise TypeError(
-                f"{cls.name}: `_from_parts` is the constructor, which "
-                f"takes {len(cls.init.params)} parameter(s), and "
-                f"{len(fields)} accessor(s) cross the wire: "
-                f"{[n for n, _, _ in fields]}. An accessor joins the "
-                f"wire by existing - mark the ones that should not "
-                f"@local, or give the constructor what they send.")
+        # in order, which the model checks.
         out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
     return out
 
@@ -1523,11 +1510,6 @@ class Emitter:
         privately, as `_from_parts`, which is exactly the name the wire
         layer asks for."""
         if cls.from_parts is not None:
-            if not cls.from_parts.cxx_body:
-                raise TypeError(
-                    f"{cls.name}: declares `_from_parts` with no body. Write "
-                    f"one, or drop the declaration and let the aggregate "
-                    f"build it.")
             # A declared body: the signature still comes from the field
             # list, so the body can only consume what `_parts` sent.
             return [*self._produced_ctor(cls), *self._from_parts(cls)]
@@ -1536,13 +1518,7 @@ class Emitter:
             # A part read through another accessor - `@wire_read` - arrives
             # as that accessor's type, so the aggregate needs the parts
             # converted back. `_from_parts` initialises POSITIONALLY, so
-            # the parts must be the members, in member order, or a value
-            # lands in the wrong member.
-            names = [f.name for f in cls.wire_fields]
-            if names != [n for n, _ in fields]:
-                raise TypeError(
-                    f"{cls.name}: its parts {names} are not its members "
-                    f"{[n for n, _ in fields]}, in order.")
+            # the model checks the parts are the members, in member order.
             return [*self._produced_ctor(cls), *self._from_parts(cls)]
         held = _held(cls)
         # `.none()` on an `nb::object` part, and nothing else needs it.
