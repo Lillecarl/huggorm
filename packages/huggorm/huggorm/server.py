@@ -60,6 +60,10 @@ def _tok(stream: Any) -> str:
 DEFAULT_DEPTH = 8
 DEFAULT_BUDGET = 1000
 
+# A wrapper's declared class, by the wrapper's own name: the emitted
+# table read backwards, so no naming convention is restated here.
+DECLARED = {async_name: name for name, async_name in ASYNC_CLASS.items()}
+
 # How long a log reader waits when the queue answered nothing. A drain
 # is a mutex and a move, so polling costs almost nothing - and the
 # alternative is a condition variable in C++, which would buy latency
@@ -922,7 +926,7 @@ class Dispatcher:
             req = await stream.recv_message()
             token = _tok(stream)
             target = self.resolve(req.handle.id, token)
-            spec = TREES.get(type(target).__name__.removeprefix("Async"))
+            spec = TREES.get(DECLARED.get(type(target).__name__, ""))
             if spec is None:
                 raise TypeError(
                     f"{req.handle.id[:8]} is not a value tree: its type "
