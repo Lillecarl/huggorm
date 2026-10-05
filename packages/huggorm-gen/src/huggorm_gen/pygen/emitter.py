@@ -5,12 +5,14 @@ the model.
 """
 
 import ast
+import dataclasses
 import textwrap
 from collections.abc import Mapping, Sequence
 from string import Template
 from typing import Any
 
 from huggorm_gen import ir
+from huggorm_gen.payload import callspec as cs
 from huggorm_gen.payload.wiretypes import (
     python_spelling,
 )
@@ -161,91 +163,97 @@ the oneof's fields in and a renumbering is a wire change. Tuples
 rather than lists, so nothing downstream reorders one in place."""
 
 
-def _table(var: str, ann: str,
-           rows: Sequence[tuple[str, ast.expr]]) -> ast.stmt:
-    """One emitted lookup table, named and annotated.
+def _literal(v: object) -> ast.expr:
+    """A value as the source that rebuilds it.
 
-    Five of them are written this way, and each was three lines of the
-    same ast.Dict construction. The annotation is the point of the
-    helper as much as the brevity: an inline loop over tables whose
-    values are different expression kinds infers the first branch it
-    sees and then rejects the second."""
+    A dataclass is called positionally until a field holds its
+    default; each later field that differs is a keyword. So
+    `Wire("list", item=...)` leaves `name` out, and the emitted call
+    is the one a person would write."""
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        args: list[ast.expr] = []
+        keywords: list[ast.keyword] = []
+        for f in dataclasses.fields(v):
+            x = getattr(v, f.name)
+            if f.default is not dataclasses.MISSING and x == f.default:
+                continue
+            if keywords or len(args) < [g.name for g in dataclasses.fields(v)].index(f.name):
+                keywords.append(ast.keyword(arg=f.name, value=_literal(x)))
+            else:
+                args.append(_literal(x))
+        return ast.Call(func=ast.Name(id=type(v).__name__), args=args,
+                        keywords=keywords)
+    if isinstance(v, tuple):
+        return ast.Tuple(elts=[_literal(x) for x in v])
+    if isinstance(v, dict):
+        return ast.Dict(keys=[_literal(k) for k in v],
+                        values=[_literal(x) for x in v.values()])
+    if v is None or isinstance(v, (str, int, float)):
+        return ast.Constant(value=v)
+    raise TypeError(f"no literal for {type(v).__name__}: {v!r}")
+
+
+def _table(var: str, ann: str, rows: Sequence[tuple[str, object]]) -> ast.stmt:
+    """One emitted lookup table, named and annotated. A row's value is
+    an expression already, or a value `_literal` writes."""
     return ast.AnnAssign(
         target=ast.Name(id=var), annotation=_ann(ann, var),
         value=ast.Dict(keys=[ast.Constant(value=n) for n, _ in rows],
-                       values=[v for _, v in rows]),
+                       values=[v if isinstance(v, ast.expr) else _literal(v)
+                               for _, v in rows]),
         simple=1)
 
 
-def _walk(how: Proto) -> ast.expr:
-    """One container's accessors, as a `Walk`.
-
-    A list has `item` and an attribute set has `name` and `value`.
-    Spelled the same way here - `value` is what reads the child in
-    both - so the walker has one shape rather than two."""
-    return ast.Call(func=ast.Name(id="Walk"),
-                    args=[ast.Constant(value=how["size"]),
-                          ast.Constant(value=how.get("value")
-                                       or how["item"]),
-                          ast.Constant(value=how.get("name", ""))],
-                    keywords=[])
+def _walk(how: Proto) -> cs.Walk:
+    """One container's accessors. A list has `item` and an attribute
+    set has `name` and `value`; `value` reads the child in both, so the
+    walker has one shape rather than two."""
+    return cs.Walk(how["size"], how.get("value") or how["item"],
+                   how.get("name", ""))
 
 
-def _wire(t: ir.TypeRef | None) -> ast.expr:
+def _tree(tree: Proto) -> cs.Tree:
+    return cs.Tree(tree["kind"], tree.get("identity", ""),
+                   {k: tuple(v) for k, v in tree["scalars"].items()},
+                   _walk(tree["list"]), _walk(tree["attrs"]))
+
+
+def _wire(t: ir.TypeRef | None) -> cs.Wire | None:
     """A resolved type as the `Wire` the codec dispatches on."""
     if t is None:
-        return ast.Constant(value=None)
-    keywords = []
-    if t.optional:
-        keywords.append(ast.keyword(arg="optional", value=ast.Constant(value=True)))
-        t = t.required
+        return None
+    optional = t.optional
+    t = t.required
     if t.container:
-        kind = "list" if t.origin == "list" else "map"
-        return ast.Call(func=ast.Name(id="Wire"), args=[ast.Constant(value=kind)],
-                        keywords=[ast.keyword(arg="item", value=_wire(t.args[0])),
-                                  *keywords])
+        return cs.Wire("list" if t.origin == "list" else "map",
+                       item=_wire(t.args[0]), optional=optional)
     if t.scalar is not None:
         # The leaf's own name, not the builtin it goes in as: the codec
         # converts a `datetime.timedelta` by name.
-        kind, name = "scalar", t.width or t.name
-    elif t.kind in ("enum", "value", "union", "error", "proxy"):
-        kind, name = t.kind, t.name
-    else:
-        raise TypeError(f"{t.spelling} is a {t.kind}, which does not cross")
-    return ast.Call(func=ast.Name(id="Wire"),
-                    args=[ast.Constant(value=kind), ast.Constant(value=name)],
-                    keywords=keywords)
+        return cs.Wire("scalar", t.width or t.name, optional=optional)
+    if t.kind in ("enum", "value", "union", "error", "proxy"):
+        return cs.Wire(t.kind, t.name, optional=optional)
+    raise TypeError(f"{t.spelling} is a {t.kind}, which does not cross")
 
 
-def _arg_tuple(pairs: Sequence[tuple[str, ir.TypeRef]]) -> ast.expr:
+def _args(pairs: Sequence[tuple[str, ir.TypeRef]]) -> tuple[cs.Arg, ...]:
     """Named, typed parts - wire fields or parameters - as `Arg`s."""
-    return ast.Tuple(elts=[
-        ast.Call(func=ast.Name(id="Arg"),
-                 args=[ast.Constant(value=name), _wire(t)],
-                 keywords=[])
-        for name, t in pairs])
-
-
-def _tree(tree: Proto) -> ast.expr:
-    return ast.Call(
-        func=ast.Name(id="Tree"),
-        args=[ast.Constant(value=tree["kind"]),
-              ast.Constant(value=tree.get("identity", "")),
-              ast.Dict(keys=[ast.Constant(value=k) for k in tree["scalars"]],
-                       values=[ast.Tuple(elts=[ast.Constant(value=x)
-                                               for x in v])
-                               for v in tree["scalars"].values()]),
-              _walk(tree["list"]), _walk(tree["attrs"])],
-        keywords=[])
+    out = []
+    for name, t in pairs:
+        w = _wire(t)
+        assert w is not None
+        out.append(cs.Arg(name, w))
+    return tuple(out)
 
 
 def policy_module(model: ir.Model) -> str:
     """`_policy.py`: the wire policy of every declared type.
 
-    Four tables the codec needs and no caller does: what KIND each
-    type crosses as, what a wire value is made of, which names are
-    string vocabularies, and what a sum type's arms are in declared
-    order.
+    The tables the codec and the server read: what a wire value and an
+    error are made of, a sum type's arms, every call's spec, the value
+    trees, and the directory a caller reaches by name. Each value is
+    the `_callspec` dataclass itself, built here and written by
+    `_literal`, so a wrong shape fails in this build.
 
     An emitted module, not data loaded at run time: a typechecker sees
     the type of every table. The module ships with the code that reads
@@ -268,7 +276,7 @@ def policy_module(model: ir.Model) -> str:
         target=ast.Name(id="PKG"), annotation=_ann("str", "PKG"),
         value=ast.Constant(value=ir.PROTO_PACKAGE), simple=1))
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
-                       [(c.name, _arg_tuple([(f.name, f.type) for f in c.wire_fields]))
+                       [(c.name, _args([(f.name, f.type) for f in c.wire_fields]))
                         for c in classes if c.wire == "value"]))
     # The exception surface. ERROR_MODULE is where the emitted module
     # lands, which the fault codec imports to construct one; the
@@ -277,13 +285,13 @@ def policy_module(model: ir.Model) -> str:
         target=ast.Name(id="ERROR_MODULE"), annotation=_ann("str", "ERROR_MODULE"),
         value=ast.Constant(value=model.errors.module), simple=1))
     body.append(_table("ERROR_FIELDS", "dict[str, tuple[Arg, ...]]", [
-        (n, _arg_tuple([(f.name, f.type) for f in e.wire_fields]))
+        (n, _args([(f.name, f.type) for f in e.wire_fields]))
         for n, e in model.errors.classes.items()]))
     body.append(ast.AnnAssign(
         target=ast.Name(id="LOG_RECORDS"), annotation=_ann("Wire", "LOG_RECORDS"),
-        value=_wire(grpc_schema.LOG_RECORDS), simple=1))
+        value=_literal(_wire(grpc_schema.LOG_RECORDS)), simple=1))
     body.append(_table("UNION_ARMS", "dict[str, tuple[Wire, ...]]", [
-        (n, ast.Tuple(elts=[_wire(a) for a in arms]))
+        (n, tuple(_wire(a) for a in arms))
         for n, arms in model.unions.items()]))
     # Every method's call spec, ONCE. The client reads these through
     # `rpc.py` and the server reads them through METHODS below, so the
@@ -297,7 +305,7 @@ def policy_module(model: ir.Model) -> str:
             var = _spec_name(c.name, m.name)
             body.append(ast.Assign(
                 targets=[ast.Name(id=var)],
-                value=_spec(m.name, c.rpc(m), m.params, m.returns)))
+                value=_literal(_spec(m.name, c.rpc(m), m.params, m.returns))))
             names.append(var)
         methods.append((c.name, ast.Tuple(
             elts=[ast.Name(id=n) for n in names])))
@@ -309,7 +317,7 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("TREES", "dict[str, Tree]", [
         (c.name, _tree(c.decl.tree)) for c in classes if c.decl.tree]))
     body.append(_table("ASYNC_CLASS", "dict[str, str]", [
-        (c.name, ast.Constant(value=c.async_name))
+        (c.name, c.async_name)
         for c in classes if c.served]))
     body.extend(_directory(model))
     return ast.unparse(ast.fix_missing_locations(
@@ -652,8 +660,8 @@ def protocol_module(model: ir.Model) -> ast.Module:
 
 
 def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
-          returns: ir.TypeRef | None) -> ast.expr:
-    """One call's spec, as a `Call`.
+          returns: ir.TypeRef | None) -> cs.Call:
+    """One call's spec.
 
     A typed value, not a dict literal. A checker sees nothing in a
     dict, and the spec is the one part of the generated client a
@@ -664,15 +672,8 @@ def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
     call reached the runtime, so every argument a spec describes is
     present, and carrying a default here would suggest the runtime
     fills one in."""
-    return ast.Call(
-        func=ast.Name(id="Call"),
-        args=[ast.Constant(value=name),
-              ast.Constant(value=rpc.path),
-              ast.Constant(value=rpc.req),
-              ast.Constant(value=rpc.resp),
-              _arg_tuple([(p.name, p.type) for p in params]),
-              _wire(returns)],
-        keywords=[])
+    return cs.Call(name, rpc.path, rpc.req, rpc.resp,
+                   _args([(p.name, p.type) for p in params]), _wire(returns))
 
 
 def _directory(model: ir.Model) -> list[ast.stmt]:
@@ -689,17 +690,11 @@ def _directory(model: ir.Model) -> list[ast.stmt]:
     remotely."""
     acquires = []
     for c in model.acquirable:
-        acquires.append((c.name, ast.Call(
-            func=ast.Name(id="Acquire"),
-            args=[ast.Constant(value=c.name),
-                  ast.Constant(value=c.acquire.path),
-                  ast.Constant(value=c.acquire.req),
-                  _arg_tuple([(p.name, p.type) for p in c.ctor]),
-                  ast.Constant(value=sum(1 for p in c.ctor
-                                         if p.default is None)),
-                  ast.Tuple(elts=[ast.Constant(value=p.name) for p in c.ctor
-                                  if p.default == "None"])],
-            keywords=[])))
+        acquires.append((c.name, cs.Acquire(
+            c.name, c.acquire.path, c.acquire.req,
+            _args([(p.name, p.type) for p in c.ctor]),
+            sum(1 for p in c.ctor if p.default is None),
+            tuple(p.name for p in c.ctor if p.default == "None"))))
     functions = [model.functions[n] for n in sorted(model.functions)]
     free = [(fn.name, _spec(fn.name, fn.rpc, fn.params, fn.returns))
             for fn in functions if not model.function_blockers(fn)]
@@ -709,8 +704,7 @@ def _directory(model: ir.Model) -> list[ast.stmt]:
     # differ and a caller can act on the difference: a name nobody
     # declared is a typo, and a declared function with no RPC surface
     # is a policy the build decided and printed.
-    blocked = [(fn.name, ast.Constant(
-                    value="; ".join(model.function_blockers(fn))))
+    blocked = [(fn.name, "; ".join(model.function_blockers(fn)))
                for fn in functions if model.function_blockers(fn)]
     return [_table("ACQUIRE", "dict[str, Acquire]", acquires),
             _table("FREE", "dict[str, Call]", free),
