@@ -239,7 +239,7 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
               "doc": ""}
     _append_hop_method(cls, {}, method, "Probe", set(), {"Store": "affine"}, {})
     emitted = ast.unparse(ast.fix_missing_locations(cls))
-    assert "return None if result is None else AsyncStore(result, self._runner)" \
+    assert "return None if result is None else AsyncStore._adopt(result, self._runner)" \
         in emitted, emitted
     assert "-> AsyncStore | None" in emitted, emitted
 
@@ -1275,8 +1275,8 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
     from huggorm_gen.pygen.generate import build_manifest
 
     manifest = build_manifest()
-    returned ={n for n, p in manifest["returned_types"].items()
-                if p["wire"] == "proxy"}
+    served = {n for group in ("returned_types", "wrappers")
+              for n, p in manifest[group].items() if p["wire"] == "proxy"}
     emitted = {
         node.name: ast.unparse(node.returns) if node.returns else "None"
         for node in ast.parse(
@@ -1288,8 +1288,8 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
         if not proto["wrapped"]:
             continue
         rt = proto["return_type"]
-        expected = respell(rt, {n: f"Async{n}" for n in returned})
-        if adoptee(rt, returned) is not None:
+        expected = respell(rt, {n: f"Async{n}" for n in served})
+        if adoptee(rt, served) is not None:
             adopted += 1
         if _expr(emitted[name]) != _expr(expected):
             failures.append(f"{name}: emitted {emitted[name]}, "

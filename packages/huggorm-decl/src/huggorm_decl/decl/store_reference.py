@@ -24,6 +24,7 @@ from huggorm_dsl.declare import (
     needs,
     produced,
     reads,
+    threading,
     wire_value,
 )
 
@@ -138,6 +139,7 @@ class StoreReference:
         Cxx("return self.render(with_params);")
 
 
+@threading("pool")
 @needs("nix/store/store-reference.hh")
 def parse_store_reference(uri: Str) -> StoreReference:
     """Read `uri` as libstore does before it opens a store.

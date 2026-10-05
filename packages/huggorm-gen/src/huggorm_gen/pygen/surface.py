@@ -31,8 +31,6 @@ cannot carry, rather than pretending.
 
 from typing import Any
 
-from huggorm_gen.payload.wiretypes import adoptee
-
 Proto = dict[str, Any]
 
 PROTOCOL_MODULE = "protocols"
@@ -160,24 +158,3 @@ def annotate(manifest: Proto) -> Proto:
             for m in proto["methods"]:
                 m["protocol_blockers"] = protocol_blockers(m, wrapped)
     return manifest
-
-
-def check_adoptable(manifest: Proto, adoptable: set[str]) -> list[str]:
-    """Every wrapped return type must be one the emitter can adopt.
-
-    The in-process wrapper hands a produced object to Async<T>(obj,
-    runner), which only a returned type has. A method returning a
-    wrapped class that is CONSTRUCTED instead would emit a call to a
-    constructor of a different shape - working code, wrong object.
-    Nothing does this today; the check is here so nothing starts to."""
-    wrapped = wrapped_names(manifest)
-    return [
-        f"{proto['name']}.{m['name']} returns {m['return_type']}, which is "
-        f"wrapped but not adoptable: only a returned type has the "
-        f"(obj, runner) constructor the emitter would call."
-        for group in ("wrappers", "returned_types")
-        for proto in manifest[group].values()
-        for m in proto["methods"]
-        if (found := adoptee(m["return_type"], wrapped)) is not None
-        and found[0] not in adoptable
-    ]

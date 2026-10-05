@@ -677,7 +677,7 @@ class Dispatcher:
             raise TypeError(
                 f"{name} has no async wrapper, so it cannot be handed out "
                 f"as a handle")
-        return getattr(flg, cls)(obj, parent._runner)
+        return getattr(flg, cls)._adopt(obj, parent._runner)
 
     def _service(self, cls_name: str) -> None:
         """One handler per declared method, from the emitted specs.

@@ -563,7 +563,7 @@ def returned_module(proto: Proto,
         )
     )
     mod.body.append(_future_annotations())
-    typing_names = {"Any"} if "Any" in used else set()
+    typing_names = {"Self"} | ({"Any"} if "Any" in used else set())
     if any(m["return_type"] != "None" for m in proto["methods"]):
         typing_names.add("cast")
     mod.body.append(ast.ImportFrom(
@@ -637,6 +637,7 @@ def returned_module(proto: Proto,
             type_params=[],
         )
     )
+    cls.body.append(_adopt_method(svc, execution))
 
     mod.body.append(cls)
     _append_methods_and_aclose(cls, proto, svc, async_types, bound_policies,
@@ -707,6 +708,46 @@ def _runner_decl() -> ast.AnnAssign:
                          value=None, simple=1)
 
 
+def _adopt_method(svc: str, execution: str) -> ast.FunctionDef:
+    """`Async<svc>._adopt(obj, runner)`: an object some call produced,
+    in its async form.
+
+    Every served class has it, and every adoption calls it. A wrapper
+    class's `__init__` is its constructor and takes the constructor's
+    arguments, so adoption cannot go through `__init__`; `__new__`
+    skips it, and `attach_runner` picks the runner from the class's
+    own execution policy."""
+    where = f"{svc}._adopt"
+    return ast.FunctionDef(
+        name="_adopt",
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg(arg="cls"),
+                  ast.arg(arg="obj", annotation=_ann(svc, where)),
+                  ast.arg(arg="runner", annotation=_ann("BaseRunner", where))],
+            vararg=None, kwonlyargs=[], kw_defaults=[], kwarg=None,
+            defaults=[]),
+        body=[
+            ast.Assign(
+                targets=[ast.Name(id="adopted")],
+                value=ast.Call(
+                    func=ast.Attribute(value=ast.Name(id="cls"), attr="__new__"),
+                    args=[ast.Name(id="cls")], keywords=[])),
+            ast.Assign(
+                targets=[ast.Attribute(value=ast.Name(id="adopted"),
+                                       attr="_runner")],
+                value=ast.Call(
+                    func=ast.Name(id="attach_runner"),
+                    args=[ast.Name(id="obj"), ast.Name(id="runner"),
+                          ast.Constant(value=execution)],
+                    keywords=[])),
+            ast.Return(value=ast.Name(id="adopted")),
+        ],
+        decorator_list=[ast.Name(id="classmethod")],
+        returns=_ann("Self", where),
+        type_params=[])
+
+
 def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
                        async_types: set[str],
                        bound_policies: dict[str, str],
@@ -730,7 +771,8 @@ def _append_hop_method(cls: ast.ClassDef, proto: Proto, m: Proto, svc: str,
             targets=[ast.Name(id="result")],
             value=ast.Await(value=_hop_call(m["name"], m["params"]))))
         wrapped: ast.expr = ast.Call(
-            func=ast.Name(id=f"Async{name}"),
+            func=ast.Attribute(value=ast.Name(id=f"Async{name}"),
+                               attr="_adopt"),
             args=[ast.Name(id="result"),
                   ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
             keywords=[])
@@ -794,8 +836,8 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     annotations = _emitted_annotations(proto, async_types, bound_policies, twins)
     used_types = (_annotation_names(annotations)
                   | _annotation_names(_emitted_defaults(proto))
-                  | {"None"})  # None: aclose
-    typing_names = {"Any"} if "Any" in used_types else set()
+                  | {"None", svc})  # None: aclose; svc: _adopt's object
+    typing_names = {"Self"} | ({"Any"} if "Any" in used_types else set())
     if not proto["constructs"]:
         typing_names.add("Any")  # the refusing __init__ takes *args/**kwargs
     # A forward hands back Any; the declared type is the manifest's
@@ -815,12 +857,12 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     mod.body.extend(_sibling_imports(used_types - {f"Async{svc}"}))
     mod.body.extend(_foreign_imports(annotations))
 
-    # An abstract base constructs nothing, so it imports neither the
-    # sync target nor a runner class. It still annotates with the target
-    # if a method mentions it, which is why the subtraction below is
+    # An abstract base constructs nothing, so it imports no runner
+    # class. It still adopts, so it annotates with the target and
+    # attaches a runner, which is why the subtraction below is
     # conditional too.
     constructs = proto["constructs"]
-    runtime_names = [] if proto.get("async_base") else ["BaseRunner"]
+    runtime_names = ["BaseRunner", "attach_runner"]
     if constructs:
         mod.body.append(ast.ImportFrom(
             module="huggorm_bindings", names=[ast.alias(name=svc)], level=0))
@@ -874,6 +916,8 @@ def wrapper_module(proto: Proto, bound_policies: dict[str, str] | None = None,
     ))
     if base is None:
         cls.body.append(_runner_decl())
+    cls.body.append(_adopt_method(
+        svc, proto["threading"] if proto["wrapped"] else "inline"))
 
     init_kwargs = []
     if proto["threading"] == "affine":
@@ -1463,14 +1507,12 @@ def free_function_module(protos: list[Proto],
     everywhere else. The sync function is imported under an underscore
     alias so the coroutine can take its plain name.
 
-    A proxy return is adopted into its Async form, as a method's is.
-    Only a POOL returned type can be: `attach_runner` gives one a pool
-    runner of its own, while an affine one needs a producer's home
-    thread and a free function has none. A WRAPPER class cannot be
-    adopted at all - its Async form has a constructor, not an
-    adoption path. Both are refused here, at generation, because the
-    alternative is a coroutine that hands a sync object to an async
-    caller and a server that leases one.
+    A proxy return is adopted into its Async form through `_adopt`, as
+    a method's is. Only a POOL class can be: `attach_runner` gives one
+    a runner of its own, while an affine one needs a producer's home
+    thread and a free function has none. That is refused here, at
+    generation, because the alternative is a coroutine that hands a
+    sync object to an async caller and a server that leases one.
     """
     pool_parent = False
     for proto in protos:
@@ -1480,8 +1522,8 @@ def free_function_module(protos: list[Proto],
                 raise ValueError(
                     f"free function {proto['name']} returns {rt}, and "
                     f"{', '.join(proxies)} cannot be adopted into an "
-                    f"async form from a free function. Drop its threading "
-                    f"policy, or return a pool returned type.")
+                    f"async form from a free function. Return a served "
+                    f"class on its own or as `X | None`.")
             continue
         policy = bound_policies[adopted[0]]
         if policy != "pool":
@@ -1542,7 +1584,8 @@ def free_function_module(protos: list[Proto],
             # A pool policy ignores the parent, so a fresh PoolRunner
             # stands in for the producer a method would pass.
             wrapped: ast.expr = ast.Call(
-                func=ast.Name(id=f"Async{name}"),
+                func=ast.Attribute(value=ast.Name(id=f"Async{name}"),
+                                   attr="_adopt"),
                 args=[ast.Name(id="result"),
                       ast.Call(func=ast.Name(id="PoolRunner"),
                                args=[ast.Constant(value=None)], keywords=[])],

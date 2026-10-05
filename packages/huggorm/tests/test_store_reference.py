@@ -5,6 +5,8 @@ lands in is the fact under test: `daemon` and `daemon?x=y` are
 different arms upstream, and a caller must be told which it got.
 """
 
+from typing import Any
+
 import pytest
 
 from huggorm_bindings import (
@@ -55,6 +57,28 @@ def test_a_bare_path_is_a_local_uri() -> None:
 def test_what_libstore_cannot_read_raises() -> None:
     with pytest.raises(UsageError, match="Cannot parse Nix store"):
         parse_store_reference("not a uri")
+
+
+async def test_the_async_form_adopts_a_wrapper_class() -> None:
+    """A free function that returns a WRAPPER class hands back its
+    async form, through `_adopt`, as a returned type's does."""
+    from huggorm_generated import AsyncStoreReference
+    from huggorm_generated import parse_store_reference as aparse
+
+    ref = await aparse("ssh-ng://user@host?compress=true")
+    assert isinstance(ref, AsyncStoreReference)
+    assert await ref.render(with_params=False) == "ssh-ng://user@host"
+    assert await ref.params() == {"compress": "true"}
+
+
+async def test_a_remote_parse_answers_a_handle(client: Any) -> None:
+    """Over the wire the same call answers a handle the server leased,
+    and the handle's methods reach the adopted object."""
+    ref = await client.call_function("parse_store_reference",
+                                     "daemon?trusted=true")
+    assert ref.handle_id
+    assert await ref.params() == {"trusted": "true"}
+    assert await ref.render() == "unix://?trusted=true"
 
 
 def test_the_store_registry_names_nix_s_own_types() -> None:

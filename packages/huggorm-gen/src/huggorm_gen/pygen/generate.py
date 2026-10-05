@@ -285,15 +285,11 @@ def build_manifest() -> Proto:
         print(f"not wrapped (pool and non-blocking, so nothing to wrap): "
               f"{', '.join(unwrapped)}")
 
-    # Adoption serves the affine-bound enforcement below: which
-    # returned types have a runner to be adopted into. The full served
-    # set is decided in `main`; this one only needs the affine names.
-    returned_policies = {p["name"]: p["threading"] for p in returned_protos
-                         if p["wrapped"]}
-
     # policy enforcement: a pool wrapper may not return affine types at
-    # all - drop them from the surface entirely.
-    affine_bound = {name for name, pol in returned_policies.items() if pol == "affine"}
+    # all - drop them from the surface entirely. Any wrapped class can
+    # be returned, so both groups name them.
+    affine_bound = {p["name"] for p in returned_protos + protos
+                    if p["wrapped"] and p["threading"] == "affine"}
     for proto in protos:
         if proto["threading"] == "pool":
             before = len(proto["methods"])
@@ -443,15 +439,6 @@ def build_manifest() -> Proto:
     annotate(manifest)
     surface.annotate(manifest)
 
-    # The three surfaces - protocol, in-process wrapper, RPC client -
-    # must agree on which returns get adopted into an object of their
-    # own. returned_policies is that set; check nothing else claims it.
-    complaints = surface.check_adoptable(manifest, set(returned_policies))
-    if complaints:
-        for c in complaints:
-            print(f"adoptable: {c}", file=sys.stderr)
-        sys.exit(1)
-
     return manifest
 
 
@@ -475,10 +462,12 @@ def main(argv: list[str] | None = None) -> None:
     # derivation. Every one of these WAS a local up there, and passing
     # six of them across the split would have made the boundary a
     # tuple nobody could read.
-    returned_policies = {p["name"]: p["threading"] for p in returned_protos
-                         if p["wire"] == "proxy"}
-    async_types = {p["name"] for p in returned_protos + protos
-                   if p["wire"] == "proxy"}
+    # Every served class adopts through its `_adopt`, so a call can
+    # return any of them: a returned type and a wrapper class alike.
+    served_policies = {p["name"]: p["threading"]
+                       for p in returned_protos + protos
+                       if p["wire"] == "proxy"}
+    async_types = set(served_policies)
     async_twins = manifest["async_twins"]
     unions = manifest["unions"]
 
@@ -495,7 +484,7 @@ def main(argv: list[str] | None = None) -> None:
             continue
         fname = f"async_{proto['name'].lower()}.py"
         (out / fname).write_text(ast.unparse(returned_module(
-            proto, async_types, returned_policies, async_twins)) + "\n")
+            proto, async_types, served_policies, async_twins)) + "\n")
         print(f"generated {fname} for returned type {proto['name']} "
               f"({proto['threading']})")
     for proto in protos:
@@ -503,7 +492,7 @@ def main(argv: list[str] | None = None) -> None:
             continue
         fname = f"async_{proto['name'].lower()}.py"
         (out / fname).write_text(ast.unparse(wrapper_module(
-            proto, returned_policies, async_twins, async_types)) + "\n")
+            proto, served_policies, async_twins, async_types)) + "\n")
         print(f"generated {fname} for {proto['name']} "
               f"({proto['threading']}, {len(proto['methods'])} methods)")
 
@@ -512,12 +501,12 @@ def main(argv: list[str] | None = None) -> None:
     if wrapped_free:
         (out / f"{FREE_MODULE}.py").write_text(ast.unparse(
             free_function_module(wrapped_free, async_types,
-                                 returned_policies)) + "\n")
+                                 served_policies)) + "\n")
         print(f"generated {FREE_MODULE}.py for {len(wrapped_free)} free "
               f"function(s): {', '.join(free_names)}")
 
     ordered = surface.order(manifest)
-    adoptable = set(returned_policies)
+    adoptable = set(served_policies)
     (out / f"{surface.PROTOCOL_MODULE}.py").write_text(
         ast.unparse(protocol_module(manifest, ordered, adoptable)) + "\n")
     (out / f"{surface.RPC_MODULE}.py").write_text(
