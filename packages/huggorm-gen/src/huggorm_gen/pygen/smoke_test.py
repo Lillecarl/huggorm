@@ -165,12 +165,12 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
 
     The codec half of this is tested where the codec lives; here is
     the half the generator decides."""
-    from huggorm_gen.pygen.grpc_schema import wire_blocker
+    from huggorm_gen import ir
     from huggorm_gen.pygen.model import check_wire_contract
 
-    kinds = {"StorePath": "value", "Word": "enum"}
-    for spelling in ("Word", "list[Word]", "dict[str, Word]"):
-        assert wire_blocker(spelling, kinds) is None, spelling
+    word = ir.TypeRef.named("Word", "enum")
+    for t in (word, ir.TypeRef.list_of(word), ir.TypeRef.dict_of(word)):
+        assert ir.wire_blocker(t, frozenset()) is None, t.spelling
 
     def proto(ftype: str) -> dict[str, object]:
         return {"name": "Probe", "wire": "value", "threading": "pool",
@@ -203,9 +203,9 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     passes None through. The emitted async body is checked here,
     because a body that adopts None builds a wrapper around nothing
     and fails only at the first await on it."""
+    from huggorm_gen import ir
     from huggorm_gen.payload.wiretypes import adoptee, optional_value, respell
     from huggorm_gen.pygen.emitter import _append_hop_method
-    from huggorm_gen.pygen.grpc_schema import wire_blocker
     from huggorm_gen.pygen.model import check_optional_contract
 
     assert optional_value("StorePath | None") == "StorePath"
@@ -221,16 +221,24 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
         else:
             raise AssertionError(f"{bad!r} was accepted as an optional")
 
-    kinds = {"StorePath": "value", "Store": "proxy", "Word": "enum"}
-    for good in ("StorePath | None", "str | None", "int | None",
-                 "Word | None", "Store | None"):
-        assert wire_blocker(good, kinds) is None, good
-    blocker = wire_blocker("list[StorePath] | None", kinds)
+    T = ir.TypeRef
+    path = T.named("StorePath", "value")
+    served = frozenset({"Store"})
+    for good in (path, T.named("str", "scalar"), T.named("int", "scalar"),
+                 T.named("Word", "enum"), T.named("Store", "proxy")):
+        assert ir.wire_blocker(T.optional_of(good), served) is None, good
+    blocker = ir.wire_blocker(T.optional_of(T.list_of(path)), served)
     assert blocker is not None and "IS an empty one" in blocker, blocker
     # The element's own None, not a missing type: StorePath is a value.
-    for shape in ("dict[str, StorePath | None]", "list[StorePath | None]"):
-        blocker = wire_blocker(shape, kinds)
+    for shape in (T.dict_of(T.optional_of(path)),
+                  T.list_of(T.optional_of(path))):
+        blocker = ir.wire_blocker(shape, served)
         assert blocker is not None and "has no presence" in blocker, blocker
+    # An unserved proxy is refused whether or not it may be None.
+    lost = T.named("Lost", "proxy")
+    for shape in (lost, T.optional_of(lost)):
+        blocker = ir.wire_blocker(shape, served)
+        assert blocker is not None and "no service" in blocker, shape
 
     assert adoptee("Store", {"Store"}) == ("Store", False)
     assert adoptee("Store | None", {"Store"}) == ("Store", True)
@@ -687,23 +695,29 @@ async def test_behavior() -> None:
     # directly, or the mechanism that keeps an unrepresentable type out
     # of the schema goes untested the moment everything is
     # representable.
-    from huggorm_gen.pygen.grpc_schema import wire_blocker
+    from huggorm_gen import ir
 
-    kinds = {"Value": "proxy", "StorePath": "value"}
+    T = ir.TypeRef
+    i, s = T.named("int", "scalar"), T.named("str", "scalar")
+    value, path = T.named("Value", "proxy"), T.named("StorePath", "value")
+    served = frozenset({"Value"})
     # A container of PROXIES stays refused whichever container it is:
     # one lease per element is not something anything grants in bulk.
     # Neither container nests in the other - proto3 has no repeated map
-    # field and no map of repeated values - and a bare one says nothing
-    # about what it holds. set and tuple have no field at all.
-    for shape in ("dict", "dict[int, str]", "dict[str, dict[str, int]]",
-                  "dict[str, list[int]]", "dict[str, Value]",
-                  "list", "list[Value]", "list[list[int]]",
-                  "list[dict[str, int]]", "set[int]", "Nowhere"):
-        assert wire_blocker(shape, kinds), f"{shape} should be blocked"
-    for shape in ("str", "int", "Value", "StorePath", "dict[str, int]",
-                  "dict[str, StorePath]", "list[int]",
-                  "list[StorePath]"):
-        assert not wire_blocker(shape, kinds), (shape, wire_blocker(shape, kinds))
+    # field and no map of repeated values. An opaque object and a
+    # module type with no wire spelling have no field at all. The
+    # reader refuses the rest before a model exists: a set, a
+    # non-str key, a bare container, a name nothing declares.
+    for t in (T.dict_of(T.dict_of(i)), T.dict_of(T.list_of(i)),
+              T.dict_of(value), T.list_of(value), T.list_of(T.list_of(i)),
+              T.list_of(T.dict_of(i)), T.named("object", "opaque"),
+              T.named("pathlib.Path", "module")):
+        assert ir.wire_blocker(t, served), f"{t.spelling} should be blocked"
+    for t in (s, i, value, path, T.dict_of(i), T.dict_of(path),
+              T.list_of(i), T.list_of(path),
+              T.named("datetime.timedelta", "module")):
+        assert not ir.wire_blocker(t, served), (t.spelling,
+                                                ir.wire_blocker(t, served))
 
     # Closing an affine wrapper shuts its dedicated thread down, and
     # that thread must leave the collector's list before it dies. Boehm

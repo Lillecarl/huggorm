@@ -26,19 +26,17 @@ from typing import Any
 
 from google.protobuf import descriptor_pb2
 
+from huggorm_gen import ir
 from huggorm_gen.payload.wiretypes import (
-    CONTAINERS,
     MAP_KEY,
     SCALAR_NAMES,
     arm_field,
     entry_name,
-    head,
     list_value,
     map_value,
     optional_value,
     scalar_spelling,
 )
-from huggorm_gen.pygen.surface import served_names
 
 Proto = dict[str, Any]
 
@@ -225,115 +223,7 @@ ACQUIRE = "Acquire"
 FREE_SERVICE = "Functions"
 
 
-# Types that are DELIBERATELY not on the wire, and the reason each is.
-#
-# Distinct from everything else this function reports: the rest are
-# gaps a later change could close, and these are decisions that a
-# later change should not.
-#
-# Kept here rather than in `ir.UNCROSSABLE`, which RAISES and
-# stops the build. A method taking one of these is a real in-process
-# method with no remote form - the same shape as `Store.real_path` -
-# so it is REPORTED, and the protocol withholds it.
-NOT_DATA = {
-    "object": (
-        "an arbitrary Python object is not data - here it is a "
-        "callable the binding keeps and calls back. A remote client "
-        "registering one would make the evaluator call BACK over the "
-        "socket, on its own evaluation thread, once per invocation - "
-        "a distributed call in a hot loop. In-process only, by "
-        "decision rather than omission (huggorm#33)."),
-}
-
-
-def wire_blocker(type_str: str, kinds: dict[str, str],
-                 served: frozenset[str] | None = None) -> str | None:
-    """Why this type cannot cross the wire, or None if it can.
-
-    Reported rather than raised, so a function that is unrepresentable
-    today still gets its in-process wrapper and the build says exactly
-    what is missing.
-
-    `served` names the classes that HAVE a service. None means "do not
-    ask", which is what a caller testing a type in isolation wants;
-    `annotate` passes the real set."""
-    if (why := NOT_DATA.get(type_str)) is not None:
-        return why
-    # A proxy nobody serves. It crosses as a HANDLE, and a handle is
-    # only worth having if some service takes one - so a method
-    # returning this would publish an rpc whose answer no later call
-    # can use.
-    #
-    # This is the backstop, not the rule it once was. Every proxy the
-    # manifest names gets a service in `annotate` below, so this fires
-    # only for a proxy nothing declares - a type the schema cannot see
-    # and therefore cannot serve. When it does fire the manifest says
-    # so per method instead of the build dying on the first one
-    # (huggorm#32).
-    if served is not None and type_str not in served \
-            and kinds.get(type_str) == "proxy":
-        return (f"{type_str} is a proxy with no service: it crosses as a "
-                f"handle, and nothing is wrapped to answer a call on that "
-                f"handle. A remote caller would receive an id it cannot "
-                f"use.")
-    try:
-        # `T | None` is T plus presence, so from here on it is T that
-        # is under test - a field the schema cannot build has nothing
-        # to be absent FROM.
-        if (inner := optional_value(type_str)) is not None:
-            if head(inner) in CONTAINERS:
-                return (f"{type_str}: a repeated field has no presence and "
-                        f"needs none - an absent container IS an empty one. "
-                        f"Declare {inner} and return it empty.")
-            type_str = inner
-        value_type = map_value(type_str)
-        item_type = list_value(type_str)
-    except TypeError as e:
-        return str(e)
-    # A container of PROXIES stays refused, whichever container it is.
-    # The element type is what actually goes in the field, so from here
-    # on it is the type under test.
-    for element in (value_type, item_type):
-        if element is None:
-            continue
-        try:
-            optional_element = optional_value(element)
-        except TypeError as e:
-            return str(e)
-        if optional_element is not None:
-            return (f"{type_str}: an element of a map or a repeated field "
-                    f"has no presence, so {element} cannot say None there")
-        if kinds.get(element) == "proxy":
-            return (f"{type_str}: a container of proxies would grant one "
-                    f"lease per element, and nothing grants leases in bulk "
-                    f"(huggorm#31)")
-        type_str = element
-    try:
-        _msg_arg_type(type_str, kinds)
-    except TypeError:
-        if head(type_str) in ("tuple", "set", "frozenset"):
-            return (f"{type_str} has no wire representation; a protobuf "
-                    f"field is a scalar, a message, a map or a repeated one")
-        return (f"{type_str} is not in the manifest, so it has no wire "
-                f"policy (an excluded base class, most likely - see "
-                f"huggorm#18)")
-    return None
-
-
-def _method_blockers(m: Proto, kinds: dict[str, str],
-                     served: frozenset[str] | None = None) -> list[str]:
-    """Why this method has no RPC, or [] when it has one."""
-    out = [
-        f"parameter {p['name']!r}: {why}"
-        for p in m["params"]
-        if (why := wire_blocker(p["type"], kinds, served))
-    ]
-    if (why := wire_blocker(m["return_type"], kinds, served)):
-        out.append(f"return type: {why}")
-    return out
-
-
-def annotate(manifest: Proto) -> Proto:
+def annotate(manifest: Proto, model: ir.Model) -> Proto:
     """Stamp the wire names onto the manifest, in place.
 
     Every consumer previously re-derived them from the same convention
@@ -362,15 +252,8 @@ def annotate(manifest: Proto) -> Proto:
                     "req": req_name(cls_name, ACQUIRE),
                 }
 
-    kinds = _wire_kinds(manifest)
-    # Which classes a handle can be USED with: every proxy. This used
-    # to be the wrapped classes, which is how an unwrapped proxy lost
-    # its methods' rpc one by one. It is the same set `surface` serves
-    # protocols for, not a second answer. (`ir.ClassModel.entry` puts a
-    # `service` NAME on every proxy whether or not one is published,
-    # so reading that back would defeat the check the way reading
-    # `wrapped` did.)
-    served = frozenset(served_names(manifest))
+    # Which classes a handle can be USED with: every proxy.
+    served = model.served
     for group in ("wrappers", "returned_types"):
         for cls_name, proto in manifest[group].items():
             if proto["wire"] != "proxy":
@@ -382,7 +265,9 @@ def annotate(manifest: Proto) -> Proto:
             # path on the machine the store runs on - and such a
             # method still deserves its in-process wrapper.
             for m in proto["methods"]:
-                m["wire_blockers"] = _method_blockers(m, kinds, served)
+                typed = model.classes[cls_name].method(m["name"])
+                m["wire_blockers"] = ir.blockers(typed.params, typed.returns,
+                                                 served)
                 if m["wire_blockers"]:
                     continue
                 m["rpc"] = {
@@ -400,7 +285,8 @@ def annotate(manifest: Proto) -> Proto:
                 "no threading policy, so the function has no async form "
                 "for a server to call"]
             continue
-        blockers = _method_blockers(proto, kinds, served)
+        typed_fn = model.functions[fname]
+        blockers = ir.blockers(typed_fn.params, typed_fn.returns, served)
         proto["wire_blockers"] = blockers
         if not blockers:
             proto["rpc"] = {

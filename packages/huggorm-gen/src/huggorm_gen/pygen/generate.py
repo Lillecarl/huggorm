@@ -20,6 +20,7 @@ from huggorm_gen.cppgen.generate import (
     declared_enums,
     declared_errors,
     declared_functions,
+    declared_model,
     declared_returned,
     declared_unions,
 )
@@ -320,7 +321,7 @@ def build_manifest() -> Proto:
     # grpc_schema owns wire naming; stamping it into the manifest is what
     # lets the server and the client read the names instead of each
     # rebuilding the same convention from scratch.
-    annotate(manifest)
+    annotate(manifest, declared_model())
     surface.annotate(manifest)
 
     return manifest

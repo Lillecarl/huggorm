@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 from huggorm_dsl.declare import Decl
 from huggorm_dsl.read import Class, Method, Module, Param, Type, is_surface
-from huggorm_gen.payload.wiretypes import SCALAR_NAMES
+from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED
 
 # The words a proxy's RPC surface is spelled with. Every name below is
 # the class name plus one of these.
@@ -157,6 +157,90 @@ class TypeRef:
             t = t.args[0]
         return t
 
+    @property
+    def container(self) -> bool:
+        return self.origin in ("list", "dict")
+
+    # Composing constructors, spelled the way the reader spells: a test
+    # builds a shape the corpus does not declare without parsing text.
+    @classmethod
+    def named(cls, name: str, kind: Kind) -> TypeRef:
+        return cls(name, "", (), kind, name)
+
+    @classmethod
+    def list_of(cls, t: TypeRef) -> TypeRef:
+        return cls(f"list[{t.spelling}]", "list", (t,), t.kind, t.name)
+
+    @classmethod
+    def dict_of(cls, t: TypeRef) -> TypeRef:
+        return cls(f"dict[str, {t.spelling}]", "dict", (t,), t.kind, t.name)
+
+    @classmethod
+    def optional_of(cls, t: TypeRef) -> TypeRef:
+        return cls(f"{t.spelling} | None", "optional", (t,), t.kind, t.name)
+
+
+# Why an opaque Python object never crosses. A DECISION, unlike every
+# other reason below, which is a gap a later change could close.
+NOT_DATA = (
+    "an arbitrary Python object is not data - here it is a "
+    "callable the binding keeps and calls back. A remote client "
+    "registering one would make the evaluator call BACK over the "
+    "socket, on its own evaluation thread, once per invocation - "
+    "a distributed call in a hot loop. In-process only, by "
+    "decision rather than omission (huggorm#33).")
+
+
+def wire_blocker(t: TypeRef, served: frozenset[str]) -> str | None:
+    """Why this type cannot cross the wire, or None if it can.
+
+    Reported rather than raised: a method that cannot cross keeps its
+    in-process wrapper, and the build says exactly what is missing.
+    The reader has already refused what no binding carries - a set, a
+    non-str map key, a bare container - so only what a protobuf field
+    cannot hold is left to say."""
+    if t.optional:
+        inner = t.required
+        # A repeated field has no presence, and needs none.
+        if inner.container:
+            return (f"{t.spelling}: a repeated field has no presence and "
+                    f"needs none - an absent container IS an empty one. "
+                    f"Declare {inner.spelling} and return it empty.")
+        t = inner
+    if t.container:
+        element = t.args[0]
+        if element.container:
+            return (f"{t.spelling}: proto3 cannot put a {element.origin} "
+                    f"inside a map. A nested attribute set needs the "
+                    f"recursive value message (huggorm#30)"
+                    if t.origin == "dict" else
+                    f"{t.spelling}: proto3 cannot repeat a {element.origin}. "
+                    f"A list of them needs the recursive value message "
+                    f"(huggorm#30)")
+        if element.optional:
+            return (f"{t.spelling}: an element of a map or a repeated field "
+                    f"has no presence, so {element.spelling} cannot say "
+                    f"None there")
+        if element.kind == "proxy":
+            # One lease per element, and nothing grants leases in bulk.
+            return (f"{t.spelling}: a container of proxies would grant one "
+                    f"lease per element, and nothing grants leases in bulk "
+                    f"(huggorm#31)")
+        t = element
+    if t.kind == "opaque":
+        return NOT_DATA
+    if t.kind == "proxy" and t.name not in served:
+        # A handle only some service can answer is worth sending.
+        return (f"{t.spelling} is a proxy with no service: it crosses as a "
+                f"handle, and nothing is wrapped to answer a call on that "
+                f"handle. A remote caller would receive an id it cannot "
+                f"use.")
+    if t.kind == "module" and t.name not in SPELLED:
+        return (f"{t.spelling} is not in the manifest, so it has no wire "
+                f"policy (an excluded base class, most likely - see "
+                f"huggorm#18)")
+    return None
+
 
 def _spelling(t: Type) -> str:
     """The Python spelling of a declared type.
@@ -236,6 +320,16 @@ class ParamModel:
     def entry(self) -> dict[str, Any]:
         return {"name": self.name, "type": self.type.spelling,
                 "default": self.default}
+
+
+def blockers(params: Sequence[ParamModel], returns: TypeRef | None,
+             served: frozenset[str]) -> list[str]:
+    """Why a call has no rpc, or [] when it has one."""
+    out = [f"parameter {p.name!r}: {why}" for p in params
+           if (why := wire_blocker(p.type, served))]
+    if returns is not None and (why := wire_blocker(returns, served)):
+        out.append(f"return type: {why}")
+    return out
 
 
 @dataclass(frozen=True)
@@ -367,6 +461,9 @@ class ClassModel:
             methods=tuple(MethodModel.of(m, resolver) for m in c.methods
                           if is_surface(m.name)),
         )
+
+    def method(self, name: str) -> MethodModel:
+        return next(m for m in self.methods if m.name == name)
 
     @property
     def wire(self) -> str:
