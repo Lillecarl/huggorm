@@ -19,6 +19,7 @@ from typing import Literal
 
 from huggorm_dsl.declare import Decl
 from huggorm_dsl.read import Class, Method, Module, Param, Type, is_surface
+from huggorm_gen.payload import callspec
 from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED
 
 # The words a proxy's RPC surface is spelled with. Every name below is
@@ -498,6 +499,25 @@ class ClassModel:
 
     def method(self, name: str) -> MethodModel:
         return next(m for m in self.methods if m.name == name)
+
+    @property
+    def tree(self) -> callspec.Tree | None:
+        """How a value that holds values is walked, or None.
+
+        The declaration states it as `@tree(...)` keywords. A list has
+        `item` and an attribute set has `name` and `value`; `value`
+        reads the child in both, so the walker has one shape."""
+        spec = self.decl.tree
+        if not spec:
+            return None
+
+        def walk(how: Mapping[str, str]) -> callspec.Walk:
+            return callspec.Walk(how["size"], how.get("value") or how["item"],
+                                 how.get("name", ""))
+
+        return callspec.Tree(spec["kind"], spec.get("identity", ""),
+                             {k: tuple(v) for k, v in spec["scalars"].items()},
+                             walk(spec["list"]), walk(spec["attrs"]))
 
     @property
     def wire(self) -> str:

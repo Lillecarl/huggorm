@@ -9,7 +9,6 @@ import dataclasses
 import textwrap
 from collections.abc import Mapping, Sequence
 from string import Template
-from typing import Any
 
 from huggorm_gen import ir
 from huggorm_gen.payload import callspec as cs
@@ -18,9 +17,6 @@ from huggorm_gen.payload.wiretypes import (
 )
 from huggorm_gen.pygen import grpc_schema
 from huggorm_gen.pygen.spell import Spelling, import_from
-
-# A declared tree spec, as the declaration states it.
-Proto = dict[str, Any]
 
 ASYNC = ir.ASYNC
 
@@ -204,20 +200,6 @@ def _table(var: str, ann: str, rows: Sequence[tuple[str, object]]) -> ast.stmt:
         simple=1)
 
 
-def _walk(how: Proto) -> cs.Walk:
-    """One container's accessors. A list has `item` and an attribute
-    set has `name` and `value`; `value` reads the child in both, so the
-    walker has one shape rather than two."""
-    return cs.Walk(how["size"], how.get("value") or how["item"],
-                   how.get("name", ""))
-
-
-def _tree(tree: Proto) -> cs.Tree:
-    return cs.Tree(tree["kind"], tree.get("identity", ""),
-                   {k: tuple(v) for k, v in tree["scalars"].items()},
-                   _walk(tree["list"]), _walk(tree["attrs"]))
-
-
 def _wire(t: ir.TypeRef | None) -> cs.Wire | None:
     """A resolved type as the `Wire` the codec dispatches on."""
     if t is None:
@@ -315,7 +297,7 @@ def policy_module(model: ir.Model) -> str:
     # class emitted, and `server.adopt` would raise AttributeError on
     # its first handle (huggorm#32).
     body.append(_table("TREES", "dict[str, Tree]", [
-        (c.name, _tree(c.decl.tree)) for c in classes if c.decl.tree]))
+        (c.name, c.tree) for c in classes if c.tree is not None]))
     body.append(_table("ASYNC_CLASS", "dict[str, str]", [
         (c.name, c.async_name)
         for c in classes if c.served]))
