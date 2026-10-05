@@ -36,6 +36,49 @@ def _code(src: str, signature: ast.arguments | None = None,
     return node
 
 
+def _def(header: str, body: str = "...", doc: str = "",
+         signature: ast.arguments | None = None) -> ast.stmt:
+    """One def from its header and its body, both as source.
+
+    `signature` replaces the parameters, for one `_arguments` spells
+    per surface, and `doc` goes first when there is one."""
+    indented = textwrap.indent(textwrap.dedent(body).strip(), "    ")
+    src = f"{header}:\n{indented}"
+    try:
+        node = ast.parse(src).body[0]
+    except SyntaxError as e:
+        raise ValueError(f"cannot parse the emitted {header!r}") from e
+    assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    if signature is not None:
+        node.args = signature
+    if doc:
+        node.body.insert(0, ast.Expr(value=ast.Constant(value=doc)))
+    return node
+
+
+def _forwarded(call: str, returns: str) -> str:
+    """The body that hands back an awaited forward, typed.
+
+    The runtime hands back Any - it dispatches by method name onto an
+    object it knows nothing about. The declared type is the
+    declaration's claim about that method, so the cast is where the
+    claim is made rather than a silent Any leaking into every caller.
+    A method returning None does not return at all: there is nothing
+    to hand back."""
+    if returns == "None":
+        return f"await {call}"
+    return f"return cast({returns}, await {call})"
+
+
+def _adopting(call: str, async_name: str, runner: str, optional: bool) -> str:
+    """The body that adopts what a call hands back into its async form,
+    and passes None through when the return may be None."""
+    adopt = f"{async_name}._adopt(result, {runner})"
+    if optional:
+        adopt = f"None if result is None else {adopt}"
+    return f"result = await {call}\nreturn {adopt}"
+
+
 RUNNER_BY_THREADING = {
     "affine": "AffineRunner",
     "pool": "PoolRunner",
@@ -374,49 +417,26 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
 
 
 def _hop_method(cls: ast.ClassDef, model: ir.Model,
-                      m: ir.MethodModel, svc: str,
-                      signature: tuple[list[str], str]) -> None:
+                m: ir.MethodModel, svc: str,
+                signature: tuple[list[str], str]) -> None:
     """One `async def` that hops to the runner, adopting what it
     returns where the return is a served class."""
     params, returns = signature
-    entries = m.params
-    body: list[ast.stmt] = []
-    if m.doc:
-        body.append(ast.Expr(value=ast.Constant(value=m.doc)))
+    call = (f"self._runner.call({m.name!r}, "
+            f"[{', '.join(p.name for p in m.params)}])")
     if (adopted := _adopted(model, m)) is not None:
-        body.append(ast.Assign(
-            targets=[ast.Name(id="result")],
-            value=ast.Await(value=_hop_call(m.name, entries))))
-        wrapped: ast.expr = ast.Call(
-            func=ast.Attribute(value=ast.Name(id=f"{ASYNC}{adopted.name}"),
-                               attr="_adopt"),
-            args=[ast.Name(id="result"),
-                  ast.Attribute(value=ast.Name(id="self"), attr="_runner")],
-            keywords=[])
-        if m.returns is not None and m.returns.optional:
-            wrapped = ast.IfExp(
-                test=ast.Compare(left=ast.Name(id="result"), ops=[ast.Is()],
-                                 comparators=[ast.Constant(value=None)]),
-                body=ast.Constant(value=None), orelse=wrapped)
-        body.append(ast.Return(value=wrapped))
+        body = _adopting(call, f"{ASYNC}{adopted.name}", "self._runner",
+                         m.returns is not None and m.returns.optional)
     elif (twin := model.twins.get(m.return_spelling)) is not None:
         # Same value, other spelling. anyio.Path takes any path-like,
         # so the wrapper constructs one rather than casting: a cast
         # would claim the awaitable methods without adding them.
-        body.append(ast.Return(value=ast.Call(
-            func=_ann(twin, f"{svc}.{m.name}"),
-            args=[ast.Await(value=_hop_call(m.name, entries))],
-            keywords=[])))
+        body = f"return {twin}(await {call})"
     else:
-        body.append(_hop_return(m.name, entries, m.return_spelling))
-    cls.body.append(ast.AsyncFunctionDef(
-        name=m.name,
-        args=_arguments([ast.arg(arg="self")], entries, params,
-                        f"{svc}.{m.name}"),
-        body=body,
-        decorator_list=[],
-        returns=_ann(returns, f"{svc}.{m.name}"),
-        type_params=[]))
+        body = _forwarded(call, m.return_spelling)
+    cls.body.append(_def(
+        f"async def {m.name}() -> {returns}", body, m.doc,
+        _arguments([ast.arg(arg="self")], m.params, params, f"{svc}.{m.name}")))
 
 
 _POLICY_DOC = {
@@ -548,43 +568,6 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
         init, set(), {runner} | ({"unwrap_arg"} if c.ctor else set()))
 
 
-def _hop_call(method_name: str,
-              params: Sequence[ir.ParamModel]) -> ast.Call:
-    return ast.Call(
-        func=ast.Attribute(
-            value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
-            attr="call",
-        ),
-        args=[
-            ast.Constant(value=method_name),
-            ast.List(elts=[ast.Name(id=p.name) for p in params]),
-        ],
-        keywords=[],
-    )
-
-
-def _forward(call: ast.expr, return_type: str) -> ast.stmt:
-    """Return the result of an awaited forward, typed.
-
-    The runtime hands back Any - it dispatches by method name onto an
-    object it knows nothing about. The declared type is the
-    declaration's claim about that method, so the cast is where the claim is made
-    rather than a silent Any leaking into every caller. A method
-    returning None does not return at all: casting to None is not a
-    thing, and there is nothing to hand back."""
-    if return_type == "None":
-        return ast.Expr(value=ast.Await(value=call))
-    return ast.Return(value=ast.Call(
-        func=ast.Name(id="cast"),
-        args=[_ann(return_type, "cast"), ast.Await(value=call)],
-        keywords=[]))
-
-
-def _hop_return(method_name: str, params: Sequence[ir.ParamModel],
-                return_type: str = "None") -> ast.stmt:
-    return _forward(_hop_call(method_name, params), return_type)
-
-
 def _future_annotations() -> ast.ImportFrom:
     """Lazy annotations, so a class may name one defined further down.
 
@@ -653,34 +636,15 @@ def protocol_module(model: ir.Model) -> ast.Module:
             if not model.offered(m):
                 continue
             params, returns = signatures[(name, m.name)]
-            body: list[ast.stmt] = []
-            if m.doc:
-                body.append(ast.Expr(value=ast.Constant(value=m.doc)))
-            body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
-            cls.body.append(ast.AsyncFunctionDef(
-                name=m.name,
-                args=_arguments([ast.arg(arg="self")],
-                                m.params, params,
-                                f"{name}.{m.name}"),
-                body=body,
-                decorator_list=[],
-                returns=_ann(returns, f"{name}.{m.name}"),
-                type_params=[]))
-        cls.body.append(ast.AsyncFunctionDef(
-            name=ACLOSE,
-            args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
-                               vararg=None, kwonlyargs=[], kw_defaults=[],
-                               kwarg=None, defaults=[]),
-            body=[
-                ast.Expr(value=ast.Constant(value=(
-                    "Release this object. In process that shuts the "
-                    "runner's thread down; remotely it gives the lease "
-                    "back. Either way the object is spent afterwards."))),
-                ast.Expr(value=ast.Constant(value=Ellipsis)),
-            ],
-            decorator_list=[],
-            returns=_ann("None", f"{name}.{ACLOSE}"),
-            type_params=[]))
+            cls.body.append(_def(
+                f"async def {m.name}() -> {returns}", doc=m.doc,
+                signature=_arguments([ast.arg(arg="self")], m.params, params,
+                                     f"{name}.{m.name}")))
+        cls.body.append(_def(
+            f"async def {ACLOSE}(self) -> None",
+            doc="Release this object. In process that shuts the runner's "
+                "thread down; remotely it gives the lease back. Either way "
+                "the object is spent afterwards."))
         mod.body.append(cls)
 
     ast.fix_missing_locations(mod)
@@ -866,18 +830,12 @@ def rpc_module(model: ir.Model) -> ast.Module:
             if not model.offered(m):
                 continue
             params, returns = signatures[(name, m.name)]
-            call = ("await self._client.invoke($spec, self.handle_id, [$args])")
-            method = _code(f"""
-                async def $method(self) -> $returns:
-                    {call if returns == "None" else f"return cast($returns, {call})"}
-                """, _arguments([ast.arg(arg="self")], m.params, params,
-                                f"{name}.{m.name}"),
-                method=m.name, returns=returns, spec=_spec_name(name, m.name),
-                args=", ".join(p.name for p in m.params))
-            assert isinstance(method, ast.AsyncFunctionDef)
-            if m.doc:
-                method.body.insert(0, ast.Expr(value=ast.Constant(value=m.doc)))
-            cls.body.append(method)
+            call = (f"self._client.invoke({_spec_name(name, m.name)}, "
+                    f"self.handle_id, [{', '.join(p.name for p in m.params)}])")
+            cls.body.append(_def(
+                f"async def {m.name}() -> {returns}", _forwarded(call, returns),
+                m.doc, _arguments([ast.arg(arg="self")], m.params, params,
+                                  f"{name}.{m.name}")))
         cls.body.append(_code("""
             async def $aclose(self) -> None:
                 $doc
@@ -966,45 +924,17 @@ def free_function_module(model: ir.Model) -> ast.Module:
 
     for fn in fns:
         params, ret = signatures[fn.name]
-        entries = fn.params
-        body: list[ast.stmt] = []
-        if fn.doc:
-            body.append(ast.Expr(value=ast.Constant(value=fn.doc)))
-        call = ast.Call(
-            func=ast.Name(id="call_function"),
-            args=[ast.Name(id="_" + fn.name),
-                  ast.List(elts=[ast.Name(id=p.name) for p in fn.params])],
-            keywords=[])
+        call = f"call_function(_{fn.name}, [{', '.join(p.name for p in fn.params)}])"
         r = fn.returns
         if r is not None and r.kind == "proxy":
-            body.append(ast.Assign(targets=[ast.Name(id="result")],
-                                   value=ast.Await(value=call)))
             # A pool policy ignores the parent, so a fresh PoolRunner
             # stands in for the producer a method would pass.
-            wrapped: ast.expr = ast.Call(
-                func=ast.Attribute(value=ast.Name(id=f"{ASYNC}{r.name}"),
-                                   attr="_adopt"),
-                args=[ast.Name(id="result"),
-                      ast.Call(func=ast.Name(id="PoolRunner"),
-                               args=[ast.Constant(value=None)], keywords=[])],
-                keywords=[])
-            if r.optional:
-                wrapped = ast.IfExp(
-                    test=ast.Compare(left=ast.Name(id="result"),
-                                     ops=[ast.Is()],
-                                     comparators=[ast.Constant(value=None)]),
-                    body=ast.Constant(value=None), orelse=wrapped)
-            body.append(ast.Return(value=wrapped))
+            body = _adopting(call, f"{ASYNC}{r.name}", "PoolRunner(None)",
+                             r.optional)
         else:
-            body.append(_forward(call, fn.returns.spelling
-                                 if fn.returns is not None else "None"))
-        mod.body.append(ast.AsyncFunctionDef(
-            name=fn.name,
-            args=_arguments([], entries, params, fn.name),
-            body=body,
-            decorator_list=[],
-            returns=_ann(ret, fn.name),
-            type_params=[]))
+            body = _forwarded(call, r.spelling if r is not None else "None")
+        mod.body.append(_def(f"async def {fn.name}() -> {ret}", body, fn.doc,
+                             _arguments([], fn.params, params, fn.name)))
 
     ast.fix_missing_locations(mod)
     return mod
@@ -1016,15 +946,6 @@ STUB_PACKAGE = "huggorm_bindings-stubs"
 
 # What the generated RPC classes require of whatever drives them.
 CLIENT_PROTOCOL = "RPCClient"
-
-
-def _stub_body(doc: str) -> list[ast.stmt]:
-    """A docstring (when there is one) followed by `...`."""
-    out: list[ast.stmt] = []
-    if doc:
-        out.append(ast.Expr(value=ast.Constant(value=doc)))
-    out.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
-    return out
 
 
 # What each value dunder looks like from outside. The comparisons take
@@ -1055,18 +976,8 @@ def _stub_dunders(name: str, dunders: list[str]) -> list[ast.stmt]:
     out: list[ast.stmt] = []
     for dunder in dunders:
         param, ret = _DUNDER_SIGS[dunder]
-        args = [ast.arg(arg="self")]
-        if param is not None:
-            args.append(ast.arg(
-                arg="other",
-                annotation=_ann(param, f"{name}.{dunder}")))
-        out.append(ast.FunctionDef(
-            name=dunder,
-            args=ast.arguments(posonlyargs=[], args=args, vararg=None,
-                               kwonlyargs=[], kw_defaults=[], kwarg=None,
-                               defaults=[]),
-            body=_stub_body(""), decorator_list=[],
-            returns=_ann(ret, f"{name}.{dunder}"), type_params=[]))
+        other = f", other: {param}" if param is not None else ""
+        out.append(_def(f"def {dunder}(self{other}) -> {ret}"))
     return out
 
 
@@ -1081,46 +992,28 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
     # The declarations the codegen itself reads. They are real class
     # attributes, so a stub that omitted them would make every
     # reader of them an error.
-    for attr, kind in (("_threading", "str"), ("_wire", "str"),
-                       ("_binds", "str")):
-        cls.body.append(ast.AnnAssign(
-            target=ast.Name(id=attr),
-            annotation=_ann(kind, f"{name}.{attr}"),
-            value=None, simple=1))
+    for attr in ("_threading", "_wire", "_binds"):
+        cls.body.append(_code(f"{attr}: str"))
     if produced:
-        cls.body.append(ast.FunctionDef(
-            name="__init__",
-            args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
-                               vararg=None, kwonlyargs=[], kw_defaults=[],
-                               kwarg=None, defaults=[]),
-            body=_stub_body(
-                f"Always raises: a {name} is produced by another "
-                f"object, never constructed."),
-            decorator_list=[],
-            returns=_ann("NoReturn", f"{name}.__init__"),
-            type_params=[]))
+        cls.body.append(_def(
+            "def __init__(self) -> NoReturn",
+            doc=f"Always raises: a {name} is produced by another object, "
+                f"never constructed."))
     else:
         spell.defaults(c.ctor)
-        cls.body.append(ast.FunctionDef(
-            name="__init__",
-            args=_arguments([ast.arg(arg="self")],
-                            c.ctor,
-                            [spell(p.type) for p in c.ctor],
-                            f"{name}.__init__"),
-            body=_stub_body(""), decorator_list=[],
-            returns=_ann("None", f"{name}.__init__"), type_params=[]))
+        cls.body.append(_def(
+            "def __init__() -> None",
+            signature=_arguments([ast.arg(arg="self")], c.ctor,
+                                 [spell(p.type) for p in c.ctor],
+                                 f"{name}.__init__")))
     cls.body.extend(_stub_dunders(name, ir.dunders(c.decl)))
     for m in c.methods:
         spell.defaults(m.params)
-        cls.body.append(ast.FunctionDef(
-            name=m.name,
-            args=_arguments([ast.arg(arg="self")],
-                            m.params,
-                            [spell(p.type) for p in m.params],
-                            f"{name}.{m.name}"),
-            body=_stub_body(m.doc), decorator_list=[],
-            returns=_ann(spell.returns(m.returns), f"{name}.{m.name}"),
-            type_params=[]))
+        params = [spell(p.type) for p in m.params]
+        cls.body.append(_def(
+            f"def {m.name}() -> {spell.returns(m.returns)}", doc=m.doc,
+            signature=_arguments([ast.arg(arg="self")], m.params, params,
+                                 f"{name}.{m.name}")))
     if len(cls.body) == 1:
         # Docstring only: a class body needs a statement.
         cls.body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
@@ -1128,16 +1021,11 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
 
 
 def _stub_function(fn: ir.FunctionModel, spell: Spelling,
-                   where: str) -> ast.FunctionDef:
+                   where: str) -> ast.stmt:
     spell.defaults(fn.params)
-    return ast.FunctionDef(
-        name=fn.name,
-        args=_arguments([], fn.params,
-                        [spell(p.type) for p in fn.params], where),
-        body=_stub_body(fn.doc),
-        decorator_list=[],
-        returns=_ann(spell.returns(fn.returns), where),
-        type_params=[])
+    params = [spell(p.type) for p in fn.params]
+    return _def(f"def {fn.name}() -> {spell.returns(fn.returns)}", doc=fn.doc,
+                signature=_arguments([], fn.params, params, where))
 
 
 def _homes(model: ir.Model) -> dict[str, str]:
