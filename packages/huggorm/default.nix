@@ -6,6 +6,7 @@
   huggorm-gen,
   huggorm-decl,
   huggorm-dsl,
+  gitMinimal,
   grpcurl,
   ruff,
   zuban,
@@ -89,6 +90,8 @@ python3Packages.buildPythonPackage {
   # MYPYPATH. Without it every binding type reads as Any and the check
   # passes while proving nothing (huggorm#27).
   nativeCheckInputs = [
+    # The suite builds a git work tree for the git fetcher to read.
+    gitMinimal
     grpcurl
     ruff
     zuban

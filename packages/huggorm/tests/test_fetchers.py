@@ -1,14 +1,12 @@
 """nix::fetchers::Input: what a fetcher fetches, before it fetches."""
 
 import pathlib
+import subprocess
 
 import pytest
 
 # Every fetcher scheme but `path` sits behind the `flakes` feature.
 pytestmark = pytest.mark.usefixtures("flakes")
-
-# The SHA-256 of nothing.
-NAR_HASH = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
 
 
 def test_a_url_parses_into_its_attributes() -> None:
@@ -36,34 +34,54 @@ def test_a_scheme_refuses_an_attribute_it_does_not_take() -> None:
         input_from_attrs({"type": "path", "path": "/src", "owner": "x"})
 
 
-def test_a_path_input_names_its_contents(tmp_path: pathlib.Path) -> None:
-    """A path input can say what its tree is without a store copy;
-    the same tree gives the same fingerprint."""
+def _dirty(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A git work tree with one commit and one uncommitted change."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-c", "user.name=huggorm",
+                        "-c", "user.email=huggorm@invalid", *args],
+                       cwd=repo, check=True, capture_output=True)
+
+    (repo / "a").write_text("committed")
+    git("init", "--quiet")
+    git("add", "a")
+    git("commit", "--quiet", "--message", "one")
+    (repo / "a").write_text("changed")
+    return repo
+
+
+def test_a_dirty_work_tree_is_named_by_its_changes(
+        tmp_path: pathlib.Path) -> None:
+    """Uncommitted changes are hashed into the fingerprint, which is
+    the case that makes `fingerprint` block: Nix reads each changed
+    file. Change the file and the answer changes."""
     from huggorm_bindings import Store, input_from_attrs
 
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "a").write_text("x")
+    repo = _dirty(tmp_path)
     store = Store("dummy://")
-    source = input_from_attrs({"type": "path", "path": str(tmp_path / "src")})
+    source = input_from_attrs({"type": "git", "url": f"file://{repo}"})
     first = source.fingerprint(store)
-    assert first == source.fingerprint(store)
+    assert first is not None and ";d=" in first, first
+    assert input_from_attrs(source.to_attrs()).fingerprint(store) == first
+    (repo / "a").write_text("changed again")
+    again = input_from_attrs({"type": "git", "url": f"file://{repo}"})
+    assert again.fingerprint(store) not in (None, first)
 
 
-async def test_a_blocking_method_on_a_value_is_awaitable() -> None:
+async def test_a_blocking_method_on_a_value_is_awaitable(
+        tmp_path: pathlib.Path) -> None:
     """`Input.fingerprint` blocks, and `Input` is a value with no
     wrapper, so its async form is a free coroutine. It takes the
-    store as either form, as every free coroutine does (huggorm#25).
-
-    A tarball with a narHash is named by that hash, so the answer is
-    known without a fetch."""
+    store as either form, as every free coroutine does (huggorm#25)."""
     from huggorm_bindings import Store, input_from_attrs
     from huggorm_generated import AsyncStore, input_fingerprint
 
-    source = input_from_attrs({"type": "tarball",
-                               "url": "https://example.invalid/src.tar.gz",
-                               "narHash": NAR_HASH})
+    repo = _dirty(tmp_path)
+    source = input_from_attrs({"type": "git", "url": f"file://{repo}"})
     expected = source.fingerprint(Store("dummy://"))
-    assert expected == NAR_HASH
+    assert expected is not None
     assert await input_fingerprint(source, Store("dummy://")) == expected
     store = AsyncStore("dummy://")
     try:
