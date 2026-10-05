@@ -48,11 +48,10 @@ def _cls(name: str, *, threading: str = "pool", blocking: bool = True,
 
 
 def _model(*classes: Any, enums: tuple[str, ...] = ()) -> Any:
-    from huggorm_dsl.declare import Decl
     from huggorm_gen import ir
 
     return ir.Model({c.name: c for c in classes}, {}, {}, frozenset(), {},
-                    {n: ir.EnumModel(n, "pkg.mod", (), "", Decl(name=n))
+                    {n: ir.EnumModel(n, "pkg.mod", (), "")
                      for n in enums},
                     ir.Errors("", {}))
 

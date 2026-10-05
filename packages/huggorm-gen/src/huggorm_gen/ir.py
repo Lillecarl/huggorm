@@ -967,10 +967,22 @@ class UnionModel:
 
 @dataclass(frozen=True)
 class WordModel:
-    """One vocabulary member: its Python name and the word it is."""
+    """One vocabulary member: its Python name, the word it is, and its
+    C++ enumerator ("" when no C++ enum stands behind the words)."""
 
     name: str
     value: str
+    enumerator: str = ""
+
+
+@dataclass(frozen=True)
+class CxxEnum:
+    """The C++ enum a vocabulary stands for: the type a conversion
+    takes, and the member that reaches the enum inside it ("" when it
+    IS the enum)."""
+
+    held: str
+    reach: str
 
 
 @dataclass(frozen=True)
@@ -981,15 +993,23 @@ class EnumModel:
     module: str
     members: tuple[WordModel, ...]
     doc: str
-    decl: Decl
     # The header that declares its C++ enum, or "".
     header: str = ""
+    cxx: CxxEnum | None = None
+    # The C++ parser upstream has for a word, or "": then the binding
+    # writes `from_word` itself.
+    parsed_by: str = ""
 
     @classmethod
     def of(cls, c: Class, package: str, module: str) -> EnumModel:
+        enum = c.decl.enumerated
         return cls(c.name, f"{package}.{module}",
-                   tuple(WordModel(m.name, m.value) for m in c.members),
-                   _clean(c.doc), c.decl, c.decl.header)
+                   tuple(WordModel(m.name, m.value,
+                                   enum.enumerator(m.name) if enum else "")
+                         for m in c.members),
+                   _clean(c.doc), c.decl.header,
+                   CxxEnum(enum.held, enum.reach) if enum else None,
+                   c.decl.parsed_by)
 
 @dataclass(frozen=True)
 class ErrorModel:

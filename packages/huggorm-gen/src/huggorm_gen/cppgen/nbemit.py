@@ -245,7 +245,7 @@ def words_from_word(cls: ir.EnumModel) -> list[str]:
     `parseHashAlgo` throws UsageError and lists the words it takes -
     so a caller who mistypes gets the same shape of answer wherever
     the word came from."""
-    enum = cls.decl.enumerated
+    enum = cls.cxx
     assert enum is not None
     listed = ", ".join(f"'{w.value}'" for w in cls.members)
     out = [f"/** A word, as the {cls.name} libstore holds. */",
@@ -255,7 +255,7 @@ def words_from_word(cls: ir.EnumModel) -> list[str]:
            "{"]
     for word in cls.members:
         out += [f'{INDENT}if (word == "{word.value}")',
-                f"{INDENT * 2}return {enum.enumerator(word.name)};"]
+                f"{INDENT * 2}return {word.enumerator};"]
     out += [f'{INDENT}throw nix::UsageError(',
             f'{INDENT * 2}"unknown {cls.name} \'%1%\', expect {listed}",'
             if listed else f'{INDENT * 2}"unknown {cls.name} \'%1%\'",',
@@ -436,14 +436,14 @@ def words_conversion(cls: ir.EnumModel) -> list[str]:
     The throw past the switch is unreachable and a compiler still
     wants it: every enumerator returns above, and control falling off
     the end of a non-void function is what `-Wreturn-type` is for."""
-    enum = cls.decl.enumerated
+    enum = cls.cxx
     assert enum is not None
     out = [f"/** A {cls.name}, as the word Python has. */",
            f"inline std::string as_word({enum.held} value)",
            "{",
            f"{INDENT}switch (value{enum.reach}) {{"]
     for word in cls.members:
-        out.append(f"{INDENT}case {enum.enumerator(word.name)}: "
+        out.append(f"{INDENT}case {word.enumerator}: "
                    f'return "{word.value}";')
     out += [f"{INDENT}}}",
             f'{INDENT}throw nix::Error("unknown {enum.held}");',
@@ -1310,7 +1310,7 @@ class Emitter:
         out = {node.name: held for _, t in _sites(classes, functions)
                for node in _nodes(t)
                if isinstance(held := self.model.declared(node), ir.EnumModel)
-               and held.decl.enumerated}
+               and held.cxx is not None}
         # ...and what a BODY spells, from `@spells`. A signature does not
         # reach everything: `KeyedBuildResult.error` builds an exception
         # carrying a failure word, and `-> BuildError | None` says
@@ -1939,7 +1939,7 @@ class Emitter:
                 head += [*HASHABLE.strip().splitlines(), ""]
             for v in vocabularies:
                 head += words_conversion(v)
-                if not v.decl.parsed_by:
+                if not v.parsed_by:
                     head += words_from_word(v)
             for u in unions:
                 head += (self.bare_check(u) if _is_bare(u)
