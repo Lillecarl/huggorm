@@ -412,6 +412,40 @@ def test_a_bound_base_is_refused_rather_than_dropped(
     assert "Leaf" in str(caught.value)
 
 
+DEFAULTED = '''"""One function whose default every surface writes as source."""
+
+from huggorm_dsl.declare import Str, needs
+
+
+@needs("nix/store/store-api.hh")
+def probe(x: Str = DEFAULT) -> Str:
+    """A probe."""
+'''
+
+
+@pytest.mark.parametrize(("default", "why"), [
+    ("[]", "mutable default"),
+    ('float("inf")', "not a literal"),
+])
+def test_a_default_no_surface_can_write_is_refused(
+        tmp_path: pathlib.Path, default: str, why: str) -> None:
+    """Every surface writes a default as source. `[]` would be one
+    shared list per surface, and `inf` is a NameError where it lands."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    source = DEFAULTED.replace("DEFAULT", default)
+    with pytest.raises(DeclarationError, match=why):
+        read(_declaration(tmp_path, source))
+
+
+def test_a_literal_default_is_read(tmp_path: pathlib.Path) -> None:
+    """The negative control: a literal default reads back."""
+    from huggorm_dsl.read import read
+
+    module = read(_declaration(tmp_path, DEFAULTED.replace("DEFAULT", '"x"')))
+    assert module.functions[0].params[0].default == "x"
+
+
 def test_a_taught_dunder_reads_as_a_method(tmp_path: pathlib.Path) -> None:
     """`__call__` is an ordinary method to every emitter."""
     from huggorm_dsl.read import read

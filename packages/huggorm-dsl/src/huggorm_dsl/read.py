@@ -841,6 +841,25 @@ def type_of(ann: object, node: ast.AST, fn: Callable[..., Any]) -> Type:
     raise DeclarationError(node, f"'{ann!r}' is not a type.")
 
 
+def _writable_default(value: object, node: ast.AST, where: str) -> None:
+    """Refuse a default the surfaces cannot write as source. Each
+    surface writes its own copy, so `[]` is one shared list per
+    surface, and `repr(float("inf"))` is a NameError where it lands."""
+    if isinstance(value, (list, dict, set, bytearray)):
+        raise DeclarationError(
+            node, f"{where}: {value!r} is a mutable default, and every "
+                  f"generated surface would carry its own. Default to "
+                  f"None: a list reads an absent argument back as empty.")
+    try:
+        same = ast.literal_eval(repr(value)) == value
+    except (ValueError, SyntaxError):
+        same = False
+    if not same:
+        raise DeclarationError(
+            node, f"{where}: default {value!r} is not a literal the "
+                  f"generated surfaces can write.")
+
+
 def _member(ann: object, value: object) -> str:
     """Which member of a vocabulary a default names, or "".
 
@@ -1157,8 +1176,11 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
             raise DeclarationError(
                 arg, f"{node.name}({arg.arg}): a default of None needs "
                      f"`| None` in the type.")
-        params.append(Param(arg.arg, declared,
-                            default, _member(anns[arg.arg], default)))
+        member = _member(anns[arg.arg], default)
+        # A vocabulary member is written as the member, not by repr.
+        if default is not inspect.Parameter.empty and not member:
+            _writable_default(default, arg, f"{node.name}({arg.arg})")
+        params.append(Param(arg.arg, declared, default, member))
 
     ret: Type | None = None
     if node.returns is not None and anns.get("return") is not None:
