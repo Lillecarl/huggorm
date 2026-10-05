@@ -255,7 +255,7 @@ def emit_module(mod: Module, dotted: str, out: str,
     if not bound and not mod.functions:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    written = extension(unit, dotted, declared_model(), corpus().producers,
+    written = extension(unit, dotted, declared_model(),
                         chain=chain,
                         errors=errors_module(),
                         error_headers=headers or ())

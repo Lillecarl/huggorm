@@ -51,7 +51,7 @@ A shape it cannot derive stops with a reason. The escape hatch is
 becomes the place the real code lives.
 """
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 
 from huggorm_dsl.declare import Decl
 from huggorm_gen import cxx, ir
@@ -372,7 +372,7 @@ def records_header(unit: ir.ModuleModel, package: str,
     values = [c for c in unit.bindable() if c.is_value]
     if not values:
         return None
-    emit = Emitter(model, unit, {})
+    emit = Emitter(model, unit)
     others = [m for m in emit.records_named(values, ())
               if m != unit.name]
     structs = emit.records(values)
@@ -675,15 +675,13 @@ class Emitter:
     """The binding C++ for classes that may name each other.
 
     `unit` is the module being emitted. A name it cannot see is
-    refused, never resolved from the whole `model`. `producers` is each
-    call that hands a class back, from the whole set: what makes a
-    `PathInfo` lives in another module."""
+    refused, never resolved from the whole `model`. The producers are
+    the whole model's: what makes a `PathInfo` lives in another
+    module."""
 
-    def __init__(self, model: ir.Model, unit: ir.ModuleModel,
-                 producers: Mapping[str, Sequence[str]]) -> None:
+    def __init__(self, model: ir.Model, unit: ir.ModuleModel) -> None:
         self.model = model
         self.unit = unit
-        self.producers = producers
 
     def _decl(self, name: str) -> Decl | None:
         """The declaration this unit sees behind a name, or None."""
@@ -700,7 +698,7 @@ class Emitter:
         nanobind answers `TypeError: PathInfo: no constructor defined!`,
         which is true and tells a caller nothing about where to look.
         The calls are read off the return types, so none goes stale."""
-        calls = list(self.producers.get(cls.name, ()))
+        calls = list(self.model.producers.get(cls.name, ()))
         named = (" or ".join([", ".join(calls[:-1]), calls[-1]])
                  if len(calls) > 1 else "".join(calls))
         said = because or (f"objects come from {named}, not from a "
@@ -2004,7 +2002,6 @@ def imports(unit: ir.ModuleModel, model: ir.Model) -> list[str]:
 
 
 def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
-              producers: Mapping[str, Sequence[str]],
               chain: list[str] | None = None,
               errors: str = "",
               error_headers: Sequence[str] = ()) -> str:
@@ -2023,7 +2020,7 @@ def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
     or `huggorm_bindings.path` inside a package. It is the one fact
     here no declaration carries, and it is what turns a sibling
     declaration's name into an import a running interpreter can
-    follow. `producers` is the set's, as `Emitter` takes it."""
+    follow."""
     classes = unit.bindable()
     package = dotted.rpartition(".")[0]
     reached = [f'{INDENT}nb::module_::import_("'
@@ -2033,7 +2030,7 @@ def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
     # Only a unit that HAS a translator catches anything, so only that
     # unit needs the headers behind the chain.
     return "\n".join([
-        Emitter(model, unit, producers).module(
+        Emitter(model, unit).module(
             classes, unit.functions, unit.exported,
             errors,
             error_headers if translators else (), package),
@@ -2134,14 +2131,13 @@ def census(cls: ir.ClassModel) -> dict[str, int]:
 if __name__ == "__main__":
     import sys
 
-    from huggorm_decl import corpus
     from huggorm_gen.cppgen.generate import declared_model
 
     # A declaration file of the corpus, by module name: `path`, `store`.
     whole = declared_model()
     for name in sys.argv[1:]:
         unit = whole.module(name)
-        emit = Emitter(whole, unit, corpus().producers)
+        emit = Emitter(whole, unit)
         for cls in unit.bindable():
             print(emit.module([cls], (), ()) if len(unit.classes) == 1
                   else emit.bind_function(cls))

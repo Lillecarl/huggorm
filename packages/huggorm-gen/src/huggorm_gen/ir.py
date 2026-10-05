@@ -16,6 +16,7 @@ import inspect
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import cached_property
 from typing import Literal
 
 from huggorm_dsl.declare import Decl
@@ -1015,6 +1016,33 @@ class Model:
 
     def module(self, name: str) -> ModuleModel:
         return next(m for m in self.modules if m.name == name)
+
+    @cached_property
+    def producers(self) -> dict[str, tuple[str, ...]]:
+        """Each call that hands back a class, by the class's name,
+        sorted. A set's question: `Store.query_path_info` makes a
+        `PathInfo`, and `pathinfo.py` does not import `Store`.
+
+        A call that returns `X`, `X | None` or `list[X]` makes an `X`,
+        read off the return types so no declaration names it twice."""
+        def made(t: TypeRef | None) -> str | None:
+            if t is None:
+                return None
+            t = t.required
+            if t.origin == "list":
+                t = t.args[0]
+            return None if t.origin else t.name
+
+        out: dict[str, list[str]] = {}
+        for unit in self.modules:
+            for c in unit.classes:
+                for m in c.bound:
+                    if (name := made(m.returns)) is not None:
+                        out.setdefault(name, []).append(f"{c.name}.{m.name}")
+            for fn in unit.functions:
+                if (name := made(fn.returns)) is not None:
+                    out.setdefault(name, []).append(fn.name)
+        return {name: tuple(sorted(calls)) for name, calls in out.items()}
 
     @property
     def blocking_methods(self) -> list[FunctionModel]:
