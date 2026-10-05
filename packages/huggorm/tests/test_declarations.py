@@ -852,6 +852,41 @@ class State:
 '''
 
 
+VOCABULARY = '''"""A vocabulary with something in it that is not a word."""
+
+from enum import StrEnum
+
+from huggorm_dsl.declare import words
+
+
+@words()
+class Mode(StrEnum):
+    """One word, and one thing that is not."""
+
+    FAST = "fast"
+    """Quickly."""
+
+    {extra}
+'''
+
+
+@pytest.mark.parametrize("extra", [
+    "def slow(self) -> str:\n        return 'slow'",
+    "SLOW: str",
+    '"""A docstring under no word."""',
+])
+def test_a_vocabulary_refuses_what_is_not_a_word(
+        tmp_path: pathlib.Path, extra: str) -> None:
+    """A vocabulary body is words and their docstrings. The reader read
+    those and skipped the rest, so a stage emitting the words from the
+    model would have dropped anything else without a word."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    source = VOCABULARY.format(extra=extra)
+    with pytest.raises(DeclarationError, match="nothing else"):
+        _ = read(_declaration(tmp_path, source)).classes
+
+
 def test_the_model_refuses_a_spelling_of_no_vocabulary(
         tmp_path: pathlib.Path) -> None:
     """`@spells` must name an enum-backed vocabulary the declaration

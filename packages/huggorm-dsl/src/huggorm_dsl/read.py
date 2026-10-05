@@ -1244,7 +1244,14 @@ def _members(node: ast.ClassDef) -> tuple[Member, ...]:
     out: list[Member] = []
     for i, item in enumerate(node.body):
         if not isinstance(item, ast.Assign):
-            continue
+            # The class's docstring, or a word's. Anything else would be
+            # dropped by every stage that reads the words, silently.
+            if (_is_docstring(item)
+                    and (i == 0 or isinstance(node.body[i - 1], ast.Assign))):
+                continue
+            raise DeclarationError(
+                item, f"{node.name}: a vocabulary holds words and their "
+                      f"docstrings, and nothing else")
         if len(item.targets) != 1 or not isinstance(item.targets[0], ast.Name):
             raise DeclarationError(item, "a word is one plain assignment")
         if not (isinstance(item.value, ast.Constant)
@@ -1260,6 +1267,11 @@ def _members(node: ast.ClassDef) -> tuple[Member, ...]:
     if not out:
         raise DeclarationError(node, f"{node.name}: a vocabulary with no words")
     return tuple(out)
+
+
+def _is_docstring(item: ast.stmt) -> bool:
+    return (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant)
+            and isinstance(item.value.value, str))
 
 
 def targets_name(item: ast.Assign) -> str:
