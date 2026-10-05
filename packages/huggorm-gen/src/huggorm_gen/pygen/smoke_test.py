@@ -265,6 +265,19 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     complaints = check_optional_contract([proto("str | int")])
     assert len(complaints) == 1 and "no wire representation" in complaints[0]
 
+    # No pool class returns an affine one: a wrapper or a returned
+    # type, plain or optional. An affine class may (huggorm#8).
+    from huggorm_gen.pygen.model import affine_from_pool
+
+    def declared(name: str, threading: str, rt: str) -> dict[str, object]:
+        return {"name": name, "wrapped": True, "threading": threading,
+                "methods": [{"name": "make", "return_type": rt}]}
+
+    state = declared("State", "affine", "State")
+    for rt in ("State", "State | None"):
+        assert affine_from_pool([state, declared("Pool", "pool", rt)]), rt
+    assert affine_from_pool([state]) == []
+
 
 def test_runtime_contract(out: pathlib.Path) -> None:
     """The emitter-runtime import contract. Generated modules reference

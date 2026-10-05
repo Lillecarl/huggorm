@@ -1726,11 +1726,10 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     site instead of a TypeError at runtime.
 
     These protos are the UNFILTERED ones. The generated surface is not
-    the binding surface: the pool policy drops query_derivation from
-    Store, and 018 moves the shared methods off the subclasses. Both
-    are rules about the async wrappers. A stub describing the sync
-    bindings that way would hide LocalStore.query_derivation, which
-    exists and which examples/custom.py calls."""
+    the binding surface: 018 moves the shared methods off the
+    subclasses, which is a rule about the async wrappers. A stub that
+    described the sync bindings that way would hide a method the
+    binding has."""
     mod = ast.Module(body=[], type_ignores=[])
     short = module.rsplit(".", 1)[-1]
     mod.body.append(ast.Expr(value=ast.Constant(value=(

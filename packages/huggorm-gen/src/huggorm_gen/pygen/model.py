@@ -397,12 +397,37 @@ def check_optional_contract(protos: list[Proto]) -> list[str]:
     return bad
 
 
+def affine_from_pool(protos: list[Proto]) -> list[str]:
+    """No POOL class may return an AFFINE one.
+
+    An affine object lives on the thread that made it, and a pool
+    object's methods run on any pool thread, so it would be born on a
+    thread nothing owns. `attach_runner` refuses it when the call runs;
+    this refuses the declaration first.
+
+    Every pool class is checked, a returned type as much as a wrapper,
+    so a chain is covered too: any path from a pool class to an affine
+    one ends in one such edge (huggorm#8).
+
+    Returns a list of complaints; empty means the rule holds."""
+    affine = {p["name"] for p in protos
+              if p["wrapped"] and p["threading"] == "affine"}
+    return [
+        f"{proto['name']}.{m['name']} returns {m['return_type']}, which is "
+        f"affine, from a pool class: it would live on a thread nothing "
+        f"owns. Return it from an affine class instead."
+        for proto in protos if proto["threading"] == "pool"
+        for m in proto["methods"]
+        if adoptee(m["return_type"], affine) is not None
+    ]
+
+
 def check_collection_contract(protos: list[Proto]) -> list[str]:
     """No method may return a COLLECTION of wrapped types.
 
     A wrapped type only works when something attaches a runner to it,
     and every layer does that for one object: the async wrapper writes
-    `AsyncX(result, self._runner)`, the server puts one handle, the
+    `AsyncX._adopt(result, self._runner)`, the server puts one handle, the
     client builds one proxy. None of them walks a container, so
     `dict[str, Value]` type-checks, builds, emits a schema - and hands
     back bare sync objects in process while failing on the first call

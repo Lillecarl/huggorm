@@ -24,7 +24,7 @@ from huggorm_gen.cppgen.generate import (
     declared_returned,
     declared_unions,
 )
-from huggorm_gen.payload.wiretypes import adoptee, names_in
+from huggorm_gen.payload.wiretypes import names_in
 from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
@@ -45,6 +45,7 @@ from huggorm_gen.pygen.emitter import (
 )
 from huggorm_gen.pygen.grpc_schema import annotate, build_fdset
 from huggorm_gen.pygen.model import (
+    affine_from_pool,
     check_collection_contract,
     check_optional_contract,
     check_wire_contract,
@@ -237,10 +238,10 @@ def build_manifest() -> Proto:
 
         A COPY. `_proto` is called twice for every class - once for
         the wrappers and once for the stubs - and the wrapper pass
-        edits `methods` in place, dropping the affine-returning ones
-        from a pool class. Handing back the same dict both times let
-        that edit reach the stubs, which describe the BINDING and have
-        no such rule."""
+        edits `methods` in place, moving shared methods onto a base.
+        Handing back the same dict both times would let that edit
+        reach the stubs, which describe the BINDING and have no such
+        rule."""
         want = declared.get(name)
         if want is None:
             # Not a fallback. Every name reaching this comes from the
@@ -286,20 +287,11 @@ def build_manifest() -> Proto:
         print(f"not wrapped (pool and non-blocking, so nothing to wrap): "
               f"{', '.join(unwrapped)}")
 
-    # policy enforcement: a pool wrapper may not return affine types at
-    # all - drop them from the surface entirely. Any wrapped class can
-    # be returned, so both groups name them.
-    affine_bound = {p["name"] for p in returned_protos + protos
-                    if p["wrapped"] and p["threading"] == "affine"}
-    for proto in protos:
-        if proto["threading"] == "pool":
-            before = len(proto["methods"])
-            proto["methods"] = [m for m in proto["methods"]
-                                if adoptee(m["return_type"], affine_bound) is None]
-            dropped = before - len(proto["methods"])
-            if dropped:
-                print(f"dropped {dropped} affine-returning method(s) "
-                      f"from pool wrapper {proto['name']}")
+    complaints = affine_from_pool(returned_protos + protos)
+    if complaints:
+        for c in complaints:
+            print(f"policy: {c}", file=sys.stderr)
+        sys.exit(1)
 
     base_of, shared_of, complaints = _hierarchy(declared_bases(), protos)
     if complaints:
