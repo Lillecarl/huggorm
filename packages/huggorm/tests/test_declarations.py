@@ -348,17 +348,18 @@ def test_a_produced_class_nothing_returns_fails_the_build(
     build reads those calls off the return types. `Line` is produced
     and nothing here returns one, so it has no way in at all. The real
     set is the control: every produced class in it has a call."""
-    from huggorm_decl import corpus
-    from huggorm_dsl.read import producers, read
-    from huggorm_gen.cppgen.generate import unmade
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen.generate import declared_model
 
     mod = read(_declaration(tmp_path, WIRE_READ.replace("{local}", "@local")))
-    assert unmade(mod.classes, producers(mod.classes, mod.functions)) == [
-        "Line"]
+    unit = ir.ModuleModel.of(mod, "")
+    with pytest.raises(TypeError, match=r"^Line: declared @produced"):
+        ir.Model({c.name: c for c in unit.classes}, {}, {}, frozenset(),
+                 {}, {}, ir.Errors("", {}), (unit,))
 
-    have = corpus()
-    assert have.producers["PathInfo"] == ("Store.query_path_info",)
-    assert unmade(have.classes, have.producers) == []
+    assert declared_model().producers["PathInfo"] == (
+        "Store.query_path_info",)
 
 
 # One bound class that declares a dunder the emitters carry and one

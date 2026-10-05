@@ -23,12 +23,12 @@ import functools
 import pathlib
 import re
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
-from huggorm_dsl.read import FROM_PARTS, Class, Module, reading
+from huggorm_dsl.read import FROM_PARTS, Module, reading
 from huggorm_gen import cxx, ir
 from huggorm_gen.cppgen import nbemit, pyenum, pyerrors, pyinit
 from huggorm_gen.cppgen.nbemit import extension
@@ -639,16 +639,6 @@ def census_gc_slots(have: Any) -> None:
             print(f"    {line}")
 
 
-def unmade(classes: Iterable[Class],
-           producers: Mapping[str, Sequence[str]]) -> list[str]:
-    """Each produced class no declared call returns, by name.
-
-    Such a class has no way in at all, and its refusing `__init__`
-    would name no call to use instead."""
-    return sorted(c.name for c in classes
-                  if c.decl.produced and c.name not in producers)
-
-
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     # The package directory is EMPTY in the checkout - every file in
@@ -660,10 +650,7 @@ def main(out_dir: str) -> int:
     # see rather than the first one. Emission below then runs against
     # a corpus known to be sound (huggorm#61).
     have.read_all()
-    if missing := unmade(have.classes, have.producers):
-        raise TypeError(
-            f"{', '.join(missing)}: declared @produced, and no declared "
-            f"call returns one. Declare the call that makes it.")
+    declared_model()
     chain = error_chain()
     headers = error_headers()
     for mod in have.modules:

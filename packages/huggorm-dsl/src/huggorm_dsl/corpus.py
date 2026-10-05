@@ -48,7 +48,6 @@ from huggorm_dsl.read import (
     Module,
     collecting,
     load,
-    producers,
     read,
 )
 from huggorm_dsl.read import resolved as resolve_tree
@@ -233,13 +232,6 @@ class Corpus:
         not surface. It stays a filter rather than becoming the
         default here: the C++ emitter wants all three."""
         return tuple(f for m in self.modules for f in m.functions)
-
-    @property
-    def producers(self) -> dict[str, tuple[str, ...]]:
-        """Each call in the set that hands back a class, by the class's
-        name. A set's question: `Store.query_path_info` makes a
-        `PathInfo`, and `pathinfo.py` does not import `Store`."""
-        return producers(self.classes, self.functions)
 
     @property
     def known(self) -> dict[str, Class]:

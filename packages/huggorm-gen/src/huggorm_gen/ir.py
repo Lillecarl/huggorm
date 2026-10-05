@@ -1014,6 +1014,15 @@ class Model:
     # a name a caller imports.
     modules: tuple[ModuleModel, ...] = ()
 
+    def __post_init__(self) -> None:
+        # A produced class has no way in but a call that returns it,
+        # and its refusing `__init__` names those calls.
+        if missing := sorted(n for n, c in self.classes.items()
+                             if c.decl.produced and n not in self.producers):
+            raise TypeError(
+                f"{', '.join(missing)}: declared @produced, and no declared "
+                f"call returns one. Declare the call that makes it.")
+
     def module(self, name: str) -> ModuleModel:
         return next(m for m in self.modules if m.name == name)
 
