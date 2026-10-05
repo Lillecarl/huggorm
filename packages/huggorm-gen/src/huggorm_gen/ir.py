@@ -373,13 +373,15 @@ class MethodModel:
     params: tuple[ParamModel, ...]
     returns: TypeRef | None
     doc: str
+    # Declared `@blocks`: the binding releases the GIL for it.
+    blocks: bool = False
 
     @classmethod
     def of(cls, m: Method, resolver: Resolver) -> MethodModel:
         return cls(m.name,
                    tuple(ParamModel.of(p, resolver) for p in m.params),
                    type_ref(m.ret, resolver) if m.ret is not None else None,
-                   _clean(m.doc))
+                   _clean(m.doc), m.blocks)
 
     @property
     def return_spelling(self) -> str:
@@ -625,6 +627,14 @@ class Model:
     twins: Mapping[str, str]
     enums: Mapping[str, EnumModel]
     errors: Errors
+
+    @property
+    def blocking_unwrapped(self) -> list[tuple[ClassModel, MethodModel]]:
+        """Every `@blocks` method on a class with no async form. An
+        async caller calls it synchronously and stalls its event loop
+        (huggorm#25)."""
+        return [(c, m) for c in self.classes.values() if not c.wrapped
+                for m in c.methods if m.blocks]
 
     @property
     def served(self) -> frozenset[str]:

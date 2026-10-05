@@ -562,6 +562,31 @@ def test_the_stubs_promise_the_same_order_the_model_does(
     assert checked, "no stubbed class was found in the model"
 
 
+def test_a_blocking_method_with_no_async_form_says_so(
+        model: ir.Model) -> None:
+    """`@blocks` on a class with no async form is named, not hidden.
+
+    The binding releases the GIL for it, but there is no awaitable
+    form, so an async caller stalls its event loop. The build warns,
+    and the stub tells a caller what to do instead (huggorm#25).
+    `Input.fingerprint` hashes a path input's tree, and `Input` is a
+    wire value, which has no wrapper."""
+    import sys
+
+    found = {(c.name, m.name) for c, m in model.blocking_unwrapped}
+    assert ("Input", "fingerprint") in found, found
+
+    stubs = next(pathlib.Path(entry) / "huggorm_bindings-stubs"
+                 for entry in sys.path
+                 if (pathlib.Path(entry) / "huggorm_bindings-stubs").is_dir())
+    tree = ast.parse((stubs / "fetchers.pyi").read_text())
+    cls = next(n for n in tree.body
+               if isinstance(n, ast.ClassDef) and n.name == "Input")
+    method = next(n for n in cls.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "fingerprint")
+    assert "anyio.to_thread.run_sync" in (ast.get_docstring(method) or "")
+
+
 def test_a_class_with_no_door_refuses_to_be_built(
         model: ir.Model) -> None:
     """A class the declaration says does not construct must refuse.

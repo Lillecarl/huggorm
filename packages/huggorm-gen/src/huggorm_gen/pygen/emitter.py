@@ -993,8 +993,13 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
     for m in c.methods:
         spell.defaults(m.params)
         params = [spell(p.type) for p in m.params]
+        doc = m.doc
+        if m.blocks and not c.wrapped:
+            doc = (f"{doc}\n\n" if doc else "") + (
+                f"Blocks, and {name} has no async form: from async code, "
+                f"call it through `anyio.to_thread.run_sync` (huggorm#25).")
         cls.body.append(_def(
-            f"def {m.name}() -> {spell.returns(m.returns)}", doc=m.doc,
+            f"def {m.name}() -> {spell.returns(m.returns)}", doc=doc,
             signature=_arguments([ast.arg(arg="self")], m.params, params,
                                  f"{name}.{m.name}")))
     if len(cls.body) == 1:
