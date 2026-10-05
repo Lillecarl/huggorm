@@ -281,8 +281,7 @@ class Variant:
     would say the opposite of what a sum type means. Inheritance is
     "is a", so `class DerivedPath(StorePath, DerivedPathBuilt)` makes
     a DerivedPath a StorePath, when the truth runs the other way -
-    and `read.py` already refuses a second base for a reason of its
-    own.
+    and `read.py` refuses a base on a bound class anyway.
 
     `cxx` is the union's own C++ type. `raw` is how to reach the
     std::variant inside it: upstream's unions PUBLICLY INHERIT their
@@ -382,11 +381,6 @@ class Decl:
     # None for a vocabulary with no enum behind it, which gets the
     # Python surface and no check. See `Enumerated`.
     enumerated: Enumerated | None = None
-    # The class this one derives from, by DECLARED name. One base:
-    # every hierarchy this binds is single inheritance, and C++
-    # multiple inheritance through a Python type is a different
-    # problem from the one a declaration is for.
-    base: str = ""
     # Whether Python may construct one. An abstract base still gets a
     # class, an async wrapper and a wire identity - a caller holds a
     # base most of the time - but calling it would build an

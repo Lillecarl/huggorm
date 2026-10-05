@@ -16,7 +16,6 @@ from typing import Any
 from huggorm_decl import corpus
 from huggorm_dsl import declare
 from huggorm_gen.cppgen.generate import (
-    declared_bases,
     declared_entries,
     declared_enums,
     declared_errors,
@@ -73,85 +72,6 @@ Proto = dict[str, Any]
 # One of them was already dead. `_wrapper_classes` excluded a class
 # whose `_async` was False, and nothing has emitted `_async` since
 # the mock was deleted.
-
-
-def _sig(m: Proto) -> list[str]:
-    """One method's parameter list, as the pair that has to match:
-    the declared type and the declared default."""
-    return [f"{p['name']}: {p['type']}"
-            + (f" = {p['default']}" if p["default"] is not None else "")
-            for p in m["params"]]
-
-
-def _hierarchy(
-    bases: dict[str, str], protos: list[Proto]
-) -> tuple[dict[str, str], dict[str, set[str]], list[str]]:
-    """Link each emitted wrapper to its nearest emitted ancestor, and
-    work out which methods the ancestor may guarantee.
-
-    The base carries the INTERSECTION of what its subclasses actually
-    expose after their own policy filtering - which is exactly the set a
-    caller can use without knowing which implementation it holds, and so
-    exactly what an abstract Store is for. Nothing is shadow-dropped: a
-    method the base does not promise simply is not on it.
-
-    That resolves the tension between inheritance and per-subclass
-    policy. LocalStore is pool and loses query_derivation, RemoteStore
-    is affine and keeps it, so query_derivation is not part of the
-    guaranteed surface and lands on RemoteStore alone.
-
-    `bases` is each declared class to its declared base. It used to
-    be `cls.__mro__`, which asked a compiled object the question the
-    declaration answers - and answered it only after a C++ build.
-
-    Walked rather than read once, because a base need not be
-    EMITTED. The MRO walk took the nearest ancestor that is also a
-    wrapper; the same rule here is to keep climbing while the base is
-    declared but not among these protos.
-
-    Returns (base_of, shared_of, complaints).
-    """
-    by_name = {p["name"]: p for p in protos}
-    base_of: dict[str, str] = {}
-    children: dict[str, list[Proto]] = {}
-    for proto in protos:
-        parent = bases.get(proto["name"], "")
-        while parent and parent not in by_name:
-            parent = bases.get(parent, "")
-        if parent:
-            base_of[proto["name"]] = parent
-            children.setdefault(parent, []).append(proto)
-
-    shared_of: dict[str, set[str]] = {}
-    complaints: list[str] = []
-    for base_name, kids in children.items():
-        base = next(p for p in protos if p["name"] == base_name)
-        names = {m["name"] for m in base["methods"]}
-        for kid in kids:
-            names &= {m["name"] for m in kid["methods"]}
-        shared_of[base_name] = names
-
-        # Inheritance is only sound if the shared methods really are the
-        # same method. A subclass whose signature drifted would inherit
-        # the base's body and lie about its own types.
-        base_sigs = {m["name"]: m for m in base["methods"]}
-        for kid in kids:
-            for m in kid["methods"]:
-                if m["name"] not in names:
-                    continue
-                b = base_sigs[m["name"]]
-                # Defaults too, not only types. The base declares the
-                # method the subclass inherits, so a subclass that
-                # changed only a default would be called with the
-                # base's one - and the two would disagree about what
-                # the short call means.
-                if (_sig(m) != _sig(b) or m["return_type"] != b["return_type"]):
-                    complaints.append(
-                        f"{kid['name']}.{m['name']} does not match "
-                        f"{base_name}.{m['name']}: "
-                        f"{_sig(m)} -> {m['return_type']} "
-                        f"vs {_sig(b)} -> {b['return_type']}")
-    return base_of, shared_of, complaints
 
 
 def _vendor(src: pathlib.Path, dst: pathlib.Path) -> None:
@@ -237,11 +157,9 @@ def build_manifest() -> Proto:
         """One declared class, by name.
 
         A COPY. `_proto` is called twice for every class - once for
-        the wrappers and once for the stubs - and the wrapper pass
-        edits `methods` in place, moving shared methods onto a base.
-        Handing back the same dict both times would let that edit
-        reach the stubs, which describe the BINDING and have no such
-        rule."""
+        the wrappers and once for the stubs - and the later passes
+        write keys onto the wrappers' dicts in place. The stubs
+        describe the BINDING and must not see them."""
         want = declared.get(name)
         if want is None:
             # Not a fallback. Every name reaching this comes from the
@@ -292,33 +210,6 @@ def build_manifest() -> Proto:
         for c in complaints:
             print(f"policy: {c}", file=sys.stderr)
         sys.exit(1)
-
-    base_of, shared_of, complaints = _hierarchy(declared_bases(), protos)
-    if complaints:
-        for c in complaints:
-            print(f"hierarchy: {c}", file=sys.stderr)
-        sys.exit(1)
-    for proto in protos:
-        proto["async_base"] = base_of.get(proto["name"])
-        shared = shared_of.get(proto["name"])
-        if shared is not None:
-            # A different `dropped` from the count above; naming it
-            # so was how a typechecker noticed.
-            only_on_subclasses = [m["name"] for m in proto["methods"]
-                                  if m["name"] not in shared]
-            if only_on_subclasses:
-                print(f"{proto['name']} guarantees {sorted(shared)}; "
-                      f"{sorted(only_on_subclasses)} live on subclasses only")
-            proto["methods"] = [m for m in proto["methods"] if m["name"] in shared]
-    # Subclasses keep only what the base does not already provide.
-    for proto in protos:
-        base = proto["async_base"]
-        if base is not None:
-            inherited = shared_of.get(base, set())
-            proto["inherited"] = sorted(
-                m["name"] for m in proto["methods"] if m["name"] in inherited)
-            proto["methods"] = [m for m in proto["methods"]
-                                if m["name"] not in inherited]
 
     # The async spelling of a type, when the LANGUAGE gives one.
     #

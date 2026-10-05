@@ -382,6 +382,36 @@ def test_an_undeclarable_dunder_is_refused_rather_than_dropped(
     assert "Callable.__call__" not in str(caught.value)
 
 
+DERIVED = '''"""One bound class that names a base."""
+
+from huggorm_dsl.declare import binding, header
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool")
+class Base:
+    """A base."""
+
+
+@header("nix/store/local-store.hh")
+@binding(cxx="nix::LocalStore", threading="pool")
+class Leaf(Base):
+    """No emitter carries a hierarchy, so this is refused."""
+'''
+
+
+def test_a_bound_base_is_refused_rather_than_dropped(
+        tmp_path: pathlib.Path) -> None:
+    """No emitter carries a class hierarchy, so a base would be
+    dropped in silence; the reader refuses it at its line
+    (huggorm#60)."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    with pytest.raises(DeclarationError, match="huggorm#60") as caught:
+        read(_declaration(tmp_path, DERIVED))
+    assert "Leaf" in str(caught.value)
+
+
 def test_a_taught_dunder_reads_as_a_method(tmp_path: pathlib.Path) -> None:
     """`__call__` is an ordinary method to every emitter."""
     from huggorm_dsl.read import read

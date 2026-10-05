@@ -2181,14 +2181,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
             f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
     held = _held(cls)
     known = known or {}
-    # The C++ base, and the trampoline where the declaration named a
-    # virtual. nanobind takes both as template arguments and does the
-    # rest: a method declared once on the base is reachable from every
-    # leaf, and a Python override becomes visible to C++.
     holds = [held]
-    if decl.base:
-        holds.append(_held(known[decl.base]) if decl.base in known
-                     else decl.base)
     # A WIRE VALUE is final, and that is a contract rather than a
     # preference. Such a class crosses as its declared parts, so a
     # subclass carrying state no part reads would arrive on the far

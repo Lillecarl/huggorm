@@ -432,8 +432,7 @@ class ClassModel:
             "doc": self.doc,
             # Empty for a produced value: it binds no C++ type.
             "binds": "" if self.is_value else "C" + self.name,
-            "bases": ([f"{self.qualified_module}.{decl.base}"]
-                      if decl.base else []),
+            "bases": [],
             "threading": decl.threading,
             "abstract": decl.abstract,
             "constructs": self.constructs,

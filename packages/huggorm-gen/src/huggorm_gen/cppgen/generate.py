@@ -74,34 +74,11 @@ def declared_entries() -> dict[str, dict[str, Any]]:
     construction, and an INCLUDES declaration is complete for the
     values it emits, which is what `is_value` already says."""
     out = {}
-    home = {cls.name: mod for mod in corpus().modules for cls in mod.classes}
     for mod in corpus().modules:
-        known = mod.known
         for cls in mod.classes:
-            entry = ir.ClassModel.of(
+            out[cls.name] = ir.ClassModel.of(
                 cls, PACKAGE, mod.name, ir.Resolver.of(mod),
                 mod.functions).entry(final=False)
-            # A SUBCLASS carries its base's methods, because that is
-            # what deriving means on both sides of the binding: C++
-            # inherits them and so does the Python class nanobind
-            # builds. The declaration states each leaf's own policy
-            # and its own additions, and says the rest once.
-            #
-            # Reflection got this for free - it read a live class,
-            # where the methods are already there - and the layer
-            # above needs it: an abstract base guarantees the
-            # INTERSECTION of what its subclasses expose, so a leaf
-            # that listed nothing would empty the base.
-            base = known.get(cls.decl.base)
-            if base is not None:
-                mine = {m["name"] for m in entry["methods"]}
-                inherited = ir.ClassModel.of(
-                    base, PACKAGE, base.module,
-                    ir.Resolver.of(home[base.name])).entry(
-                        final=False)["methods"]
-                entry["methods"] = [m for m in inherited
-                                    if m["name"] not in mine] + entry["methods"]
-            out[cls.name] = entry
     return out
 
 
@@ -265,23 +242,6 @@ def declared_enums() -> dict[str, dict[str, Any]]:
             if cls.is_words:
                 out[cls.name] = ir.words_entry(cls, PACKAGE, mod.name)
     return out
-
-
-def declared_bases() -> dict[str, str]:
-    """Each declared class to its declared base, by name.
-
-    `pygen._hierarchy` walked `cls.__mro__` for this, which is the
-    same question asked of a compiled object. A declaration states
-    its base outright, and states one - every hierarchy this binds is
-    single inheritance.
-
-    Only a base the set DECLARES. A class deriving from something
-    outside it has no emitted ancestor, which is what the MRO walk
-    meant by "the nearest class that is also emitted"."""
-    have = corpus()
-    known = {c.name for c in have.classes}
-    return {c.name: c.decl.base for c in have.classes
-            if c.decl.base in known}
 
 
 def errors_module() -> str:

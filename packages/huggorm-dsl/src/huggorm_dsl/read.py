@@ -1274,18 +1274,12 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                 node, f"{node.name}: a vocabulary is a StrEnum. Write "
                       f"`class {node.name}(StrEnum)`.")
     elif node.bases:
-        if len(node.bases) > 1:
-            raise DeclarationError(
-                node, f"{node.name}: one base. Every hierarchy this binds "
-                      f"is single inheritance, and C++ multiple "
-                      f"inheritance through a Python type is a different "
-                      f"problem from the one a declaration is for.")
-        base = node.bases[0]
-        if not isinstance(base, ast.Name):
-            raise DeclarationError(
-                node, f"{node.name}: a base is a NAME another declaration "
-                      f"declares, not {ast.unparse(base)!r}.")
-        decl.base = base.id
+        # No emitter carries a class hierarchy (huggorm#60): nanobind
+        # downcasts by exact type, so a bound base buys nothing. A base
+        # written here would be dropped in silence, so it is refused.
+        raise DeclarationError(
+            node, f"{node.name}: a bound class has no base. Declare "
+                  f"the methods on {node.name} itself (huggorm#60).")
     # `@needs` writes onto whatever it decorates, and on a class that
     # is the stand-in rather than the Decl - so it is read here
     # instead of being restated in declare.py, which is the same trick
