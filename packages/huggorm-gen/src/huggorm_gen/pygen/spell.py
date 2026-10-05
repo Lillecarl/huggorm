@@ -69,6 +69,14 @@ class Spelling:
             if p.default_class:
                 self.bindings.add(p.default_class)
 
+    def absorb(self, other: Spelling) -> None:
+        """Take another renderer's imports, for a module that spells
+        parameters and returns differently."""
+        self.bindings |= other.bindings
+        self.unions |= other.unions
+        self.protocols |= other.protocols
+        self.modules |= other.modules
+
     def imports(self) -> list[ast.stmt]:
         """`import pathlib`, then the bindings, the unions and the
         protocols, each sorted - the order every module writes them."""

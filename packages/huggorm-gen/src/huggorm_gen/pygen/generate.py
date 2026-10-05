@@ -395,8 +395,7 @@ def main(argv: list[str] | None = None) -> None:
     (out / f"{surface.PROTOCOL_MODULE}.py").write_text(
         ast.unparse(protocol_module(declared_model())) + "\n")
     (out / f"{surface.RPC_MODULE}.py").write_text(
-        ast.unparse(rpc_module(manifest, ordered,
-                               surface.served_names(manifest))) + "\n")
+        ast.unparse(rpc_module(declared_model())) + "\n")
     withheld = [
         f"{proto['name']}.{m['name']}"
         for proto in ordered for m in proto["methods"] if m["protocol_blockers"]
