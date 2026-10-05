@@ -178,15 +178,9 @@ def _held(cls: Class) -> str:
     return cls.decl.cxx or f"{NAMESPACE}::{cls.name}"
 
 
-def _bare(cls: Class, known: dict[str, Class] | None = None) -> str:
+def _bare(cls: Class, known: dict[str, Class]) -> str:
     """The C++ type behind a declared class, or a refusal."""
     if cls.is_union:
-        # The arms are named, not carried, so they resolve through the
-        # known set. A caller that has not got one cannot ask this.
-        if known is None:
-            raise ValueError(
-                f"{cls.name} is a union: its arms resolve through the "
-                f"known set, so a caller must pass one")
         # A SUM, and std::variant is what C++ already calls one.
         # nanobind casts it natively (<nanobind/stl/variant.h>), so a
         # parameter of a union type needs no dispatch written by hand:
@@ -240,14 +234,13 @@ def _arm(cls: Class, arm: str, known: dict[str, Class]) -> str:
 BYTES_SPELLINGS = ("nb::bytes", "std::vector<nb::bytes>")
 
 
-def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | None]:
+def _cxx(t: Type, known: dict[str, Class]) -> tuple[str, str | None]:
     """A declared type as C++ carries it BY VALUE, and its caster.
 
     The value form, not the parameter form. A return is a value, a
     vector's element is a value, and an optional's payload is a
     value - so this is the shape everything else is built from and
     `_param` adds the reference where a parameter wants one."""
-    known = known or {}
     held_type = t.required
     other = None if held_type.origin else known.get(held_type.python)
     if other is not None and other.decl.kind == "error":
@@ -332,7 +325,7 @@ def _cxx(t: Type, known: dict[str, Class] | None = None) -> tuple[str, str | Non
     return spelled.removeprefix("const ").removesuffix(" &"), caster
 
 
-def _param(t: Type, known: dict[str, Class] | None = None
+def _param(t: Type, known: dict[str, Class]
            ) -> tuple[str, str | None]:
     """The C++ spelling of a declared type, and the caster it needs.
 
@@ -355,7 +348,7 @@ def _param(t: Type, known: dict[str, Class] | None = None
             return spelled, caster
         return f"const {spelled} &", caster
     if t.bound:
-        if not known or t.python not in known:
+        if t.python not in known:
             raise TypeError(
                 f"'{t.python}' names a class this run has not read. Pass its "
                 f"declaration too, so the C++ spelling can be resolved.")
@@ -468,8 +461,8 @@ def _bodies(classes: Sequence[Class],
 
 
 def includes(classes: Sequence[Class],
-             functions: Sequence[Method] = (),
-             known: dict[str, Class] | None = None,
+             functions: Sequence[Method],
+             known: dict[str, Class],
              errors: Sequence[str] = ()) -> list[str]:
     """Exactly the headers this translation unit needs, and no others.
 
@@ -506,7 +499,7 @@ def includes(classes: Sequence[Class],
             note(arg)
         # ...and a UNION's arms, for the same reason: the variant
         # caster casts each arm with that arm's own.
-        held = None if t.origin else (known or {}).get(t.python)
+        held = None if t.origin else known.get(t.python)
         if held is not None and held.is_union:
             for arm in held.decl.arms:
                 note(held.decl.scalars.get(arm)
@@ -565,7 +558,7 @@ def includes(classes: Sequence[Class],
     # `registry.cpp` names `nix::Store` only as a parameter.
     wanted |= {other.decl.header for _, t in _sites(classes, functions)
                if t is not None
-               and (other := (known or {}).get(t.leaf.python)) is not None}
+               and (other := known.get(t.leaf.python)) is not None}
     wanted |= {h for cls in classes for h in cls.decl.headers}
     wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
     wanted |= {h for cls in classes if cls.from_parts is not None
@@ -588,7 +581,7 @@ def waits(cls: Class, m: Method) -> bool:
     return cls.decl.blocking or m.blocks
 
 
-def _default(pr: Param, known: dict[str, Class] | None = None) -> str:
+def _default(pr: Param, known: dict[str, Class]) -> str:
     """A Python default, as C++ spells the same value.
 
     Two cases the table cannot hold, because both need the
@@ -603,7 +596,6 @@ def _default(pr: Param, known: dict[str, Class] | None = None) -> str:
     presence and needs none - an absent container IS an empty one,
     which is what the declaration's own docstring says - so `nullptr`
     would be a null reference where a value belongs."""
-    known = known or {}
     if not pr.has_default:
         return ""
     value = pr.default
@@ -633,7 +625,7 @@ def _default(pr: Param, known: dict[str, Class] | None = None) -> str:
     raise TypeError(f"{pr.name}: no C++ spelling for the default {value!r}")
 
 
-def _extras(cls: Class, m: Method, known: dict[str, Class] | None = None) -> str:
+def _extras(cls: Class, m: Method, known: dict[str, Class]) -> str:
     """The annotations that follow a `.def`, in nanobind's order.
 
     `nb::call_guard<nb::gil_scoped_release>()` comes from one declared
@@ -699,7 +691,7 @@ def words_from_word(cls: Class) -> list[str]:
     return out
 
 
-def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
+def _parsed_by(t: Type | None, known: dict[str, Class]) -> str:
     """The C++ that turns this vocabulary's string into its type.
 
     `@words(parsed_by=...)` names it, and it was prose until this read
@@ -709,7 +701,7 @@ def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
     called. Empty for anything that is not a vocabulary, and for a
     vocabulary that declares no parser - which crosses as its string
     and is parsed by whatever it is handed to."""
-    if t is None or not known:
+    if t is None:
         return ""
     held = t.required
     other = None if held.origin else known.get(held.python)
@@ -725,20 +717,18 @@ def _parsed_by(t: Type | None, known: dict[str, Class] | None) -> str:
     return other.decl.parsed_by
 
 
-def _collection(t: Type | None, known: dict[str, Class] | None) -> str:
+def _collection(t: Type | None, known: dict[str, Class]) -> str:
     """The C++ collection type for a declared `list[T]`, if T names one.
 
     Empty for everything else, which is every list whose element type
     is a primitive or whose class is happy with a vector."""
-    if t is None or known is None:
-        return ""
-    if t.origin != "list":
+    if t is None or t.origin != "list":
         return ""
     element = known.get(t.element.python)
     return element.decl.collection if element else ""
 
 
-def _handle(t: Type | None, known: dict[str, Class] | None) -> Class | None:
+def _handle(t: Type | None, known: dict[str, Class]) -> Class | None:
     """The declared class behind this type, when it binds a HANDLE.
 
     A handle is a class whose `@binding` carries `via`: the bound C++
@@ -746,13 +736,13 @@ def _handle(t: Type | None, known: dict[str, Class] | None) -> Class | None:
     further in. `None` for everything else, which is almost every
     type - a bound class that binds its own methods is not a handle,
     and neither is a str."""
-    if t is None or not t.required.bound or not known:
+    if t is None or not t.required.bound:
         return None
     other = known.get(t.required.python)
     return other if other is not None and other.decl.via else None
 
 
-def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
+def _derived(cls: Class, m: Method, known: dict[str, Class]
              ) -> list[str] | None:
     """The body of a method the emitter can write itself, or None.
 
@@ -867,7 +857,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
     # Before this, `Hash.algorithm` carried the conversion as a `Cxx`
     # body, which is a MAPPING written into a declaration.
     voc = (None if m.ret.required.origin
-           else (known or {}).get(m.ret.required.python))
+           else known.get(m.ret.required.python))
     if voc is not None and voc.is_words and voc.decl.enumerated:
         return [*head, f"{INDENT * 4}return {NAMESPACE}::as_word({call});"]
     # A width the DECLARATION spells. `size()` answers a size_t and
@@ -881,7 +871,7 @@ def _derived(cls: Class, m: Method, known: dict[str, Class] | None = None
 
 
 def _guard_head(cls: Class, m: Method,
-                known: dict[str, Class] | None = None) -> list[str]:
+                known: dict[str, Class]) -> list[str]:
     """The tag check an accessor on a tagged union owes its caller.
 
     Separate from HOW the rest of the body reads, so a method with a
@@ -899,7 +889,7 @@ def _guard_head(cls: Class, m: Method,
         target = m.params[0].name
         # The TARGET's class holds the arm table, not this one:
         # `list_append` is declared on the evaluator and fills a Value.
-        held = (known or {}).get(m.params[0].type.python)
+        held = known.get(m.params[0].type.python)
         if held is None or held.decl.tagged is None:
             raise ValueError(
                 f"{cls.name}.{m.name}: @fills needs its target's class to "
@@ -953,7 +943,7 @@ def _wrong_arm(owner: str, hold: str, expected: str) -> str:
             f"nix::showType({expected}), nix::showType(*{owner}.{hold}));")
 
 
-def _returns(m: Method, known: dict[str, Class] | None) -> str:
+def _returns(m: Method, known: dict[str, Class]) -> str:
     """A lambda's return type, SPELLED, for every body that has one.
 
     It started as an optional-only rule - a lambda with two return
@@ -980,7 +970,7 @@ def _returns(m: Method, known: dict[str, Class] | None) -> str:
     return f" -> {_cxx(m.ret, known)[0]}"
 
 
-def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
+def _method(cls: Class, m: Method, known: dict[str, Class]
             ) -> list[str]:
     """One `.def`, bound by POINTER wherever nanobind allows it.
 
@@ -1024,7 +1014,7 @@ def _method(cls: Class, m: Method, known: dict[str, Class] | None = None
             f"{_extras(cls, m, known)}{tail})"]
 
 
-def absent(pr: Param, known: dict[str, Class] | None = None) -> bool:
+def absent(pr: Param, known: dict[str, Class]) -> bool:
     """Whether this parameter's absence is spelled `None`.
 
     A CONTAINER whose declared default is None. The declaration's own
@@ -1041,7 +1031,7 @@ def absent(pr: Param, known: dict[str, Class] | None = None) -> bool:
 
 
 def _signature(cls: Class, m: Method,
-               known: dict[str, Class] | None = None
+               known: dict[str, Class]
                ) -> tuple[str, list[str]]:
     """A lambda's parameter list, and the lines that open its body.
 
@@ -1078,7 +1068,7 @@ def _signature(cls: Class, m: Method,
 
 
 def _identity_semantics(cls: Class,
-                        known: dict[str, Class] | None = None,
+                        known: dict[str, Class],
                         equality: bool = True) -> list[str]:
     """The repr and the hash every wire value owes a reader.
 
@@ -1154,7 +1144,7 @@ def _identity_semantics(cls: Class,
     ]
 
 
-def _ctor(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
+def _ctor(cls: Class, known: dict[str, Class]) -> list[str]:
     """`nb::init<...>`, with the declared parameter named for Python.
 
     `"name"_a` is what makes the parameter usable as a keyword, so the
@@ -1319,7 +1309,7 @@ def _attribute(cls: Class, m: Method) -> TypeError:
 
 
 def record_fields(cls: Class,
-                  known: dict[str, Class] | None = None
+                  known: dict[str, Class]
                   ) -> list[tuple[str, str]]:
     """Every member of a produced value's struct, in declared order.
 
@@ -1343,7 +1333,7 @@ def _paragraph(doc: str) -> list[str]:
     return out
 
 
-def record(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
+def record(cls: Class, known: dict[str, Class]) -> list[str]:
     """The C++ struct a produced value crosses as.
 
     Real types, every one. This is what the Cython route could not do:
@@ -1377,7 +1367,7 @@ def record(cls: Class, known: dict[str, Class] | None = None) -> list[str]:
 
 
 def records(classes: Sequence[Class],
-            known: dict[str, Class] | None = None) -> list[str]:
+            known: dict[str, Class]) -> list[str]:
     """Every produced value in one unit, inside one namespace."""
     values = [c for c in classes if c.is_value]
     if not values:
@@ -1399,8 +1389,8 @@ def records_include(module: str, package: str) -> str:
 
 
 def records_named(classes: Sequence[Class],
-                  functions: Sequence[Method] = (),
-                  known: dict[str, Class] | None = None) -> list[str]:
+                  functions: Sequence[Method],
+                  known: dict[str, Class]) -> list[str]:
     """Every module whose records this unit names, its own included.
 
     A record is a struct the emitter declares, so a unit that names one
@@ -1409,7 +1399,7 @@ def records_named(classes: Sequence[Class],
     out = {c.module for c in classes if c.is_value}
     for _, t in _sites(classes, functions):
         for node in _nodes(t):
-            held = None if node.origin else (known or {}).get(node.python)
+            held = None if node.origin else known.get(node.python)
             if held is not None and held.is_value:
                 out.add(held.module)
     return sorted(out)
@@ -1463,7 +1453,7 @@ def _nodes(t: Type | None) -> Iterator[Type]:
 
 def _unions_used(classes: Sequence[Class],
                  functions: Sequence[Method],
-                 known: dict[str, Class] | None) -> list[Class]:
+                 known: dict[str, Class]) -> list[Class]:
     """Every union with a declared C++ variant this unit names.
 
     By name, so a union named twice is converted once. Sorted,
@@ -1472,7 +1462,7 @@ def _unions_used(classes: Sequence[Class],
     out: dict[str, Class] = {}
     for _, t in _sites(classes, functions):
         for node in _nodes(t):
-            cls = None if node.origin else (known or {}).get(node.python)
+            cls = None if node.origin else known.get(node.python)
             if cls is not None and cls.is_union and cls.decl.variant is not None:
                 out[cls.name] = cls
     return [out[name] for name in sorted(out)]
@@ -1480,7 +1470,7 @@ def _unions_used(classes: Sequence[Class],
 
 def _vocabularies_used(classes: Sequence[Class],
                        functions: Sequence[Method],
-                       known: dict[str, Class] | None) -> list[Class]:
+                       known: dict[str, Class]) -> list[Class]:
     """Every enum-backed vocabulary this unit NAMES, either way round.
 
     Every site, not only the returns. A unit that only TAKES a word
@@ -1507,7 +1497,7 @@ def _vocabularies_used(classes: Sequence[Class],
                 for n in cls.from_parts.spells]
     spelled += [n for fn in functions for n in fn.spells]
     for name in spelled:
-        cls = (known or {}).get(name)
+        cls = known.get(name)
         if cls is not None and cls.is_words and cls.decl.enumerated:
             out[cls.name] = cls
     # A `@spells` name has to BE one, and this is where that is
@@ -1739,7 +1729,7 @@ inline nb::tuple as_tuple(nb::handle items)
 
 
 def _record_semantics(cls: Class,
-                      known: dict[str, Class] | None = None) -> list[str]:
+                      known: dict[str, Class]) -> list[str]:
     """What a RECORD owes Python beyond reading its own fields.
 
     Equality, and only equality. The repr and the hash beside it are
@@ -1756,7 +1746,7 @@ def _record_semantics(cls: Class,
     ]
 
 
-def _record_ctor(cls: Class, known: dict[str, Class] | None = None
+def _record_ctor(cls: Class, known: dict[str, Class]
                  ) -> list[str]:
     """The two ways a record is and is not built.
 
@@ -1840,7 +1830,7 @@ FROM_PARTS_DOC = "Wire-deserialization helper (private, never surfaced)."
 
 
 def _factory(cls: Class, functions: Sequence[Method],
-             known: dict[str, Class] | None = None) -> list[str]:
+             known: dict[str, Class]) -> list[str]:
     """`nb::new_`, for a class something else makes.
 
     nix::Store is abstract and its implementation is chosen by a URI,
@@ -1897,7 +1887,7 @@ def _factory(cls: Class, functions: Sequence[Method],
     return [*lines, close + ",", f'{INDENT * 3}     "{doc}")']
 
 
-def _lambda_head(fn: Method, known: dict[str, Class] | None) -> str:
+def _lambda_head(fn: Method, known: dict[str, Class]) -> str:
     """The opening of a lambda for a function that CARRIES its C++.
 
     The return type is SPELLED, for the reason `_method` spells one:
@@ -1935,7 +1925,7 @@ def wire_fields(cls: Class) -> list[tuple[str, Type, str]]:
             for f, m in cls.parts if m.ret is not None]
 
 
-def part_types(cls: Class, known: dict[str, Class] | None = None
+def part_types(cls: Class, known: dict[str, Class]
                ) -> list[str]:
     """The C++ each part ARRIVES as, one per wire field.
 
@@ -1963,7 +1953,7 @@ PARTS_DOC = ("Wire-serialization helper (private): one value per "
 
 
 
-def _rebuilt(m: Method | None, known: dict[str, Class] | None) -> str:
+def _rebuilt(m: Method | None, known: dict[str, Class]) -> str:
     """One part, converted back to what the C++ member IS, or "".
 
     A part arrives as the wire carries it, and a `list[T]` is a
@@ -2000,7 +1990,7 @@ Both branches have a user. `GCResults.paths` needs the field's,
     return f"as_set<{held}>({m.name})"
 
 
-def _from_parts(cls: Class, known: dict[str, Class] | None = None
+def _from_parts(cls: Class, known: dict[str, Class]
                 ) -> list[str]:
     """`_from_parts`, for a value nothing constructs.
 
@@ -2152,7 +2142,7 @@ def markers(cls: Class) -> list[str]:
     return out
 
 
-def bind_function(cls: Class, known: dict[str, Class] | None = None,
+def bind_function(cls: Class, known: dict[str, Class],
                   functions: Sequence[Method] = ()) -> str:
     """The whole `bind_<name>` function for one declared class.
 
@@ -2165,7 +2155,6 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
         raise TypeError(
             f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
     held = _held(cls)
-    known = known or {}
     holds = [held]
     # A WIRE VALUE is final, and that is a contract rather than a
     # preference. Such a class crosses as its declared parts, so a
@@ -2289,7 +2278,7 @@ def bind_function(cls: Class, known: dict[str, Class] | None = None,
     return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
 
 
-def free_function(fn: Method, known: dict[str, Class] | None = None) -> list[str]:
+def free_function(fn: Method, known: dict[str, Class]) -> list[str]:
     """One `m.def`, for a function that belongs to no class.
 
     nanopynix has 72 of these and they are one shape:
@@ -2345,7 +2334,7 @@ def public(fns: Sequence[Method],
 
 
 def free_functions(fns: tuple[Method, ...],
-                   known: dict[str, Class] | None = None) -> str:
+                   known: dict[str, Class]) -> str:
     """Every free binding, in one function the module can call.
 
     The same seam a class gets. nanopynix's NB_MODULE already calls
@@ -2442,7 +2431,7 @@ inline std::vector<std::string> from_bytes(const std::vector<nb::bytes> & items)
 
 
 def _converts_bytes(classes: Sequence[Class],
-                    known: dict[str, Class] | None = None) -> bool:
+                    known: dict[str, Class]) -> bool:
     """Whether any accessor here answers bytes, so a unit needs BYTES."""
     return any(m.ret is not None and _cxx(m.ret, known)[0] in BYTES_SPELLINGS
                for cls in classes for m in cls.methods)
@@ -2483,7 +2472,7 @@ def bindable(mod: Module) -> tuple[Class, ...]:
 
 def _errors_used(classes: Sequence[Class],
                  functions: Sequence[Method],
-                 known: dict[str, Class] | None) -> bool:
+                 known: dict[str, Class]) -> bool:
     """Whether this unit names a declared EXCEPTION class anywhere.
 
     One site is enough. A unit that answers with an exception has to
@@ -2496,15 +2485,15 @@ def _errors_used(classes: Sequence[Class],
         if t is None:
             continue
         cls = (None if t.required.origin
-               else (known or {}).get(t.required.python))
+               else known.get(t.required.python))
         if cls is not None and cls.decl.kind == "error":
             return True
     return False
 
 
 def module(classes: Sequence[Class],
-           functions: Sequence[Method] = (),
-           known: dict[str, Class] | None = None,
+           functions: Sequence[Method],
+           known: dict[str, Class],
            errors: str = "",
            error_headers: Sequence[str] = (),
            package: str = "") -> str:
@@ -2546,8 +2535,8 @@ def module(classes: Sequence[Class],
             if not v.decl.parsed_by:
                 head += words_from_word(v)
         for u in unions:
-            head += (bare_check(u, known or {}) if _is_bare(u)
-                     else conversions(u, known or {}))
+            head += (bare_check(u, known) if _is_bare(u)
+                     else conversions(u, known))
         head += [f"}}  // namespace {NAMESPACE}", ""]
     # The casters come AFTER the conversions and outside the
     # namespace: each one calls a conversion by name, and a
@@ -2556,7 +2545,7 @@ def module(classes: Sequence[Class],
     if wrapped:
         head += ["namespace nanobind::detail {", ""]
         for u in wrapped:
-            head += caster(u, known or {})
+            head += caster(u, known)
         head += ["}  // namespace nanobind::detail", ""]
     out = "\n".join(head) + "\n" + "\n".join(
         bind_function(cls, known, functions) for cls in classes)
@@ -2585,7 +2574,6 @@ def imports(mod: Module) -> list[str]:
 
 
 def extension(mod: Module, dotted: str,
-              known: dict[str, Class] | None = None,
               chain: list[str] | None = None,
               errors: str = "",
               error_headers: Sequence[str] = ()) -> str:
@@ -2605,7 +2593,7 @@ def extension(mod: Module, dotted: str,
     here no declaration carries, and it is what turns a sibling
     declaration's name into an import a running interpreter can
     follow."""
-    known = known or mod.known
+    known = mod.known
     classes = bindable(mod)
     package = dotted.rpartition(".")[0]
     reached = [f'{INDENT}nb::module_::import_("'
@@ -2720,8 +2708,8 @@ if __name__ == "__main__":
     for path in sys.argv[1:]:
         mod = read(path)
         for cls in mod.classes:
-            print(module([cls]) if len(mod.classes) == 1
-                  else bind_function(cls))
+            print(module([cls], (), mod.known) if len(mod.classes) == 1
+                  else bind_function(cls, mod.known))
             c = census(cls)
             total = c["derived"] + c["hatched"]
             print(f"// {cls.name}: {c['derived']}/{total} derived, "
