@@ -258,9 +258,9 @@ def wire_blocker(t: TypeRef, served: frozenset[str]) -> str | None:
                 f"handle. A remote caller would receive an id it cannot "
                 f"use.")
     if t.kind == "module" and t.name not in SPELLED:
-        return (f"{t.spelling} is not in the manifest, so it has no wire "
-                f"policy (an excluded base class, most likely - see "
-                f"huggorm#18)")
+        return (f"{t.spelling} has no wire spelling: a type from another "
+                f"module crosses only as the builtin wiretypes.SPELLED "
+                f"names for it, and SPELLED names none for this one")
     return None
 
 
