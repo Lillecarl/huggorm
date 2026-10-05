@@ -877,15 +877,44 @@ def _shaped(cls: ClassModel) -> ClassModel:
 
 
 @dataclass(frozen=True)
+class Alternative:
+    """One arm as the C++ union's variant holds it.
+
+    `arm` is the arm's own C++, as the arms' `std::variant` holds it.
+    `cxx` is the type the union's variant holds, and `member` the
+    member inside it - both `arm` and "" for every arm no `wraps`
+    names, which the variant holds as itself."""
+
+    arm: str
+    cxx: str
+    member: str = ""
+
+
+@dataclass(frozen=True)
+class CxxVariant:
+    """The C++ union behind a sum type: its type, the member that
+    reaches its std::variant ("" when it IS one), the header that
+    declares it, whether it is the arms' `std::variant` outright, and
+    each arm's alternative in declared order."""
+
+    cxx: str
+    raw: str
+    header: str
+    bare: bool
+    alternatives: tuple[Alternative, ...]
+
+
+@dataclass(frozen=True)
 class UnionModel:
     """One sum type. Each arm is named as the wire names it, a scalar
     by its wire spelling, and carries the C++ the arms' variant holds
     it as - the bare type, never a holder - with the caster it needs."""
 
     name: str
-    decl: Decl
     arms: tuple[TypeRef, ...]
     header: str = ""
+    # The declared C++ union, or None for a sum only Python has.
+    variant: CxxVariant | None = None
 
     @classmethod
     def of(cls, u: Class, resolver: Resolver) -> UnionModel:
@@ -896,7 +925,14 @@ class UnionModel:
             arms.append(replace(TypeRef.named(a, resolver.kind(a)),
                                 cxx=cxx.arm(u, a, resolver.known),
                                 caster=caster))
-        return cls(u.name, u.decl, tuple(arms), u.decl.header)
+        v = u.decl.variant
+        variant = None if v is None else CxxVariant(
+            v.cxx, v.raw, v.header, v.bare,
+            tuple(Alternative(a.cxx, w.cxx, w.holds)
+                  if (w := v.wraps.get(a.name)) is not None
+                  else Alternative(a.cxx, a.cxx)
+                  for a in arms))
+        return cls(u.name, tuple(arms), u.decl.header, variant)
 
 
 @dataclass(frozen=True)

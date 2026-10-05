@@ -450,12 +450,7 @@ def words_conversion(cls: ir.EnumModel) -> list[str]:
 
 
 def _is_bare(cls: ir.UnionModel) -> bool:
-    return cls.decl.variant is not None and cls.decl.variant.bare
-
-
-def _arm(cls: ir.UnionModel, name: str) -> str:
-    """One arm as the arms' variant holds it."""
-    return next(a.cxx for a in cls.arms if a.name == name)
+    return cls.variant is not None and cls.variant.bare
 
 
 def _arms_type(cls: ir.UnionModel) -> str:
@@ -783,8 +778,8 @@ class Emitter:
         # A union's own type, which no `@header` names: the alias carries
         # it, because a unit that only PASSES one declares none of its
         # arms and would otherwise include nothing that spells it.
-        wanted |= {u.decl.variant.header for u in self._unions_used(
-            classes, functions) if u.decl.variant is not None}
+        wanted |= {u.variant.header for u in self._unions_used(
+            classes, functions) if u.variant is not None}
         # A vocabulary's enum, for the same reason. `hash.cpp` returns a
         # HashAlgorithm and declares no class from `nix/util/hash.hh`
         # beyond its own - the words live in another declaration file.
@@ -1287,7 +1282,7 @@ class Emitter:
             for node in _nodes(t):
                 held = self.model.declared(node)
                 if (isinstance(held, ir.UnionModel)
-                        and held.decl.variant is not None):
+                        and held.variant is not None):
                     out[node.name] = held
         return [out[name] for name in sorted(out)]
 
@@ -1324,21 +1319,6 @@ class Emitter:
         out.update((name, self.model.enums[name]) for name in spelled)
         return [out[name] for name in sorted(out)]
 
-    def _alternative(self, cls: ir.UnionModel, arm: str) -> tuple[str, str]:
-        """One arm as the C++ variant holds it: the type, and the member.
-
-        The member is empty when the variant holds the arm as itself,
-        which is every arm no `wraps` names. `SingleDerivedPathBuilt` is
-        an alternative of `nix::SingleDerivedPath` outright, so nothing
-        has to be said about it - and saying it for every arm would make
-        the one arm that IS wrapped read like the others."""
-        variant = cls.decl.variant
-        assert variant is not None
-        wrap = variant.wraps.get(arm)
-        if wrap is not None:
-            return wrap.cxx, wrap.holds
-        return _arm(cls, arm), ""
-
     def conversions(self, cls: ir.UnionModel) -> list[str]:
         """One union, in both directions, from what its alias declares.
 
@@ -1358,35 +1338,34 @@ class Emitter:
         says that, where a fourth `if` would leave a fall-through with
         nothing to return.
         """
-        variant = cls.decl.variant
+        variant = cls.variant
         assert variant is not None
-        arms = cls.decl.arms
+        *alts, last = variant.alternatives
         held = _arms_type(cls)
         reach = f"p.{variant.raw}" if variant.raw else "p"
         out = [f"/** The arms of a {cls.name}, as Python has them. */",
                f"inline {held} as_arms(const {variant.cxx} & p)",
                "{"]
-        for arm in arms[:-1]:
-            alt, member = self._alternative(cls, arm)
-            out += [f"{INDENT}if (auto * arm = std::get_if<{alt}>(&{reach}))",
-                    f"{INDENT * 2}return {'arm->' + member if member else '*arm'};"]
-        alt, member = self._alternative(cls, arms[-1])
-        got = f"std::get<{alt}>({reach})"
-        out += [f"{INDENT}return {got + '.' + member if member else got};",
+        for alt in alts:
+            out += [f"{INDENT}if (auto * arm = std::get_if<{alt.cxx}>(&{reach}))",
+                    f"{INDENT * 2}return "
+                    f"{'arm->' + alt.member if alt.member else '*arm'};"]
+        got = f"std::get<{last.cxx}>({reach})"
+        out += [f"{INDENT}return "
+                f"{got + '.' + last.member if last.member else got};",
                 "}", ""]
 
         out += [f"/** A {cls.name}'s arms, as the C++ union holds them. */",
                 f"inline {variant.cxx} from_arms(const {held} & a)",
                 "{"]
-        for arm in arms[:-1]:
-            alt, member = self._alternative(cls, arm)
+        for alt in alts:
             out += [f"{INDENT}if (auto * arm = "
-                    f"std::get_if<{_arm(cls, arm)}>(&a))",
-                    f"{INDENT * 2}return {alt + '{*arm}' if member else '*arm'};"]
-        last = arms[-1]
-        alt, member = self._alternative(cls, last)
-        got = f"std::get<{_arm(cls, last)}>(a)"
-        out += [f"{INDENT}return {alt + '{' + got + '}' if member else got};",
+                    f"std::get_if<{alt.arm}>(&a))",
+                    f"{INDENT * 2}return "
+                    f"{alt.cxx + '{*arm}' if alt.member else '*arm'};"]
+        got = f"std::get<{last.arm}>(a)"
+        out += [f"{INDENT}return "
+                f"{last.cxx + '{' + got + '}' if last.member else got};",
                 "}", ""]
 
         return out
@@ -1398,7 +1377,7 @@ class Emitter:
         the compiler. A declaration that lists the arms out of order, or
         names a union that only derives from a variant, fails here rather
         than casting through the wrong alternative."""
-        variant = cls.decl.variant
+        variant = cls.variant
         assert variant is not None
         return [f"static_assert(std::is_same_v<{variant.cxx}, "
                 f"{_arms_type(cls)}>,",
@@ -1426,7 +1405,7 @@ class Emitter:
         an optional instead, and the three cast operators reach through
         it.
         """
-        variant = cls.decl.variant
+        variant = cls.variant
         assert variant is not None
         arms = _arms_type(cls)
         return [
