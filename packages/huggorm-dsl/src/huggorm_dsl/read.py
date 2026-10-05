@@ -105,6 +105,11 @@ DECLARATIONS = "huggorm_decl.decl"
 # that name.
 FROM_PARTS = "_from_parts"
 
+# What a class decorator leaves on the class it marks. The reader
+# reads both off the import, and the contents check accepts both.
+DECL = "_decl"
+NEEDS = "_needs"
+
 # The lines an exception declaration writes in its class body. `cxx`
 # and `header` are the class's own; `reader` and `_wire_fields` are
 # read off the import, so a subclass inherits them.
@@ -900,7 +905,7 @@ def _member(ann: object, value: object) -> str:
     that says which member that is."""
     if not isinstance(ann, type) or not isinstance(value, str):
         return ""
-    decl = vars(ann).get("_decl")
+    decl = vars(ann).get(DECL)
     if decl is None or decl.kind != "words":
         return ""
     return next((k for k, v in vars(ann).items()
@@ -1256,7 +1261,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         cxx_body=_body(node),
         local=bool(getattr(marked, "_local", False)),
         wire_read=getattr(marked, "_wire_read", ""),
-        headers=tuple(getattr(marked, "_needs", ())),
+        headers=tuple(getattr(marked, NEEDS, ())),
         spells=tuple(getattr(marked, "_spells", ())),
         startup=bool(getattr(marked, "_startup", False)),
         translator=bool(getattr(marked, "_translator", False)),
@@ -1320,7 +1325,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     if not isinstance(holder, type):
         raise DeclarationError(
             node, f"{node.name}: the import has no class at this line.")
-    decl: Decl = holder.__dict__.get("_decl", Decl())
+    decl: Decl = holder.__dict__.get(DECL, Decl())
     decl.name = node.name
     # The base, said the way Python says it.
     #
@@ -1354,7 +1359,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     # is the stand-in rather than the Decl - so it is read here
     # instead of being restated in declare.py, which is the same trick
     # every other decorator gets.
-    decl.headers = tuple(holder.__dict__.get("_needs", ()))
+    decl.headers = tuple(holder.__dict__.get(NEEDS, ()))
 
     if decl.kind == "words":
         return Class(
@@ -1388,7 +1393,8 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                 f"{node.name}.{item.name}: a declaration describes a C++ "
                 f"binding, so `async def` says nothing here. The async "
                 f"form is DERIVED - @binding(threading=...) and @blocks "
-                f"decide which methods get one - so write a plain `def`."))
+                f"decide which methods get one - so write a plain `def`."),
+                unsound=f"{node.name}.{item.name}")
             continue
         if not isinstance(item, ast.FunctionDef):
             continue
@@ -1458,7 +1464,8 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                 f"@wire_value writes them, and its `order=` and "
                 f"`text=` decide which - so do not declare one. "
                 f"Anything else needs the emitters taught (huggorm#88); "
-                f"declare it under a plain name until then."))
+                f"declare it under a plain name until then."),
+                unsound=f"{node.name}.{item.name}")
         else:
             # Definition order, which is the order a reader of the
             # declaration sees and the order the emitted file keeps.
@@ -1472,7 +1479,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
             try:
                 methods.append(_method(item, vocab, fns))
             except DeclarationError as e:
-                _survive(e)
+                _survive(e, unsound=f"{node.name}.{item.name}")
     out = Class(
         name=node.name,
         doc=ast.get_docstring(node, clean=False) or "",
@@ -1863,20 +1870,18 @@ def _read(path: str) -> Module:
             _survive(e, unsound=n.name)
     # Module-level functions are FREE bindings - nanopynix has 72 of
     # them, `m.def("open_store", &open_store_uri, "uri"_a)` and its
-    # kind. Only decorated ones: an undecorated def at module level is
-    # a helper the declaration wrote for itself.
+    # kind. Only decorated ones; `_contents` refuses an undecorated
+    # def, because nothing reads it.
     functions = []
     for n in body:
         if isinstance(n, ast.AsyncFunctionDef) and n.decorator_list:
-            # As in a class body, and for the same reason. An
-            # UNDECORATED one is not refused: it is a helper the
-            # declaration wrote for itself, exactly like an
-            # undecorated `def`, and this loop already ignores those.
+            # As in a class body, and for the same reason.
             _survive(DeclarationError(
                 n,
                 f"{n.name}: a declaration describes a C++ binding, so "
                 f"`async def` says nothing here. The async form is "
-                f"DERIVED from @threading - so write a plain `def`."))
+                f"DERIVED from @threading - so write a plain `def`."),
+                unsound=n.name)
             continue
         if not (isinstance(n, ast.FunctionDef) and n.decorator_list):
             continue
@@ -1884,8 +1889,9 @@ def _read(path: str) -> Module:
             functions.append(
                 _method(n, vocab, fns, bound=False, bound_kind=False))
         except DeclarationError as e:
-            _survive(e)
-    glb = vars(load(path))
+            _survive(e, unsound=n.name)
+    mod = load(path)
+    glb = vars(mod)
     unions = _unions(body, stem, glb)
     uses = _uses(tree, pathlib.Path(path).parent)
     # ...checked once the arms can be resolved, which needs the
@@ -1907,7 +1913,7 @@ def _read(path: str) -> Module:
             _check_arms(u, resolvable, at.get(u.name, tree))
         except DeclarationError as e:
             _survive(e, unsound=u.name)
-    return Module(
+    out = Module(
         name=stem,
         doc=ast.get_docstring(tree, clean=False) or "",
         classes=tuple(classes),
@@ -1917,10 +1923,110 @@ def _read(path: str) -> Module:
         unions=unions,
         uses=uses,
     )
+    _contents(out, mod, tree, path)
+    return out
 
 
+def _dunder(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
 
 
+def _written(value: object, here: str) -> types.FunctionType | None:
+    """The function a declaration wrote, under any descriptor."""
+    fn = getattr(value, "fget", None) or getattr(value, "__func__", value)
+    if not isinstance(fn, types.FunctionType):
+        return None
+    # Python 3.14 compiles annotations into an `__annotate__` function.
+    # No one wrote it.
+    if fn.__code__.co_filename != here or fn.__name__ == "__annotate__":
+        return None
+    return fn
+
+
+def _binder(tree: ast.AST, name: str) -> ast.AST:
+    """The statement that binds `name`, so a refusal names its line."""
+    for node in ast.walk(tree):
+        if isinstance(node, DEFINITIONS) and node.name == name:
+            return node
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            if any(isinstance(t, ast.Name) and t.id == name
+                   for t in targets):
+                return node
+    return tree
+
+
+def _contents(module: Module, mod: ModuleType, tree: ast.Module,
+              path: str) -> None:
+    """Every name the import holds, the reader put somewhere.
+
+    A name in a declaration that reaches no output reads as one nobody
+    wrote. That is the silent skip (huggorm#73, #75, #78, #88), and
+    this refuses it where it starts: the import ran the file, so
+    `vars` holds every name the build has, with each `NIX_VERSION`
+    branch already chosen.
+
+    A module holds declared classes, exceptions, union aliases,
+    decorated functions and imports. A bound class holds its methods,
+    its constructor, `_from_parts` and what its decorators wrote; a
+    vocabulary holds its words. An exception class is not walked: its
+    body is copied through whole.
+
+    IMPORTS are read from the tree. The objects cannot say where they
+    came from: `Str` and a union this file declares are both a
+    `typing` alias, and `NIX_2_36` is a bare bool.
+
+    A name a refusal already marked unsound is skipped, so a class
+    that failed to read is reported once, for its cause."""
+    here = str(pathlib.Path(path).resolve())
+    imported = {a.asname or a.name.split(".")[0]
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Import | ast.ImportFrom)
+                for a in n.names}
+    bound = {c.name: c for c in module.classes}
+    known = {*bound, *(e.name for e in module.errors),
+             *(u.name for u in module.unions),
+             *(f.name for f in module.functions)}
+    unsound = _COLLECTING.unsound if _COLLECTING is not None else set()
+    for name, value in vars(mod).items():
+        if _dunder(name) or name in imported or name in unsound:
+            continue
+        if name not in known:
+            _survive(DeclarationError(
+                _binder(tree, name),
+                f"{name} ({type(value).__name__}) reaches no output. A "
+                f"declaration holds declared classes, exceptions, union "
+                f"aliases, decorated functions and imports."),
+                unsound=name)
+            continue
+        cls = bound.get(name)
+        if cls is not None:
+            _class_contents(cls, value, here, tree, unsound)
+
+
+def _class_contents(cls: Class, holder: type, here: str, tree: ast.Module,
+                    unsound: set[str]) -> None:
+    """`_contents` for one bound class."""
+    kept = {m.name for m in cls.methods} | {DECL, NEEDS}
+    kept |= {m.name for m in (cls.ctor, cls.from_parts) if m is not None}
+    words = cls.decl.kind == "words"
+    members = {m.name for m in cls.members}
+    for name, value in vars(holder).items():
+        if _dunder(name) and _written(value, here) is None:
+            continue
+        # An enum keeps its machinery under `_sunder_` names.
+        if words and ((isinstance(value, holder) and name in members)
+                      or (name.startswith("_") and name.endswith("_"))):
+            continue
+        if name in kept or f"{cls.name}.{name}" in unsound:
+            continue
+        _survive(DeclarationError(
+            _binder(_binder(tree, cls.name), name),
+            f"{cls.name}.{name} ({type(value).__name__}) reaches no "
+            f"output. A bound class holds its methods, its constructor, "
+            f"{FROM_PARTS} and what its decorators wrote."),
+            unsound=f"{cls.name}.{name}")
 
 
 def _unions(body: list[ast.stmt], where: str,
