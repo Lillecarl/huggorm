@@ -769,6 +769,32 @@ async def test_acquire_refuses_the_wrong_number_of_arguments(
     assert "store" in str(short.value), str(short.value)
 
 
+async def test_concurrent_first_calls_build_one_object(client: Any) -> None:
+    """Many first calls on one fresh handle, at once, over the wire.
+
+    The server builds a wrapper's object lazily, on its first call,
+    and a POOL store's first calls run on different threads, so they
+    race on that construction (huggorm#12). An affine object cannot:
+    its one thread serializes them.
+
+    A writable `dummy://` keeps its paths per instance, so a second
+    store built by the race would hold some of these paths, and the
+    handle would answer for the other one."""
+    store = await client.acquire("Store", "dummy://?read-only=false")
+    paths: list[Any] = [None] * 16
+
+    async def first(i: int) -> None:
+        paths[i] = await store.add_to_store(
+            f"p{i}", f"{i}".encode(), CA.TEXT, HashAlgorithm.SHA256)
+
+    async with anyio.create_task_group() as tg:
+        for i in range(len(paths)):
+            tg.start_soon(first, i)
+
+    for p in paths:
+        assert await store.is_valid_path(p), p
+
+
 async def test_bind_refuses_a_client_of_another_schema(client: Any) -> None:
     """Field numbers are positional, so a client from another build
     would decode every answer wrongly and without an error. Bind
