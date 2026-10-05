@@ -67,6 +67,16 @@ transports after that.
 
 In order:
 
+0. **The architecture, before anything else.** Carl, 2026-10-05:
+   "it's highest priority that the architecture is solid". The work
+   is a TYPED MODEL between the reader and the emitters (#29). The
+   manifest is `dict[str, Any]` and types cross it as strings, so
+   each emitter re-derives the same rules from strings and names,
+   and the copies drift. Measured on one day: "is this a proxy" was
+   an exact string match in three places that all missed `X | None`,
+   and "is this private" was a leading-`_` test in five places that
+   silently dropped `__call__`. A rule lives on the model once.
+   Features wait for this.
 1. A defect that can corrupt a value, or drop one silently. This
    repo's named failure mode is the SILENT SKIP - an emitter skips
    what it does not recognise, and a skip is indistinguishable from an
