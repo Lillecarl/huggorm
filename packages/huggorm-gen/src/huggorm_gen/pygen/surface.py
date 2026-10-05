@@ -31,8 +31,6 @@ cannot carry, rather than pretending.
 
 from typing import Any
 
-from huggorm_gen.payload.wiretypes import respell
-
 Proto = dict[str, Any]
 
 PROTOCOL_MODULE = "protocols"
@@ -53,100 +51,9 @@ def protocol_name(cls_name: str) -> str:
     return f"{cls_name}Like"
 
 
-def like_spelling(type_str: str, served: set[str]) -> str:
-    """A method parameter's annotation, the same on every surface.
-
-    A served class is spelled as its protocol, keeping `| None`, so
-    the protocol, the in-process wrapper and the RPC client agree and
-    a method with a proxy parameter can be promised (huggorm#26). The
-    location is checked when the call runs: each side refuses the
-    other side's object with a TypeError."""
-    return respell(type_str, {n: protocol_name(n) for n in served})
-
-
 def async_class_name(cls_name: str) -> str:
     return f"Async{cls_name}"
 
 
 def rpc_class_name(cls_name: str) -> str:
     return f"RPC{cls_name}"
-
-
-def served_names(manifest: Proto) -> set[str]:
-    """Every class with a service behind its handles: all proxies.
-
-    Wrap and serve are different decisions sharing one history.
-    Wrapping is execution - a home thread, a released GIL - and only
-    classes that need it get it. Serving is addressability - a lease
-    registry plus dispatch for a handle - and every proxy needs it,
-    because a handle no later call can use is the thing the wire
-    refuses to publish. A pool class with nothing to block on still
-    gets a service; its calls just run without a hop.
-    """
-    return {
-        name
-        for group in ("wrappers", "returned_types")
-        for name, proto in manifest[group].items()
-        if proto["wire"] == "proxy"
-    }
-
-
-def protocol_blockers(method: Proto) -> list[str]:
-    """Why this method cannot appear on the protocol, or [] if it can.
-
-    No wire representation, decided by grpc_schema and read back here.
-    A protocol is what BOTH implementations satisfy, so a method the
-    RPC client cannot offer is not one the protocol can declare. The
-    in-process wrapper keeps it - Store.real_path is a real method
-    that is simply not a remote call.
-
-    A proxy PARAMETER blocks nothing: every surface spells it as the
-    protocol (`like_spelling`), and the location is checked at run."""
-    return [
-        f"no rpc, so the remote surface cannot offer it: {why}"
-        for why in method.get("wire_blockers", ())
-    ]
-
-
-def order(manifest: Proto) -> list[Proto]:
-    """The served protocol dicts, bases before subclasses.
-
-    Only class inheritance needs the order - annotations are lazy in
-    both emitted modules - but a subclass whose base is not defined yet
-    is a NameError at import, so it is not optional."""
-    protos = [
-        proto
-        for group in ("returned_types", "wrappers")
-        for proto in manifest[group].values()
-        if proto["wire"] == "proxy"
-    ]
-    by_name = {p["name"]: p for p in protos}
-    out: list[Proto] = []
-    placed: set[str] = set()
-
-    def place(proto: Proto) -> None:
-        if proto["name"] in placed:
-            return
-        placed.add(proto["name"])
-        base = proto.get("async_base")
-        if base in by_name:
-            place(by_name[base])
-        out.append(proto)
-
-    for proto in protos:
-        place(proto)
-    return out
-
-
-def annotate(manifest: Proto) -> Proto:
-    """Stamp the surface names onto the manifest, in place."""
-    for group in ("wrappers", "returned_types"):
-        for cls_name, proto in manifest[group].items():
-            if proto["wire"] != "proxy":
-                continue
-            proto["protocol"] = protocol_name(cls_name)
-            proto["async_class"] = async_class_name(cls_name)
-            proto["rpc_class"] = rpc_class_name(cls_name)
-            for m in proto["methods"]:
-                m["protocol_blockers"] = protocol_blockers(m)
-    return manifest

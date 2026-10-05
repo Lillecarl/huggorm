@@ -8,28 +8,16 @@ in `huggorm_gen.contracts`, and emission lives in emitter.py. Installed as the
 
 import argparse
 import ast
-import copy
 import pathlib
 import sys
-from typing import Any
 
 from huggorm_decl import corpus
-from huggorm_dsl import declare
 from huggorm_gen import contracts, ir
-from huggorm_gen.cppgen.generate import (
-    declared_entries,
-    declared_enums,
-    declared_errors,
-    declared_functions,
-    declared_model,
-    declared_returned,
-    declared_unions,
-)
+from huggorm_gen.cppgen.generate import declared_model
 from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
     STUB_PACKAGE,
-    emitter_union_names,
     free_function_module,
     init_module,
     policy_module,
@@ -40,11 +28,7 @@ from huggorm_gen.pygen.emitter import (
     unions_module,
     wrapper_module,
 )
-from huggorm_gen.pygen.grpc_schema import annotate, build_fdset
-
-# One class, method or function as a plain dict.
-Proto = dict[str, Any]
-
+from huggorm_gen.pygen.grpc_schema import build_fdset
 
 # Nothing here imports huggorm_bindings.
 #
@@ -80,149 +64,6 @@ def _vendor(src: pathlib.Path, dst: pathlib.Path) -> None:
     makes the generator idempotent over its own output.
     """
     dst.write_bytes(src.read_bytes())
-
-
-def build_manifest() -> Proto:
-    """Everything the build decides, as a value.
-
-    This used to be the first three hundred lines of `main`, ending
-    in a `manifest.json` that other things read back. The
-    serialisation bought nothing and cost the usual: a second shape to
-    keep in step, a version stamp to check, and a `dict[str, Any]` at
-    every boundary that touched it.
-
-    A function instead. The emitters below take the value; so does
-    the suite, which held the emitted code against the JSON and can
-    now hold it against the same derivation the emitters use.
-
-    Nothing here writes a file, and that is the point of the split:
-    the three async-wrapper emissions used to happen in the middle of
-    this, so there was no moment at which the build's decisions were
-    complete and nothing had been written yet.
-    """
-    # Which annotation names are ALIASES, told before anything is
-    # emitted. The emitter distinguishes a union from a bound class
-    # when it writes an import - one comes from huggorm_bindings and
-    # the other from the generated `_unions` - and there is no way to
-    # tell them apart from a name alone. Set here rather than beside
-    # the manifest, because the wrapper modules are written first.
-    emitter_union_names(declared_unions())
-
-    # Every declared class, by name. The reflected version asked the
-    # compiled package for classes carrying a threading policy; every
-    # declared class has one, and the two sets matched exactly.
-    declared: dict[str, Proto] = declared_entries()
-    wrapper_names = sorted(declared)
-
-    # Which classes are HANDED BACK rather than constructed. The
-    # declaration says, and it is the only thing that could: this was
-    # a walk over the pxd's return types.
-    returned_names = sorted(declared_returned())
-    returned_set = set(returned_names)
-    wrapper_names = [n for n in wrapper_names if n not in returned_set]
-    if not wrapper_names:
-        print("no constructible wrapper classes found", file=sys.stderr)
-        sys.exit(1)
-
-    # Where every proto dict comes from.
-    #
-    # This is the seam that ended the build's one possible order.
-    # Every proto dict used to come from IMPORTING the compiled
-    # extension and reflecting on it - which put the async wrappers,
-    # the protocols, the RPC stubs and the type stubs behind a C++
-    # compiler for facts a person wrote in a declaration first.
-    #
-    # Reflection ran beside this for as long as there was something to
-    # measure against, and the claim held: the declaration carries
-    # everything reflection found. Then the compiled class it measured
-    # was a nanobind one, which has no signature to reflect, and the
-    # other route stopped existing.
-    #
-    # Imported, not read from a file. The specification is Python and
-    # so is this, so a serialisation between them would be one more
-    # shape to keep in step.
-    print(f"declared entries: {len(declared)} class(es) - "
-          + ", ".join(sorted(declared)))
-
-    def _proto(name: str) -> Proto:
-        """One declared class, by name.
-
-        A COPY. `_proto` is called twice for every class - once for
-        the wrappers and once for the stubs - and the later passes
-        write keys onto the wrappers' dicts in place. The stubs
-        describe the BINDING and must not see them."""
-        want = declared.get(name)
-        if want is None:
-            # Not a fallback. Every name reaching this comes from the
-            # declaration set, so a miss means two derivations of the
-            # same set disagree - and guessing a surface is how a
-            # wrong answer reaches four generated files at once.
-            raise SystemExit(f"{name} is named as a class but no "
-                             f"declaration describes it")
-        print(f"  {want['name']}: from the declaration")
-        return copy.deepcopy(want)
-
-    returned_protos = [_proto(n) for n in returned_names]
-    protos = [_proto(n) for n in wrapper_names]
-
-    unwrapped = sorted(p["name"] for p in protos + returned_protos
-                       if not p["wrapped"])
-    if unwrapped:
-        print(f"not wrapped (pool and non-blocking, so nothing to wrap): "
-              f"{', '.join(unwrapped)}")
-
-    # The async spelling of a type, when the LANGUAGE gives one.
-    #
-    # From the vocabulary, not from a marker on the bindings package.
-    # `Path` is `Annotated[pathlib.Path, Cxx("string"),
-    # Async("anyio.Path")]`, so the two spellings of one word sit
-    # together and neither file repeats the other's half.
-    async_twins: dict[str, str] = declare.twins()
-
-    # A free function comes from the declaration where there is one,
-    # and from reflection where there is not - the same rule the
-    # classes follow one screen up, and for the same reason. A
-    # nanobind function is a builtin: `inspect.signature` refuses it,
-    # so there is nothing to reflect.
-    declared_fns = declared_functions()
-    free_protos = [declared_fns[n] for n in sorted(declared_fns)]
-    from_decl = sorted(declared_fns)
-    if from_decl:
-        print(f"free functions from the declaration: "
-              f"{', '.join(from_decl)}")
-    unwrapped_free = [p["name"] for p in free_protos if not p["wrapped"]]
-    if unwrapped_free:
-        print(f"free functions with no threading policy, so no wrapper: "
-              f"{', '.join(unwrapped_free)}")
-    enums = declared_enums()
-    unions = declared_unions()
-    errors = declared_errors()
-    # Round-trip probes, not surface.
-    for proto in protos + returned_protos:
-        proto.pop("_helpers", None)
-
-    manifest: Proto = {
-        "wrappers": {p["name"]: p for p in protos},
-        "returned_types": {p["name"]: p for p in returned_protos},
-        "free_functions": {p["name"]: p for p in free_protos},
-        "errors": errors,
-        "enums": enums,
-        # {alias: [arm, ...]}, in DECLARED order - the order a oneof
-        # numbers its fields in, so a reorder is a wire change.
-        "unions": unions,
-        # The async spelling of a type, when it has one. Declared by
-        # the bindings; the emitter turns it into one annotation and
-        # one constructor call.
-        "async_twins": async_twins,
-    }
-
-    # grpc_schema owns wire naming; stamping it into the manifest is what
-    # lets the server and the client read the names instead of each
-    # rebuilding the same convention from scratch.
-    annotate(manifest, declared_model())
-    surface.annotate(manifest)
-
-    return manifest
 
 
 def main(argv: list[str] | None = None) -> None:

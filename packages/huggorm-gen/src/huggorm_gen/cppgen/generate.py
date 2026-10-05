@@ -13,10 +13,9 @@ module listed has no hand-written source at all.
 
 That is the state the spike was arguing for. There is no `.pyx`, no
 `.pxd` and no shim header anywhere in `huggorm_bindings`: every
-module is C++ written from a declaration, and `declared_entries`,
-`declared_functions` and `declared_returned` are how the generated
-layer above learns what is in them - without importing a compiled
-extension or parsing a pxd.
+module is C++ written from a declaration, and `declared_model` is how
+the generated layer above learns what is in them - without importing
+a compiled extension or parsing a pxd.
 """
 import argparse
 import ast
@@ -46,36 +45,6 @@ def nanobind_modules() -> tuple[str, ...]:
     compile, and `setup.py` reads the same list. One place names
     them, so a module cannot be emitted and then not compiled."""
     return corpus().module_names
-
-
-def declared_entries() -> dict[str, dict[str, Any]]:
-    """Every declared class, as the manifest entry it implies.
-
-    What `codegen` calls instead of reflecting. It used to build its
-    manifest by parsing the pxd files and importing the compiled
-    extension, which put every surface above it behind a C++
-    compiler. Calling this ended that, one class at a time.
-
-    A function call, not a file. An earlier version wrote JSON and
-    handed the path over, which bought nothing: the specification is
-    Python and so is its reader, so a serialisation in between is one
-    more shape to keep in step and one more place a field can go
-    missing quietly.
-
-    Only classes are here. Enums, errors and free functions still
-    come from reflection, so this is a seam that widens rather than a
-    switch that flips.
-
-    And only classes the emitter has FINISHED. A declaration under way
-    describes a class it does not yet cover - `decl/store.py` carries
-    four of nix::Store's eighteen methods today - and an entry built
-    from half a declaration is not a smaller answer, it is a wrong
-    one. The test is structural rather than a list to keep in step: a
-    MODULES declaration owns a whole module and is complete by
-    construction, and an INCLUDES declaration is complete for the
-    values it emits, which is what `is_value` already says."""
-    return {name: cls.entry(final=False)
-            for name, cls in declared_model().classes.items()}
 
 
 @functools.cache
@@ -125,65 +94,6 @@ def _errors() -> ir.Errors:
                                           have.imported(have.errors)))
 
 
-def declared_unions() -> dict[str, list[str]]:
-    """Every declared SUM type, as {alias: [arm, ...]}.
-
-    The companion to `declared_entries`, and it exists for the same
-    reason one step sideways: a union is not a class, so nothing
-    downstream can reflect one off the compiled package. The alias is
-    module-level Python - `DerivedPath = StorePath | DerivedPathBuilt`
-    - and it never reaches an extension at all.
-
-    Arms in DECLARED order, because that is the order the schema
-    numbers a oneof's fields in and a renumbering is a wire change."""
-    return {name: list(arms)
-            for name, arms in declared_model().unions.items()}
-
-
-def declared_functions() -> dict[str, dict[str, Any]]:
-    """Every free function a nanobind module offers, by name.
-
-    The companion to `declared_entries`, and needed for the same
-    reason one step further along: `model.extract_function` reads a
-    live function's `inspect.signature`, and a nanobind function is a
-    builtin with none.
-
-    Only what the module actually offers. A startup hook and an
-    exception translator are declared beside these because that is
-    where a module's C++ facts live, and neither is surface; nor is a
-    factory some class names, which is bound as that class's __new__
-    instead. `nbemit.public` is where that last rule lives, and this
-    reads it rather than repeating it."""
-    out = {name: fn.entry()
-           for name, fn in declared_model().functions.items()}
-    return out
-
-
-def declared_returned() -> list[str]:
-    """Declared classes that are HANDED BACK, by name.
-
-    A class a caller constructs is an entry point; a class that only
-    ever arrives as somebody's return value is a returned type, and
-    the generated layer treats the two differently - a returned type
-    gets an `(obj, runner)` constructor so it can be adopted onto the
-    runner that produced it.
-
-    The generator answered this by walking the pxd. There is no pxd
-    for a nanobind module, and the declaration knows anyway: a class
-    is returned when some declared method returns it.
-
-    Every name in the return type, not the type itself. A method
-    returning `list[StorePath]` hands back StorePaths as surely as one
-    returning a single StorePath does.
-
-    And only a class nothing CONSTRUCTS. `@produced(by=...)` with no
-    `__init__` is the whole test: StorePath is handed back by half of
-    Store's methods and a caller can still build one from a base name,
-    so it is an entry point that happens to be returned. Value cannot
-    be built at all, and neither can PathInfo."""
-    return sorted(declared_model().returned)
-
-
 # The exception hierarchy, declared once. It emits two things that
 # used to be written twice and had to agree: the Python module a
 # caller catches, and the translator's catch chain.
@@ -219,33 +129,6 @@ def error_headers() -> list[str]:
     if not have.errors:
         return []
     return pyerrors.headers(have.resolved(have.errors))
-
-
-def declared_errors() -> dict[str, Any]:
-    """The exception surface, as the manifest carries it.
-
-    What `model.extract_errors` reflected. It imported the compiled
-    bindings package to reach the emitted `errors.py`, which made a
-    pure-Python fact - a class statement and its bases - wait on a
-    C++ compiler.
-
-    The module name is derived here for the same reason
-    `errors_module` derives it: the emitter that writes the module
-    decides where it goes."""
-    return declared_model().errors.entry()
-
-
-def declared_enums() -> dict[str, dict[str, Any]]:
-    """Every string vocabulary, as the manifest carries it.
-
-    The companion to `declared_entries`, and the last group that came
-    from reflection. A vocabulary was found by asking the compiled
-    package for classes that subclass both str and Enum - true, and
-    a whole C++ build to learn what `decl/words.py` says outright.
-
-    Only a `@words` class. A vocabulary declaration holds nothing
-    else, and `is_words` is the declaration's own word for it."""
-    return {name: e.entry() for name, e in declared_model().enums.items()}
 
 
 def errors_module() -> str:

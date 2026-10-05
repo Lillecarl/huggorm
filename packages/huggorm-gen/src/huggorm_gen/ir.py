@@ -7,18 +7,15 @@ a proxy - resolved ONCE, against the declaration set. A name nothing
 declares is refused here, when the model is built, instead of in an
 emitter that would have guessed.
 
-Each rule a stage needs is a property here, stated once. The manifest
-dict is a VIEW of this model (`ClassModel.entry`), kept while the
-emitters move onto the model one at a time.
+Each rule a stage needs is a property here, stated once.
 """
 
 from __future__ import annotations
 
-import copy
 import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from huggorm_dsl.declare import Decl
 from huggorm_dsl.read import Class, Method, Module, Param, Type, is_surface
@@ -329,10 +326,6 @@ class ParamModel:
         return cls(p.name, type_ref(declared, resolver), default,
                    p.type.python if p.member else "")
 
-    def entry(self) -> dict[str, Any]:
-        return {"name": self.name, "type": self.type.spelling,
-                "default": self.default}
-
 
 def blockers(params: Sequence[ParamModel], returns: TypeRef | None,
              served: frozenset[str]) -> list[str]:
@@ -361,13 +354,6 @@ class MethodModel:
     @property
     def return_spelling(self) -> str:
         return self.returns.spelling if self.returns is not None else "None"
-
-    def entry(self) -> dict[str, Any]:
-        return {"name": self.name,
-                "params": [p.entry() for p in self.params],
-                "return_type": self.return_spelling,
-                "doc": self.doc}
-
 
 @dataclass(frozen=True)
 class FunctionModel:
@@ -401,15 +387,6 @@ class FunctionModel:
     @property
     def rpc(self) -> RpcNames:
         return RpcNames.of(FREE_SERVICE, self.name)
-
-    def entry(self) -> dict[str, Any]:
-        return {"name": self.name, "module": self.module,
-                "threading": self.threading, "wrapped": self.wrapped,
-                "params": [p.entry() for p in self.params],
-                "return_type": (self.returns.spelling
-                                if self.returns is not None else "None"),
-                "doc": self.doc}
-
 
 def dunders(decl: Decl) -> list[str]:
     """The value dunders a declaration implies, sorted."""
@@ -544,48 +521,6 @@ class ClassModel:
     def message(self) -> str:
         return f"{self.name}Msg"
 
-    def entry(self, final: bool = True) -> dict[str, Any]:
-        """The manifest view of this class, key for key.
-
-        `final=False` is the shape the generator consumes: no proto
-        message name yet, and the round-trip helpers a value carries."""
-        decl = self.decl
-        wire_names: dict[str, Any] = ({
-            "service": self.service,
-            "protocol": self.protocol_name,
-            "async_class": self.async_name,
-            "rpc_class": self.rpc_name,
-        } if self.served else {
-            "message": self.message if final else None,
-        })
-        return {
-            "name": self.name,
-            "module": self.qualified_module,
-            "doc": self.doc,
-            "binds": self.binds,
-            "bases": [],
-            "threading": decl.threading,
-            "abstract": decl.abstract,
-            "constructs": self.constructs,
-            "produced": self.produced,
-            "wire": self.wire,
-            "wire_fields": [list(f) for f in self.wire_fields],
-            **({"unit": True} if decl.unit else {}),
-            **({"tree": copy.deepcopy(decl.tree)} if decl.tree else {}),
-            "blocking": decl.blocking,
-            "wrapped": self.wrapped,
-            "dunders": dunders(decl),
-            "ctor": [p.entry() for p in self.ctor],
-            "methods": [m.entry() for m in self.methods],
-            "async_base": None,
-            **wire_names,
-            **({} if final else {
-                "_helpers": sorted(("_from_parts", "_parts"))
-                if decl.wire == "value" else [],
-            }),
-        }
-
-
 @dataclass(frozen=True)
 class EnumModel:
     """One string vocabulary. A member is a str, so it crosses as one."""
@@ -600,11 +535,6 @@ class EnumModel:
         return cls(c.name, f"{package}.{module}",
                    tuple(m.value for m in c.members), _clean(c.doc))
 
-    def entry(self) -> dict[str, Any]:
-        return {"name": self.name, "module": self.module,
-                "values": list(self.values), "doc": self.doc}
-
-
 @dataclass(frozen=True)
 class ErrorModel:
     """One declared exception class. It crosses as its name and its
@@ -615,11 +545,6 @@ class ErrorModel:
     bases: tuple[str, ...]
     wire_fields: tuple[tuple[str, str], ...]
 
-    def entry(self) -> dict[str, Any]:
-        return {"bases": list(self.bases),
-                "wire_fields": [list(f) for f in self.wire_fields]}
-
-
 @dataclass(frozen=True)
 class Errors:
     """The exception surface: the module the hierarchy is emitted into
@@ -627,11 +552,6 @@ class Errors:
 
     module: str
     classes: Mapping[str, ErrorModel]
-
-    def entry(self) -> dict[str, Any]:
-        return {"module": self.module or None,
-                "classes": {n: e.entry() for n, e in self.classes.items()}}
-
 
 # Why a free function with no threading policy has no rpc.
 NO_POLICY = ("no threading policy, so the function has no async form for "

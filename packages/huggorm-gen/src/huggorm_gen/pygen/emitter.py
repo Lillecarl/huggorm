@@ -1,8 +1,7 @@
-"""
-Emit ast trees from protocol dicts.
+"""Emit ast trees from the typed model (`huggorm_gen.ir`).
 
-Pure tree building — no I/O, no imports of the spec. Everything the
-emitter needs arrives in the protocol dict a declaration produced.
+Pure tree building - no I/O. Everything an emitter needs arrives in
+the model.
 """
 
 import ast
@@ -12,13 +11,11 @@ from typing import Any
 from huggorm_gen import ir
 from huggorm_gen.payload.wiretypes import (
     SCALAR_NAMES,
-    dotted_heads,
-    names_in,
     python_spelling,
 )
 from huggorm_gen.pygen.spell import Spelling
 
-# One class, method or function as a plain dict.
+# A declared tree spec, as the declaration states it.
 Proto = dict[str, Any]
 
 ASYNC = ir.ASYNC
@@ -28,18 +25,7 @@ RUNNER_BY_THREADING = {
     "pool": "PoolRunner",
 }
 
-# Annotation atoms that never need an import. Everything else must be
-# imported from huggorm_bindings, or get_type_hints raises NameError -
-# invisible on Python 3.14 (PEP 649 lazy annotations), fatal below.
-_BUILTIN_TYPES = {"None", "Any", "str", "int", "float", "bool", "bytes",
-                  "object", "dict", "list", "tuple", "set"}
-
-
-
-
-
-
-def _arguments(leading: list[ast.arg], params: list[Proto],
+def _arguments(leading: list[ast.arg], params: Sequence[ir.ParamModel],
                types: list[str], where: str) -> ast.arguments:
     """`leading` plus one argument per declared parameter, annotated
     and defaulted.
@@ -48,15 +34,15 @@ def _arguments(leading: list[ast.arg], params: list[Proto],
     caller resolves it, because the same declared type is spelled
     differently in an async wrapper, in a protocol and in a stub.
 
-    The default is written from the manifest's source string, so every
+    The default is written from the declared source string, so every
     surface offers the same one. A caller that omits the argument gets
     the same value in-process and over RPC, and the wire never has to
     represent absence."""
     args = list(leading)
     defaults: list[ast.expr] = []
     for p, type_str in zip(params, types, strict=True):
-        annotation = _ann(type_str, f"{where}:{p['name']}")
-        if p["default"] == "None" and not _admits_none(annotation):
+        annotation = _ann(type_str, f"{where}:{p.name}")
+        if p.default == "None" and not _admits_none(annotation):
             # A parameter that may be omitted is spelled `T | None`.
             # `output: str = None` is implicit Optional, which strict
             # typecheckers reject and which misdescribes the default
@@ -65,100 +51,16 @@ def _arguments(leading: list[ast.arg], params: list[Proto],
             # none of them spells this differently.
             annotation = ast.BinOp(left=annotation, op=ast.BitOr(),
                                    right=ast.Constant(value=None))
-        args.append(ast.arg(arg=p["name"], annotation=annotation))
-        if p["default"] is not None:
-            defaults.append(_ann(p["default"], f"{where}:{p['name']}="))
+        args.append(ast.arg(arg=p.name, annotation=annotation))
+        if p.default is not None:
+            defaults.append(_ann(p.default, f"{where}:{p.name}="))
         elif defaults:
             raise ValueError(
-                f"{where}: required parameter {p['name']!r} follows a "
+                f"{where}: required parameter {p.name!r} follows a "
                 f"defaulted one")
     return ast.arguments(posonlyargs=[], args=args, vararg=None,
                          kwonlyargs=[], kw_defaults=[], kwarg=None,
                          defaults=defaults)
-
-
-def _default_names(params: list[Proto]) -> list[str]:
-    """The default expressions in one parameter list, as strings.
-
-    Import collection reads these beside the annotations: a default of
-    `ContentAddressMethod.NAR` names a type the module has to import,
-    and the annotation only happens to name the same one."""
-    return [p["default"] for p in params if p["default"] is not None]
-
-
-
-
-
-
-
-
-
-
-def _annotation_names(annotations: list[str]) -> set[str]:
-    """Every name an annotation list mentions, module heads excluded.
-
-    Two dotted things reach the emitter and only one is a module. An
-    annotation `pathlib.Path` names a type in a module, imported as
-    itself. A default `ContentAddressMethod.NAR` names an attribute on
-    a CLASS, which has to come from huggorm_bindings like any other -
-    which is why the two lists stay apart and only annotations are
-    asked for their heads."""
-    out: set[str] = set()
-    for a in annotations:
-        out |= names_in(a)
-    return out - _module_heads(annotations)
-
-
-def _module_heads(annotations: list[str]) -> set[str]:
-    """The modules an ANNOTATION list names by a dotted type.
-
-    Pass annotations only. A default's dotted head is a class, and
-    calling this on one would import a module that does not exist."""
-    return {h for a in annotations for h in dotted_heads(a)}
-
-
-def _foreign_imports(annotations: list[str]) -> list[ast.Import]:
-    """`import pathlib` for every module an emitted module annotates
-    with by a dotted name.
-
-    A plain import, not a from-import: the annotation is written
-    dotted, `pathlib.Path`, so the module name is what has to be
-    bound. Which modules those are is read off the annotations rather
-    than listed anywhere."""
-    return [ast.Import(names=[ast.alias(name=m)])
-            for m in sorted(_module_heads(annotations))]
-
-
-# The SUM types, by alias name. A union is not in huggorm_bindings and
-# cannot be: the alias is Python and the module that would hold it is a
-# compiled extension. `_unions.py` is generated from the manifest
-# instead, so the one statement of `DerivedPath = StorePath |
-# DerivedPathBuilt` is the declaration and everything else derives.
-UNIONS_MODULE = "._unions"
-_UNION_NAMES: set[str] = set()
-
-
-def emitter_union_names(unions: dict[str, list[str]]) -> None:
-    """Which annotation names are ALIASES rather than bound classes.
-
-    Told once, before anything is written. There is no way to tell the
-    two apart from a name, and the difference decides which import an
-    emitted module gets."""
-    _UNION_NAMES.clear()
-    _UNION_NAMES.update(unions)
-
-
-# The protocols, by name. A proxy parameter is annotated with one on
-# every surface, and the generated `protocols` module defines them.
-PROTOCOLS_MODULE = ".protocols"
-_PROTOCOL_NAMES: set[str] = set()
-
-
-def emitter_protocol_names(names: set[str]) -> None:
-    """Which annotation names are protocols. Told once, as the unions
-    are, before anything is written."""
-    _PROTOCOL_NAMES.clear()
-    _PROTOCOL_NAMES.update(names)
 
 
 def _admits_none(annotation: ast.expr) -> bool:
@@ -168,37 +70,6 @@ def _admits_none(annotation: ast.expr) -> bool:
     if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
         return _admits_none(annotation.left) or _admits_none(annotation.right)
     return False
-
-
-def _huggorm_bindings_import(names: set[str]) -> list[ast.ImportFrom]:
-    """Import the types an emitted module annotates with.
-
-    Two sources, because a union has no home in the bindings. A CLASS
-    comes from huggorm_bindings, which is where it is bound; an ALIAS
-    comes from the generated `_unions`, which is where it is written.
-
-    Async* names are excluded: those come from sibling modules. So are
-    dotted module heads, which _annotation_names already drops - they
-    are imported as themselves."""
-    usable = sorted(
-        n for n in names
-        if n not in _BUILTIN_TYPES and not n.startswith("Async")
-    )
-    out = []
-    bound = [n for n in usable
-             if n not in _UNION_NAMES and n not in _PROTOCOL_NAMES]
-    if bound:
-        out.append(ast.ImportFrom(
-            module="huggorm_bindings",
-            names=[ast.alias(name=n) for n in bound], level=0))
-    for module, group in ((UNIONS_MODULE, _UNION_NAMES),
-                          (PROTOCOLS_MODULE, _PROTOCOL_NAMES)):
-        local = [n for n in usable if n in group]
-        if local:
-            out.append(ast.ImportFrom(
-                module=module.lstrip("."),
-                names=[ast.alias(name=n) for n in local], level=1))
-    return out
 
 
 # The emitted `_policy.py`'s own docstring. Out here rather than
@@ -398,20 +269,6 @@ def unions_module(unions: Mapping[str, Sequence[str]]) -> str:
         ast.Module(body=body, type_ignores=[]))) + "\n"
 
 
-def _sibling_imports(names: set[str]) -> list[ast.ImportFrom]:
-    """`from .async_x import AsyncX` for every generated wrapper an
-    emitted module annotates with - adopted returns and wrapper-typed
-    parameters alike."""
-    return [
-        ast.ImportFrom(
-            module=f"async_{n.removeprefix('Async').lower()}",
-            names=[ast.alias(name=n)],
-            level=1,
-        )
-        for n in sorted(n for n in names if n.startswith("Async"))
-    ]
-
-
 def _ann(type_str: str, context: str) -> ast.expr:
     """Parse a type string into an annotation node. Strict: bad type strings fail loudly."""
     try:
@@ -485,7 +342,7 @@ def _hop_method(cls: ast.ClassDef, model: ir.Model,
     """One `async def` that hops to the runner, adopting what it
     returns where the return is a served class."""
     params, returns = signature
-    entries = [p.entry() for p in m.params]
+    entries = m.params
     body: list[ast.stmt] = []
     if m.doc:
         body.append(ast.Expr(value=ast.Constant(value=m.doc)))
@@ -699,7 +556,7 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
         if threading == "affine":
             init_kwargs.append(ast.keyword(
                 arg="name", value=ast.Constant(value=f"huggorm-affine-{svc}")))
-        entries = [p.entry() for p in c.ctor]
+        entries = c.ctor
         # A zero-argument lambda over __init__'s parameters, so the
         # object is built on the runner's thread, not the caller's.
         # Each argument goes through unwrap_arg: a wrapper passed in
@@ -737,7 +594,8 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
 
 
 
-def _hop_call(method_name: str, params: list[Proto]) -> ast.Call:
+def _hop_call(method_name: str,
+              params: Sequence[ir.ParamModel]) -> ast.Call:
     return ast.Call(
         func=ast.Attribute(
             value=ast.Attribute(value=ast.Name(id="self"), attr="_runner"),
@@ -745,7 +603,7 @@ def _hop_call(method_name: str, params: list[Proto]) -> ast.Call:
         ),
         args=[
             ast.Constant(value=method_name),
-            ast.List(elts=[ast.Name(id=p["name"]) for p in params]),
+            ast.List(elts=[ast.Name(id=p.name) for p in params]),
         ],
         keywords=[],
     )
@@ -755,8 +613,8 @@ def _forward(call: ast.expr, return_type: str) -> ast.stmt:
     """Return the result of an awaited forward, typed.
 
     The runtime hands back Any - it dispatches by method name onto an
-    object it knows nothing about. The declared type is the manifest's
-    claim about that method, so the cast is where the claim is made
+    object it knows nothing about. The declared type is the
+    declaration's claim about that method, so the cast is where the claim is made
     rather than a silent Any leaking into every caller. A method
     returning None does not return at all: casting to None is not a
     thing, and there is nothing to hand back."""
@@ -768,7 +626,7 @@ def _forward(call: ast.expr, return_type: str) -> ast.stmt:
         keywords=[]))
 
 
-def _hop_return(method_name: str, params: list[Proto],
+def _hop_return(method_name: str, params: Sequence[ir.ParamModel],
                 return_type: str = "None") -> ast.stmt:
     return _forward(_hop_call(method_name, params), return_type)
 
@@ -872,18 +730,6 @@ def _future_annotations() -> ast.ImportFrom:
                           names=[ast.alias(name="annotations")], level=0)
 
 
-def _sync_imports(annotations: list[str], defined_here: set[str],
-                  defaults: list[str] | None = None) -> list[ast.ImportFrom]:
-    """Import the binding types an all-in-one module annotates with.
-
-    Unlike the per-class wrappers there are no siblings to import from:
-    everything else the module names, it defines."""
-    used = ((_annotation_names(annotations)
-             | _annotation_names(defaults or []))
-            - _BUILTIN_TYPES - defined_here)
-    return _huggorm_bindings_import(used)
-
-
 def protocol_module(model: ir.Model) -> ast.Module:
     """Emit one Protocol per served class: the surface a caller can
     program against without knowing whether the object answering is in
@@ -949,7 +795,7 @@ def protocol_module(model: ir.Model) -> ast.Module:
             cls.body.append(ast.AsyncFunctionDef(
                 name=m.name,
                 args=_arguments([ast.arg(arg="self")],
-                                [p.entry() for p in m.params], params,
+                                m.params, params,
                                 f"{name}.{m.name}"),
                 body=body,
                 decorator_list=[],
@@ -1220,7 +1066,7 @@ def rpc_module(model: ir.Model) -> ast.Module:
             cls.body.append(ast.AsyncFunctionDef(
                 name=m.name,
                 args=_arguments([ast.arg(arg="self")],
-                                [p.entry() for p in m.params], params,
+                                m.params, params,
                                 f"{name}.{m.name}"),
                 body=body,
                 decorator_list=[],
@@ -1339,7 +1185,7 @@ def free_function_module(model: ir.Model) -> ast.Module:
 
     for fn in fns:
         params, ret = signatures[fn.name]
-        entries = [p.entry() for p in fn.params]
+        entries = fn.params
         body: list[ast.stmt] = []
         if fn.doc:
             body.append(ast.Expr(value=ast.Constant(value=fn.doc)))
@@ -1477,7 +1323,7 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
         cls.body.append(ast.FunctionDef(
             name="__init__",
             args=_arguments([ast.arg(arg="self")],
-                            [p.entry() for p in c.ctor],
+                            c.ctor,
                             [spell(p.type) for p in c.ctor],
                             f"{name}.__init__"),
             body=_stub_body(""), decorator_list=[],
@@ -1488,7 +1334,7 @@ def _stub_class(c: ir.ClassModel, spell: Spelling,
         cls.body.append(ast.FunctionDef(
             name=m.name,
             args=_arguments([ast.arg(arg="self")],
-                            [p.entry() for p in m.params],
+                            m.params,
                             [spell(p.type) for p in m.params],
                             f"{name}.{m.name}"),
             body=_stub_body(m.doc), decorator_list=[],
@@ -1505,7 +1351,7 @@ def _stub_function(fn: ir.FunctionModel, spell: Spelling,
     spell.defaults(fn.params)
     return ast.FunctionDef(
         name=fn.name,
-        args=_arguments([], [p.entry() for p in fn.params],
+        args=_arguments([], fn.params,
                         [spell(p.type) for p in fn.params], where),
         body=_stub_body(fn.doc),
         decorator_list=[],

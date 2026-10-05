@@ -226,62 +226,6 @@ def fault_msg_name(cls_name: str) -> str:
 
 
 
-def annotate(manifest: Proto, model: ir.Model) -> Proto:
-    """Stamp the wire names onto the manifest, in place.
-
-    Every consumer previously re-derived them from the same convention
-    kept in three copies; a rename broke dispatch at the first rpc call
-    rather than at build time."""
-    manifest["package"] = PKG
-    for group in ("wrappers", "returned_types"):
-        for cls_name, proto in manifest[group].items():
-            if proto["wire"] == "value":
-                proto["message"] = value_msg_name(cls_name)
-            # A service is addressability, not execution. Wrapping
-            # decides which thread runs a call - a home thread, a
-            # pool thread, a released GIL - and a pool class whose
-            # methods cannot block needs none of that. But its
-            # handles still need somewhere to live, so every proxy
-            # gets a service: the async form the server adopts and
-            # the client holds is emitted with the rest, and the
-            # served set below is what the wire blocker checks
-            # rather than the wrapper set.
-            if proto["wire"] != "proxy":
-                continue
-            proto["service"] = model.classes[cls_name].service
-
-    # Which classes a handle can be USED with: every proxy.
-    served = model.served
-    for group in ("wrappers", "returned_types"):
-        for cls_name, proto in manifest[group].items():
-            if proto["wire"] != "proxy":
-                continue
-            # A METHOD gets the same treatment a free function has
-            # always had: say why it cannot cross, rather than raise
-            # while building the schema. Not everything a binding
-            # offers is a remote call - Store.real_path answers with a
-            # path on the machine the store runs on - and such a
-            # method still deserves its in-process wrapper.
-            typed_cls = model.classes[cls_name]
-            for m in proto["methods"]:
-                typed = typed_cls.method(m["name"])
-                m["wire_blockers"] = ir.blockers(typed.params, typed.returns,
-                                                 served)
-                if not m["wire_blockers"]:
-                    m["rpc"] = _names(typed_cls.rpc(typed))
-
-    for fname, proto in manifest.get("free_functions", {}).items():
-        typed_fn = model.functions[fname]
-        proto["wire_blockers"] = model.function_blockers(typed_fn)
-        if not proto["wire_blockers"]:
-            proto["rpc"] = _names(typed_fn.rpc)
-    return manifest
-
-
-def _names(rpc: ir.RpcNames) -> dict[str, str]:
-    return {"path": rpc.path, "req": rpc.req, "resp": rpc.resp}
-
-
 # -- schema ---------------------------------------------------------------
 
 ENUM = "enum"

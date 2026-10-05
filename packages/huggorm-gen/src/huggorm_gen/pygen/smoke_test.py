@@ -172,15 +172,6 @@ def test_an_optional_return_names_a_value_or_nothing(
     assert respell("Store | None", {"Store": "AsyncStore"}) == "AsyncStore | None"
     assert respell("str", {"Store": "AsyncStore"}) == "str"
 
-    # A proxy parameter is spelled as its protocol, optional or not, and
-    # keeps nothing off the protocol (huggorm#26).
-    from huggorm_gen.pygen.surface import like_spelling, protocol_blockers
-    assert like_spelling("Store", {"Store"}) == "StoreLike"
-    assert like_spelling("Store | None", {"Store"}) == "StoreLike | None"
-    assert like_spelling("StorePath | None", {"Store"}) == "StorePath | None"
-    assert not protocol_blockers(
-        {"params": [{"name": "s", "type": "Store"}]})
-
     # The corpus has the case: a Repl may hand back no Value.
     emitted = (out / "async_repl.py").read_text()
     assert "return None if result is None else AsyncValue._adopt(result, self._runner)" \
@@ -579,8 +570,8 @@ async def test_behavior() -> None:
     # entries hold (huggorm#30).
     assert not model.function_blockers(free["collect_garbage"])
     assert not model.function_blockers(free["gc_stats"])
-    stats = free["gc_stats"].returns
-    assert stats is not None and stats.spelling == "dict[str, int]"
+    gc_return = free["gc_stats"].returns
+    assert gc_return is not None and gc_return.spelling == "dict[str, int]"
 
     # gc_stats was the last function with no RPC surface, so the
     # blocker path now has nothing left to report. Exercise it
