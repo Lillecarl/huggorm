@@ -2189,10 +2189,14 @@ def extension(mod: Module, dotted: str, model: ir.Model,
                f'{f"{package}." if package else ""}{stem}");'
                for stem in imports(mod)]
     translators = [translator(fn, chain) for fn in mod.translators]
+    # What this unit can name, as `known` scopes it: a class this module
+    # does not import is refused, not resolved from the whole set.
+    visible = {name: model.classes[name] for name in mod.known
+               if name in model.classes}
     # Only a unit that HAS a translator catches anything, so only that
     # unit needs the headers behind the chain.
     return "\n".join([
-        Emitter(mod.known, producers, model.classes).module(
+        Emitter(mod.known, producers, visible).module(
             classes, mod.functions,
             [model.functions[fn.name] for fn in public(mod.exported, classes)],
             errors,
