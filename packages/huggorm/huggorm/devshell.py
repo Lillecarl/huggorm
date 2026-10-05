@@ -14,8 +14,8 @@ document surgery is JSON throughout, so no hash is computed here;
 
 Two flavours, like the session's: the sync one over a local
 `Store`, the async one over a local `AsyncStore`. The document half
-crosses RPC - `read_derivation` answers a handle and `to_json`
-reads through it - but the build half does not follow it across:
+crosses RPC - `awrite_dev_shell_derivation` takes any `StoreLike`,
+an `RPCStore` too - but the build half does not follow it across:
 `build_paths` would build on the server's store and `real_path`
 answers the server's filesystem, while the environment has to be
 built where it will be sourced. The script text stays a parameter
@@ -60,6 +60,7 @@ from .errors import NixError
 
 if TYPE_CHECKING:
     from huggorm_bindings import Store, StorePath
+    from huggorm_generated.protocols import StoreLike
 
 #: What `to_bash` leaves out. `Common::ignoreVars` in `develop.cc`,
 #: verbatim: the caller already has a terminal, a shell and a temp
@@ -409,13 +410,13 @@ def write_dev_shell_derivation(
 
 
 async def awrite_dev_shell_derivation(
-    store: AsyncStore, drv_path: StorePath, get_env_script: bytes,
+    store: StoreLike, drv_path: StorePath, get_env_script: bytes,
 ) -> StorePath:
-    """The async flavour, over a local `AsyncStore`.
+    """The async flavour, over any `StoreLike`: an in-process
+    `AsyncStore` or a remote `RPCStore`, by the same code.
 
-    Same rewrite, awaited: every store call here crosses into the
-    pool, and the derivation handle answers `to_json` the same way.
-    Remote stores read the document the same way; only the build
+    Same rewrite, awaited. Every call here crosses the wire, and the
+    derivation handle answers `to_json` the same way; only the build
     stays where the environment will be sourced.
     """
     document = json.loads(await (await store.read_derivation(drv_path)).to_json())

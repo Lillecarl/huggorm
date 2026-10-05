@@ -480,3 +480,59 @@ async def test_forgetting_a_directory_forgets_its_default_nix(
 
     again = await call(state, "eval_file", str(src))
     assert await call(again, "integer") == 2, "the resolved key survived"
+
+
+# A derivation `nix develop` accepts: its builder is bash. Nothing
+# builds here, so the builder never has to exist.
+BASH_LEAF = ('derivation { name = "leaf"; system = "x86_64-linux"; '
+             'builder = "/bin/bash"; args = [ "-c" "echo" ]; '
+             'outputs = [ "out" "dev" ]; }')
+
+
+async def test_one_consumer_rewrites_a_derivation_everywhere(
+        surface: str, client: Any, tmp_path: Any) -> None:
+    """One body over all three surfaces, end to end (huggorm#111).
+
+    Evaluate, force, read the derivation path, then rewrite it as
+    `nix develop` does and write the rewrite back. The rewrite is the
+    library's own: the async flavour is typed against `StoreLike`, so
+    the async and RPC runs call the SAME function. A store directory
+    rather than `dummy://`, because instantiating writes a `.drv`;
+    the server shares this machine, so it opens the same directory.
+
+    Every surface must write the shell derivation the sync binding
+    writes."""
+    from huggorm.devshell import (
+        awrite_dev_shell_derivation,
+        write_dev_shell_derivation,
+    )
+    from huggorm_bindings import EvalState, Store
+
+    uri = str(tmp_path)
+    script = b"echo env\n"
+    if surface == "sync":
+        store: Any = Store(uri)
+        state: Any = EvalState(store)
+    elif surface == "async":
+        from huggorm_generated import AsyncEvalState, AsyncStore
+
+        store = AsyncStore(uri)
+        state = AsyncEvalState(store)
+    else:
+        store = await client.acquire("Store", uri)
+        state = await client.acquire("EvalState", store)
+
+    value = await call(state, "eval_expr", BASH_LEAF)
+    await call(state, "force", value)
+    drv = await call(value, "drv_path")
+    if surface == "sync":
+        shell = write_dev_shell_derivation(store, drv, script)
+    else:
+        shell = await awrite_dev_shell_derivation(store, drv, script)
+
+    read = await call(store, "read_derivation", shell)
+    assert await call(read, "name") == "leaf-env"
+    reference = Store(uri)
+    expected = write_dev_shell_derivation(reference, drv, script)
+    assert await call(store, "print_store_path", shell) \
+        == reference.print_store_path(expected)
