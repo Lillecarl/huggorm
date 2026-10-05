@@ -63,7 +63,7 @@ import pathlib
 import re
 import types
 import typing
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
@@ -734,6 +734,32 @@ class Module:
     # is legal Python, so the reader follows the import rather than
     # matching the spelling it expects.
     vocabulary: dict[str, str] = field(default_factory=dict)
+
+
+def producers(classes: Iterable[Class],
+              functions: Iterable[Method]) -> dict[str, tuple[str, ...]]:
+    """Each call that hands back a class, by the class's name, sorted.
+
+    A call that returns the class, `X | None` or `list[X]`. This is
+    where a produced class comes from, read off the return types, so
+    no declaration names it a second time and no name goes stale."""
+    def made(t: Type | None) -> str | None:
+        if t is None:
+            return None
+        t = t.required
+        if t.origin == "list":
+            t = t.element
+        return None if t.origin else t.python
+
+    out: dict[str, list[str]] = {}
+    for cls in classes:
+        for m in cls.methods:
+            if (name := made(m.ret)) is not None:
+                out.setdefault(name, []).append(f"{cls.name}.{m.name}")
+    for fn in functions:
+        if (name := made(fn.ret)) is not None:
+            out.setdefault(name, []).append(fn.name)
+    return {name: tuple(sorted(calls)) for name, calls in out.items()}
 
 
 # -- the vocabulary -------------------------------------------------------

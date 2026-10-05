@@ -342,6 +342,25 @@ def test_a_part_read_through_another_accessor_is_still_derived(
         _ = read(path).classes[0].parts
 
 
+def test_a_produced_class_nothing_returns_fails_the_build(
+        tmp_path: pathlib.Path) -> None:
+    """A produced class is made by a call that returns it, and the
+    build reads those calls off the return types. `Line` is produced
+    and nothing here returns one, so it has no way in at all. The real
+    set is the control: every produced class in it has a call."""
+    from huggorm_decl import corpus
+    from huggorm_dsl.read import producers, read
+    from huggorm_gen.cppgen.generate import unmade
+
+    mod = read(_declaration(tmp_path, WIRE_READ.replace("{local}", "@local")))
+    assert unmade(mod.classes, producers(mod.classes, mod.functions)) == [
+        "Line"]
+
+    have = corpus()
+    assert have.producers["PathInfo"] == ("Store.query_path_info",)
+    assert unmade(have.classes, have.producers) == []
+
+
 # One bound class that declares a dunder the emitters carry and one
 # they do not.
 CALLABLE = '''"""One bound class that declares two dunders."""
@@ -755,7 +774,7 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
 
     cls = read(_declaration(tmp_path, ATTRIBUTE)).classes[0]
     with pytest.raises(TypeError, match="ATTRIBUTE"):
-        nbemit.Emitter({cls.name: cls}).bind_function(cls)
+        nbemit.Emitter({cls.name: cls}, {}).bind_function(cls)
 
 
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -1313,7 +1332,7 @@ def test_the_emitter_must_write_every_method_the_reader_kept() -> None:
     have = corpus()
     mod = have.module("pathinfo.py")
     bound = bindable(mod)
-    text = extension(mod, "huggorm_bindings.pathinfo", chain=[], errors="")
+    text = extension(mod, "huggorm_bindings.pathinfo", have.producers, chain=[], errors="")
     generate.census_written(mod, bound, text)
 
     lost = text.replace('def("nar_size"', 'def("not_that_one"')
@@ -1344,7 +1363,7 @@ def test_a_function_the_emitter_writes_another_way_is_not_missing() -> None:
                          ("path", {"_init_libstore", "_translate_nix_error"})):
         mod = have.module(f"{stem}.py")
         assert shapes <= {f.name for f in mod.functions}
-        text = extension(mod, f"huggorm_bindings.{stem}", chain=[], errors="")
+        text = extension(mod, f"huggorm_bindings.{stem}", have.producers, chain=[], errors="")
         assert 'def("open_store"' not in text, "it is a constructor, not a name"
         generate.census_written(mod, bindable(mod), text)
 
@@ -1399,12 +1418,12 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
 
     mod = have.module("path.py")
     assert mod.translators, "the control below means nothing otherwise"
-    text = extension(mod, "huggorm_bindings.path", chain=[],
+    text = extension(mod, "huggorm_bindings.path", have.producers, chain=[],
                      errors="", error_headers=headers)
     for h in headers:
         assert f'#include "{h}"' in text, h
 
-    without = extension(mod, "huggorm_bindings.path", chain=[], errors="")
+    without = extension(mod, "huggorm_bindings.path", have.producers, chain=[], errors="")
     assert '#include "nix/store/store-dir-config.hh"' not in without, \
         "the headers come from the derivation, not from a fixed list"
 
@@ -1525,12 +1544,12 @@ def test_a_body_brings_its_own_standard_header() -> None:
 
     have = corpus()
     text = extension(have.module("eval.py"), "huggorm_bindings.eval",
-                     chain=[], errors="")
+                     have.producers, chain=[], errors="")
     assert "#include <stdexcept>" in text
     assert "std::invalid_argument" in text, "the body that needs it"
 
     other = extension(have.module("pathinfo.py"),
-                      "huggorm_bindings.pathinfo", chain=[], errors="")
+                      "huggorm_bindings.pathinfo", have.producers, chain=[], errors="")
     assert "#include <cstdint>" in other
     assert "#include <stdexcept>" not in other, \
         "nothing in pathinfo throws, so nothing asks for it"

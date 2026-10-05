@@ -51,7 +51,7 @@ becomes the place the real code lives.
 """
 
 import json
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 
 from huggorm_dsl.declare import Field
 from huggorm_dsl.read import Class, Method, Module, Param, Type
@@ -503,7 +503,7 @@ def records_header(mod: Module, package: str) -> str | None:
     values = [c for c in bindable(mod) if c.is_value]
     if not values:
         return None
-    emit = Emitter(mod.known)
+    emit = Emitter(mod.known, {})
     others = [m for m in emit.records_named(values, ())
               if m != mod.name]
     structs = emit.records(values)
@@ -600,29 +600,6 @@ inline nb::tuple as_tuple(nb::handle items)
 }
 """
 
-
-
-def _produced_ctor(cls: Class, because: str = "") -> list[str]:
-    """The `__init__` of a class nothing constructs.
-
-    `because` is the sentence, for a class that is unconstructible for
-    a reason `@produced(by=...)` does not supply - an abstract base is
-    the other one.
-
-    It raises, and the message names what DOES make one. Without it
-    nanobind answers `TypeError: PathInfo: no constructor defined!`,
-    which is true and tells a caller nothing about where to look.
-
-    The sentence comes from `@produced(by=...)`, so the declaration
-    wrote it once and no emitted string invents a second wording."""
-    said = because or (f"objects come from {cls.decl.built_by}, "
-                       f"not from a constructor")
-    return [
-        f'{INDENT * 2}.def("__init__", []({_held(cls)} *) {{',
-        f"{INDENT * 3}throw nb::type_error(",
-        f'{INDENT * 4}"{cls.name} {said}");',
-        f"{INDENT * 2}}})",
-    ]
 
 
 # What `_from_parts` is for, in one sentence a caller can read.
@@ -853,10 +830,38 @@ class Emitter:
     """The binding C++ for classes that may name each other.
 
     `known` is every class a type can resolve to: the module's own and
-    those it imports. A name outside it is refused, never guessed."""
+    those it imports. A name outside it is refused, never guessed.
+    `producers` is each call that hands a class back, from the whole
+    set: what makes a `PathInfo` lives in another module."""
 
-    def __init__(self, known: dict[str, Class]) -> None:
+    def __init__(self, known: dict[str, Class],
+                 producers: Mapping[str, Sequence[str]]) -> None:
         self.known = known
+        self.producers = producers
+
+    def _produced_ctor(self, cls: Class, because: str = "") -> list[str]:
+        """The `__init__` of a class nothing constructs.
+
+        `because` is the sentence, for a class that is unconstructible
+        for another reason - an abstract base is the other one.
+
+        It raises, and the message names what DOES make one. Without it
+        nanobind answers `TypeError: PathInfo: no constructor defined!`,
+        which is true and tells a caller nothing about where to look.
+        The calls are read off the return types, so none goes stale."""
+        calls = list(self.producers.get(cls.name, ()))
+        named = (" or ".join([", ".join(calls[:-1]), calls[-1]])
+                 if len(calls) > 1 else "".join(calls))
+        said = because or (f"objects come from {named}, not from a "
+                           f"constructor" if named
+                           else "objects come from another call, not from "
+                                "a constructor")
+        return [
+            f'{INDENT * 2}.def("__init__", []({_held(cls)} *) {{',
+            f"{INDENT * 3}throw nb::type_error(",
+            f'{INDENT * 4}"{cls.name} {said}");',
+            f"{INDENT * 2}}})",
+        ]
 
     def _bare(self, cls: Class) -> str:
         """The C++ type behind a declared class, or a refusal."""
@@ -1979,9 +1984,9 @@ class Emitter:
         """The two ways a record is and is not built.
 
         A produced value is PRODUCED. Nothing a caller does should build
-        one from nothing, and `__init__` says so in the sentence
-        `@produced(by=...)` supplied - so a caller who guesses wrong is
-        told where to look instead of getting an argument-count error.
+        one from nothing, and `__init__` says so, naming the calls that
+        make one - so a caller who guesses wrong is told where to look
+        instead of getting an argument-count error.
 
         It still has to be RECONSTRUCTIBLE, because it crosses the wire
         and the far side has only the parts. So the constructor is bound
@@ -1995,7 +2000,7 @@ class Emitter:
                     f"build it.")
             # A declared body: the signature still comes from the field
             # list, so the body can only consume what `_parts` sent.
-            return [*_produced_ctor(cls), *self._from_parts(cls)]
+            return [*self._produced_ctor(cls), *self._from_parts(cls)]
         fields = self.record_fields(cls)
         if any(f.read != f.name for f, _ in cls.parts):
             # A part read through another accessor - `@wire_read` - arrives
@@ -2008,7 +2013,7 @@ class Emitter:
                 raise TypeError(
                     f"{cls.name}: its parts {names} are not its members "
                     f"{[n for n, _ in fields]}, in order.")
-            return [*_produced_ctor(cls), *self._from_parts(cls)]
+            return [*self._produced_ctor(cls), *self._from_parts(cls)]
         held = _held(cls)
         # `.none()` on an `nb::object` part, and nothing else needs it.
         # nanobind refuses None for a parameter unless the argument says
@@ -2023,7 +2028,7 @@ class Emitter:
         made = ", ".join(f"{spelling} {name}" for name, spelling in fields)
         values = ", ".join(name for name, _ in fields)
         return [
-            *_produced_ctor(cls),
+            *self._produced_ctor(cls),
             f'{INDENT * 2}.def_static("_from_parts", []({made}) {{',
             f"{INDENT * 3}return {held}{{{values}}};",
             f'{INDENT * 2}}}{args}, "{FROM_PARTS_DOC}")',
@@ -2320,8 +2325,8 @@ class Emitter:
             # two are different mistakes: a declaration that forgot an
             # `__init__`, and one that is honestly abstract with nothing
             # to open it. `_produced_ctor` supplies the third wording
-            # itself, from `@produced(by=...)`.
-            body = _produced_ctor(cls, "" if cls.decl.built_by else (
+            # itself, from the calls that return the class.
+            body = self._produced_ctor(cls, "" if cls.decl.built_by else (
                 "declares no constructor" if cls.ctor is None
                 else "is abstract, and no factory opens one"))
         elif decl.built_by:
@@ -2330,7 +2335,7 @@ class Emitter:
             # it names a method instead, there is no factory to bind and
             # nothing constructs one, so the constructor says so.
             body = (self._factory(cls, functions)
-                    or (_produced_ctor(cls) if cls.is_produced else []))
+                    or (self._produced_ctor(cls) if cls.is_produced else []))
         else:
             body = self._ctor(cls)
         for m in cls.methods:
@@ -2506,6 +2511,7 @@ def imports(mod: Module) -> list[str]:
 
 
 def extension(mod: Module, dotted: str,
+              producers: Mapping[str, Sequence[str]],
               chain: list[str] | None = None,
               errors: str = "",
               error_headers: Sequence[str] = ()) -> str:
@@ -2524,7 +2530,7 @@ def extension(mod: Module, dotted: str,
     or `huggorm_bindings.path` inside a package. It is the one fact
     here no declaration carries, and it is what turns a sibling
     declaration's name into an import a running interpreter can
-    follow."""
+    follow. `producers` is the set's, as `Emitter` takes it."""
     classes = bindable(mod)
     package = dotted.rpartition(".")[0]
     reached = [f'{INDENT}nb::module_::import_("'
@@ -2534,7 +2540,7 @@ def extension(mod: Module, dotted: str,
     # Only a unit that HAS a translator catches anything, so only that
     # unit needs the headers behind the chain.
     return "\n".join([
-        Emitter(mod.known).module(
+        Emitter(mod.known, producers).module(
             classes, mod.functions, errors,
             error_headers if translators else (), package),
         *translators,
@@ -2635,12 +2641,13 @@ def census(cls: Class) -> dict[str, int]:
 if __name__ == "__main__":
     import sys
 
-    from huggorm_dsl.read import read
+    from huggorm_dsl.read import producers, read
 
     for path in sys.argv[1:]:
         mod = read(path)
         for cls in mod.classes:
-            emit = Emitter(mod.known)
+            emit = Emitter(mod.known,
+                           producers(mod.known.values(), mod.functions))
             print(emit.module([cls], ()) if len(mod.classes) == 1
                   else emit.bind_function(cls))
             c = census(cls)

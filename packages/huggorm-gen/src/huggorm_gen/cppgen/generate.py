@@ -23,11 +23,12 @@ import functools
 import pathlib
 import re
 import sys
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
-from huggorm_dsl.read import FROM_PARTS, Module, reading
+from huggorm_dsl.read import FROM_PARTS, Class, Module, reading
 from huggorm_gen import ir
 from huggorm_gen.cppgen import nbemit, pyenum, pyerrors, pyinit
 from huggorm_gen.cppgen.nbemit import bindable, extension
@@ -258,7 +259,8 @@ def emit_module(mod: Module, dotted: str, out: str,
     if not bound and not mod.functions:
         print(f"{decl}: nothing to bind", file=sys.stderr)
         return 2
-    written = extension(mod, dotted, chain=chain, errors=errors_module(),
+    written = extension(mod, dotted, corpus().producers, chain=chain,
+                        errors=errors_module(),
                         error_headers=headers or ())
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(written)
@@ -640,6 +642,16 @@ def census_gc_slots(have: Any) -> None:
             print(f"    {line}")
 
 
+def unmade(classes: Iterable[Class],
+           producers: Mapping[str, Sequence[str]]) -> list[str]:
+    """Each produced class no declared call returns, by name.
+
+    Such a class has no way in at all, and its refusing `__init__`
+    would name no call to use instead."""
+    return sorted(c.name for c in classes
+                  if c.decl.built_by and c.name not in producers)
+
+
 def main(out_dir: str) -> int:
     out = pathlib.Path(out_dir).resolve()
     # The package directory is EMPTY in the checkout - every file in
@@ -651,6 +663,10 @@ def main(out_dir: str) -> int:
     # see rather than the first one. Emission below then runs against
     # a corpus known to be sound (huggorm#61).
     have.read_all()
+    if missing := unmade(have.classes, have.producers):
+        raise TypeError(
+            f"{', '.join(missing)}: declared @produced, and no declared "
+            f"call returns one. Declare the call that makes it.")
     chain = error_chain()
     headers = error_headers()
     for mod in have.modules:
