@@ -52,7 +52,6 @@ becomes the place the real code lives.
 
 from collections.abc import Iterator, Mapping, Sequence
 
-from huggorm_dsl.declare import Field
 from huggorm_dsl.read import Class, Method, Module, Param, Type
 from huggorm_gen import cxx, ir
 from huggorm_gen.cxx import NAMESPACE
@@ -297,30 +296,6 @@ def _render(cls: Class, accessor: str) -> str:
         raise TypeError(
             f"{cls.name}: \"{accessor}\" names no accessor on this class.")
     return f'nb::str(h.attr("{accessor}")())'
-
-
-def _repr_parts(cls: Class) -> str:
-    """`"name='" + <read> + "'"` for every declared field, joined.
-
-    Str fields only, and it refuses rather than guessing. A number
-    would need `std::to_string` and a nested value its own repr;
-    inventing either here would put a wrong answer in an emitted file
-    instead of a message in this one."""
-    decl = cls.decl
-    shown = {m.name: m for m in cls.methods}.get(decl.shown)
-    fields = cls.parts or (
-        [(Field(decl.shown, read=decl.shown), shown)] if shown else [])
-    parts = []
-    for i, (f, m) in enumerate(fields):
-        if m.ret is None or m.ret.origin or m.ret.python != "str":
-            spelled = m.ret.python if m.ret is not None else "None"
-            raise TypeError(
-                f"{cls.name}.{f.name}: a repr of a {spelled} is not derived "
-                f"yet. Only str fields render without a second decision.")
-        lead = ", " if i else ""
-        parts.append(f'+ "{lead}{f.name}=\'" + {_render(cls, f.read)} '
-                     f'+ "\'"')
-    return " ".join(parts)
 
 
 def _value_semantics(cls: Class) -> list[str]:
