@@ -444,6 +444,10 @@ class MethodModel:
     returns_handle: str = ""
     # It returns a vocabulary with a C++ enum behind it.
     returns_word: bool = False
+    # Headers its body needs (`@needs`), and the vocabularies its body
+    # converts that no signature names (`@spells`).
+    headers: tuple[str, ...] = ()
+    spells: tuple[str, ...] = ()
 
     @classmethod
     def of(cls, m: Method, resolver: Resolver) -> MethodModel:
@@ -460,7 +464,8 @@ class MethodModel:
                    fills=m.fills, local=m.local, prop=m.prop,
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
-                                 and bool(word.decl.enumerated)))
+                                 and bool(word.decl.enumerated)),
+                   headers=m.headers, spells=m.spells)
 
     @property
     def return_spelling(self) -> str:
@@ -485,6 +490,12 @@ class FunctionModel:
     cxx_body: str = ""
     blocks: bool = False
     instant: bool = False
+    headers: tuple[str, ...] = ()
+    spells: tuple[str, ...] = ()
+    # Runs once when the module is imported (`@startup`).
+    startup: bool = False
+    # Turns a library exception into a Python one (`@translator`).
+    translator: bool = False
 
     @classmethod
     def of(cls, fn: Method, package: str, module: str,
@@ -498,7 +509,9 @@ class FunctionModel:
                    tuple(ParamModel.of(p, resolver) for p in fn.params),
                    type_ref(fn.ret, resolver) if fn.ret is not None else None,
                    _clean(fn.doc), cxx_name=fn.binds, cxx_body=fn.cxx_body,
-                   blocks=fn.blocks, instant=fn.instant)
+                   blocks=fn.blocks, instant=fn.instant, headers=fn.headers,
+                   spells=fn.spells, startup=fn.startup,
+                   translator=fn.translator)
 
     @property
     def wrapped(self) -> bool:
@@ -752,6 +765,22 @@ NO_POLICY = ("no threading policy, so the function has no async form for "
 
 
 @dataclass(frozen=True)
+class ModuleModel:
+    """One declaration file, as one translation unit sees it."""
+
+    name: str
+    # RAW, as the file wrote it.
+    doc: str
+    # Every class it declares, in declared order.
+    classes: tuple[ClassModel, ...]
+    # Every function it declares: startup hooks, translators and
+    # factories too, which `Model.functions` leaves out.
+    functions: tuple[FunctionModel, ...]
+    # Every name the unit can resolve: its own and its imports'.
+    visible: frozenset[str]
+
+
+@dataclass(frozen=True)
 class Model:
     """The whole declaration set, resolved: what every stage reads.
 
@@ -769,6 +798,12 @@ class Model:
     twins: Mapping[str, str]
     enums: Mapping[str, EnumModel]
     errors: Errors
+    # Each declaration file. Not a name table: a module name is not
+    # a name a caller imports.
+    modules: tuple[ModuleModel, ...] = ()
+
+    def module(self, name: str) -> ModuleModel:
+        return next(m for m in self.modules if m.name == name)
 
     @property
     def blocking_methods(self) -> list[FunctionModel]:

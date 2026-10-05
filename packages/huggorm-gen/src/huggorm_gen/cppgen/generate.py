@@ -58,6 +58,7 @@ def declared_model() -> ir.Model:
     have = corpus()
     classes: dict[str, ir.ClassModel] = {}
     functions: dict[str, ir.FunctionModel] = {}
+    modules: list[ir.ModuleModel] = []
     seen: list[tuple[dict[str, Any], Any]] = []
     for mod in have.modules:
         resolver = ir.Resolver.of(mod)
@@ -65,11 +66,15 @@ def declared_model() -> ir.Model:
             classes[cls.name] = ir.ClassModel.of(
                 cls, PACKAGE, mod.name, resolver, mod.functions)
             seen.append((mod.known, cls))
+        every = {fn.name: ir.FunctionModel.of(fn, PACKAGE, mod.name, resolver)
+                 for fn in mod.functions}
         # `nbemit.public` drops a startup hook, a translator and a
         # factory bound as its class's constructor: none is surface.
         for fn in nbemit.public(mod.exported, mod.classes):
-            functions[fn.name] = ir.FunctionModel.of(
-                fn, PACKAGE, mod.name, resolver)
+            functions[fn.name] = every[fn.name]
+        modules.append(ir.ModuleModel(
+            mod.name, mod.doc, tuple(classes[c.name] for c in mod.classes),
+            tuple(every.values()), frozenset(mod.known)))
     unions = {}
     for mod in have.modules:
         resolver = ir.Resolver.of(mod)
@@ -79,7 +84,7 @@ def declared_model() -> ir.Model:
              for vocab in map(have.module, have.vocabularies)
              for cls in vocab.classes if cls.is_words}
     return ir.Model(classes, functions, unions, ir.returned_names(seen),
-                    declare.twins(), enums, _errors())
+                    declare.twins(), enums, _errors(), tuple(modules))
 
 
 def _errors() -> ir.Errors:
