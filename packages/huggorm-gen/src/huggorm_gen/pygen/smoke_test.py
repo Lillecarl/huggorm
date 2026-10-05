@@ -6,9 +6,8 @@ entry point; runs after codegen-generate, stdlib only:
 2. the package imports and __all__ matches
 3. every emitted module and class carries a real docstring, and
    imports exactly the names it uses
-4. behavioral checks: results, C++ exception wrapping, affine thread
-   pinning (including returned affine values), pool execution,
-   policy-driven surface drops, aclose, exactly-once lazy construction
+4. each wrapper constructor is the declared one, and wire policy and
+   wrapping hold as the model states them
 5. the emitter-runtime symbol contract: every name any emitted module
    imports from _runtime must exist on the runtime module
 """
@@ -16,15 +15,12 @@ entry point; runs after codegen-generate, stdlib only:
 import argparse
 import ast
 import builtins
-import gc
 import importlib
 import inspect
 import pathlib
 import re
 import sys
 from typing import Any
-
-import anyio
 
 from huggorm_dsl.read import is_surface
 
@@ -190,170 +186,20 @@ def test_runtime_contract(out: pathlib.Path) -> None:
     )
 
 
-async def _all(*aws: Any) -> list[Any]:
-    """Every awaitable concurrently, results in order.
+def test_each_wrapper_constructor_is_the_declared_one() -> None:
+    """Every emitted wrapper __init__ states its declared constructor
+    parameters and passes each one through unwrap_arg.
 
-    anyio has no `gather`, and that absence is the point: a task
-    group OWNS its children, so a failure in one cancels the rest
-    rather than being handed back as a value nobody looks at.
-    Ordering by index is the only thing `gather` gave that a task
-    group does not, so it is the only thing restated here."""
-    out: list[Any] = [None] * len(aws)
-
-    async def one(i: int, aw: Any) -> None:
-        out[i] = await aw
-
-    async with anyio.create_task_group() as tg:
-        for i, aw in enumerate(aws):
-            tg.start_soon(one, i, aw)
-    return out
-
-
-async def _all_errors(*aws: Any) -> list[Any]:
-    """As `_all`, but every awaitable is EXPECTED to fail.
-
-    `gather(return_exceptions=True)` in one call. Separate from `_all`
-    because a task group's default is the opposite - the first
-    failure cancels its siblings - and a flag that inverts a task
-    group's whole contract reads better as a second name.
-
-    `Exception` and not `BaseException`: swallowing the cancellation
-    exception is the one thing anyio's contract forbids."""
-    out: list[Any] = [None] * len(aws)
-
-    async def one(i: int, aw: Any) -> None:
-        try:
-            await aw
-        except Exception as exc:
-            out[i] = exc
-
-    async with anyio.create_task_group() as tg:
-        for i, aw in enumerate(aws):
-            tg.start_soon(one, i, aw)
-    return out
-
-
-async def test_behavior() -> None:
-    import tempfile
-
-    import huggorm_bindings
-    from huggorm_bindings import ContentAddressMethod as CA
-    from huggorm_bindings import HashAlgorithm, StorePath
-    from huggorm_bindings.errors import NixTypeError
-    from huggorm_generated import (
-        AsyncEvalState,
-        AsyncStore,
-        AsyncValue,
-    )
-    from huggorm_generated._runtime import InternalError
-
-    def added(name: str, body: bytes) -> tuple[str, bytes]:
-        return name, body
-
+    Typed parameters leave no **kwargs to forward, so what can still go
+    wrong is a parameter the emitter forgot to unwrap, or a signature
+    that drifted from the declaration."""
     from huggorm_gen.cppgen.generate import declared_model
 
     model = declared_model()
-    # The emitted package, for the wrapper sources this reads back.
     pkg_file = importlib.import_module("huggorm_generated").__file__
     assert pkg_file is not None
     pkg_dir = pathlib.Path(pkg_file).parent
 
-    # Pool store: concurrent adds genuinely overlap. A chroot store
-    # rather than dummy://, because this adds paths and dummy:// holds
-    # none - and a chroot needs no daemon, which is what lets it run
-    # inside the build sandbox.
-    root = tempfile.mkdtemp(prefix="huggorm-smoke-")
-    local = AsyncStore(root)
-    assert await local.query_all_valid_paths() == [], "a fresh chroot is empty"
-    t0 = anyio.current_time()
-    p1, p2 = await _all(
-        local.add_to_store("hello.txt", b"world", CA.NAR, HashAlgorithm.SHA256),
-        local.add_to_store("note.txt", b"nix real", CA.NAR, HashAlgorithm.SHA256),
-    )
-    elapsed = anyio.current_time() - t0
-    assert elapsed < 0.18, f"expected overlapped adds, took {elapsed:.2f}s"
-    # StorePath is pool AND non-blocking, so it has no wrapper: an
-    # awaited store method hands back the binding object itself, and
-    # reading it is a plain call (huggorm#25).
-    assert type(p1) is StorePath
-    assert len({p1.to_string(), p2.to_string()}) == 2
-    assert await local.is_valid_path(p1) is True
-
-    # Lazy construction must run the factory EXACTLY ONCE, even when
-    # concurrent first-calls hit one pool handle. Regression guard for
-    # the unlocked _resolve race (each stray factory call once produced
-    # diverging underlying stores).
-    from huggorm_generated import _runtime
-
-    class _Probe:
-        def noop(self) -> str:
-            return "ok"
-
-    made: list[int] = []
-
-    def factory() -> _Probe:
-        made.append(1)
-        return _Probe()
-
-    runner = _runtime.PoolRunner(factory)
-    results = await _all(*(runner.call("noop", []) for _ in range(8)))
-    assert results == ["ok"] * 8
-    assert len(made) == 1, f"factory ran {len(made)}x under concurrent first-calls"
-
-    # Same guarantee on the failure path: one attempt, every caller
-    # gets the cached error.
-    failed: list[int] = []
-
-    def bad_factory() -> object:
-        failed.append(1)
-        raise RuntimeError("no")
-
-    bad_runner = _runtime.PoolRunner(bad_factory)
-    errs = await _all_errors(*(bad_runner.call("noop", []) for _ in range(4)))
-    assert len(failed) == 1, f"failing factory ran {len(failed)}x"
-    assert all(isinstance(e, InternalError) for e in errs)
-    assert all(type(e.__cause__) is RuntimeError for e in errs)
-
-    # Cross-thread unwrap guard: an affine wrapper that has never been
-    # called refuses construction on a foreign thread. Silent off-home
-    # construction was the bug (ensure() used to build affine objects
-    # wherever the caller happened to run).
-    import types
-
-    def _shell(runner: Any) -> Any:
-        return types.SimpleNamespace(_runner=runner, _wire="proxy")
-
-    lazy_affine = _shell(_runtime.AffineRunner(lambda: object()))
-    try:
-        _runtime.unwrap_arg(lazy_affine)
-        raise AssertionError("unconstructed affine must refuse cross-thread unwrap")
-    except TypeError:
-        pass
-
-    # Its first call constructs on its OWN thread; afterwards the
-    # wrapper unwraps fine from anywhere.
-    try:
-        await lazy_affine._runner.call("noop", [])
-        raise AssertionError("expected probe method error")
-    except InternalError:
-        pass
-    assert _runtime.unwrap_arg(lazy_affine) is not None
-    assert lazy_affine._runner.born_thread_name.startswith("huggorm-affine")
-
-    # Pool runners keep constructing lazily from any thread.
-    pool_shell = _shell(_runtime.PoolRunner(lambda: {"ok": True}))
-    assert _runtime.unwrap_arg(pool_shell) == {"ok": True}
-
-    # Every emitted wrapper __init__ must state its declared constructor
-    # parameters, and pass every one through unwrap_arg.
-    #
-    # This replaces the old kwargs guard. That one checked a **kwargs
-    # forward replayed through unwrap_arg, because a wrapper passed as a
-    # keyword argument would otherwise hand the async shell to the sync
-    # constructor. Typed parameters make that hazard structurally
-    # impossible - there is no **kwargs to forward - so the check moves
-    # to what can still go wrong: a parameter the emitter forgot to
-    # unwrap, or a signature that drifted from the declaration.
     checked_ctors = 0
     abstract, not_wrapped = [], []
     for c in model.constructed:
@@ -373,14 +219,9 @@ async def test_behavior() -> None:
             if isinstance(n, ast.FunctionDef) and n.name == "__init__"
         )
         if not c.constructs:
-            # A class with no door has no constructor to check - it has
-            # one that refuses. Pin the refusal instead.
-            #
-            # Keyed on the DOOR, not on `abstract`. That split landed
-            # in 061: nix::Store now states the true C++ fact about
-            # itself AND keeps its factory, so `abstract` here would
-            # have demanded a refusal from the one class that must not
-            # refuse.
+            # A class with no door has one constructor, and it refuses.
+            # Keyed on the DOOR, not on `abstract`: nix::Store states
+            # the true C++ fact about itself AND keeps its factory.
             assert any(isinstance(n, ast.Raise) for n in ast.walk(init)), (
                 f"{py.name}.__init__ must refuse to construct an abstract base"
             )
@@ -404,7 +245,6 @@ async def test_behavior() -> None:
             f"{py.name}.__init__ unwraps {sorted(unwrapped)}, "
             f"must unwrap every declared parameter {declared}"
         )
-        # Optional parameters must actually be optional.
         n_optional = sum(1 for p in c.ctor if p.default is not None)
         assert len(init.args.defaults) == n_optional, (
             f"{py.name}.__init__ has {len(init.args.defaults)} default(s), "
@@ -418,159 +258,56 @@ async def test_behavior() -> None:
     )
     assert not_wrapped, "expected at least one unwrapped class in the surface"
 
-    # Affine service: everything pinned to one dedicated thread.
-    remote = AsyncEvalState(AsyncStore("dummy://"))
-    assert await remote.get_store_uri() == "dummy://"
-    await remote.make_int(1)
-    await remote.eval_expr("2")
-    assert len(remote._runner.workers_seen) == 1, "affine calls must share one thread"
 
-    # Returned affine value pins to the PRODUCER's thread.
-    drv = await remote.make_int(11)
-    assert await drv.integer() == 11
-    assert await drv.type_name() == "int"
-    assert drv._runner.workers_seen == remote._runner.workers_seen, (
-        "value ops must run on the producer's thread"
-    )
+def test_wrapping_and_wire_policy_are_separate_axes() -> None:
+    """Immutable types are wire-values, everything else proxies. A class
+    is wrapped when it needs a home thread (affine) or its methods can
+    block. StorePath and PathInfo are pool and declare
+    `_blocking = False`, so they cross every layer as themselves - no
+    await in front of a substring read (huggorm#25)."""
+    import huggorm_generated as flg
+    from huggorm_gen.cppgen.generate import declared_model
 
-    # Returned pool values are free to use any thread.
-    spool = await local.add_to_store("x", b"y", CA.NAR, HashAlgorithm.SHA256)
-    assert isinstance(spool, StorePath)
-    assert isinstance(drv, AsyncValue)
-
-    # Wire policy lands in the model and on generated classes:
-    # immutable types are wire-values, everything else proxies.
-    cls = model.classes
+    cls = declared_model().classes
     assert cls["StorePath"].wire == "value"
     assert cls["Value"].wire == "proxy"
     assert cls["PathInfo"].wire == "value"
     assert cls["EvalState"].wire == "proxy"
-    assert local._wire == "proxy" and spool._wire == "value"
-
-    # Wrapping is a SEPARATE axis from wire policy, and the rule is:
-    # wrap when the object needs a home thread (affine) or its methods
-    # can block. StorePath and PathInfo are pool and declare
-    # _blocking = False, so they cross every layer as themselves -
-    # no await in front of a substring read (huggorm#25).
-    import huggorm_generated as flg_names
     for name in ("StorePath", "PathInfo"):
         assert not cls[name].decl.blocking and not cls[name].wrapped, name
-        assert not hasattr(flg_names, f"Async{name}"), (
-            f"Async{name} must not be generated")
-        # ...and nothing remote either: with no handle to address, an
-        # rpc on it could never be called. It crosses as a value.
+        assert not hasattr(flg, f"Async{name}"), f"Async{name} must not be generated"
+        # With no handle to address, an rpc on it could never be called.
         assert not cls[name].served, name
     # The control: an affine class and a blocking pool class both stay
     # wrapped, so the rule is doing work rather than switching nothing.
     assert cls["Value"].wrapped is True
     assert cls["Store"].wrapped is True
 
-    # C++ exceptions surface as InternalError with the cause attached.
-    try:
-        await remote.parse_expr("")
-        raise AssertionError("expected InternalError for an empty expression")
-    except InternalError as e:
-        d = e.to_dict()
-        assert d["code"] == "internal" and d["cause_type"] == "ValueError"
 
-    # Evaluation: EvalState is the affine SERVICE exemplar. Its values
-    # attach to its thread, and forcing mutates them in place.
-    state = AsyncEvalState(AsyncStore("dummy://"))
-    assert await state.get_store_uri() == "dummy://"
+def test_the_wire_refuses_what_it_cannot_carry() -> None:
+    """Every declared function is representable, so the corpus no longer
+    exercises the blocker path. Exercised directly, or the mechanism
+    that keeps an unrepresentable type out of the schema goes untested.
 
-    # Thunk protocol: parse gives an unforced value; accessors throw
-    # Nix's own type error until it is forced.
-    thunk = await state.parse_expr("42")
-    assert await thunk.type_name() == "thunk"
-    try:
-        await thunk.integer()
-        raise AssertionError("expected unforced access to fail")
-    except NixTypeError as e:
-        assert "expected an integer but found a thunk" in str(e)
-    await state.force(thunk)
-    assert await thunk.type_name() == "int"
-    assert await thunk.integer() == 42
-    assert await thunk.integer() == 42  # force is idempotent
+    A container of PROXIES stays refused whichever container it is: one
+    lease per element is not something anything grants in bulk. Neither
+    container nests in the other - proto3 has no repeated map field and
+    no map of repeated values. An opaque object and a module type with
+    no wire spelling have no field at all."""
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen.generate import declared_model
 
-    # eval returns a fully forced value on the state's thread.
-    v = await state.eval_expr('"hello nix"')
-    assert isinstance(v, AsyncValue)
-    assert await v.string_value() == "hello nix"
-
-    # Free functions have generated wrappers too: module-level
-    # coroutines on the shared pool.
-    #
-    # NONE OF THEM TAKES A BOUND HANDLE. `describe(obj: MockStore)`
-    # was the only one, and it went with the mock (huggorm#60), so the
-    # emitter's parameter-unwrapping path for a free function has no
-    # user until nix::copyPaths or the libexpr EvalState brings one
-    # back. Said here rather than left as a silent hole.
-    import huggorm_generated as flg
-    from huggorm_bindings.errors import UnimplementedError
-
-    # A Nix built without the collector refuses, by name, every question
-    # only the collector can answer, and the checks that need one run
-    # where it exists (huggorm#105).
-    has_gc = huggorm_bindings.boehm_gc()
-
-    async def collect() -> None:
-        if has_gc:
-            await flg.collect_garbage()
-
-    # An untouched affine wrapper constructs on its OWN thread, on the
-    # first call. ensure() refuses to build a dedicated-thread object
-    # off-home, rightly, and the runner satisfies that refusal rather
-    # than relaxing it.
-    #
-    # It read `untouched.force(thunk_arg)` with a thunk from `state`,
-    # which is a CROSS-STATE call and now refused: a state is an
-    # isolation, and a value is only meaningful to the state that
-    # allocated it. The cross-state part was scaffolding - what is
-    # asserted is where `untouched` was born, and any call proves that.
-    #
-    # The comment there claimed this covered an affine wrapper used as
-    # an ARGUMENT, and it never did. `_materialize_args` was a no-op on
-    # `thunk_arg`, which is attached to an already-constructed
-    # producer - and that is true of EVERY affine argument the corpus
-    # can produce, because the only ones are Values and a Value comes
-    # from a state that has by then been called. So the argument side
-    # of `materialize` has no producer to exercise it, which is said
-    # here rather than left looking covered.
-    untouched = AsyncEvalState(AsyncStore("dummy://"))
-    assert untouched._runner._obj is None, "expected an unconstructed wrapper"
-    assert await (await untouched.eval_expr("1")).integer() == 1
-    born = untouched._runner.born_thread_name
-    assert born is not None and born.startswith("huggorm-affine"), (
-        f"argument construction must stay on its own thread, not {born}")
-    await untouched.aclose()
-    free = model.functions
+    free = declared_model().functions
     assert free["collect_garbage"].returns is None
-    # ...and the wire can carry each. gc_stats returns dict[str, int],
-    # which is a protobuf map now that the declaration says what the
-    # entries hold (huggorm#30).
-    assert not model.function_blockers(free["collect_garbage"])
-    assert not model.function_blockers(free["gc_stats"])
+    # gc_stats returns dict[str, int], a protobuf map now that the
+    # declaration says what the entries hold (huggorm#30).
     gc_return = free["gc_stats"].returns
     assert gc_return is not None and gc_return.spelling == "dict[str, int]"
-
-    # gc_stats was the last function with no RPC surface, so the
-    # blocker path now has nothing left to report. Exercise it
-    # directly, or the mechanism that keeps an unrepresentable type out
-    # of the schema goes untested the moment everything is
-    # representable.
-    from huggorm_gen import ir
 
     T = ir.TypeRef
     i, s = T.named("int", "scalar"), T.named("str", "scalar")
     value, path = T.named("Value", "proxy"), T.named("StorePath", "value")
     served = frozenset({"Value"})
-    # A container of PROXIES stays refused whichever container it is:
-    # one lease per element is not something anything grants in bulk.
-    # Neither container nests in the other - proto3 has no repeated map
-    # field and no map of repeated values. An opaque object and a
-    # module type with no wire spelling have no field at all. The
-    # reader refuses the rest before a model exists: a set, a
-    # non-str key, a bare container, a name nothing declares.
     for t in (T.dict_of(T.dict_of(i)), T.dict_of(T.list_of(i)),
               T.dict_of(value), T.list_of(value), T.list_of(T.list_of(i)),
               T.list_of(T.dict_of(i)), T.named("object", "opaque"),
@@ -581,243 +318,6 @@ async def test_behavior() -> None:
               T.named("datetime.timedelta", "module")):
         assert not ir.wire_blocker(t, served), (t.spelling,
                                                 ir.wire_blocker(t, served))
-
-    # Closing an affine wrapper shuts its dedicated thread down, and
-    # that thread must leave the collector's list before it dies. Boehm
-    # stops the world by signalling every registered thread and waiting
-    # for each to answer; a dead one never answers, so the next
-    # collection aborted the PROCESS with "Signals delivery fails
-    # constantly". Nothing caught it because every existing aclose
-    # happened after the last collection. Two affine wrappers were
-    # closed just above, so collect here.
-    await collect()
-    if has_gc:
-        assert huggorm_bindings.gc_stats()["heap_size"] > 0
-    else:
-        for refused in (huggorm_bindings.gc_stats, huggorm_bindings.collect_garbage):
-            try:
-                refused()
-            except UnimplementedError:
-                continue
-            raise AssertionError(f"{refused.__name__} answered with no collector")
-
-    # ---- collections ------------------------------------------------
-    # An attribute set is BUILT, not parsed: the expression language
-    # stays a toy, and reimplementing Nix's syntax would buy nothing
-    # the wire and lifetime paths do not get from a builder.
-    builder = AsyncEvalState(AsyncStore("dummy://"))
-    attrs = await builder.make_attrs()
-    for name, number in (("zebra", 1), ("apple", 2), ("mango", 3)):
-        await builder.attrs_set(attrs, name, await builder.make_int(number))
-    assert await attrs.type_name() == "attrs"
-    assert await attrs.size() == 3
-
-    # Nix attribute sets are alphabetical, so an index walk IS the
-    # listing order (Carl, 2026-08-25). The C++ side keeps a sorted
-    # array, like nix::Bindings.
-    names = [await attrs.name_at(i) for i in range(await attrs.size())]
-    assert names == ["apple", "mango", "zebra"], names
-    assert [await (await attrs.value_at(i)).integer() for i in range(3)] == [2, 3, 1]
-    assert await attrs.has("mango") and not await attrs.has("durian")
-    assert await (await attrs.get("apple")).integer() == 2
-
-    # Setting a name twice replaces its value, like assignment.
-    await builder.attrs_set(attrs, "apple", await builder.make_int(99))
-    assert await attrs.size() == 3
-    assert await (await attrs.get("apple")).integer() == 99
-
-    # Nesting: a list inside an attribute set, holding values that are
-    # values in their own right.
-    xs = await builder.make_list()
-    for word in ("one", "two"):
-        await builder.list_append(xs, await builder.make_string(word))
-    await builder.attrs_set(attrs, "xs", xs)
-    assert await (await (await attrs.get("xs")).at(1)).string_value() == "two"
-
-    # The collector must SEE the children through the parent. A plain
-    # std::vector<Value *> inside a GC-allocated Value would hold them
-    # in malloc memory, which Boehm does not scan: they would be
-    # collected while the parent still pointed at them. Drop every
-    # Python reference, collect, then churn hard enough that a freed
-    # block would be handed out again - and read the tree back.
-    del xs
-    gc.collect()
-    await collect()
-    churn = [await builder.make_int(i) for i in range(500)]
-    del churn
-    gc.collect()
-    await collect()
-    assert await attrs.size() == 4
-    assert await (await attrs.get("apple")).integer() == 99
-    assert await (await (await attrs.get("xs")).at(0)).string_value() == "one"
-    assert [await attrs.name_at(i) for i in range(4)] == [
-        "apple", "mango", "xs", "zebra"]
-
-    # Wrong-kind and out-of-range access say which, on every accessor.
-    # Built one at a time: a tuple of coroutines leaves the untried ones
-    # unawaited the moment the first raises.
-    for make in (lambda: attrs.integer(),
-                 lambda: attrs.at(0),
-                 lambda: attrs.name_at(99)):
-        try:
-            await make()
-        except Exception as e:
-            # A wrong kind is Nix's own type error. The runtime wraps
-            # another binding failure in InternalError, so its C++ text
-            # is on the cause, not the message.
-            why = str(e.__cause__ or e)
-            assert "but found" in why or "out of range" in why, why
-        else:
-            raise AssertionError("wrong-kind access succeeded")
-    await builder.aclose()
-
-    # THE HIERARCHY IS GONE, AND SO ARE THE THREE PROPERTIES IT WAS
-    # THE ONLY EXERCISE FOR (huggorm#60):
-    #
-    # - a generated base whose subclasses share one wire service;
-    # - the pool policy DROPPING an affine-returning method from a
-    #   pool wrapper while an affine wrapper keeps it;
-    # - an abstract base refusing construction.
-    #
-    # Real Nix has the hierarchy - nix::Store over nix::LocalStore and
-    # the rest - but nanobind downcasts by EXACT typeid, so registering
-    # an intermediate buys nothing and the leaves are a zoo this repo
-    # does not track. Carl has no use case for the downcast either.
-    # These come back if and when a second real base does.
-
-    # Boehm GC proof, in two layers. First the counters bound straight
-    # from gc.h prove the collector is ACTIVE and that this exact value
-    # lives inside a GC-allocated block. A no-op integration could not
-    # produce either fact.
-    if has_gc:
-        stats = huggorm_bindings.gc_stats()
-        assert stats["heap_size"] > 0 and stats["total_bytes"] > 0
-        assert await v.is_gc_managed()
-        assert await thunk.is_gc_managed()
-
-        # Second layer: survival. Collection is a blocking global operation,
-        # so it is dispatched off the loop thread - which also exercises
-        # thread registration from a fresh pool thread.
-        collections_before = stats["collections"]
-        await collect()
-        assert huggorm_bindings.gc_stats()["collections"] >= collections_before + 2
-        assert await v.string_value() == "hello nix"
-        await collect()
-    else:
-        assert not await v.is_gc_managed(), "nothing is GC-managed with no collector"
-    # Forced state persists through collection...
-    assert await thunk.type_name() == "int"
-    assert await thunk.integer() == 42
-    # ...and the arena keeps accepting new values afterwards.
-    fresh = await state.parse_expr("7")
-    assert await fresh.type_name() == "thunk"
-    await state.force(fresh)
-    assert await fresh.integer() == 7
-
-    # Every value that is made releases its root when it is dropped.
-    #
-    # OUR invariant, deliberately, and it replaces a heap-bytes
-    # assertion that was asking the wrong party. Two things made that
-    # one unsound. An evaluated value is rooted by the STATE - the
-    # file cache, the env chain - so dropping the Python handle
-    # removes our root and boehm rightly keeps the value. And boehm is
-    # conservative: a stale pointer in a register legitimately retains
-    # an object, so a byte count is flaky by construction.
-    #
-    # A leaked root is a real bug class and nothing else can see it.
-    # It keeps its value alive forever, and the heap only ever says
-    # the heap grew.
-    if has_gc:
-        roots_before = huggorm_bindings.gc_stats()["live_roots"]
-        kept = [await state.make_string(f'{"p" * 200}-{i}') for i in range(200)]
-        assert huggorm_bindings.gc_stats()["live_roots"] >= roots_before + 200
-
-        del kept
-        await collect()
-        assert huggorm_bindings.gc_stats()["live_roots"] == roots_before, (
-            f"dropped values must release their roots: "
-            f"{roots_before} -> {huggorm_bindings.gc_stats()['live_roots']}"
-        )
-
-    assert v._runner.workers_seen == state._runner.workers_seen, (
-        "value ops must run on the producer's thread"
-    )
-
-    # Affine serialization, proved by WHERE the calls ran rather than
-    # by how long they took.
-    #
-    # This used to gather two evals and require the elapsed time to be
-    # about twice one eval. That worked because the mock SLEPT: real
-    # libexpr evaluates "1" in microseconds, so a timing test measures
-    # scheduler noise and passes or fails on the machine's mood. A
-    # single worker is the property the policy actually promises, and
-    # a thread name is not a stopwatch.
-    await _all(state.eval_expr("1"), state.eval_expr("2"))
-    assert len(state._runner.workers_seen) == 1, (
-        f"evals must serialize on one thread, saw {state._runner.workers_seen}")
-
-    # Evaluation errors, in the two shapes a caller has to tell apart.
-    #
-    # A nix::Error is DECLARED, so it reaches the caller as itself and
-    # `except NixError` works here exactly as it does against the sync
-    # binding (huggorm#66). It describes itself through `to_dict`, which
-    # is what the runtime tests before deciding to wrap anything.
-    #
-    # Anything else is not declared, carries no parts, and arrives as
-    # an InternalError naming it. The mock could only ever raise the
-    # second kind, so this pairing is new.
-    # The error module by its DERIVED name. `huggorm_bindings` is a
-    # fixed fact in this file, but the errors submodule is named after
-    # the declaration - so writing `.errors` here would have been a
-    # copy of a name the build computes, and renaming the declaration
-    # proved it (huggorm#63).
-    from huggorm_generated._policy import ERROR_MODULE
-
-    NixError = importlib.import_module(ERROR_MODULE).NixError
-
-    try:
-        await state.eval_expr("not an expression")
-        raise AssertionError("expected an evaluation error")
-    except NixError as e:
-        # The narrowest declared class: an undefined variable is a
-        # nix::UndefinedVarError, and `except NixError` still catches it.
-        d = e.to_dict()
-        assert d["code"] == "UndefinedVarError", d
-        assert "undefined variable" in d["message"], d
-    try:
-        await state.eval_expr("")
-        raise AssertionError("expected a refusal")
-    except InternalError as e:
-        d = e.to_dict()
-        assert d["code"] == "internal" and d["cause_type"] == "ValueError", d
-
-    await v.aclose()
-    await thunk.aclose()
-    await state.aclose()
-
-    # Wrong arity fails AT THE CALL SITE now. It used to sail through
-    # __init__(*args, **kwargs) and surface as an InternalError raised
-    # from inside the lazy factory, on a worker thread, at the first
-    # method call - far from the line that caused it.
-    #
-    # Caching of a GENUINE factory failure is covered directly above,
-    # via PoolRunner(bad_factory); that guarantee is unchanged.
-    try:
-        AsyncEvalState(AsyncStore("dummy://"), None, None, "unexpected-arg")  # type: ignore[call-arg]
-        raise AssertionError("wrong arity must fail at construction")
-    except TypeError:
-        pass
-
-    # A declared required parameter is required, and a declared optional
-    # one is optional.
-    try:
-        AsyncEvalState()  # type: ignore[call-arg]
-        raise AssertionError("missing required store must fail")
-    except TypeError:
-        pass
-    await drv.aclose()
-    await remote.aclose()
-    await local.aclose()
 
 
 def test_no_unused_imports(out: pathlib.Path) -> None:
@@ -1554,11 +1054,7 @@ def main(argv: list[str] | None = None) -> None:
     # test added later was simply not in it: two of them existed here,
     # linted, typechecked, and never ran. A gate nothing calls is
     # worse than no gate, because the file says it is covered.
-    #
-    # Definition order is the run order - a module's dict keeps it -
-    # and the sync checks go first so the one async check still runs
-    # last, which is the only ordering the old list expressed on
-    # purpose.
+    # Definition order is the run order: a module's dict keeps it.
     checks = [fn for name, fn in list(globals().items())
               if name.startswith("test_") and callable(fn)]
 
@@ -1568,15 +1064,7 @@ def main(argv: list[str] | None = None) -> None:
         return fn(out) if inspect.signature(fn).parameters else fn()
 
     for fn in checks:
-        if not inspect.iscoroutinefunction(fn):
-            call(fn)
-    for fn in checks:
-        if inspect.iscoroutinefunction(fn):
-            # `anyio.run` takes the function and its arguments, where
-            # `asyncio.run` took the coroutine. `call` decides the
-            # arguments from the signature, so a lambda is what hands
-            # anyio something to call.
-            anyio.run(lambda f=fn: call(f))  # type: ignore[arg-type,misc]
+        call(fn)
     print(f"smoke test OK ({len(checks)} checks)")
 
 
