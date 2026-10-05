@@ -705,18 +705,28 @@ class UnionModel:
 
 
 @dataclass(frozen=True)
+class WordModel:
+    """One vocabulary member: its Python name and the word it is."""
+
+    name: str
+    value: str
+
+
+@dataclass(frozen=True)
 class EnumModel:
     """One string vocabulary. A member is a str, so it crosses as one."""
 
     name: str
     module: str
-    values: tuple[str, ...]
+    members: tuple[WordModel, ...]
     doc: str
+    decl: Decl
 
     @classmethod
     def of(cls, c: Class, package: str, module: str) -> EnumModel:
         return cls(c.name, f"{package}.{module}",
-                   tuple(m.value for m in c.members), _clean(c.doc))
+                   tuple(WordModel(m.name, m.value) for m in c.members),
+                   _clean(c.doc), c.decl)
 
 @dataclass(frozen=True)
 class ErrorModel:
