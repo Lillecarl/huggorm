@@ -4,8 +4,8 @@ Each one reads the same parsed declaration and none knows about the
 others:
 
 - `nbemit.py` writes nanobind C++ - the binding itself.
-- `manifest.py` writes the manifest entry every generated Python
-  surface above the bindings is built from.
+- `pyinit.py` writes the bindings package's `__init__`, the front
+  door that re-exports every declared name.
 - `pyenum.py` writes a vocabulary as a StrEnum module, by
   transforming the declaration's own tree.
 - `pyerrors.py` writes the exception module and the C++ catch chain

@@ -5,7 +5,7 @@ generated from a declaration, and everything above them generated from
 the same declaration.
 
 One file decides six surfaces: the C++ binding, the type stub, the
-manifest entry, the async wrapper, the RPC client and the gRPC schema.
+wire policy, the async wrapper, the RPC client and the gRPC schema.
 Adding a type means editing one declaration and nothing else. That is
 the whole premise, and it is what a reviewer should push on.
 
@@ -206,14 +206,14 @@ reached for it.
 
     huggorm/
       wire.py       the codec both sides share. Knows shapes, no types.
-      server.py     manifest -> gRPC service, dispatch, handles
+      server.py     the emitted call specs -> gRPC service, dispatch, handles
       remote.py     the client
       lifecycle.py  connections, leases, detach and reclaim
       faults.py     a typed error, across the wire
       tests/        the suite, hermetic unless marked live
 
 `wire.py` is the sharpest single file: it names no concrete type at
-all. Every type it acts on comes out of the manifest.
+all. Every type it acts on is a `Wire` the build emitted into `_policy`.
 
 ## How a change flows
 
@@ -231,8 +231,8 @@ of two constructors a value takes - goes in the declaration itself, as
 a `Cxx(...)` in the method's body. Every build prints how many of each
 class's methods were derived and how many carry a body.
 
-Nothing else is edited. The emitters write the binding, the stub and
-the manifest entry, and the four surfaces follow from the manifest. If
+Nothing else is edited. The reader builds the typed model (`ir.py`)
+from the declaration, and every surface is emitted from the model. If
 the codegen cannot express something, that is the finding - and the
 fix belongs in the declaration or the emitter, not in a hand-written
 wrapper.

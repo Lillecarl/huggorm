@@ -7,13 +7,11 @@ copied rather than two kept in step.
 
 ## Why this is not a dict
 
-It was one. Every generated method carried an entry out of
-`self._rpc: dict[str, dict[str, Any]]`, which the manifest had
-handed over as JSON. That worked and it proved nothing: `--strict`
+A `dict[str, Any]` spec would work and prove nothing: `--strict`
 cannot check a key that does not exist, a field spelled wrong, or a
-`params` list whose entries are the wrong shape. The whole point of
-generating the client was that a typechecker could see it, and the
-one part a caller cannot see was the one part still untyped.
+`params` list whose entries are the wrong shape. The point of
+generating the client is that a typechecker can see it, and a dict
+leaves the call spec as the one untyped part.
 
 A frozen dataclass answers all three. The emitter builds one per
 method, at import, and the checker reads every field.

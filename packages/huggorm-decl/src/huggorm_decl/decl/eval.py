@@ -1710,7 +1710,7 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         why huggorm#34, a Nix function called FROM Python, cannot
         borrow this shape.
 
-        IN-PROCESS ONLY. No rpc surface exists and the manifest
+        IN-PROCESS ONLY. No rpc surface exists and the generator
         refuses to build one, because a remote registration would make
         the evaluator call back over the socket once per invocation,
         on its evaluation thread. A decision, in huggorm#33, rather

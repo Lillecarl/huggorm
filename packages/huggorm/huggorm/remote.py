@@ -645,7 +645,7 @@ class NixClient:
         req = self.msg(m.req)()
         req.self.id = handle_id
 
-        # Wire names and wire policies both come out of the manifest, so
+        # Wire names and wire policies both come out of `_policy`, so
         # this method mentions no concrete type: a proxy arg contributes
         # its handle id, a wire-value serializes through its declared
         # parts, a scalar goes in as itself.

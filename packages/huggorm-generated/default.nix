@@ -4,9 +4,9 @@
   huggorm-bindings,
   zuban,
   ruff,
-  # The declarations, and the reader that turns one into a manifest
-  # entry. A build input: pygen imports it and calls it instead of
-  # reflecting on a compiled class.
+  # The declarations, and the reader that turns them into the model.
+  # A build input: pygen imports it and calls it instead of reflecting
+  # on a compiled class.
   huggorm-gen,
   huggorm-decl,
   huggorm-dsl,

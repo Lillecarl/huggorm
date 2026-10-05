@@ -82,12 +82,11 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
     """The class the import kept reaches every output; the other
     reaches none.
 
-    Three outputs come off an exception declaration - the manifest
-    entries, the translator's catch chain, and the emitted module -
-    and before this they disagreed about what a branch means. The
-    entries and the chain read the top level, where a branched class
-    is not; the module copied the whole document, so it emitted both
-    the class and the `if` around it.
+    Three outputs come off an exception declaration - the model's
+    error entries, the translator's catch chain, and the emitted
+    module - and all three must agree on what a branch means. A
+    reader of the top level misses a branched class, and a copy of
+    the whole document emits both the class and the `if` around it.
 
     So `Gone` must be absent from all three and `Here` present in all
     three. Asserting only one direction would pass on an emitter that
@@ -366,9 +365,9 @@ def test_an_undeclarable_dunder_is_refused_rather_than_dropped(
         tmp_path: pathlib.Path) -> None:
     """A dunder the emitters are not taught gets an answer.
 
-    The class-body loop once kept the names that are not
-    `__`-prefixed and skipped the rest, so a declared dunder reached
-    no binding, no stub line and no manifest entry, with no
+    Without the refusal, the class-body loop would keep the names
+    that are not `__`-prefixed and skip the rest, so a declared dunder
+    would reach no binding, no stub line and no rpc, with no
     diagnostic anywhere - and a skip is indistinguishable from an
     absence, which is this repo's named failure mode (huggorm#88).
 
@@ -627,7 +626,7 @@ class Sizes:
 
 # A PROXY whose method takes the unsigned width. A proxy is reached
 # through a service, so this parameter is a message field - and the
-# manifest has one string for it, read as a Python annotation by the
+# model has one type for it, read as a Python annotation by the
 # stubs and as a wire type by the schema.
 TAKES = '''"""One proxy whose method takes a width."""
 
@@ -662,7 +661,7 @@ def test_a_field_says_which_64_bit_integer_it_is(
     alias carries. `Type.wire` threw it away.
 
     Both halves are asserted. The wire tells the two apart, and the
-    manifest's Python spelling does NOT - a caller holds an `int`
+    model's Python spelling does NOT - a caller holds an `int`
     either way, and a stub that said `uint` would name a type Python
     does not have."""
     from huggorm_dsl.read import read

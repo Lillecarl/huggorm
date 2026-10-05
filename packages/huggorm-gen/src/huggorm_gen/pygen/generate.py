@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> None:
     _vendor(here / "runtime.py", out / "_runtime.py")
     # ...and the SUM types, which have no home in the bindings: an
     # alias is Python and the module binding its arms is a compiled
-    # extension. Written from the manifest, so the declaration states
+    # extension. Written from the model, so the declaration states
     # `DerivedPath = StorePath | DerivedPathBuilt` once.
     (out / "_unions.py").write_text(unions_module(model.unions))
     # ...and the wire policy of every declared type, which the codec

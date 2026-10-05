@@ -1956,7 +1956,7 @@ PARTS_DOC = ("Wire-serialization helper (private): one value per "
 
 
 # A declared field's WIRE type, and the C++ that carries it. The wire
-# spells types the way the manifest does - `str`, `int`, `str?`, or
+# spells types the way a declaration does - `str`, `int`, `str?`, or
 # another declared class - because that is the vocabulary the message
 # shape is written in, not C++'s.
 

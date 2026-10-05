@@ -1,7 +1,7 @@
 """
-Manifest -> protobuf schema, and the single source of RPC naming.
+Model -> protobuf schema.
 
-Builds a FileDescriptorSet from the protocol dicts in the manifest.
+Builds a FileDescriptorSet from the typed model (`huggorm_gen.ir`).
 Emitted at build time as grpc_schema.pb beside the generated Python - one
 artifact, four uses: grpclib dispatch, dynamic message classes on any
 client, reflection bytes later, and protoc input for other languages
@@ -16,10 +16,10 @@ Conventions:
   directly. NO type name is hardcoded here: adding a wire-value means
   editing one declaration and nothing else.
 
-This module also owns naming. annotate() writes every rpc's service,
-method path and message names INTO the manifest, so the server and the
-client read them instead of each recomputing the convention. A rename
-here reaches both sides at build time rather than at first call.
+This module does not own naming. `ir.RpcNames` states every rpc's
+service, method path and message names once. The schema, the server
+and the client all read them from there, so a rename reaches every
+side at build time rather than at first call.
 """
 
 from typing import Any
@@ -420,8 +420,8 @@ def _add_value_tree(f: Any, sess: Any) -> None:
     recursive, and its arms are the wire KINDS themselves rather than a
     list of typed fields. The generator stays unaware of it; what it
     does know - which class is a tree and how to walk one - reaches the
-    server through the manifest, from a declaration next to the
-    binding.
+    server through the emitted `_policy`, from a declaration next to
+    the binding.
 
     The proxy arm is where laziness lives. A thunk cannot be
     serialized, so it crosses as a handle and the caller forces it with

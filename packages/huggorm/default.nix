@@ -47,7 +47,7 @@ python3Packages.buildPythonPackage {
   # generated is propagated so anyone writing code in/downstream of
   # huggorm sees huggorm_generated in their environment.
   # grpclib: asyncio gRPC transport for the remote layer. protobuf
-  # runtime feeds the manifest-built descriptor schema.
+  # runtime feeds the model-built descriptor schema.
   # googleapis-common-protos: google.rpc.Status, which is the message
   # gRPC puts in grpc-status-details-bin - the only place a FAILED
   # call can carry a typed answer (huggorm#36).
@@ -98,9 +98,9 @@ python3Packages.buildPythonPackage {
     # The generator, for the suite alone. Several tests hold an
     # artifact - the descriptor set, the front door's __all__, the
     # stubs - against what the build decided, and they get that by
-    # calling `build_manifest()` rather than by reading a JSON dump of
-    # it (065). Not a runtime dependency: nothing in `huggorm/`
-    # imports it.
+    # building the model (`declared_model()`) rather than by reading a
+    # dump of it (065). Not a runtime dependency: nothing in
+    # `huggorm/` imports it.
     huggorm-gen
     huggorm-decl
     huggorm-dsl

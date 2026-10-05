@@ -901,7 +901,7 @@ def _resolved(found: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _expr(src: str) -> str:
     """One expression, normalized the way ast.unparse writes it, so a
-    manifest string and an emitted node compare as source."""
+    declared default and an emitted node compare as source."""
     return ast.unparse(ast.parse(src, mode="eval").body)
 
 
@@ -1162,7 +1162,7 @@ def test_stubs(out: pathlib.Path) -> None:
     becomes a call that fails at runtime. Both directions matter, which
     is why this compares sets rather than checking coverage one way.
 
-    Reflected against the LIVE modules, not the manifest. The manifest
+    Reflected against the LIVE modules, not the model. The model
     holds the generated surface, which the affine-return drop and 018's
     hierarchy split have already filtered; the bindings have neither."""
     import importlib
@@ -1505,7 +1505,7 @@ def test_no_binding_leaks_a_cxx_type(out: pathlib.Path) -> None:
 
     That is the failure this gate exists for, because nothing else
     catches it. The C++ compiles - the method pointer is valid. The
-    declaration typechecks. The stub says `str`, the manifest says
+    declaration typechecks. The stub says `str`, the model says
     `str`, and a caller gets TypeError on the first call saying the
     supported argument type is a C++ type they have never heard of.
 

@@ -210,7 +210,7 @@ def test_filling_the_base_environment_raises_rather_than_corrupts(
 def test_no_rpc_surface(state: Any) -> None:
     """A callable does not cross a wire, by decision.
 
-    The manifest refuses to build an rpc for a parameter spelled
+    The generator refuses to build an rpc for a parameter spelled
     `nb::object`, so the remote EvalState has no `register_primop` at
     all. Asserted rather than assumed, because an accidental rpc would
     make the evaluator call back over the socket once per invocation

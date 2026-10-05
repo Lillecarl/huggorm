@@ -520,16 +520,15 @@ def test_the_stubs_promise_the_same_order_the_model_does(
         model: ir.Model) -> None:
     """The stubs are what a caller's typechecker reads.
 
-    huggorm#52 was a complaint about the STUBS: they were re-extracted
-    by reflection on a second route that never saw the declaration, so
-    the manifest stopped claiming PathInfo has an ordering while
-    `store.pyi` went on claiming it. A second route to the same fact
-    is a second answer to it.
+    huggorm#52 was a complaint about the STUBS. Stubs that come from a
+    second route, one that never sees the declaration, can disagree
+    with the model about whether PathInfo has an ordering. A second
+    route to the same fact is a second answer to it.
 
     So this compares the two artefacts rather than calling anything.
-    An earlier version built an instance and tried `<`, which looked
-    stronger and was weaker: a produced value has no constructor, so
-    the check skipped exactly the two classes that were wrong."""
+    Building an instance and trying `<` looks stronger and is weaker:
+    a produced value has no constructor, so that check skips exactly
+    the classes most likely to be wrong."""
     import sys
 
     from huggorm_dsl.read import DECLARED_DUNDERS

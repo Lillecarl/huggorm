@@ -76,11 +76,10 @@ class WrapperError(Exception):
         return {"code": self.code, "message": self.message}
 
     # No from_dict. Rebuilding an error is a WIRE concern and it lives
-    # at the wire, where the manifest says which classes exist. The
-    # version that lived here approximated the cause from a hard-coded
-    # map of five builtins - a list of library knowledge in the one
-    # module that is emitted beside the wrappers and must not know
-    # which library it wraps (huggorm#36).
+    # at the wire, where the emitted `_policy` says which classes
+    # exist. This module is emitted beside the wrappers and must not
+    # know which library it wraps, so it holds no map of library
+    # errors to guess a cause from (huggorm#36).
 
 
 class InternalError(WrapperError):

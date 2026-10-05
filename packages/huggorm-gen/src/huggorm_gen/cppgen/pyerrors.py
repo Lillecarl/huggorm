@@ -27,14 +27,13 @@ Deleted rather than fixed (huggorm#72), because there is nothing left
 for it to check: the module and the chain come from ONE reading of
 one file, so they cannot disagree.
 
-The BODY is `read.resolved`, not a raw parse, and the difference is
-huggorm#73. A raw `tree.body` holds neither arm of an `if
-NIX_VERSION >= ...` - the classes are nested one level down - so a
-branched error class reached no manifest entry and no catch clause,
-while `module()` copied the whole branch through into the emitted
-file. Three holes, none of them loud. The reader has resolved a
-version branch since it was written; this now asks it rather than
-parsing the file again.
+The BODY is `read.resolved`, not a raw parse (huggorm#73). A raw
+`tree.body` holds neither arm of an `if NIX_VERSION >= ...` - the
+classes are nested one level down - so a branched error class would
+reach no model entry and no catch clause, while `module()` would copy
+the whole branch into the emitted file. None of those holes is loud.
+The reader already resolves a version branch, so this asks it rather
+than parsing the file again.
 
 So a branch is a BUILD-TIME question here. The emitted module holds
 the classes this build's Nix has, flat, with no condition left to

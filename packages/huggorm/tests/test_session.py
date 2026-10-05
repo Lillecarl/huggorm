@@ -192,9 +192,9 @@ async def test_remote_close_reports_a_failed_release(server: Any) -> None:
 
 
 def test_remote_session_follows_the_acquire_table() -> None:
-    """Typed acquires name what the manifest declares.
+    """Typed acquires name what the declaration says.
 
-    The acquire table is manifest-derived, so a declaration change
+    The acquire table is emitted from the model, so a declaration change
     that moves a constructor fails here rather than drifting the
     hand-written session silently.
     """

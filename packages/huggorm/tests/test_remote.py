@@ -76,8 +76,8 @@ async def test_a_proxy_stays_remote(client: Any) -> None:
     assert isinstance(v, RPCValue)
     assert v._wire == "proxy"
     # The generated class carries real methods, so a missing one is a
-    # plain AttributeError from Python - not a manifest lookup that
-    # produced a coroutine either way.
+    # plain AttributeError from Python - not a lookup by name that
+    # produces a coroutine either way.
     from huggorm import remote
 
 
@@ -192,7 +192,7 @@ async def test_a_nix_error_in_no_encoding_crosses_as_bytes(
 
 
 async def test_an_undeclared_cause_still_approximates(client: Any) -> None:
-    """Rebuilding is for what the manifest DECLARES, and nothing else.
+    """Rebuilding is for the errors a declaration NAMES, and nothing else.
 
     The evaluator raises std::invalid_argument, which the binding
     surfaces as a plain ValueError - not a nix error, so it carries no

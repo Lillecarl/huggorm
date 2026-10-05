@@ -2,7 +2,7 @@
 
 huggorm binds Nix to Python, and generates the binding itself from a
 declaration. One file per Nix class decides six surfaces: the C++
-binding, the type stub, the manifest entry, the async wrapper, the RPC
+binding, the type stub, the wire policy, the async wrapper, the RPC
 client and the gRPC schema.
 
 **The destination is an evaluation service, not a binding.** A binding
@@ -68,15 +68,12 @@ transports after that.
 In order:
 
 0. **The architecture, before anything else.** Carl, 2026-10-05:
-   "it's highest priority that the architecture is solid". The work
-   is a TYPED MODEL between the reader and the emitters (#29). The
-   manifest is `dict[str, Any]` and types cross it as strings, so
-   each emitter re-derives the same rules from strings and names,
-   and the copies drift. Measured on one day: "is this a proxy" was
-   an exact string match in three places that all missed `X | None`,
-   and "is this private" was a leading-`_` test in five places that
-   silently dropped `__call__`. A rule lives on the model once.
-   Features wait for this.
+   "it's highest priority that the architecture is solid". Every
+   stage reads the TYPED MODEL (`huggorm_gen/ir.py`, #29); the
+   runtime reads `Wire` descriptors the build emits. A rule lives on
+   the model once. A type never crosses a stage as a string: parsed
+   strings let copies of one rule drift ("is this a proxy" once
+   missed `X | None` in three places).
 
    **Everything is on the table.** Carl, 2026-10-05: "if you find
    poor architecture you fix it". Standing mandate, no ask needed:
@@ -131,7 +128,7 @@ guess, never trust a memory of it.
 ## 2. No hand-written C++ mapping. None.
 
 `packages/huggorm-decl/src/huggorm_decl/decl/` is the source. Everything else
-is emitted from it: the nanobind C++, the manifest, the sync API, the
+is emitted from it: the nanobind C++, the wire policy, the sync API, the
 async API, the RPC API, the type stubs, the enums.
 
 **A MAPPING is any C++ that says "this Python name means that C++
@@ -318,4 +315,4 @@ nix build --no-link --print-out-paths  --file . pkgs.$package.src # this can be 
 
 # How the codegen works
 The WHY is under Goals, above. This is the mechanism.
-The declarations are in `packages/huggorm-decl/src/huggorm_decl/decl/`, one file per Nix class, named after that class's header. `read.py` reads each one twice - it IMPORTS it, so Python resolves any `NIX_VERSION` branch, and it parses it with `ast.parse` for everything the import throws away. No body ever runs, so C++ written in a body is dead text the reader lifts out. The emitters then write the nanobind C++, the manifest entry, the type stub and the enum module from what the declaration says.
+The declarations are in `packages/huggorm-decl/src/huggorm_decl/decl/`, one file per Nix class, named after that class's header. `read.py` reads each one twice - it IMPORTS it, so Python resolves any `NIX_VERSION` branch, and it parses it with `ast.parse` for everything the import throws away. No body ever runs, so C++ written in a body is dead text the reader lifts out. `ir.py` resolves what it read into the typed model, and the emitters write the nanobind C++, the type stubs, the enum modules and every Python surface from that model.

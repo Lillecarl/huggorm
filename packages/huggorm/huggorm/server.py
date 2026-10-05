@@ -448,10 +448,10 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
 class Dispatcher:
     def __init__(self, pool: Any, tasks: Any, loops: Any,
                  lease_ttl: float = 120.0) -> None:
-        """No manifest. Every table it unpacked is emitted, in
+        """Every table it reads is emitted, in
         `huggorm_generated._policy`, so this reads them by name.
 
-        The handlers are still built in a loop and that is right: the
+        The handlers are built in a loop and that is right: the
         body of one is a RULE - decode, call, encode - and it reads
         the same for every method. What differs is the spec, and the
         build writes that."""
@@ -459,7 +459,7 @@ class Dispatcher:
         # Two task groups, and which one a task goes in is decided
         # by whether it ENDS. `serve` explains the split; both OWN
         # their children, so nothing here retains a set of tasks by
-        # hand any more (huggorm#35).
+        # hand (huggorm#35).
         #
         # `tasks` finishes what it holds: a runner shutdown releases
         # an affine thread from the collector's list, and cancelling

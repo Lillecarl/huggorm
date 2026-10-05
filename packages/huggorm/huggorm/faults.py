@@ -110,9 +110,9 @@ class FaultCodec:
 
     def __init__(self, pool: Any,
                  module: ModuleType | None = None) -> None:
-        """No manifest. The two tables it dug out are emitted, in
+        """The two tables it reads are emitted, in
         `huggorm_generated._policy`, so a typechecker sees what each
-        holds - it saw a `dict[str, Any]` before.
+        holds.
 
         An empty ERROR_MODULE is a legitimate answer: a library need
         not have an error surface, and `module` raises only if

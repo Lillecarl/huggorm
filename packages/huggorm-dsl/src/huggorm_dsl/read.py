@@ -20,16 +20,16 @@ declaration can name a C++ type this machine has never compiled.
 
 ## Why this matters more than it looks
 
-The generator used to build its manifest by IMPORTING the compiled
+The generator could build its model by IMPORTING the compiled
 bindings and reflecting on them. That works, and it puts the whole
 build in one order: compile the C++ first, learn what it says second.
-Every surface above - async, protocols, RPC, stubs - waited on a C++
-compiler.
+Every surface above - async, protocols, RPC, stubs - would wait on a
+C++ compiler.
 
-Reading the declaration inverts that. The manifest is known BEFORE
-anything compiles, because the declaration already said everything
-the manifest holds. Then the binding and the manifest are two
-readings of one document rather than two stages of a pipeline.
+Reading the declaration inverts that. The model is known BEFORE
+anything compiles, because the declaration already says everything
+the model holds. Then the binding and the model are two readings of
+one document rather than two stages of a pipeline.
 
 ## The vocabulary
 
@@ -414,7 +414,7 @@ class Method:
 
     name: str
     # RAW, as written. Cleaning is a reader's convenience and an
-    # emitter's problem: the manifest wants the literal text a class
+    # emitter's problem: the stubs want the literal text a class
     # carries, and `_doc` re-indents from raw anyway.
     doc: str
     params: tuple[Param, ...]
@@ -625,7 +625,7 @@ class Class:
         written, which is the only place that cannot drift from it.
 
         The accessor comes back beside the field because a type is spelled
-        two ways at this boundary. The WIRE spelling is what the manifest
+        two ways at this boundary. The WIRE spelling is what the model
         carries; the C++ spelling is what `_from_parts` takes, and only
         the accessor's own annotation has it."""
         by_name = {m.name: m for m in self.methods}
@@ -1356,8 +1356,8 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                 # `uri="auto"` default died: `open_store` carried it,
                 # `__init__` did not, and the emitter read the wrong
                 # one - so `Store()` raised, `AsyncStore()` required
-                # an argument, and the stub and the manifest agreed
-                # with each other about the wrong thing.
+                # an argument, and the generated surfaces agreed with
+                # each other about the wrong thing.
                 #
                 # The `__init__` is still worth writing: it is where
                 # the PROSE goes, and a caller reading the declaration
@@ -1371,11 +1371,11 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                     f"owns the signature. Move them there and leave "
                     f"the docstring here.")
         elif item.name.startswith("__") and item.name not in DECLARED_DUNDERS:
-            # A SILENT SKIP, until this refusal. The loop kept the
-            # names that are not `__`-prefixed and dropped the rest
-            # with no answer, so a declaration that wrote
-            # `def __call__` got no binding, no stub line, no manifest
-            # entry and no diagnostic - and a skip is
+            # Without this refusal, a SILENT SKIP. The loop would keep
+            # the names that are not `__`-prefixed and drop the rest
+            # with no answer, so a declaration that writes
+            # `def __call__` would get no binding, no stub line, no rpc
+            # and no diagnostic - and a skip is
             # indistinguishable from an absence, which is this repo's
             # named failure mode (huggorm#88).
             #

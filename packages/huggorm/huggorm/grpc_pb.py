@@ -1,9 +1,7 @@
 """Load the build-time gRPC schema emitted by huggorm-generated.
 
-The descriptor set and nothing else. `load_manifest` lived here and
-is gone: no code in this library reads `manifest.json` any more, so
-the one reader left - the suite, which uses it as an enumeration of
-what the build decided - keeps its own (065).
+The descriptor set and nothing else. Every other build-time fact is
+an emitted constant in `huggorm_generated._policy`.
 """
 
 from __future__ import annotations
@@ -48,12 +46,10 @@ def load_pool() -> descriptor_pool.DescriptorPool:
 
 # The protobuf package every message and service sits in. DERIVED,
 # not written here: grpc_schema decides it, so a rename reaches this
-# file the way it reaches every other consumer. It used to be a second
-# copy of the string, and a rename had to find it (huggorm#45).
+# file the way it reaches every other consumer (huggorm#45).
 #
 # Re-exported rather than imported at each use site, because this
-# module is where every caller already looks for schema facts. It came
-# from `manifest.json`, through a `load_manifest` that ran
-# `check_manifest` first - a check that existed only because JSON
-# could come from another generator. An emitted constant cannot.
+# module is where every caller already looks for schema facts. It is
+# an emitted constant, so no other generator can supply a different
+# one and nothing needs to check it at load time.
 PKG = _PKG

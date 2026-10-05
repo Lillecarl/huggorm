@@ -15,7 +15,7 @@ are derived.
   already derives from the declarations. Read from there rather than
   computed again.
 - Everything `huggorm_generated` exports, which `emitter.package_exports`
-  already derives from the manifest. Read from there for the same
+  already derives from the model. Read from there for the same
   reason. `RPC_CLASSES` is dropped: it is a registry the client uses
   to turn a handle into an object, not surface.
 - The UNION aliases. They live in `_unions` because a union has no

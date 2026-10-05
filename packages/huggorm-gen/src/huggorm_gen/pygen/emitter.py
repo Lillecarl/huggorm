@@ -188,13 +188,10 @@ def policy_module(model: ir.Model) -> str:
     string vocabularies, and what a sum type's arms are in declared
     order.
 
-    They came out of `manifest.json`, read at run time by a codec that
-    a typechecker could tell nothing about - every one of them was a
-    `dict[str, Any]` off a JSON load. `check_manifest` existed for
-    exactly that reason: its own comment says a manifest from another
-    generator *"would answer wrong, one lookup at a time"*. An emitted
-    module ships with the code that reads it, so there is no other
-    generator to defend against.
+    An emitted module, not data loaded at run time: a typechecker sees
+    the type of every table. The module ships with the code that reads
+    it, so no other generator can supply it, and nothing checks it at
+    load time.
 
     Arms in DECLARED order, because that is the order the schema
     numbered the oneof's fields in and a renumbering is a wire change.
@@ -263,7 +260,7 @@ def policy_module(model: ir.Model) -> str:
 def unions_module(unions: Mapping[str, Sequence[ir.TypeRef]]) -> str:
     """`_unions.py`: one alias per declared sum type.
 
-    Nothing but aliases, and every one derived from the manifest - so
+    Nothing but aliases, and every one derived from the model - so
     the declaration says `DerivedPath = StorePath | DerivedPathBuilt`
     once and this is the same sentence in the package a caller
     imports."""
@@ -741,7 +738,7 @@ def protocol_module(model: ir.Model) -> ast.Module:
     program against without knowing whether the object answering is in
     this process or on the far side of a socket.
 
-    A method with no rpc is absent, and the manifest says why. A proxy,
+    A method with no rpc is absent, and `NO_RPC` says why. A proxy,
     parameter or return, is spelled as its protocol, here and on both
     implementations."""
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
@@ -830,10 +827,9 @@ def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
           returns: ir.TypeRef | None) -> ast.expr:
     """One call's spec, as a `Call`.
 
-    A typed value, not a dict literal. The dict came straight out of
-    the manifest and carried its whole entry; a checker could see
-    nothing in it, which made the one part of the generated client a
-    caller cannot read also the one part nothing verified.
+    A typed value, not a dict literal. A checker sees nothing in a
+    dict, and the spec is the one part of the generated client a
+    caller cannot read, so it must be a part the checker verifies.
 
     The docstring is dropped: it is already on the method. So are the
     parameter defaults - the method signature resolved them before the
@@ -910,12 +906,11 @@ def _spec_name(cls: str, method: str) -> str:
 def rpc_module(model: ir.Model) -> ast.Module:
     """Emit one RPC client class per served class.
 
-    These replace a __getattr__ proxy. That proxy resolved a method
-    name against the manifest at call time, which meant a typechecker
-    saw nothing at all: it could neither reject a call that does not
-    exist nor check the arguments of one that does. A generated class
-    has real methods with real signatures, so both directions are
-    checked - and the conformance gate compares them against the
+    Generated classes, not a `__getattr__` proxy. A proxy resolves a
+    method name at call time, so a typechecker sees nothing: it can
+    neither reject a call that does not exist nor check the arguments
+    of one that does. A generated class has real methods with real
+    signatures, so both directions are checked - and the conformance gate compares them against the
     protocol and the in-process wrapper.
 
     Unlike the in-process side, NO class here is abstract. Locally an
@@ -948,7 +943,7 @@ def rpc_module(model: ir.Model) -> ast.Module:
     mod.body.append(ast.Expr(value=ast.Constant(value=(
         "Generated RPC clients - do not edit. One per wrapped class, "
         "mirroring the wrapper hierarchy. Each method carries the call "
-        "spec the manifest gave it, so a call needs no lookup and names "
+        "spec the build wrote for it, so a call needs no lookup and names "
         "nothing the build did not put there."))))
     mod.body.append(_future_annotations())
     mod.body.append(import_from("typing", "Any", "Protocol", "cast"))
@@ -1014,7 +1009,7 @@ def rpc_module(model: ir.Model) -> ast.Module:
 
         # Only the methods that HAVE an rpc. A method the wire cannot
         # carry keeps its in-process wrapper and is simply absent here;
-        # the manifest says why, and the protocol drops it too.
+        # `NO_RPC` says why, and the protocol drops it too.
         callable_ = [m for m in served_cls.methods if model.offered(m)]
 
         cls.body.append(ast.FunctionDef(
@@ -1250,9 +1245,9 @@ _DUNDER_SIGS = {
 def _stub_dunders(name: str, dunders: list[str]) -> list[ast.stmt]:
     """The value dunders a class defines, as stub declarations.
 
-    Everything else in a stub comes from the protocol dicts, and those
-    skip every `_`-prefixed name - which is right for the manifest and
-    wrong here. Without these, a typechecker reads object's __eq__ and
+    Everything else in a stub comes from the model's methods. Those are
+    surface only, so they skip the value dunders - right for the rpc
+    and protocol surfaces, and wrong here. Without these, a typechecker reads object's __eq__ and
     calls `a < b` an error on a class that supports it, and
     `sorted(paths)` an error on a list of them (huggorm#46).
 
@@ -1390,7 +1385,7 @@ def stub_module(model: ir.Model, module: str) -> ast.Module:
         f"Generated type stubs for {module} - do not edit.\n\n"
         f"The module itself is a compiled extension, which carries no "
         f"signatures a typechecker can read. Built via ast at Nix build "
-        f"time, from the same protocol dicts as every other surface."))))
+        f"time, from the same model as every other surface."))))
     if produced:
         mod.body.append(ast.ImportFrom(
             module="typing", names=[ast.alias(name="NoReturn")], level=0))
