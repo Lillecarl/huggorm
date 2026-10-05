@@ -24,7 +24,6 @@ from huggorm_gen.cppgen.generate import (
     declared_returned,
     declared_unions,
 )
-from huggorm_gen.payload.wiretypes import names_in
 from huggorm_gen.pygen import surface
 from huggorm_gen.pygen.emitter import (
     FREE_MODULE,
@@ -37,9 +36,7 @@ from huggorm_gen.pygen.emitter import (
     protocol_module,
     returned_module,
     rpc_module,
-    stub_init_module,
-    stub_module,
-    stub_proto,
+    stub_package,
     unions_module,
     wrapper_module,
 )
@@ -342,7 +339,6 @@ def main(argv: list[str] | None = None) -> None:
     manifest = build_manifest()
     protos = list(manifest["wrappers"].values())
     returned_protos = list(manifest["returned_types"].values())
-    free_protos = list(manifest["free_functions"].values())
     # Read back off the manifest rather than threaded out of the
     # derivation. Every one of these WAS a local up there, and passing
     # six of them across the split would have made the boundary a
@@ -398,98 +394,16 @@ def main(argv: list[str] | None = None) -> None:
     # Type stubs for the bindings themselves (huggorm#27). The bindings
     # are compiled extensions, so a typechecker reads no signatures out
     # of them and every binding type resolves to Any - which made the
-    # generated protocols name types that check nothing. Everything
-    # needed is already in the protocol dicts.
+    # generated protocols name types that check nothing.
     #
     # A PEP 561 stub-only package, because a .pyi has to sit beside the
     # module it describes and the bindings are built and installed
     # before this runs. The generated package cannot write into them.
     stub_dir = out.parent / STUB_PACKAGE
     stub_dir.mkdir(parents=True, exist_ok=True)
-    # Re-extracted, NOT the protos above: those have been through the
-    # affine-return drop and 018's hierarchy split, which are rules
-    # about the async wrappers. The bindings themselves have neither.
-    #
-    # Through `_proto`, so the stubs read the same declaration the
-    # rest does. A second route to the same fact was a second answer
-    # to it: reflecting here directly made `manifest.json` stop
-    # claiming PathInfo has an ordering while `store.pyi` went on
-    # claiming it, because the stubs never saw the declaration.
-    # Read from `declared_entries` again, NOT off the manifest: the
-    # protos in there have been through the affine-return drop and
-    # 018's hierarchy split, which are rules about the async wrappers.
-    # The bindings themselves have neither.
-    #
-    # In the manifest's order, so the stubs come out the same way
-    # twice.
-    declared = declared_entries()
-    all_protos = [copy.deepcopy(declared[n])
-                  for n in [*manifest["returned_types"], *manifest["wrappers"]]]
-    # Bases before subclasses: a stub may forward-reference, but there
-    # is no reason to make a reader do it.
-    order_of = {p["name"]: i for i, p in enumerate(all_protos)}
-    all_protos.sort(key=lambda p: (
-        len([b for b in p["bases"] if b.rsplit(".", 1)[-1] in order_of]),
-        order_of[p["name"]]))
-    # A stub says NoReturn for a constructor that raises. Returned
-    # types are produced by definition; a wrapper says so with
-    # `@produced`, which is the declaration's word for it.
-    produced = ({p["name"] for p in returned_protos}
-                | {p["name"] for p in all_protos if p["produced"]})
-    home = {p["name"]: p["module"] for p in all_protos}
-    # An enum is named in a signature and defined somewhere else, so
-    # the stub for the module that names it needs the import. `home`
-    # is where a stub learns that, and it held only wrapper and
-    # returned-type modules until now.
-    home.update({name: proto["module"]
-                 for name, proto in manifest["enums"].items()})
-    # An error class too: a wire value may carry one, as a build
-    # result carries its BuildError.
-    if manifest["errors"]["module"]:
-        home.update({name: manifest["errors"]["module"]
-                     for name in manifest["errors"]["classes"]})
-    modules = sorted({p["module"] for p in all_protos}
-                     | {p["module"] for p in free_protos})
-    exported: dict[str, list[str]] = {}
-    for module in modules:
-        mine = [stub_proto(p) for p in all_protos if p["module"] == module]
-        mine_free = [stub_proto(p) for p in free_protos
-                     if p["module"] == module]
-        # Types this module names but does not define. Read through
-        # the subscripts, not off the head: a method returning
-        # `list[StorePath]` names StorePath as surely as one returning
-        # StorePath does, and the stub needs the import either way.
-        written = [p["type"] for pr in mine for m in pr["methods"]
-                   for p in m["params"]]
-        written += [m["return_type"] for pr in mine for m in pr["methods"]]
-        written += [p["type"] for pr in mine for p in pr["ctor"]]
-        written += [p["type"] for pr in mine_free for p in pr["params"]]
-        written += [pr["return_type"] for pr in mine_free]
-        # And the defaults, which are expressions rather than types but
-        # name types all the same: `method: ContentAddressMethod =
-        # ContentAddressMethod.NAR` needs the import for the second
-        # half even if the first half were spelled differently.
-        written += [p["default"] for pr in mine for m in pr["methods"]
-                    for p in m["params"] if p["default"] is not None]
-        written += [p["default"] for pr in mine_free for p in pr["params"]
-                    if p["default"] is not None]
-        mentioned = {n for t in written for n in names_in(t)}
-        foreign = {n: home[n] for n in mentioned
-                   if n in home and home[n] != module}
-        short = module.rsplit(".", 1)[-1]
-        (stub_dir / f"{short}.pyi").write_text(ast.unparse(
-            stub_module(module, mine, mine_free, produced, foreign)) + "\n")
-        exported[module] = [p["name"] for p in mine] + [p["name"] for p in mine_free]
-    # The enums, re-exported from wherever they live. They get NO .pyi
-    # of their own and want none: they are plain Python, and `partial`
-    # in py.typed is exactly the instruction to read the real module
-    # for anything these stubs do not cover. Only __init__.pyi has to
-    # mention them, because it must re-export what the package does.
-    for name, proto in sorted(manifest["enums"].items()):
-        exported.setdefault(proto["module"], []).append(name)
-    (stub_dir / "__init__.pyi").write_text(
-        ast.unparse(stub_init_module(
-            {m: exported[m] for m in sorted(exported)})) + "\n")
+    stubs = stub_package(model)
+    for fname, stub in stubs.items():
+        (stub_dir / fname).write_text(ast.unparse(stub) + "\n")
     # PARTIAL, and the word is load-bearing. A stubs package normally
     # REPLACES the runtime one for a typechecker, so a hand-written
     # Python module in the bindings - errors.py - would vanish behind
@@ -498,8 +412,10 @@ def main(argv: list[str] | None = None) -> None:
     # these stubs exist because a compiled extension carries no
     # signatures, and a .py file needs no help.
     (stub_dir / "py.typed").write_text("partial\n")
+    modules = sorted(f.removesuffix(".pyi") for f in stubs
+                     if f != "__init__.pyi")
     print(f"generated {STUB_PACKAGE}/ for {len(modules)} binding module(s): "
-          + ", ".join(sorted(m.rsplit('.', 1)[-1] for m in modules)))
+          + ", ".join(modules))
 
     # No manifest.json. It was a serialisation of `build_manifest()`,
     # and every reader calls the function instead - the emitters here,

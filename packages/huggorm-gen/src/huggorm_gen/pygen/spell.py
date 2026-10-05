@@ -14,6 +14,7 @@ import ast
 from collections.abc import Callable, Iterable, Mapping
 
 from huggorm_gen.ir import ParamModel, TypeRef
+from huggorm_gen.payload.wiretypes import python_spelling
 
 # Names Python already has.
 BUILTIN = frozenset({"None", "str", "int", "float", "bool", "bytes",
@@ -83,6 +84,7 @@ class Spelling:
             if arm in self._expand:
                 out.append(self._arms(arm))
                 continue
+            arm = python_spelling(arm)
             if arm not in BUILTIN:
                 self.bindings.add(arm)
             out.append(arm)

@@ -6,7 +6,7 @@ emitter needs arrives in the protocol dict a declaration produced.
 """
 
 import ast
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from huggorm_gen import ir
@@ -136,20 +136,16 @@ def _foreign_imports(annotations: list[str]) -> list[ast.Import]:
 # DerivedPathBuilt` is the declaration and everything else derives.
 UNIONS_MODULE = "._unions"
 _UNION_NAMES: set[str] = set()
-_UNION_ARMS: dict[str, list[str]] = {}
 
 
 def emitter_union_names(unions: dict[str, list[str]]) -> None:
-    """Which annotation names are ALIASES rather than bound classes,
-    and the arms of each.
+    """Which annotation names are ALIASES rather than bound classes.
 
     Told once, before anything is written. There is no way to tell the
     two apart from a name, and the difference decides which import an
     emitted module gets."""
     _UNION_NAMES.clear()
     _UNION_NAMES.update(unions)
-    _UNION_ARMS.clear()
-    _UNION_ARMS.update(unions)
 
 
 # The protocols, by name. A proxy parameter is annotated with one on
@@ -172,55 +168,6 @@ def _admits_none(annotation: ast.expr) -> bool:
     if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
         return _admits_none(annotation.left) or _admits_none(annotation.right)
     return False
-
-
-def _written_out(name: str) -> ast.expr:
-    """`name`, or the arms of the union it names, each written out too."""
-    arms = _UNION_ARMS.get(name)
-    if arms is None:
-        return ast.Name(id=python_spelling(name))
-    expanded = _written_out(arms[0])
-    for arm in arms[1:]:
-        expanded = ast.BinOp(left=expanded, op=ast.BitOr(),
-                             right=_written_out(arm))
-    return expanded
-
-
-class _ExpandUnions(ast.NodeTransformer):
-    def visit_Name(self, node: ast.Name) -> ast.expr:
-        return _written_out(node.id)
-
-
-def expand_unions(type_str: str) -> str:
-    """`type_str` with every union alias written out as its arms.
-
-    For the binding stubs. The alias is Python in the generated
-    `_unions` module, and a compiled binding module holds no such
-    name, so a stub that NAMED it would name nothing: a typechecker
-    reads the type as unknown. Written out, it is the arms, which the
-    binding modules do hold."""
-    tree = _ExpandUnions().visit(_ann(type_str, "a stub type"))
-    return ast.unparse(tree)
-
-
-def stub_proto(proto: Proto) -> Proto:
-    """A copy of a class or function proto with its unions written out."""
-    out = dict(proto)
-    if "methods" in out:
-        out["methods"] = [
-            {**m, "return_type": expand_unions(m["return_type"]),
-             "params": [{**p, "type": expand_unions(p["type"])}
-                        for p in m["params"]]}
-            for m in out["methods"]]
-    if "ctor" in out:
-        out["ctor"] = [{**p, "type": expand_unions(p["type"])}
-                       for p in out["ctor"]]
-    if "params" in out:
-        out["params"] = [{**p, "type": expand_unions(p["type"])}
-                         for p in out["params"]]
-    if "return_type" in out:
-        out["return_type"] = expand_unions(out["return_type"])
-    return out
 
 
 def _huggorm_bindings_import(names: set[str]) -> list[ast.ImportFrom]:
@@ -937,16 +884,6 @@ def _sync_imports(annotations: list[str], defined_here: set[str],
     return _huggorm_bindings_import(used)
 
 
-def _params(m: Proto, cls_name: str,
-            spell: Callable[[str], str] = str) -> ast.arguments:
-    """`self` plus one typed argument per declared parameter. `spell`
-    turns a declared type into the annotation this module writes."""
-    return _arguments(
-        [ast.arg(arg="self")], m["params"],
-        [spell(p["type"]) for p in m["params"]],
-        f"{cls_name}.{m['name']}")
-
-
 def protocol_module(model: ir.Model) -> ast.Module:
     """Emit one Protocol per served class: the surface a caller can
     program against without knowing whether the object answering is in
@@ -1478,7 +1415,7 @@ _DUNDER_SIGS = {
 }
 
 
-def _stub_dunders(proto: Proto) -> list[ast.stmt]:
+def _stub_dunders(name: str, dunders: list[str]) -> list[ast.stmt]:
     """The value dunders a class defines, as stub declarations.
 
     Everything else in a stub comes from the protocol dicts, and those
@@ -1491,25 +1428,104 @@ def _stub_dunders(proto: Proto) -> list[ast.stmt]:
     are per-class, because a store path has a natural order and a
     natural string while a PathInfo has neither."""
     out: list[ast.stmt] = []
-    for dunder in proto.get("dunders", ()):
+    for dunder in dunders:
         param, ret = _DUNDER_SIGS[dunder]
         args = [ast.arg(arg="self")]
         if param is not None:
             args.append(ast.arg(
                 arg="other",
-                annotation=_ann(param, f"{proto['name']}.{dunder}")))
+                annotation=_ann(param, f"{name}.{dunder}")))
         out.append(ast.FunctionDef(
             name=dunder,
             args=ast.arguments(posonlyargs=[], args=args, vararg=None,
                                kwonlyargs=[], kw_defaults=[], kwarg=None,
                                defaults=[]),
             body=_stub_body(""), decorator_list=[],
-            returns=_ann(ret, f"{proto['name']}.{dunder}"), type_params=[]))
+            returns=_ann(ret, f"{name}.{dunder}"), type_params=[]))
     return out
 
 
-def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
-                produced: set[str], foreign: dict[str, str]) -> ast.Module:
+def _stub_class(c: ir.ClassModel, spell: Spelling,
+                produced: bool) -> ast.ClassDef:
+    name = c.name
+    cls = ast.ClassDef(name=name, bases=[], keywords=[], body=[],
+                       decorator_list=[], type_params=[])
+    binds = "" if c.is_value else f"C{name}"
+    cls.body.append(ast.Expr(value=ast.Constant(value=(
+        c.doc or f"Binding for the C++ {binds}. Threading "
+                 f"'{c.decl.threading}', wire '{c.wire}'."))))
+    # The declarations the codegen itself reads. They are real class
+    # attributes, so a stub that omitted them would make every
+    # reader of them an error.
+    for attr, kind in (("_threading", "str"), ("_wire", "str"),
+                       ("_binds", "str")):
+        cls.body.append(ast.AnnAssign(
+            target=ast.Name(id=attr),
+            annotation=_ann(kind, f"{name}.{attr}"),
+            value=None, simple=1))
+    if produced:
+        cls.body.append(ast.FunctionDef(
+            name="__init__",
+            args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
+                               vararg=None, kwonlyargs=[], kw_defaults=[],
+                               kwarg=None, defaults=[]),
+            body=_stub_body(
+                f"Always raises: a {name} is produced by another "
+                f"object, never constructed."),
+            decorator_list=[],
+            returns=_ann("NoReturn", f"{name}.__init__"),
+            type_params=[]))
+    else:
+        spell.defaults(c.ctor)
+        cls.body.append(ast.FunctionDef(
+            name="__init__",
+            args=_arguments([ast.arg(arg="self")],
+                            [p.entry() for p in c.ctor],
+                            [spell(p.type) for p in c.ctor],
+                            f"{name}.__init__"),
+            body=_stub_body(""), decorator_list=[],
+            returns=_ann("None", f"{name}.__init__"), type_params=[]))
+    cls.body.extend(_stub_dunders(name, ir.dunders(c.decl)))
+    for m in c.methods:
+        spell.defaults(m.params)
+        cls.body.append(ast.FunctionDef(
+            name=m.name,
+            args=_arguments([ast.arg(arg="self")],
+                            [p.entry() for p in m.params],
+                            [spell(p.type) for p in m.params],
+                            f"{name}.{m.name}"),
+            body=_stub_body(m.doc), decorator_list=[],
+            returns=_ann(spell.returns(m.returns), f"{name}.{m.name}"),
+            type_params=[]))
+    if len(cls.body) == 1:
+        # Docstring only: a class body needs a statement.
+        cls.body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
+    return cls
+
+
+def _stub_function(fn: ir.FunctionModel, spell: Spelling,
+                   where: str) -> ast.FunctionDef:
+    spell.defaults(fn.params)
+    return ast.FunctionDef(
+        name=fn.name,
+        args=_arguments([], [p.entry() for p in fn.params],
+                        [spell(p.type) for p in fn.params], where),
+        body=_stub_body(fn.doc),
+        decorator_list=[],
+        returns=_ann(spell.returns(fn.returns), where),
+        type_params=[])
+
+
+def _homes(model: ir.Model) -> dict[str, str]:
+    """The binding module each declared name is defined in."""
+    home = {c.name: c.qualified_module for c in model.classes.values()}
+    home.update({n: e.module for n, e in model.enums.items()})
+    if model.errors.module:
+        home.update({n: model.errors.module for n in model.errors.classes})
+    return home
+
+
+def stub_module(model: ir.Model, module: str) -> ast.Module:
     """Emit the .pyi describing ONE binding module.
 
     The bindings ship as compiled extensions. A typechecker cannot read
@@ -1518,133 +1534,72 @@ def stub_module(module: str, protos: list[Proto], free_protos: list[Proto],
     not exist and NOT catch a str passed where a StorePath is declared
     (huggorm#27).
 
-    Everything here already exists in the protocol dicts: every
-    method signature and every constructor signature, as the
-    declaration wrote them.
-
-    `produced` names the classes that are handed back rather than
-    constructed. Their __init__ raises unconditionally, so the stub
+    A class only a call hands back raises from __init__, so the stub
     says NoReturn - true, and it makes StorePath() an error at the call
     site instead of a TypeError at runtime.
 
-    These protos are the UNFILTERED ones. The generated surface is not
-    the binding surface: 018 moves the shared methods off the
-    subclasses, which is a rule about the async wrappers. A stub that
-    described the sync bindings that way would hide a method the
-    binding has."""
-    mod = ast.Module(body=[], type_ignores=[])
+    A union is written out as its arms. The alias is Python in the
+    generated `_unions` module, and a compiled binding module holds no
+    such name, so a stub that NAMED it would name nothing."""
+    spell = Spelling(_as_binding, expand=model.unions)
+    classes = [c for c in (*model.handed_back, *model.constructed)
+               if c.qualified_module == module]
+    functions = [model.functions[n] for n in sorted(model.functions)
+                 if model.functions[n].module == module]
+    produced = {c.name for c in classes
+                if c.name in model.returned or c.produced}
     short = module.rsplit(".", 1)[-1]
+    defs: list[ast.stmt] = [_stub_class(c, spell, c.name in produced)
+                            for c in classes]
+    defs += [_stub_function(fn, spell, f"{short}.{fn.name}")
+             for fn in functions]
+
+    mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(ast.Expr(value=ast.Constant(value=(
         f"Generated type stubs for {module} - do not edit.\n\n"
         f"The module itself is a compiled extension, which carries no "
         f"signatures a typechecker can read. Built via ast at Nix build "
         f"time, from the same protocol dicts as every other surface."))))
-
-    if any(p["name"] in produced for p in protos):
+    if produced:
         mod.body.append(ast.ImportFrom(
             module="typing", names=[ast.alias(name="NoReturn")], level=0))
-    # A stub describes the SYNC surface unfiltered, so it names every
-    # type the bindings do - a foreign module included, whether or not
-    # the method that returns one has an rpc.
-    written = [p["type"] for pr in protos for m in pr["methods"]
-               for p in m["params"]]
-    written += [m["return_type"] for pr in protos for m in pr["methods"]]
-    written += [p["type"] for pr in protos for p in pr["ctor"]]
-    written += [p["type"] for pr in free_protos for p in pr["params"]]
-    written += [pr["return_type"] for pr in free_protos]
-    mod.body.extend(_foreign_imports(written))
-    for name, other in sorted(foreign.items()):
-        mod.body.append(ast.ImportFrom(
-            module=other.rsplit(".", 1)[-1],
-            names=[ast.alias(name=name)], level=1))
-
-    by_name = {p["name"]: p for p in protos}
-
-    def inherited(proto: Proto) -> Proto:
-        """Methods a base already declares identically. A subclass
-        entry restates everything it inherits, because the declaration
-        that built it inherits its base's methods; Python does not, and
-        neither should the stub."""
-        out: Proto = {}
-        for b in proto["bases"]:
-            base = by_name.get(b.rsplit(".", 1)[-1])
-            if base is None:
-                continue
-            out |= inherited(base)
-            out |= {m["name"]: m for m in base["methods"]}
-        return out
-
-    for proto in protos:
-        name = proto["name"]
-        bases: list[ast.expr] = [
-            ast.Name(id=b.rsplit(".", 1)[-1]) for b in proto["bases"]]
-        from_base = inherited(proto)
-        cls = ast.ClassDef(name=name, bases=bases, keywords=[], body=[],
-                           decorator_list=[], type_params=[])
-        cls.body.append(ast.Expr(value=ast.Constant(value=(
-            proto.get("doc")
-            or f"Binding for the C++ {proto['binds']}. Threading "
-               f"'{proto['threading']}', wire '{proto['wire']}'."))))
-        # The declarations the codegen itself reads. They are real class
-        # attributes, so a stub that omitted them would make every
-        # reader of them an error.
-        for attr, kind in (("_threading", "str"), ("_wire", "str"),
-                           ("_binds", "str")):
-            cls.body.append(ast.AnnAssign(
-                target=ast.Name(id=attr),
-                annotation=_ann(kind, f"{name}.{attr}"),
-                value=None, simple=1))
-        if name in produced:
-            cls.body.append(ast.FunctionDef(
-                name="__init__",
-                args=ast.arguments(posonlyargs=[], args=[ast.arg(arg="self")],
-                                   vararg=None, kwonlyargs=[], kw_defaults=[],
-                                   kwarg=None, defaults=[]),
-                body=_stub_body(
-                    f"Always raises: a {name} is produced by another "
-                    f"object, never constructed."),
-                decorator_list=[],
-                returns=_ann("NoReturn", f"{name}.__init__"),
-                type_params=[]))
-        else:
-            cls.body.append(ast.FunctionDef(
-                name="__init__",
-                args=_arguments([ast.arg(arg="self")], proto["ctor"],
-                                [p["type"] for p in proto["ctor"]],
-                                f"{name}.__init__"),
-                body=_stub_body(""), decorator_list=[],
-                returns=_ann("None", f"{name}.__init__"), type_params=[]))
-        cls.body.extend(_stub_dunders(proto))
-        for m in proto["methods"]:
-            same = from_base.get(m["name"])
-            if same is not None and (
-                    [p["type"] for p in same["params"]]
-                    == [p["type"] for p in m["params"]]
-                    and same["return_type"] == m["return_type"]):
-                continue  # inherited unchanged; the base declares it
-            cls.body.append(ast.FunctionDef(
-                name=m["name"], args=_params(m, name),
-                body=_stub_body(m["doc"]), decorator_list=[],
-                returns=_ann(m["return_type"], f"{name}.{m['name']}"),
-                type_params=[]))
-        if len(cls.body) == 1:
-            # Docstring only: a class body needs a statement.
-            cls.body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
-        mod.body.append(cls)
-
-    for proto in free_protos:
-        mod.body.append(ast.FunctionDef(
-            name=proto["name"],
-            args=_arguments([], proto["params"],
-                            [p["type"] for p in proto["params"]],
-                            f"{short}.{proto['name']}"),
-            body=_stub_body(proto["doc"]),
-            decorator_list=[],
-            returns=_ann(proto["return_type"], f"{short}.{proto['name']}"),
-            type_params=[]))
-
+    mod.body.extend(spell.module_imports())
+    home = _homes(model)
+    for name in sorted(spell.bindings):
+        if home.get(name, module) != module:
+            mod.body.append(ast.ImportFrom(
+                module=home[name].rsplit(".", 1)[-1],
+                names=[ast.alias(name=name)], level=1))
+    mod.body.extend(defs)
     ast.fix_missing_locations(mod)
     return mod
+
+
+def stub_package(model: ir.Model) -> dict[str, ast.Module]:
+    """Every binding module's stub, and the `__init__.pyi` that
+    re-exports them, by file name.
+
+    The vocabularies get NO .pyi of their own and want none: they are
+    plain Python, and `partial` in py.typed is exactly the instruction
+    to read the real module for anything these stubs do not cover.
+    Only __init__.pyi mentions them, because it must re-export what
+    the package does."""
+    modules = sorted({c.qualified_module for c in model.classes.values()}
+                     | {f.module for f in model.functions.values()})
+    out: dict[str, ast.Module] = {}
+    exported: dict[str, list[str]] = {}
+    for module in modules:
+        out[f"{module.rsplit('.', 1)[-1]}.pyi"] = stub_module(model, module)
+        exported[module] = (
+            [c.name for c in (*model.handed_back, *model.constructed)
+             if c.qualified_module == module]
+            + [n for n in sorted(model.functions)
+               if model.functions[n].module == module])
+    for name, enum in sorted(model.enums.items()):
+        exported.setdefault(enum.module, []).append(name)
+    out["__init__.pyi"] = stub_init_module(
+        {m: exported[m] for m in sorted(exported)})
+    return out
 
 
 def stub_init_module(by_module: dict[str, list[str]]) -> ast.Module:
