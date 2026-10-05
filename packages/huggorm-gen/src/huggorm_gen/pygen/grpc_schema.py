@@ -55,10 +55,14 @@ assert set(SCALARS) == set(SCALAR_NAMES), "scalar tables disagree"
 
 HANDLE = "Handle"
 
-# The hand-written Session messages' one scalar, and what a log stream
-# answers with. `_policy.LOG_RECORDS` is emitted from the second, so
-# the codec reads the stream by the type the schema wrote.
+# The hand-written Session messages' field types. `_policy.LOG_RECORDS`
+# is emitted from the last, so the codec reads the stream by the type
+# the schema wrote.
+STR = ir.TypeRef.named("str", "scalar")
 INT = ir.TypeRef.named("int", "scalar")
+FLOAT = ir.TypeRef.named("float", "scalar")
+BOOL = ir.TypeRef.named("bool", "scalar")
+HELD = ir.TypeRef.named(HANDLE, "proxy")
 LOG_RECORDS = ir.TypeRef.list_of(ir.TypeRef.named("LogRecord", "value"))
 
 
@@ -226,14 +230,10 @@ def _add_faults(file_dp: Any, model: ir.Model) -> None:
     IS the identity: the far side resolves it in the schema pool or it
     does not resolve at all. Nothing has to trust a class name, because
     no class name crosses on its own."""
-    fault = file_dp.message_type.add()
-    fault.name = FAULT
-    _field(fault, "code", 1, proto_type=_scalar_const("string"))
-    _field(fault, "message", 2, proto_type=_scalar_const("string"))
-    # The approximation, kept: a peer that cannot resolve the typed
+    # The cause, approximated: a peer that cannot resolve the typed
     # detail still learns what failed and what it said.
-    _field(fault, "cause_type", 3, proto_type=_scalar_const("string"))
-    _field(fault, "cause_message", 4, proto_type=_scalar_const("string"))
+    _message(file_dp, FAULT, code=STR, message=STR, cause_type=STR,
+             cause_message=STR)
 
     for cls_name, error in model.errors.classes.items():
         m = file_dp.message_type.add()
@@ -243,9 +243,7 @@ def _add_faults(file_dp: Any, model: ir.Model) -> None:
 
 
 def _add_common(file_dp: Any, model: ir.Model) -> None:
-    handle = file_dp.message_type.add()
-    handle.name = HANDLE
-    _field(handle, "id", 1, proto_type=_scalar_const("string"))
+    _message(file_dp, HANDLE, id=STR)
 
     # Wire-value messages, built from the contract each binding declares.
     for c in (*model.constructed, *model.handed_back):
@@ -320,69 +318,64 @@ def _add_service(file_dp: Any, model: ir.Model, c: ir.ClassModel,
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
+def _message(f: Any, name: str, **fields: ir.TypeRef | str) -> Any:
+    """One message, numbered in the order its fields are written.
+
+    A field is a resolved type, or the name of a hand-built message."""
+    m = f.message_type.add()
+    m.name = name
+    for n, (fname, t) in enumerate(fields.items(), start=1):
+        if isinstance(t, str):
+            _field(m, fname, n, type_name=t)
+        else:
+            _add_typed_field(m, fname, n, t)
+    return m
+
+
+def _rpc(svc: Any, name: str, req: str, resp: str,
+         streaming: bool = False) -> None:
+    rpc = svc.method.add()
+    rpc.name = name
+    rpc.input_type = f".{PKG}.{req}"
+    rpc.output_type = f".{PKG}.{resp}"
+    # Set only when true: descriptor.proto is proto2, so an explicit
+    # False is present and serialized, and the schema digest moves.
+    if streaming:
+        rpc.server_streaming = True
+
+
 def _add_session(f: Any) -> None:
+    """The protocol rpcs: connection identity and handle lifetime.
+
+    Hand-written, because no declared method is their wire form.
+    Construction lives on each class's own service, where it can carry
+    typed arguments."""
     sess = f.service.add()
     sess.name = "Session"
 
-    # Session keeps only what is genuinely protocol: connection identity
-    # and handle lifetime. Construction moved onto each class's own
-    # service, where it can carry typed arguments.
-
     # Connection lifecycle (huggorm#2). The connection token travels in
     # gRPC metadata on every request; these rpcs manage it.
-    conn_resp = f.message_type.add()
-    conn_resp.name = "ConnResp"
-    _field(conn_resp, "token", 1, proto_type=_scalar_const("string"))
-    _field(conn_resp, "lease_ttl", 2, proto_type=_scalar_const("double"))
-    ack = f.message_type.add()
-    ack.name = "AckResp"
-    _field(ack, "ok", 1, proto_type=_scalar_const("bool"))
-    bind_req = f.message_type.add()
-    bind_req.name = "BindReq"
-    _field(bind_req, "claim_token", 1, proto_type=_scalar_const("string"))
-    # The digest of the whole schema, which bind compares before it
-    # answers (huggorm#22). Its number must never move: it is the one
-    # field two different schemas have to agree on.
-    _field(bind_req, "schema_digest", 2, proto_type=_scalar_const("string"))
-    bnd = sess.method.add()
-    bnd.name = "Bind"
-    bnd.input_type = f".{PKG}.BindReq"
-    bnd.output_type = f".{PKG}.ConnResp"
+    _message(f, "ConnResp", token=STR, lease_ttl=FLOAT)
+    _message(f, "AckResp", ok=BOOL)
+    # `schema_digest` is what bind compares before it answers
+    # (huggorm#22). Its number must never move: it is the one field two
+    # different schemas have to agree on.
+    _message(f, "BindReq", claim_token=STR, schema_digest=STR)
+    _rpc(sess, "Bind", "BindReq", "ConnResp")
 
-    # No token field: it rides in the x-huggorm-conn metadata like
-    # every other rpc's does. An empty request message is the right
-    # shape for a probe whose only question is "am I still bound"
-    # (huggorm#49).
-    ping_req = f.message_type.add()
-    ping_req.name = "PingReq"
-    png = sess.method.add()
-    png.name = "Ping"
-    png.input_type = f".{PKG}.PingReq"
-    png.output_type = f".{PKG}.AckResp"
+    # No token field: it rides in the x-huggorm-conn metadata like every
+    # other rpc's does. An empty request is the right shape for a probe
+    # whose only question is "am I still bound" (huggorm#49).
+    _message(f, "PingReq")
+    _rpc(sess, "Ping", "PingReq", "AckResp")
 
-    share_req = f.message_type.add()
-    share_req.name = "ShareReq"
-    _field(share_req, "handle", 1, type_name=HANDLE)
-    _field(share_req, "to_token", 2, proto_type=_scalar_const("string"))
-    _field(share_req, "mode", 3, proto_type=_scalar_const("string"))
-    shr = sess.method.add()
-    shr.name = "Share"
-    shr.input_type = f".{PKG}.ShareReq"
-    shr.output_type = f".{PKG}.AckResp"
+    _message(f, "ShareReq", handle=HELD, to_token=STR, mode=STR)
+    _rpc(sess, "Share", "ShareReq", "AckResp")
 
-    detach_req = f.message_type.add()
-    detach_req.name = "DetachReq"
-    _field(detach_req, "target", 1, type_name=HANDLE)
-    _field(detach_req, "all", 2, proto_type=_scalar_const("bool"))
-    det = sess.method.add()
-    det.name = "Detach"
-    det.input_type = f".{PKG}.DetachReq"
-    det.output_type = f".{PKG}.AckResp"
+    _message(f, "DetachReq", target=HELD, all=BOOL)
+    _rpc(sess, "Detach", "DetachReq", "AckResp")
 
-    rel = sess.method.add()
-    rel.name = "Release"
-    rel.input_type = f".{PKG}.{HANDLE}"
-    rel.output_type = f".{PKG}.{HANDLE}"
+    _rpc(sess, "Release", HANDLE, HANDLE)
 
     # Batched release, for handles the client dropped rather than
     # closed (huggorm#28). A garbage collector frees many objects at
@@ -390,18 +383,9 @@ def _add_session(f: Any) -> None:
     # per-handle: a client cannot know whether a queued id was already
     # released by something else, and one stale id must not sink the
     # rest of the batch.
-    many_req = f.message_type.add()
-    many_req.name = "ReleaseManyReq"
-    field = _field(many_req, "handles", 1, type_name=HANDLE)
-    field.label = field.LABEL_REPEATED
-    many_resp = f.message_type.add()
-    many_resp.name = "ReleaseManyResp"
-    _field(many_resp, "released", 1, proto_type=_scalar_const("sint64"))
-    _field(many_resp, "unknown", 2, proto_type=_scalar_const("sint64"))
-    relm = sess.method.add()
-    relm.name = "ReleaseMany"
-    relm.input_type = f".{PKG}.ReleaseManyReq"
-    relm.output_type = f".{PKG}.ReleaseManyResp"
+    _message(f, "ReleaseManyReq", handles=ir.TypeRef.list_of(HELD))
+    _message(f, "ReleaseManyResp", released=INT, unknown=INT)
+    _rpc(sess, "ReleaseMany", "ReleaseManyReq", "ReleaseManyResp")
 
     _add_value_tree(f, sess)
     _add_log_stream(f, sess)
@@ -415,24 +399,19 @@ VALUE = "NixValue"
 def _add_value_tree(f: Any, sess: Any) -> None:
     """A value that holds values, and the rpc that fetches one.
 
-    Hand-written, like the rest of Session. This message cannot come
-    out of a _wire_fields declaration the way StorePath's does: it is
-    recursive, and its arms are the wire KINDS themselves rather than a
-    list of typed fields. The generator stays unaware of it; what it
+    This message cannot come out of a _wire_fields declaration the way
+    StorePath's does: it is recursive, and its arms are the wire KINDS
+    themselves rather than a list of typed fields. What the generator
     does know - which class is a tree and how to walk one - reaches the
-    server through the emitted `_policy`, from a declaration next to
-    the binding.
+    server through the emitted `_policy`.
 
     The proxy arm is where laziness lives. A thunk cannot be
     serialized, so it crosses as a handle and the caller forces it with
     another call. The same arm carries every node the walk stopped at,
     so a bounded answer and a lazy one have one shape."""
-    proxy = f.message_type.add()
-    proxy.name = "NixProxy"
-    _field(proxy, "handle", 1, type_name=HANDLE)
     # The handle alone does not say what it is, and no layer above the
     # bindings may name a class. The walk knows, so it says.
-    _field(proxy, "cls", 2, proto_type=_scalar_const("string"))
+    proxy = _message(f, "NixProxy", handle=HELD, cls=STR)
 
     lst = f.message_type.add()
     lst.name = "NixList"
@@ -467,64 +446,39 @@ def _add_value_tree(f: Any, sess: Any) -> None:
                        type_name=msg)
         field.oneof_index = 0
 
-    req = f.message_type.add()
-    req.name = "RealizeReq"
-    _field(req, "handle", 1, type_name=HANDLE)
     # Two bounds, because a tree is unbounded in two directions and
     # they are not the same problem. depth counts levels EXPANDED, so 1
     # is the root alone; budget is the hard stop, because a single
     # attribute set can hold a hundred thousand entries one level down.
     # Every node the walk stops at costs the caller a lease, which is
     # why both default small.
-    _field(req, "depth", 2, proto_type=_scalar_const("sint64"))
-    _field(req, "budget", 3, proto_type=_scalar_const("sint64"))
-
-    resp = f.message_type.add()
-    resp.name = "RealizeResp"
-    _field(resp, "root", 1, type_name=VALUE)
-    _field(resp, "nodes", 2, proto_type=_scalar_const("sint64"))
-    _field(resp, "truncated", 3, proto_type=_scalar_const("bool"))
-
-    rlz = sess.method.add()
-    rlz.name = "Realize"
-    rlz.input_type = f".{PKG}.RealizeReq"
-    rlz.output_type = f".{PKG}.RealizeResp"
+    _message(f, "RealizeReq", handle=HELD, depth=INT, budget=INT)
+    _message(f, "RealizeResp", root=VALUE, nodes=INT, truncated=BOOL)
+    _rpc(sess, "Realize", "RealizeReq", "RealizeResp")
 
 
 # -- the log stream --------------------------------------------------------
 
-
-def _options(req: Any, first: int) -> None:
-    """The two fields a log subscription carries, wherever it is made.
-
-    Stated once because both requests carry them, and the numbering
-    is a parameter because only one of the two has a handle in front.
-
-    `level` gets real presence and `capacity` does not, and the two
-    are not the same question. Level 0 is lvlError, which is a
-    subscription somebody means - "errors only" - so an unset field
-    and a zero one have to differ. Capacity 0 is not a queue at all,
-    so zero is free to mean "the binding's own default" (huggorm#48).
-    """
-    _add_typed_field(req, "capacity", first, INT)
-    _add_typed_field(req, "level", first + 1, INT, optional=True)
+# The two fields a log subscription carries, wherever it is made.
+#
+# `level` gets real presence and `capacity` does not, and the two are
+# not the same question. Level 0 is lvlError, which is a subscription
+# somebody means - "errors only" - so an unset field and a zero one
+# have to differ. Capacity 0 is not a queue at all, so zero is free to
+# mean "the binding's own default" (huggorm#48).
+LOG_OPTIONS = {"capacity": INT, "level": ir.TypeRef.optional_of(INT)}
 
 
 def _add_log_stream(f: Any, sess: Any) -> None:
-    """The one rpc that travels the other way, unsolicited.
+    """The rpcs that travel the other way, unsolicited.
 
-    Hand-written, like the rest of Session, and for the reason
-    huggorm#32 gives: a log stream is PROTOCOL. Every other rpc came
-    out of a binding declaration, because every other rpc is a call
-    someone made. This one answers records nobody asked for one at a
-    time, so there is no method for it to be the wire form of.
+    A log stream is PROTOCOL (huggorm#32): every other rpc is a call
+    someone made, and this one answers records nobody asked for one at
+    a time.
 
-    Three things here are decisions rather than shape.
-
-    **It streams.** `server_streaming` is the first use of it in this
-    schema, and it is what the descriptor has to SAY - reflection and
-    grpcurl read the flag, and a descriptor that calls this unary
-    while dispatch streams is a schema that lies.
+    **It streams.** Reflection and grpcurl read `server_streaming`, and
+    a descriptor that calls this unary while dispatch streams is a
+    schema that lies.
 
     **A message is a DRAIN, not a record.** `LogStream.drain` answers
     everything waiting in one call, and a batch per drain keeps that
@@ -535,63 +489,30 @@ def _add_log_stream(f: Any, sess: Any) -> None:
     see is this repo's named failure mode. The count is cumulative, so
     a client that missed a batch still learns the total.
 
-    TWO rpcs now, one response message. `Logs` names a state and
-    subscribes on its thread; `ProcessLogs` names nothing and takes
-    what no subscribed thread claimed. A batch of records and a drop
-    count is the whole answer either way, so a second response
-    message would be the same fact declared twice.
-
-    Where the options live is `_options`, for the same reason."""
-    req = f.message_type.add()
-    req.name = "LogsReq"
-    # Which state's thread to subscribe on. The tap routes by thread,
-    # and an EvalState owns one, so the handle names the subscription.
-    _field(req, "state", 1, type_name=HANDLE)
-    _options(req, 2)
-
-    # The same subscription with nothing to name. The process-wide
-    # sink takes records no subscribed thread claimed, so there is no
-    # handle to address and the message is the options alone
-    # (huggorm#85).
-    #
-    # Numbered from 1 rather than leaving a hole where the handle
-    # would be. They are two messages, not one message with a field
-    # switched off, and a reserved gap would say the opposite.
-    process = f.message_type.add()
-    process.name = "ProcessLogsReq"
-    _options(process, 1)
-
-    # ONE response message for both. A batch of records and a drop
-    # count is the whole answer either way, and a second message with
-    # the same two fields would be the same fact declared twice.
-    resp = f.message_type.add()
-    resp.name = "LogsResp"
-    _add_typed_field(resp, "records", 1, LOG_RECORDS)
-    _add_typed_field(resp, "dropped", 2, INT)
-
-    for name, input_name in (("Logs", "LogsReq"),
-                             ("ProcessLogs", "ProcessLogsReq")):
-        rpc = sess.method.add()
-        rpc.name = name
-        rpc.input_type = f".{PKG}.{input_name}"
-        rpc.output_type = f".{PKG}.LogsResp"
-        rpc.server_streaming = True
+    `Logs` names a state and subscribes on its thread; `ProcessLogs`
+    names nothing and takes what no subscribed thread claimed. A batch
+    and a drop count is the whole answer either way, so both share one
+    response message."""
+    # The tap routes by thread, and an EvalState owns one, so the
+    # handle names the subscription.
+    _message(f, "LogsReq", state=HELD, **LOG_OPTIONS)
+    # The process-wide sink takes records no subscribed thread claimed,
+    # so there is no handle to address (huggorm#85). Numbered from 1
+    # rather than leaving a hole where the handle would be: they are two
+    # messages, not one message with a field switched off.
+    _message(f, "ProcessLogsReq", **LOG_OPTIONS)
+    _message(f, "LogsResp", records=LOG_RECORDS, dropped=INT)
+    _rpc(sess, "Logs", "LogsReq", "LogsResp", streaming=True)
+    _rpc(sess, "ProcessLogs", "ProcessLogsReq", "LogsResp", streaming=True)
 
     # The end of a state's records so far. A call on the state's own
     # thread answers its request id, and its "finalized" marker lands
     # in that thread's queue after every record raised before it. A
     # reader that sees the marker holds everything; a timed window
     # would drop what came late.
-    barrier = f.message_type.add()
-    barrier.name = "LogsBarrierReq"
-    _field(barrier, "state", 1, type_name=HANDLE)
-    barrier_resp = f.message_type.add()
-    barrier_resp.name = "LogsBarrierResp"
-    _add_typed_field(barrier_resp, "request", 1, INT)
-    rpc = sess.method.add()
-    rpc.name = "LogsBarrier"
-    rpc.input_type = f".{PKG}.LogsBarrierReq"
-    rpc.output_type = f".{PKG}.LogsBarrierResp"
+    _message(f, "LogsBarrierReq", state=HELD)
+    _message(f, "LogsBarrierResp", request=INT)
+    _rpc(sess, "LogsBarrier", "LogsBarrierReq", "LogsBarrierResp")
 
 
 def _add_free_service(file_dp: Any, model: ir.Model) -> None:
