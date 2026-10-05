@@ -958,7 +958,8 @@ def test_a_declared_type_is_the_type_nanobind_BINDS(
     _VOCABULARIES.clear()
     _VOCABULARIES.update(model.enums)
     _UNIONS.clear()
-    _UNIONS.update({n: [a.name for a in arms] for n, arms in model.unions.items()})
+    _UNIONS.update({n: [a.name for a in u.arms]
+                    for n, u in model.unions.items()})
     _ERRORS.clear()
     _ERRORS.update(model.errors.classes)
 

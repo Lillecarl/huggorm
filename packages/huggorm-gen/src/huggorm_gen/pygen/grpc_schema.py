@@ -265,12 +265,12 @@ def _add_common(file_dp: Any, model: ir.Model) -> None:
     # happen not to collide. A oneof is a real tag, and protobuf lets
     # a message hold itself, so the recursive arm needs nothing said
     # about it here (huggorm#59).
-    for alias, arms in model.unions.items():
+    for alias, union in model.unions.items():
         m = file_dp.message_type.add()
         m.name = union_msg_name(alias)
         one = m.oneof_decl.add()
         one.name = "raw"
-        for n, arm in enumerate(arms, start=1):
+        for n, arm in enumerate(union.arms, start=1):
             # An arm is never `optional`: the oneof IS the presence,
             # and marking a member optional would add a second,
             # disagreeing one.

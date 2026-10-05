@@ -15,7 +15,7 @@ from __future__ import annotations
 import inspect
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from huggorm_dsl.declare import Decl
@@ -685,6 +685,26 @@ class ClassModel:
         return f"{self.name}Msg"
 
 @dataclass(frozen=True)
+class UnionModel:
+    """One sum type. Each arm is named as the wire names it, a scalar
+    by its wire spelling, and carries the C++ the variant holds it as."""
+
+    name: str
+    decl: Decl
+    arms: tuple[TypeRef, ...]
+
+    @classmethod
+    def of(cls, u: Class, resolver: Resolver) -> UnionModel:
+        arms = []
+        for a in u.decl.arms:
+            held = u.decl.scalars.get(a) or Type(python=a, bound=True)
+            spelled, caster = cxx.value(held, resolver.known)
+            arms.append(replace(TypeRef.named(a, resolver.kind(a)),
+                                cxx=spelled, caster=caster))
+        return cls(u.name, u.decl, tuple(arms))
+
+
+@dataclass(frozen=True)
 class EnumModel:
     """One string vocabulary. A member is a str, so it crosses as one."""
 
@@ -730,8 +750,8 @@ class Model:
 
     classes: Mapping[str, ClassModel]
     functions: Mapping[str, FunctionModel]
-    # Every union alias, to its arms in declared order.
-    unions: Mapping[str, tuple[TypeRef, ...]]
+    # Every union alias, its arms in declared order.
+    unions: Mapping[str, UnionModel]
     # The classes that are HANDED BACK rather than constructed.
     returned: frozenset[str]
     # A type the async surface spells differently: `pathlib.Path` is

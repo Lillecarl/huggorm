@@ -74,8 +74,7 @@ def declared_model() -> ir.Model:
     for mod in have.modules:
         resolver = ir.Resolver.of(mod)
         for u in mod.unions:
-            unions[u.name] = tuple(ir.TypeRef.named(a, resolver.kind(a))
-                                   for a in u.decl.arms)
+            unions[u.name] = ir.UnionModel.of(u, resolver)
     enums = {cls.name: ir.EnumModel.of(cls, PACKAGE, vocab.name)
              for vocab in map(have.module, have.vocabularies)
              for cls in vocab.classes if cls.is_words}

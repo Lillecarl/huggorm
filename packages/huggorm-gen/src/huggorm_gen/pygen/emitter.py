@@ -280,8 +280,8 @@ def policy_module(model: ir.Model) -> str:
         target=ast.Name(id="LOG_RECORDS"), annotation=_ann("Wire", "LOG_RECORDS"),
         value=_literal(_wire(grpc_schema.LOG_RECORDS)), simple=1))
     body.append(_table("UNION_ARMS", "dict[str, tuple[Wire, ...]]", [
-        (n, tuple(_wire(a) for a in arms))
-        for n, arms in model.unions.items()]))
+        (n, tuple(_wire(a) for a in u.arms))
+        for n, u in model.unions.items()]))
     # Every method's call spec, ONCE. The client reads these through
     # `rpc.py` and the server reads them through METHODS below, so the
     # two ends of a call cannot disagree about its shape.
@@ -313,7 +313,7 @@ def policy_module(model: ir.Model) -> str:
         ast.Module(body=body, type_ignores=[]))) + "\n"
 
 
-def unions_module(unions: Mapping[str, Sequence[ir.TypeRef]]) -> str:
+def unions_module(unions: Mapping[str, ir.UnionModel]) -> str:
     """`_unions.py`: one alias per declared sum type.
 
     Nothing but aliases, and every one derived from the model - so
@@ -321,7 +321,7 @@ def unions_module(unions: Mapping[str, Sequence[ir.TypeRef]]) -> str:
     once and this is the same sentence in the package a caller
     imports."""
     # A scalar arm is a builtin, and huggorm_bindings has none to import.
-    arms = sorted({a.name for v in unions.values() for a in v
+    arms = sorted({a.name for u in unions.values() for a in u.arms
                    if a.kind != "scalar"})
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=(
@@ -333,7 +333,8 @@ def unions_module(unions: Mapping[str, Sequence[ir.TypeRef]]) -> str:
         ast.ImportFrom(module="huggorm_bindings",
                        names=[ast.alias(name=a) for a in arms], level=0),
     ]
-    for alias, members in unions.items():
+    for alias, union in unions.items():
+        members = union.arms
         value: ast.expr = ast.Name(id=python_spelling(members[0].name))
         for arm in members[1:]:
             value = ast.BinOp(left=value, op=ast.BitOr(),
@@ -1041,7 +1042,8 @@ def stub_module(model: ir.Model, module: str) -> ast.Module:
     A union is written out as its arms. The alias is Python in the
     generated `_unions` module, and a compiled binding module holds no
     such name, so a stub that NAMED it would name nothing."""
-    spell = Spelling(_as_binding, expand=model.unions)
+    spell = Spelling(_as_binding, expand={n: u.arms for n, u
+                                          in model.unions.items()})
     classes = [c for c in (*model.handed_back, *model.constructed)
                if c.qualified_module == module]
     functions = [model.functions[n] for n in sorted(model.functions)
