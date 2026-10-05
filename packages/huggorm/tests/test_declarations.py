@@ -755,7 +755,7 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
 
     cls = read(_declaration(tmp_path, ATTRIBUTE)).classes[0]
     with pytest.raises(TypeError, match="ATTRIBUTE"):
-        nbemit.bind_function(cls, {cls.name: cls})
+        nbemit.Emitter({cls.name: cls}).bind_function(cls)
 
 
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:

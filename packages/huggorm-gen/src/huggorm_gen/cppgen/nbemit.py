@@ -178,198 +178,11 @@ def _held(cls: Class) -> str:
     return cls.decl.cxx or f"{NAMESPACE}::{cls.name}"
 
 
-def _bare(cls: Class, known: dict[str, Class]) -> str:
-    """The C++ type behind a declared class, or a refusal."""
-    if cls.is_union:
-        # A SUM, and std::variant is what C++ already calls one.
-        # nanobind casts it natively (<nanobind/stl/variant.h>), so a
-        # parameter of a union type needs no dispatch written by hand:
-        # the caster tries each arm and the body receives the one that
-        # matched.
-        #
-        # The ARMS, not the C++ union type upstream declares.
-        # nix::DerivedPath IS a std::variant, but over
-        # DerivedPathOpaque rather than StorePath - and nanobind's
-        # caster is specialised on std::variant exactly, not on
-        # something deriving from one. So the binding takes the arms
-        # the PYTHON side has and a body converts, which is a decision
-        # and belongs in a body.
-        if cls.decl.variant is not None:
-            # THE UNION'S OWN TYPE. A generated type_caster casts it
-            # to the arms Python has, so a signature names what
-            # libstore names and no body converts.
-            return cls.decl.variant.cxx
-        return _arms_type(cls, known)
-    if cls.is_words:
-        # A vocabulary. The member IS the string a Nix parser takes,
-        # so it crosses as one - a fact about the words rather than
-        # about either binding.
-        return "std::string"
-    if not cls.decl.cxx and not cls.decl.built_by:
-        raise TypeError(
-            f"'{cls.name}' has no C++ type behind it. Only a class with "
-            f"@binding(cxx=...) or @produced(by=...) can cross as one.")
-    return _held(cls)
-
-
-def _arms_type(cls: Class, known: dict[str, Class]) -> str:
-    """A union as the std::variant of the arms PYTHON has.
-
-    Not what a signature says any more - that is the union's own C++
-    type - but what the caster casts through, and what `from_arms`
-    takes."""
-    inner = ", ".join(_arm(cls, a, known) for a in cls.decl.arms)
-    return f"std::variant<{inner}>"
-
-
-def _arm(cls: Class, arm: str, known: dict[str, Class]) -> str:
-    """One arm as Python has it, in C++: a builtin from the alias the
-    declaration wrote, and a class through its own declaration."""
-    if (scalar := cls.decl.scalars.get(arm)) is not None:
-        return _cxx(scalar, known)[0]
-    return _bare(known[arm], known)
 
 
 # What `to_bytes` and `from_bytes` convert, and nothing else does.
 BYTES_SPELLINGS = ("nb::bytes", "std::vector<nb::bytes>")
 
-
-def _cxx(t: Type, known: dict[str, Class]) -> tuple[str, str | None]:
-    """A declared type as C++ carries it BY VALUE, and its caster.
-
-    The value form, not the parameter form. A return is a value, a
-    vector's element is a value, and an optional's payload is a
-    value - so this is the shape everything else is built from and
-    `_param` adds the reference where a parameter wants one."""
-    held_type = t.required
-    other = None if held_type.origin else known.get(held_type.python)
-    if other is not None and other.decl.kind == "error":
-        # A live Python EXCEPTION, handed over rather than raised. A
-        # BuildResult's failure arm is a nix::BuildError, and reading
-        # a failed result is not an exception (huggorm#71) - so what
-        # crosses is the object.
-        #
-        # `nb::object` whether or not the declaration wrote `| None`,
-        # and the optional is dropped on purpose: `nb::none()` IS the
-        # absent value here, and `std::optional<nb::object>` would
-        # give a Python caller one spelling for absent and the emitter
-        # two.
-        return "nb::object", None
-    if t.optional:
-        held, _ = _cxx(t.required, known)
-        return f"std::optional<{held}>", "optional"
-    if t.origin == "list":
-        held, _ = _cxx(t.element, known)
-        # A vector, not the std::set libstore keeps them in. A set
-        # casts to a Python set, which has no order - and every one
-        # of these answers is sorted, which is information a caller
-        # can use.
-        return f"std::vector<{held}>", "vector"
-    if t.origin == "dict":
-        held, _ = _cxx(t.element, known)
-        # `std::map`, which is what libstore keeps every one of these
-        # in - `OutputPathMap` and `SingleDrvOutputs` are both one -
-        # and what nanobind's <nanobind/stl/map.h> casts.
-        #
-        # str keys only, and that is the wire rather than a shortcut:
-        # a protobuf map key is an integral or a string, so a map
-        # keyed by anything else has no field to be. The declaration
-        # spells `dict[str, V]` and nothing else parses.
-        #
-        # This replaced a hard-coded `"dict[str, int]": nb::dict`
-        # entry that served one free function. A body that builds an
-        # nb::dict by hand IS the mapping this exists to derive, so
-        # the entry went and `gc_stats` returns the map.
-        return f"std::map<std::string, {held}>", "map"
-    inner = t.python
-    if t.bound or inner in known:
-        if inner not in known:
-            raise TypeError(
-                f"'{inner}' names a class this run has not read. Pass its "
-                f"declaration too, so the C++ spelling can be resolved.")
-        other = known[inner]
-        spelled = _bare(other, known)
-        if other.decl.holder:
-            # Held through something. `@binding(holder="shared_ptr")`
-            # is the declaration saying the factory hands back a
-            # reference-counted handle, so Python has to keep a share
-            # or the object closes under the name for it.
-            return (f"std::{other.decl.holder}<{spelled}>",
-                    other.decl.holder)
-        if other.is_union:
-            # <nanobind/stl/variant.h>, and the ARMS' casters too: a
-            # variant of bound classes needs none of its own, but one
-            # holding a string or a vector does.
-            return spelled, "variant"
-        return spelled, "string" if spelled == "std::string" else None
-    # Three tables, in the order the declaration meant them. A Python
-    # type nanobind casts natively wins outright - `pathlib.Path`
-    # carries Cxx("string"), the coarse answer, and nanobind has a
-    # filesystem caster. Then the alias, which is the declaration
-    # naming a C++ spelling. Then the bare builtin, which names none.
-    spelled, caster = "", None
-    if inner in CXX_PYTHON:
-        spelled, caster = CXX_PYTHON[inner]
-    elif t.cxx is not None and t.cxx.spelling in CXX_PARAM:
-        spelled, caster = CXX_PARAM[t.cxx.spelling]
-    elif inner in CXX_BUILTIN:
-        spelled, caster = CXX_BUILTIN[inner]
-    else:
-        raise TypeError(
-            f"'{t.python}' has no C++ spelling. A bound class names types "
-            f"through an Annotated alias in declare.py.")
-    # Both tables spell a PARAMETER, so both may carry a reference.
-    # A value never does: a `const std::string &` member of a struct
-    # is a dangling reference waiting to happen, and an optional
-    # cannot hold one at all.
-    return spelled.removeprefix("const ").removesuffix(" &"), caster
-
-
-def _param(t: Type, known: dict[str, Class]
-           ) -> tuple[str, str | None]:
-    """The C++ spelling of a declared type, and the caster it needs.
-
-    A BOUND type - one naming another declared class - resolves
-    through `known`, which maps a declared name to its C++ spelling.
-    So `is_valid_path(path: StorePath)` becomes `const nix::StorePath
-    &`, and neither declaration repeats the other's C++ name."""
-    if t.optional or t.origin or t.python in CXX_PYTHON:
-        spelled, caster = _cxx(t, known)
-        # By const reference, because these are the types worth not
-        # copying - and, for `nb::bytes`, because a copy would be
-        # WRONG. A method that releases the GIL runs its whole body
-        # with the guard held, so a by-value Python handle changes a
-        # reference count without the GIL and nanobind aborts the
-        # process: "attempted to change the reference count of a
-        # Python object while the GIL was not held". A reference
-        # binds to the caster's own object, which nanobind destroys
-        # after the guard.
-        if spelled.startswith("const "):
-            return spelled, caster
-        return f"const {spelled} &", caster
-    if t.bound:
-        if t.python not in known:
-            raise TypeError(
-                f"'{t.python}' names a class this run has not read. Pass its "
-                f"declaration too, so the C++ spelling can be resolved.")
-        other = known[t.python]
-        if other.is_words:
-            # A vocabulary. The member IS the string a Nix parser
-            # takes, so it crosses as one. That is a fact about the
-            # words rather than about the binding, which is why the
-            # emitted module is plain Python with no C++ at all.
-            return CXX_PARAM["string"]
-        # A wire value is a copy the call reads, so const. A proxy is an
-        # object the call may act on: `nix::copyClosure` writes into the
-        # destination `Store &`, and a const reference cannot reach it.
-        if other.decl.wire:
-            return f"const {_bare(other, known)} &", None
-        return f"{_bare(other, known)} &", None
-    if t.cxx is None or t.cxx.spelling not in CXX_PARAM:
-        raise TypeError(
-            f"'{t.python}' has no C++ parameter spelling. A bound class "
-            f"names types through an Annotated alias in declare.py.")
-    return CXX_PARAM[t.cxx.spelling]
 
 
 def _sites(classes: Sequence[Class],
@@ -460,114 +273,6 @@ def _bodies(classes: Sequence[Class],
         yield fn.cxx_body
 
 
-def includes(classes: Sequence[Class],
-             functions: Sequence[Method],
-             known: dict[str, Class],
-             errors: Sequence[str] = ()) -> list[str]:
-    """Exactly the headers this translation unit needs, and no others.
-
-    Derived from the declared types rather than listed. A caster left
-    out does not fail at compile time - nanobind fails the conversion
-    at RUNTIME with a bare std::bad_cast out of module init, which is
-    a bad way to learn about a missing include.
-
-    Every declared type of every method, parameter and return alike.
-    A return needs its caster as much as a parameter does, and the
-    first version only walked the parameters - which held while the
-    only return was a string_view and stopped the moment one was a
-    vector."""
-    casters: set[str] = set()
-
-    def note(t: Type | None) -> None:
-        if t is None:
-            return
-        try:
-            _, caster = _cxx(t, known)
-        except TypeError:
-            # A type this emitter cannot spell is reported where it is
-            # emitted, with the method that named it. Failing here
-            # would name only the type.
-            return
-        if caster:
-            casters.add(caster)
-        # A container or an optional needs what it HOLDS cast too:
-        # `list[StorePath]` needs <vector>, and a `list[str]` needs
-        # <string> beneath it. Every argument, so no container kind is
-        # left out: a union held in a map needs <variant> as surely as
-        # a bare one.
-        for arg in t.args:
-            note(arg)
-        # ...and a UNION's arms, for the same reason: the variant
-        # caster casts each arm with that arm's own.
-        held = None if t.origin else known.get(t.python)
-        if held is not None and held.is_union:
-            for arm in held.decl.arms:
-                note(held.decl.scalars.get(arm)
-                     or Type(python=arm, bound=True))
-
-    for pr, t in _sites(classes, functions):
-        note(t)
-        # A CONTAINER that reads None arrives as a std::optional, so
-        # it needs that caster even though no declared type here is
-        # optional. `_signature` builds the optional; this is the
-        # only place that can know it will. Missed until a module had
-        # one and nothing else optional in it - `store` had returns
-        # to hide it, `derived_path` had not.
-        if pr is not None and absent(pr, known):
-            casters.add("optional")
-    # A hook has no signature worth casting, and it still names the
-    # header its C++ lives in. `wanted` below is where that lands.
-
-    # What the hand-written BODIES spell, which no signature says.
-    # Derived from the text the declaration carries - see
-    # BODY_HEADERS for why this is not a header's job.
-    body = " ".join(b for b in _bodies(classes, functions) if b)
-    standard = {h for spelling, h in BODY_HEADERS.items()
-                if spelling in body}
-
-    out = ["#include <nanobind/nanobind.h>"]
-    out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
-    if any(cls.decl.wire == "value" and cls.decl.text for cls in classes):
-        # std::hash lives in <functional>, and the value hash uses it.
-        out.append("#include <functional>")
-    out += [f"#include <{h}>" for h in sorted(standard)]
-    # The headers that declare the types the CATCH CHAIN names. The
-    # chain is emitted, so the includes it needs are emitted too - the
-    # three of them lived in `cpp/errors.hpp` until now, which is a
-    # fact about generated code stated in a hand-written helper
-    # (huggorm#90). `decl/errors.py` says which header each class is
-    # in, beside the `cxx` that names the class.
-    out += [f'#include "{h}"' for h in errors]
-    # Each class's header, then whatever the bodies reach past it.
-    # Sorted and de-duplicated, because two methods needing one
-    # header is normal and the order of a declaration's methods is
-    # not an order for includes.
-    wanted = {cls.decl.header for cls in classes}
-    # A union's own type, which no `@header` names: the alias carries
-    # it, because a unit that only PASSES one declares none of its
-    # arms and would otherwise include nothing that spells it.
-    wanted |= {u.decl.variant.header for u in _unions_used(
-        classes, functions, known) if u.decl.variant is not None}
-    # A vocabulary's enum, for the same reason. `hash.cpp` returns a
-    # HashAlgorithm and declares no class from `nix/util/hash.hh`
-    # beyond its own - the words live in another declaration file.
-    wanted |= {v.decl.header for v in _vocabularies_used(
-        classes, functions, known)}
-    # A class from ANOTHER declaration that a signature names. nanobind
-    # casts by type, so a forward declaration is not enough:
-    # `registry.cpp` names `nix::Store` only as a parameter.
-    wanted |= {other.decl.header for _, t in _sites(classes, functions)
-               if t is not None
-               and (other := known.get(t.leaf.python)) is not None}
-    wanted |= {h for cls in classes for h in cls.decl.headers}
-    wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
-    wanted |= {h for cls in classes if cls.from_parts is not None
-               for h in cls.from_parts.headers}
-    wanted |= {h for fn in functions for h in fn.headers}
-    out += [f'#include "{h}"' for h in sorted(wanted - {""})]
-    return out
-
-
 def waits(cls: Class, m: Method) -> bool:
     """Whether this call can block, and so needs the GIL released.
 
@@ -580,72 +285,6 @@ def waits(cls: Class, m: Method) -> bool:
         return False
     return cls.decl.blocking or m.blocks
 
-
-def _default(pr: Param, known: dict[str, Class]) -> str:
-    """A Python default, as C++ spells the same value.
-
-    Two cases the table cannot hold, because both need the
-    declaration to resolve them.
-
-    A VOCABULARY member is a name in Python and a string in C++:
-    `HashAlgorithm.SHA256` is `"sha256"`, and only the vocabulary
-    knows which. Emitting the Python spelling put an undeclared
-    identifier in the C++.
-
-    `None` on a CONTAINER is an empty one. A repeated field has no
-    presence and needs none - an absent container IS an empty one,
-    which is what the declaration's own docstring says - so `nullptr`
-    would be a null reference where a value belongs."""
-    if not pr.has_default:
-        return ""
-    value = pr.default
-    if pr.member:
-        # A vocabulary member IS the string a Nix parser takes.
-        return json.dumps(value)
-    if value is None and pr.type.optional:
-        # An optional parameter, absent. `nullptr`, what a bare None
-        # becomes below, is a null POINTER, which a std::optional
-        # parameter cannot take.
-        return "nb::none()"
-    if absent(pr, known):
-        # None, and the signature says so. The parameter arrives as a
-        # std::optional and an emitted line turns it into an empty
-        # container - so a caller who passes nothing and a caller who
-        # passes None get the same answer.
-        return "nb::none()"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if value is None:
-        return "nullptr"
-    if isinstance(value, str):
-        # Double quotes: `'auto'` in C++ is a character literal.
-        return json.dumps(value)
-    if isinstance(value, int):
-        return str(value)
-    raise TypeError(f"{pr.name}: no C++ spelling for the default {value!r}")
-
-
-def _extras(cls: Class, m: Method, known: dict[str, Class]) -> str:
-    """The annotations that follow a `.def`, in nanobind's order.
-
-    `nb::call_guard<nb::gil_scoped_release>()` comes from one declared
-    fact: `blocking` on the class, or `@blocks` on the method. The
-    declaration says a call can wait; how a backend spells the release
-    is the emitter's business.
-
-    `"name"_a` follows, because a parameter's name is part of the
-    Python signature rather than decoration, and `= value` after it
-    when the declaration gave a default. Dropping a default would
-    silently change the signature a caller sees."""
-    out = []
-    if waits(cls, m):
-        out.append("nb::call_guard<nb::gil_scoped_release>()")
-    for pr in m.params:
-        arg = f'"{pr.name}"_a'
-        if pr.has_default:
-            arg += f" = {_default(pr, known)}"
-        out.append(arg)
-    return "".join(f", {x}" for x in out)
 
 
 def words_from_word(cls: Class) -> list[str]:
@@ -691,245 +330,8 @@ def words_from_word(cls: Class) -> list[str]:
     return out
 
 
-def _parsed_by(t: Type | None, known: dict[str, Class]) -> str:
-    """The C++ that turns this vocabulary's string into its type.
-
-    `@words(parsed_by=...)` names it, and it was prose until this read
-    it: both `add_*` methods hand-wrote
-    `nix::ContentAddressMethod::parse(method)` in their bodies while
-    the declaration two files away already said what the parser is
-    called. Empty for anything that is not a vocabulary, and for a
-    vocabulary that declares no parser - which crosses as its string
-    and is parsed by whatever it is handed to."""
-    if t is None:
-        return ""
-    held = t.required
-    other = None if held.origin else known.get(held.python)
-    if other is None or not other.is_words:
-        return ""
-    if not other.decl.parsed_by and other.decl.enumerated:
-        # Upstream has no parser for this enum, so the emitter wrote
-        # one. `from_word` is a template because a return type does
-        # not overload - `as_word` going the other way needs no such
-        # thing, which is why the two names are not symmetrical.
-        return (f"{NAMESPACE}::from_word"
-                f"<{other.decl.enumerated.held}>")
-    return other.decl.parsed_by
 
 
-def _collection(t: Type | None, known: dict[str, Class]) -> str:
-    """The C++ collection type for a declared `list[T]`, if T names one.
-
-    Empty for everything else, which is every list whose element type
-    is a primitive or whose class is happy with a vector."""
-    if t is None or t.origin != "list":
-        return ""
-    element = known.get(t.element.python)
-    return element.decl.collection if element else ""
-
-
-def _handle(t: Type | None, known: dict[str, Class]) -> Class | None:
-    """The declared class behind this type, when it binds a HANDLE.
-
-    A handle is a class whose `@binding` carries `via`: the bound C++
-    type owns a lifetime and the object worth calling is one step
-    further in. `None` for everything else, which is almost every
-    type - a bound class that binds its own methods is not a handle,
-    and neither is a str."""
-    if t is None or not t.required.bound:
-        return None
-    other = known.get(t.required.python)
-    return other if other is not None and other.decl.via else None
-
-
-def _derived(cls: Class, m: Method, known: dict[str, Class]
-             ) -> list[str] | None:
-    """The body of a method the emitter can write itself, or None.
-
-    Three mechanical things a HANDLE forces, and each of them was a
-    a verbatim body before this existed:
-
-    - the CALL goes through the handle - `v.get()->type_name()`;
-    - a RETURN of a handle class wraps in it - the C++ hands back
-      what it holds, and Python must get the handle;
-    - a PARAMETER of a handle class unwraps out of it, because the
-      C++ takes what the handle points at.
-
-    ...and one a plain STRUCT forces: `@reads` names a data member,
-    so there is nothing to call - `self.narSize`, not `self.narSize()`.
-    A member read cannot be bound by pointer the way a method can,
-    because `.def` takes a function and `&T::narSize` is not one.
-
-    None when this method needs none of the four. `_method` then
-    binds it by pointer, which is the shorter and better line."""
-    ret_handle = _handle(m.ret, known)
-    args = [(pr.name, _handle(pr.type, known)) for pr in m.params]
-    # A guarded accessor reaches through the union pair rather than
-    # through `via`, so the two are read separately and `call` below
-    # is rebuilt after the guard picks its reach.
-    # A `list[T]` return needs a body too: the conversion below is
-    # what makes a C++ set answer the list the declaration promised,
-    # and a pointer binding has nowhere to put it.
-    wants_list = m.ret is not None and m.ret.origin in ("list", "dict")
-    if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
-            or m.produces or wants_list or any(h for _, h in args)):
-        return None
-    obj = _self(cls)
-    reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
-    # The GUARD, for an accessor on a tagged union.
-    #
-    # Written here, once, from two declared facts: the class says how
-    # to ask which arm is held, and the accessor says which one it
-    # needs. Twelve accessors used to spell this by hand in
-    # `cpp/eval.hpp`, and a thirteenth could have forgotten it -
-    # which for a `noexcept` reader on the wrong tag is not an error
-    # but a reinterpretation of the payload.
-    # A PRODUCER: allocate on this state, call one initialiser with
-    # the declared arguments, wrap. The declaration names only the
-    # initialiser; the three lines around it are the same for every
-    # producer, which is why they are here and not in twelve bodies.
-    if m.produces:
-        given = ", ".join(pr.name for pr in m.params)
-        return [
-            f"{INDENT * 4}auto * made = {obj}.alloc();",
-            f"{INDENT * 4}made->{m.produces}({given});",
-            f"{INDENT * 4}return {obj}.wrap(made);",
-        ]
-
-    head = _guard_head(cls, m, known)
-    if m.guard or m.names:
-        hold, ask, table = cls.decl.tagged  # type: ignore[misc]
-        reach = f"{obj}.{hold}->"
-    if m.names:
-        # The arm table, read the other way. One switch, so the names
-        # a caller sees and the names @guard checks cannot drift.
-        _, _, table = cls.decl.tagged  # type: ignore[misc]
-        lines = [f"{INDENT * 4}switch ({reach}{ask}) {{"]
-        for name, enum in table.items():
-            lines.append(f'{INDENT * 4}case {enum}: return "{name}";')
-        lines.append(f"{INDENT * 4}}}")
-        # Every enumerator is named above, and a compiler still wants
-        # a return past the switch.
-        lines.append(f'{INDENT * 4}return "unknown";')
-        return lines
-    # A declared `list[T]` PARAMETER over a C++ set. libstore takes
-    # StorePathSet in a dozen places and the wire carries a list, so
-    # the conversion is a fact about the two type systems rather than
-    # a decision - and `as_set` is emitted beside this, not written by
-    # hand.
-    # A declared `list[T]` PARAMETER, where T's class says libstore
-    # holds a collection of them some other way. The wire carries a
-    # list either way; this is the two type systems disagreeing, not a
-    # decision, so `as_set` is written here rather than at each site.
-    passed = ", ".join(
-        f"as_set<{_collection(pr.type, known)}>({pr.name})"
-        if _collection(pr.type, known) else
-        (f"{pr.name}.{h.decl.via}" if h else pr.name)
-        for pr, (_, h) in zip(m.params, args, strict=True))
-    # A member is reached, not called. The declaration says which by
-    # writing @reads, and an accessor that reads one takes no
-    # parameters - so there is no argument list to spell either.
-    call = (f"{reach}{m.reads}" if m.reads
-            else f"{reach}{m.cxx_name or m.name}({passed})")
-    if m.ret is None:
-        return [*head, f"{INDENT * 4}{call};"]
-    if ret_handle is not None:
-        return [*head, f"{INDENT * 4}return {_held(ret_handle)}({call});"]
-    # A declared `Bytes` over a string, and the list of each. A string
-    # is not one implicitly - `nb::bytes` takes only explicit
-    # constructors - so the conversion is written here, once.
-    if _cxx(m.ret, known)[0] in BYTES_SPELLINGS:
-        return [*head, f"{INDENT * 4}return to_bytes({call});"]
-    # A declared `list[T]` RETURN over a C++ collection that is not
-    # a vector. libstore answers with a set almost everywhere, and the
-    # declaration already said `list` - so nothing needs to say it
-    # twice. `as_list` is a template over any range, so wrapping is
-    # right whether the call answered a set or a vector.
-    if m.ret is not None and m.ret.origin == "list":
-        return [*head, f"{INDENT * 4}return as_list({call});"]
-    # The same for a `dict[str, V]`: libstore keys many maps with a
-    # transparent `std::less<>`, and nanobind casts only the plain one.
-    if m.ret is not None and m.ret.origin == "dict":
-        return [*head, f"{INDENT * 4}return as_map({call});"]
-    # A declared VOCABULARY return. The enumerator libstore answers
-    # with is not the word Python has, and `as_word` is the switch
-    # that says which - emitted beside this, not written by hand.
-    # Before this, `Hash.algorithm` carried the conversion as a `Cxx`
-    # body, which is a MAPPING written into a declaration.
-    voc = (None if m.ret.required.origin
-           else known.get(m.ret.required.python))
-    if voc is not None and voc.is_words and voc.decl.enumerated:
-        return [*head, f"{INDENT * 4}return {NAMESPACE}::as_word({call});"]
-    # A width the DECLARATION spells. `size()` answers a size_t and
-    # the declaration says I64, so the cast is what makes the emitted
-    # C++ say what the declaration says rather than what this
-    # library's version of the call happens to return.
-    spelled, _ = _cxx(m.ret, known)
-    if spelled in ("std::int64_t", "std::uint64_t"):
-        return [*head, f"{INDENT * 4}return static_cast<{spelled}>({call});"]
-    return [*head, f"{INDENT * 4}return {call};"]
-
-
-def _guard_head(cls: Class, m: Method,
-                known: dict[str, Class]) -> list[str]:
-    """The tag check an accessor on a tagged union owes its caller.
-
-    Separate from HOW the rest of the body reads, so a method with a
-    declared `Cxx` body gets one too. A body is a decision about what
-    to DO once the arm is known; the check that the arm IS known is
-    the same either way, and writing it inside twelve bodies is what
-    this exists to stop."""
-    if m.fills:
-        # The FIRST parameter is the value being filled. A method that
-        # fills takes its target first, which is what makes this
-        # derivable rather than another thing to name.
-        maker, arm = m.fills
-        if not m.params:
-            raise ValueError(f"{cls.name}.{m.name}: @fills needs a target")
-        target = m.params[0].name
-        # The TARGET's class holds the arm table, not this one:
-        # `list_append` is declared on the evaluator and fills a Value.
-        held = known.get(m.params[0].type.python)
-        if held is None or held.decl.tagged is None:
-            raise ValueError(
-                f"{cls.name}.{m.name}: @fills needs its target's class to "
-                f"carry @tagged, to check the arm being filled")
-        hold, ask, table = held.decl.tagged
-        if arm not in table:
-            raise ValueError(
-                f'{cls.name}.{m.name}: @fills(..., "{arm}") names no arm; '
-                f"@tagged offers {sorted(table)}")
-        return [
-            # The arm FIRST. A builder of the wrong kind passes the
-            # builder test and then reads the wrong union member,
-            # which is undefined rather than an error.
-            f"{INDENT * 4}if ({target}.{hold}->{ask} != {table[arm]})",
-            f"{INDENT * 5}{_wrong_arm(target, hold, table[arm])}",
-            f"{INDENT * 4}if (!{target}.is_builder())",
-            f"{INDENT * 5}throw std::invalid_argument(",
-            f'{INDENT * 6}"this value did not come from {maker}, and a "',
-            f'{INDENT * 6}"Nix value is immutable: filling it would "',
-            f'{INDENT * 6}"rewrite memory the evaluator produced");',
-        ]
-    if not (m.guard or m.names):
-        return []
-    if cls.decl.tagged is None:
-        raise ValueError(
-            f"{cls.name}.{m.name}: needs @tagged(reach, ask, ...) on the "
-            f"class to say how to reach the union, how to ask which arm "
-            f"it holds, and what the arms are called")
-    hold, ask, table = cls.decl.tagged
-    if not m.guard:
-        return []
-    if m.guard not in table:
-        raise ValueError(
-            f'{cls.name}.{m.name}: @guard("{m.guard}") names no arm; '
-            f"@tagged offers {sorted(table)}")
-    obj = _self(cls)
-    return [
-        f"{INDENT * 4}if ({obj}.{hold}->{ask} != {table[m.guard]})",
-        f"{INDENT * 5}{_wrong_arm(obj, hold, table[m.guard])}",
-    ]
 
 
 def _wrong_arm(owner: str, hold: str, expected: str) -> str:
@@ -943,246 +345,9 @@ def _wrong_arm(owner: str, hold: str, expected: str) -> str:
             f"nix::showType({expected}), nix::showType(*{owner}.{hold}));")
 
 
-def _returns(m: Method, known: dict[str, Class]) -> str:
-    """A lambda's return type, SPELLED, for every body that has one.
-
-    It started as an optional-only rule - a lambda with two return
-    paths, the value and std::nullopt, cannot deduce one - and the
-    same argument covers more than optionals. A body ending
-    `return {};` for an empty container cannot deduce either, and
-    neither can two returns whose types merely convert. The
-    declaration already said which type it is, so saying it in the
-    lambda costs nothing and removes the whole class of "cannot
-    deduce".
-
-    Both branches of `_method`, because the argument never was about
-    who WROTE the body. A declared body had it and a derived body did
-    not, so `@reads` over a `list[T]` deduced `as_list`'s return
-    where the same accessor with a `Cxx` line spelled it - one fact,
-    stated in one branch of two.
-
-    Empty for a method that returns nothing. `force` and the
-    builders' setters do, and a lambda with no return statement is
-    void.
-    """
-    if m.ret is None:
-        return ""
-    return f" -> {_cxx(m.ret, known)[0]}"
 
 
-def _method(cls: Class, m: Method, known: dict[str, Class]
-            ) -> list[str]:
-    """One `.def`, bound by POINTER wherever nanobind allows it.
 
-    A method pointer costs no lambda and no closure, and it keeps the
-    C++ name visible in the emitted line - so a reader can see which
-    upstream function is bound. `m.cxx_name` is the whole of the
-    mapping, and the declaration is the only place it lives.
-
-    A view returns by pointer too, because the string_view caster
-    copies. `includes()` is what makes that safe, and it derives the
-    header from this same declaration rather than trusting a human to
-    remember."""
-    # A method may return nothing - `force` and the builders' setters
-    # do - and a lambda with no return statement is void. Only the
-    # branches that SPELL the return type need one.
-    doc = _doc(m.doc)
-    tail = f', "{doc}"' if doc else ""
-    if m.cxx_body:
-        # A method the declaration could not derive, carried verbatim.
-        obj = _self(cls)
-        args, opening = _signature(cls, m, known)
-        head = (f'{INDENT * 2}.def("{m.name}", '
-                f"[]({_held(cls)} &{obj}{args}){_returns(m, known)} {{")
-        body = [f"{INDENT * 4}{ln}".rstrip()
-                for ln in m.cxx_body.strip().splitlines()]
-        # The tag check goes in FRONT of a declared body. A body says
-        # what to do once the arm is known; @guard says the arm is
-        # known, and the two are separate decisions.
-        return [head, *opening, *_guard_head(cls, m, known), *body,
-                f"{INDENT * 2}}}{_extras(cls, m, known)}{tail})"]
-    derived = _derived(cls, m, known)
-    if derived is not None:
-        obj = _self(cls)
-        args, opening = _signature(cls, m, known)
-        return [f'{INDENT * 2}.def("{m.name}", '
-                f"[]({_held(cls)} &{obj}{args}){_returns(m, known)} {{",
-                *opening, *derived,
-                f"{INDENT * 2}}}{_extras(cls, m, known)}{tail})"]
-    spelled = m.cxx_name or m.name
-    return [f'{INDENT * 2}.def("{m.name}", &{_held(cls)}::{spelled}'
-            f"{_extras(cls, m, known)}{tail})"]
-
-
-def absent(pr: Param, known: dict[str, Class]) -> bool:
-    """Whether this parameter's absence is spelled `None`.
-
-    A CONTAINER whose declared default is None. The declaration's own
-    docstring says what that means - a repeated field has no presence
-    and needs none, so an absent container IS an empty one - and a
-    caller passing None explicitly means the same thing.
-
-    It matters because nanobind's vector caster refuses None: it asks
-    for a sequence, and None is not one. So a parameter that reads
-    None has to say so in its own type."""
-    if not pr.has_default or pr.default is not None:
-        return False
-    return pr.type.required.origin == "list"
-
-
-def _signature(cls: Class, m: Method,
-               known: dict[str, Class]
-               ) -> tuple[str, list[str]]:
-    """A lambda's parameter list, and the lines that open its body.
-
-    Almost always the first alone. The lines exist for one case: a
-    container that reads None. It arrives as a std::optional, and the
-    body wants the plain container - so the parameter is renamed and
-    one derived line puts the declared name back, holding an empty
-    container where the caller passed nothing.
-
-    The body then reads exactly what the declaration wrote."""
-    args, opening = "", []
-    for pr in m.params:
-        spelled, _ = _param(pr.type, known)
-        parser = _parsed_by(pr.type, known)
-        if parser:
-            # A VOCABULARY arrives as the string libstore's parser
-            # takes, and one call turns it into the C++ type. The
-            # spelling of that call is declared once, by `@words`, so
-            # a body writes the parameter name and gets the parsed
-            # value - and a second method taking the same vocabulary
-            # cannot spell the parse differently.
-            args += f", {spelled} {pr.name}_"
-            opening.append(f"{INDENT * 4}const auto {pr.name} = "
-                           f"{parser}({pr.name}_);")
-            continue
-        if not absent(pr, known):
-            args += f", {spelled} {pr.name}"
-            continue
-        held, _ = _cxx(pr.type.required, known)
-        args += f", const std::optional<{held}> & {pr.name}_"
-        opening.append(f"{INDENT * 4}const {held} {pr.name} = "
-                       f"{pr.name}_.value_or({held}{{}});")
-    return args, opening
-
-
-def _identity_semantics(cls: Class,
-                        known: dict[str, Class],
-                        equality: bool = True) -> list[str]:
-    """The repr and the hash every wire value owes a reader.
-
-    Both from the declared PARTS, and both through the Python object.
-    `nb::repr(h.attr("path")())` asks StorePath for its own repr,
-    so a part of any type renders without this emitter knowing what it
-    is - which is what lets one line cover a str, a store path and a
-    list of them.
-
-    A list part is hashed as a TUPLE. A list is unhashable for the
-    good reason that it can change, and this one cannot: it is a copy
-    of what the object said.
-
-    The hash agrees with equality because it hashes the same parts in
-    the same order, and equality is either those parts or a C++
-    `operator==` over the members they are read from.
-
-    `equality=False` for a RECORD, whose `__eq__` came from
-    `_record_semantics` one line earlier. Emitting both put two
-    overloads on one name: nanobind tries them in order, the typed
-    one matches every same-type comparison, and the parts one never
-    ran. They agreed only because the members ARE the parts."""
-    fields = wire_fields(cls)
-    if not fields and cls.decl.shown:
-        # A value that declares no FIELDS and one thing worth showing.
-        # The repr then has no name to print, so it prints the value
-        # alone - `ValidPathInfo('/nix/store/...')`. Weaker than a
-        # named field, and it is what the declaration carries.
-        return [f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
-                f'{INDENT * 3}return nb::str("{cls.name}({{!r}})").format(',
-                f'{INDENT * 4}h.attr("{cls.decl.shown}")());',
-                f"{INDENT * 2}}})"]
-    # A UNIT value has no parts and still compares, hashes and prints:
-    # every one is equal, `Deferred()` names it, and the empty tuple
-    # hashes.
-    if not fields and not cls.decl.unit:
-        return []
-    spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
-    reads = ", ".join(read for _, _, read in fields)
-    hashed = ", ".join(
-        f"{NAMESPACE}::as_tuple({read})" if t.required.origin == "list"
-        else read
-        for _, t, read in fields)
-    out = []
-    if equality and cls.decl.compare != "cxx":
-        # Equal when the SAME CLASS carries the same declared parts.
-        #
-        # `b.type().is(a.type())` rather than isinstance: a subclass
-        # of a value type would carry parts this one does not compare,
-        # so saying "equal" would be a claim the parts do not support.
-        #
-        # NotImplemented rather than False for another type, which is
-        # what lets the other side answer - and what `nb::is_operator`
-        # already does for an overload that does not match.
-        out += [
-            f'{INDENT * 2}.def("__eq__", [](nb::handle a, nb::handle b)',
-            f"{INDENT * 3} -> nb::object {{",
-            f"{INDENT * 3}if (!b.type().is(a.type()))",
-            f"{INDENT * 4}return nb::not_implemented();",
-            f'{INDENT * 3}return nb::cast(a.attr("_parts")()'
-            f'.equal(b.attr("_parts")()));',
-            f"{INDENT * 2}}}, nb::is_operator())",
-        ]
-    return [
-        *out,
-        f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
-        f'{INDENT * 3}return nb::str("{cls.name}({spec})").format(',
-        f"{INDENT * 4}{reads});",
-        f"{INDENT * 2}}})",
-        f'{INDENT * 2}.def("__hash__", [](nb::handle h) {{',
-        f"{INDENT * 3}return nb::hash(nb::make_tuple({hashed}));",
-        f"{INDENT * 2}}})",
-    ]
-
-
-def _ctor(cls: Class, known: dict[str, Class]) -> list[str]:
-    """`nb::init<...>`, with the declared parameter named for Python.
-
-    `"name"_a` is what makes the parameter usable as a keyword, so the
-    declaration's parameter NAME reaches callers rather than being
-    decoration."""
-    if cls.ctor is None:
-        return []
-    names = "".join(
-        f', "{pr.name}"_a'
-        + (f" = {_default(pr, known)}" if pr.has_default else "")
-        for pr in cls.ctor.params)
-    if cls.ctor.cxx_body:
-        # Placement new, because `__init__` is handed storage rather
-        # than asked for an object. One Python signature over several
-        # C++ constructors needs this: nb::init picks by C++ type at
-        # compile time, and which constructor to call is a decision
-        # about a VALUE - an OutputsSpec means all outputs when it says
-        # so and a named set when it carries names.
-        obj = _self(cls)
-        args, opening = _signature(cls, cls.ctor, known)
-        body = [f"{INDENT * 4}{ln}".rstrip()
-                for ln in cls.ctor.cxx_body.strip().splitlines()]
-        head = (f'{INDENT * 2}.def("__init__", '
-                f"[]({_held(cls)} *{obj}{args}) {{")
-        tail = f"{INDENT * 2}}}{names}"
-        if not cls.ctor.doc:
-            return [head, *opening, *body, tail + ")"]
-        doc = _doc(cls.ctor.doc)
-        return [head, *opening, *body, tail + ",",
-                f'{INDENT * 3}     "{doc}")']
-    types = ", ".join(_param(pr.type, known)[0] for pr in cls.ctor.params)
-    line = f"{INDENT * 2}.def(nb::init<{types}>(){names}"
-    if not cls.ctor.doc:
-        return [line + ")"]
-    # One line, however the declaration wrapped it: a C++ string
-    # literal has no continuation and gluing two is noise.
-    doc = _doc(cls.ctor.doc)
-    return [line + ",", f'{INDENT * 3}     "{doc}")']
 
 
 def _render(cls: Class, accessor: str) -> str:
@@ -1308,21 +473,6 @@ def _attribute(cls: Class, m: Method) -> TypeError:
         f"accessor, or teach all four (huggorm#76).")
 
 
-def record_fields(cls: Class,
-                  known: dict[str, Class]
-                  ) -> list[tuple[str, str]]:
-    """Every member of a produced value's struct, in declared order.
-
-    Nothing is listed. A produced value's ACCESSORS are its fields -
-    the store flattened one of its own objects and handed over the
-    parts - so the name is the accessor's name and the type is what
-    it returns. Order is the declaration's, which is the order a
-    reader of the declaration sees and the order the constructor
-    takes."""
-    return [(m.name, _cxx(m.ret, known)[0])
-            for m in cls.methods if m.ret is not None and not m.local]
-
-
 def _paragraph(doc: str) -> list[str]:
     """The first paragraph of a docstring, as its lines."""
     out: list[str] = []
@@ -1332,50 +482,6 @@ def _paragraph(doc: str) -> list[str]:
         out.append(line.strip())
     return out
 
-
-def record(cls: Class, known: dict[str, Class]) -> list[str]:
-    """The C++ struct a produced value crosses as.
-
-    Real types, every one. This is what the Cython route could not do:
-    a pxd cannot declare a std::optional, a std::set or a member with
-    no default constructor, so it turned a store path into its base
-    name, absence into an empty string and a set into a vector of
-    strings - and Python then held nine slots that had each been
-    printed and re-parsed on the way.
-
-    Here a `nix::StorePath` stays one, `std::optional` carries
-    absence, and a list of paths is a list of paths. Nothing is
-    printed and nothing is parsed back.
-
-    An aggregate, so the constructor is the member list in order and
-    C++20's parenthesised aggregate initialisation gives `nb::init`
-    something to call. `operator==` is defaulted rather than written,
-    which is what makes the value compare as its parts."""
-    # The first PARAGRAPH, on one line. A first line alone can stop
-    # mid-sentence, because the declaration wraps its prose for a
-    # reader rather than for this.
-    lead = " ".join(_paragraph(cls.doc))
-    out = [f"/** {lead} */", f"struct {cls.name}", "{"]
-    out += [f"{INDENT}{spelling} {name};"
-            for name, spelling in record_fields(cls, known)]
-    # A value compares as its parts, and `= default` is the whole of
-    # that sentence. Written out, it would be one line per field with
-    # nothing to gate it against the field list.
-    out += [f"{INDENT}bool operator==(const {cls.name} &) const = default;",
-            "};"]
-    return out
-
-
-def records(classes: Sequence[Class],
-            known: dict[str, Class]) -> list[str]:
-    """Every produced value in one unit, inside one namespace."""
-    values = [c for c in classes if c.is_value]
-    if not values:
-        return []
-    out = [f"namespace {NAMESPACE} {{", ""]
-    for cls in values:
-        out += [*record(cls, known), ""]
-    return [*out, f"}}  // namespace {NAMESPACE}", ""]
 
 
 def records_include(module: str, package: str) -> str:
@@ -1388,23 +494,6 @@ def records_include(module: str, package: str) -> str:
     return f"{package}/{name}" if package else name
 
 
-def records_named(classes: Sequence[Class],
-                  functions: Sequence[Method],
-                  known: dict[str, Class]) -> list[str]:
-    """Every module whose records this unit names, its own included.
-
-    A record is a struct the emitter declares, so a unit that names one
-    from another module needs that module's struct, not only its
-    Python class. Sorted, for `includes`' reason."""
-    out = {c.module for c in classes if c.is_value}
-    for _, t in _sites(classes, functions):
-        for node in _nodes(t):
-            held = None if node.origin else known.get(node.python)
-            if held is not None and held.is_value:
-                out.add(held.module)
-    return sorted(out)
-
-
 def records_header(mod: Module, package: str) -> str | None:
     """The header a module's records are emitted into, or None.
 
@@ -1414,9 +503,10 @@ def records_header(mod: Module, package: str) -> str | None:
     values = [c for c in bindable(mod) if c.is_value]
     if not values:
         return None
-    others = [m for m in records_named(values, (), mod.known)
+    emit = Emitter(mod.known)
+    others = [m for m in emit.records_named(values, ())
               if m != mod.name]
-    structs = records(values, mod.known)
+    structs = emit.records(values)
     # What the fields SPELL, read off the structs as `includes` reads
     # a body: `std::int64_t` needs <cstdint>, and no caster names it.
     text = "\n".join(structs)
@@ -1424,7 +514,7 @@ def records_header(mod: Module, package: str) -> str | None:
                       if spelling in text})
     return "\n".join([
         "#pragma once", "",
-        *includes(values, (), mod.known),
+        *emit.includes(values, ()),
         *[f"#include <{h}>" for h in spelled],
         *[f'#include "{records_include(m, package)}"' for m in others],
         "",
@@ -1450,70 +540,6 @@ def _nodes(t: Type | None) -> Iterator[Type]:
     for arg in t.args:
         yield from _nodes(arg)
 
-
-def _unions_used(classes: Sequence[Class],
-                 functions: Sequence[Method],
-                 known: dict[str, Class]) -> list[Class]:
-    """Every union with a declared C++ variant this unit names.
-
-    By name, so a union named twice is converted once. Sorted,
-    because the order two methods happen to be declared in is not an
-    order for a translation unit."""
-    out: dict[str, Class] = {}
-    for _, t in _sites(classes, functions):
-        for node in _nodes(t):
-            cls = None if node.origin else known.get(node.python)
-            if cls is not None and cls.is_union and cls.decl.variant is not None:
-                out[cls.name] = cls
-    return [out[name] for name in sorted(out)]
-
-
-def _vocabularies_used(classes: Sequence[Class],
-                       functions: Sequence[Method],
-                       known: dict[str, Class]) -> list[Class]:
-    """Every enum-backed vocabulary this unit NAMES, either way round.
-
-    Every site, not only the returns. A unit that only TAKES a word
-    needs no read-back conversion to work, and gets one anyway,
-    because the read-back conversion is the switch and the switch is
-    the gate. `Store.build_paths` takes a BuildMode and returns none,
-    so without this the day upstream adds a fourth mode would pass
-    silently. The emitted function is `inline` and unused, which
-    costs a compiler nothing.
-
-    By name and sorted, for the reason `_unions_used` is: a
-    vocabulary named twice is converted once, and the order two
-    methods happen to be declared in is not an order for a
-    translation unit."""
-    out: dict[str, Class] = {}
-    spelled = [node.python for _, t in _sites(classes, functions)
-               for node in _nodes(t) if not node.origin]
-    # ...and what a BODY spells, from `@spells`. A signature does not
-    # reach everything: `KeyedBuildResult.error` builds an exception
-    # carrying a failure word, and `-> BuildError | None` says
-    # nothing about it.
-    spelled += [n for cls in classes for m in cls.methods for n in m.spells]
-    spelled += [n for cls in classes if cls.from_parts is not None
-                for n in cls.from_parts.spells]
-    spelled += [n for fn in functions for n in fn.spells]
-    for name in spelled:
-        cls = known.get(name)
-        if cls is not None and cls.is_words and cls.decl.enumerated:
-            out[cls.name] = cls
-    # A `@spells` name has to BE one, and this is where that is
-    # checked. The decorator takes a string because a declaration
-    # holds constants, so nothing above catches a typo - and a
-    # silently skipped name fails much later, as a missing
-    # `huggorm::as_word` overload in the emitted C++.
-    for cls in classes:
-        for m in (*cls.methods, *([cls.from_parts] if cls.from_parts else [])):
-            for name in m.spells:
-                if name not in out:
-                    raise TypeError(
-                        f"{cls.name}.{m.name}: @spells({name!r}) names no "
-                        f"enum-backed vocabulary this declaration can see. "
-                        f"Import the declaration that declares it.")
-    return [out[name] for name in sorted(out)]
 
 
 def words_conversion(cls: Class) -> list[str]:
@@ -1554,163 +580,10 @@ def words_conversion(cls: Class) -> list[str]:
     return out
 
 
-def _alternative(cls: Class, arm: str,
-                 known: dict[str, Class]) -> tuple[str, str]:
-    """One arm as the C++ variant holds it: the type, and the member.
-
-    The member is empty when the variant holds the arm as itself,
-    which is every arm no `wraps` names. `SingleDerivedPathBuilt` is
-    an alternative of `nix::SingleDerivedPath` outright, so nothing
-    has to be said about it - and saying it for every arm would make
-    the one arm that IS wrapped read like the others."""
-    variant = cls.decl.variant
-    assert variant is not None
-    wrap = variant.wraps.get(arm)
-    if wrap is not None:
-        return wrap.cxx, wrap.holds
-    return _arm(cls, arm, known), ""
-
-
-def conversions(cls: Class, known: dict[str, Class]) -> list[str]:
-    """One union, in both directions, from what its alias declares.
-
-    THE BODIES DO NOT SAY THIS. They call `as_arms` and `from_arms`
-    by name, and every line below comes from the `Variant(...)` the
-    declaration carries - the union's C++ type, how to reach the
-    std::variant inside it, and which arm the variant wraps.
-
-    It was a hand-written header (huggorm#63). Two unions wrote the
-    same visit four times, and the two `drv_path` bodies that called
-    it were identical text in two classes that differ in nothing the
-    line touches. One declared fact answers all of it.
-
-    The last arm is `std::get` rather than another `std::get_if`.
-    A variant holds exactly one alternative, so once every other has
-    been ruled out the last one is what is there - and `std::get`
-    says that, where a fourth `if` would leave a fall-through with
-    nothing to return.
-    """
-    variant = cls.decl.variant
-    assert variant is not None
-    arms = cls.decl.arms
-    held = _arms_type(cls, known)
-    reach = f"p.{variant.raw}" if variant.raw else "p"
-    out = [f"/** The arms of a {cls.name}, as Python has them. */",
-           f"inline {held} as_arms(const {variant.cxx} & p)",
-           "{"]
-    for arm in arms[:-1]:
-        alt, member = _alternative(cls, arm, known)
-        out += [f"{INDENT}if (auto * arm = std::get_if<{alt}>(&{reach}))",
-                f"{INDENT * 2}return {'arm->' + member if member else '*arm'};"]
-    alt, member = _alternative(cls, arms[-1], known)
-    got = f"std::get<{alt}>({reach})"
-    out += [f"{INDENT}return {got + '.' + member if member else got};",
-            "}", ""]
-
-    out += [f"/** A {cls.name}'s arms, as the C++ union holds them. */",
-            f"inline {variant.cxx} from_arms(const {held} & a)",
-            "{"]
-    for arm in arms[:-1]:
-        alt, member = _alternative(cls, arm, known)
-        out += [f"{INDENT}if (auto * arm = "
-                f"std::get_if<{_arm(cls, arm, known)}>(&a))",
-                f"{INDENT * 2}return {alt + '{*arm}' if member else '*arm'};"]
-    last = arms[-1]
-    alt, member = _alternative(cls, last, known)
-    got = f"std::get<{_arm(cls, last, known)}>(a)"
-    out += [f"{INDENT}return {alt + '{' + got + '}' if member else got};",
-            "}", ""]
-
-    return out
-
 
 def _is_bare(cls: Class) -> bool:
     return cls.decl.variant is not None and cls.decl.variant.bare
 
-
-def bare_check(cls: Class, known: dict[str, Class]) -> list[str]:
-    """What a `bare` union gets instead of a conversion and a caster.
-
-    The claim that the C++ type IS the arms' `std::variant`, checked by
-    the compiler. A declaration that lists the arms out of order, or
-    names a union that only derives from a variant, fails here rather
-    than casting through the wrong alternative."""
-    variant = cls.decl.variant
-    assert variant is not None
-    return [f"static_assert(std::is_same_v<{variant.cxx}, "
-            f"{_arms_type(cls, known)}>,",
-            f'{INDENT}"{cls.name} is declared bare, so its C++ type must '
-            f'be the std::variant of its arms, in order");', ""]
-
-
-def caster(cls: Class, known: dict[str, Class]) -> list[str]:
-    """One union as a nanobind type_caster, so no body converts.
-
-    `as_arms` and `from_arms` still do the work; this is where they
-    are CALLED, once, instead of at every site that names the type.
-    The signature then says `nix::DerivedPath` - what libstore says -
-    and `store.parse_derived_path` is one call with nothing round it.
-
-    Composed with the caster nanobind ships for std::variant rather
-    than written out. The arms already cast; the only thing missing
-    was that `nix::DerivedPath` IS a variant and nanobind's caster is
-    specialised on `std::variant` exactly, not on something deriving
-    from one.
-
-    NB_TYPE_CASTER is not used, for the reason nanobind's own variant
-    caster does not use it: the macro declares `Value value;` and
-    neither union is default-constructible - the opaque arm holds a
-    `nix::StorePath`, which has no default constructor. The storage is
-    an optional instead, and the three cast operators reach through
-    it.
-    """
-    variant = cls.decl.variant
-    assert variant is not None
-    arms = _arms_type(cls, known)
-    return [
-        f"/** {variant.cxx}, cast as the arms Python has. */",
-        f"template <> struct type_caster<{variant.cxx}> {{",
-        f"{INDENT}using Value = {variant.cxx};",
-        f"{INDENT}using Arms = {arms};",
-        f"{INDENT}using Caster = make_caster<Arms>;",
-        f"{INDENT}static constexpr auto Name = Caster::Name;",
-        f"{INDENT}template <typename T_> using Cast = movable_cast_t<T_>;",
-        f"{INDENT}template <typename T_> static constexpr bool can_cast()"
-        f" {{ return true; }}",
-        "",
-        f"{INDENT}std::optional<Value> held;",
-        f"{INDENT}explicit operator Value *() {{ return &*held; }}",
-        f"{INDENT}explicit operator Value &() {{ return *held; }}",
-        f"{INDENT}explicit operator Value &&() {{ return (Value &&) *held; }}",
-        "",
-        f"{INDENT}bool from_python(handle src, uint8_t flags,",
-        f"{INDENT * 4}     cleanup_list *cleanup) noexcept",
-        f"{INDENT}{{",
-        f"{INDENT * 2}Caster caster;",
-        f"{INDENT * 2}if (!caster.from_python(src, flags, cleanup))",
-        f"{INDENT * 3}return false;",
-        f"{INDENT * 2}held.emplace({NAMESPACE}::from_arms("
-        f"caster.operator cast_t<Arms>()));",
-        f"{INDENT * 2}return true;",
-        f"{INDENT}}}",
-        "",
-        f"{INDENT}static handle from_cpp(const Value &value, rv_policy policy,",
-        f"{INDENT * 4}               cleanup_list *cleanup) noexcept",
-        f"{INDENT}{{",
-        f"{INDENT * 2}return Caster::from_cpp({NAMESPACE}::as_arms(value), "
-        f"policy, cleanup);",
-        f"{INDENT}}}",
-        "",
-        f"{INDENT}static handle from_cpp(const Value *value, rv_policy policy,",
-        f"{INDENT * 4}               cleanup_list *cleanup) noexcept",
-        f"{INDENT}{{",
-        f"{INDENT * 2}if (value == nullptr)",
-        f"{INDENT * 3}return none().release();",
-        f"{INDENT * 2}return from_cpp(*value, policy, cleanup);",
-        f"{INDENT}}}",
-        "};",
-        "",
-    ]
 
 
 # A list field, as something a hash can hold.
@@ -1727,79 +600,6 @@ inline nb::tuple as_tuple(nb::handle items)
 }
 """
 
-
-def _record_semantics(cls: Class,
-                      known: dict[str, Class]) -> list[str]:
-    """What a RECORD owes Python beyond reading its own fields.
-
-    Equality, and only equality. The repr and the hash beside it are
-    what EVERY wire value owes and come from `_identity_semantics`,
-    which reads the same declared parts for a record and for a
-    constructed value alike.
-
-    `__ne__` is not here and does not need to be. Python fills the
-    slot as soon as `__eq__` exists."""
-    held = _held(cls)
-    return [
-        f'{INDENT * 2}.def("__eq__", [](const {held} &a, const {held} &b)',
-        f"{INDENT * 3} {{ return a == b; }}, nb::is_operator())",
-    ]
-
-
-def _record_ctor(cls: Class, known: dict[str, Class]
-                 ) -> list[str]:
-    """The two ways a record is and is not built.
-
-    A produced value is PRODUCED. Nothing a caller does should build
-    one from nothing, and `__init__` says so in the sentence
-    `@produced(by=...)` supplied - so a caller who guesses wrong is
-    told where to look instead of getting an argument-count error.
-
-    It still has to be RECONSTRUCTIBLE, because it crosses the wire
-    and the far side has only the parts. So the constructor is bound
-    privately, as `_from_parts`, which is exactly the name the wire
-    layer asks for."""
-    if cls.from_parts is not None:
-        if not cls.from_parts.cxx_body:
-            raise TypeError(
-                f"{cls.name}: declares `_from_parts` with no body. Write "
-                f"one, or drop the declaration and let the aggregate "
-                f"build it.")
-        # A declared body: the signature still comes from the field
-        # list, so the body can only consume what `_parts` sent.
-        return [*_produced_ctor(cls), *_from_parts(cls, known)]
-    fields = record_fields(cls, known)
-    if any(f.read != f.name for f, _ in cls.parts):
-        # A part read through another accessor - `@wire_read` - arrives
-        # as that accessor's type, so the aggregate needs the parts
-        # converted back. `_from_parts` initialises POSITIONALLY, so
-        # the parts must be the members, in member order, or a value
-        # lands in the wrong member.
-        names = [f.name for f, _ in cls.parts]
-        if names != [n for n, _ in fields]:
-            raise TypeError(
-                f"{cls.name}: its parts {names} are not its members "
-                f"{[n for n, _ in fields]}, in order.")
-        return [*_produced_ctor(cls), *_from_parts(cls, known)]
-    held = _held(cls)
-    # `.none()` on an `nb::object` part, and nothing else needs it.
-    # nanobind refuses None for a parameter unless the argument says
-    # it takes one, and an `nb::object` caster accepts anything - so
-    # the refusal is the ARGUMENT's, not the caster's. Measured: a
-    # KeyedBuildResult with no failure arm could not be rebuilt at
-    # all, and the message named every parameter as compatible
-    # (huggorm#71).
-    args = "".join(f', "{name}"_a' + (".none()" if spelling == "nb::object"
-                                      else "")
-                   for name, spelling in fields)
-    made = ", ".join(f"{spelling} {name}" for name, spelling in fields)
-    values = ", ".join(name for name, _ in fields)
-    return [
-        *_produced_ctor(cls),
-        f'{INDENT * 2}.def_static("_from_parts", []({made}) {{',
-        f"{INDENT * 3}return {held}{{{values}}};",
-        f'{INDENT * 2}}}{args}, "{FROM_PARTS_DOC}")',
-    ]
 
 
 def _produced_ctor(cls: Class, because: str = "") -> list[str]:
@@ -1829,90 +629,6 @@ def _produced_ctor(cls: Class, because: str = "") -> list[str]:
 FROM_PARTS_DOC = "Wire-deserialization helper (private, never surfaced)."
 
 
-def _factory(cls: Class, functions: Sequence[Method],
-             known: dict[str, Class]) -> list[str]:
-    """`nb::new_`, for a class something else makes.
-
-    nix::Store is abstract and its implementation is chosen by a URI,
-    so there is no constructor to bind - and `Store(uri)` is still the
-    Python surface, because that is what the declaration's `__init__`
-    says. `nb::new_` is exactly that shape: a factory returning a
-    handle, bound as `__new__`.
-
-    Both halves are declared, in two places that already had to
-    agree. `@produced(by="open_store")` names the factory by its
-    PYTHON name; the free function called `open_store` names the C++
-    it binds. So this resolves one through the other and neither
-    declaration repeats the other's spelling.
-
-    The extras come from the FACTORY, not from the `__init__` beside
-    it, because the factory is what runs. `open_store` carries
-    `@blocks` - opening a daemon store connects, and a local one may
-    create its database - and it carries the default `uri="auto"`.
-    Reading them off the constructor instead dropped both: the call
-    held the GIL for the length of an open, and `Store()` raised
-    where the declaration said it should work."""
-    if cls.ctor is None:
-        return []
-    made = next((f for f in functions if f.name == cls.decl.built_by), None)
-    if made is None:
-        # A factory this declaration does not carry. The class is
-        # still bound; it just offers no way in, which is the honest
-        # answer until the factory is declared too.
-        return []
-    # Two shapes, and the declaration already says which. A factory
-    # that NAMES its C++ is an address; one that CARRIES it is a
-    # lambda, and the body goes inside.
-    #
-    # Before this, a factory had to be a named symbol, so a class
-    # whose construction needed one line of adaptation had to put a
-    # helper in `cpp/`. That is how `huggorm::open_store` came to
-    # exist: three lines wrapping one call, because the emitter could
-    # not write it (huggorm#63).
-    extras = _extras(cls, made, known)
-    doc = _doc(cls.ctor.doc) if cls.ctor.doc else ""
-    if not made.cxx_body:
-        line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){extras}"
-        if not doc:
-            return [line + ")"]
-        # One line, however the declaration wrapped it: a C++ string
-        # literal has no continuation and gluing two is noise.
-        return [line + ",", f'{INDENT * 3}     "{doc}")']
-    lines = [f"{INDENT * 2}.def(nb::new_({_lambda_head(made, known)}",
-             *(f"{INDENT * 3}{ln}".rstrip()
-               for ln in made.cxx_body.strip().splitlines())]
-    close = f"{INDENT * 2}}}){extras}"
-    if not doc:
-        return [*lines, close + ")"]
-    return [*lines, close + ",", f'{INDENT * 3}     "{doc}")']
-
-
-def _lambda_head(fn: Method, known: dict[str, Class]) -> str:
-    """The opening of a lambda for a function that CARRIES its C++.
-
-    The return type is SPELLED, for the reason `_method` spells one:
-    a body whose returns merely CONVERT to the declared type, or that
-    ends `return {}`, cannot deduce it. A free body and a factory
-    body are the same kind of body, so they take the same rule - it
-    was applied to a method and to neither of these, which is one
-    rule in one place out of three.
-
-    NO CURRENT BODY NEEDS IT, and that is worth writing down because
-    the first version of this comment claimed otherwise. It said
-    `nix::openStore` returning a `nix::ref<Store>` would not deduce.
-    Dropping the spelling and rebuilding refuted that: nanobind takes
-    the `ref` and reaches the holder through its implicit conversion
-    to `shared_ptr`, and the module compiles. Two emitted lines
-    change - this one and `gc_stats` - and both compile either way.
-
-    So this is consistency, not a fix. It is kept because the rule is
-    real for bodies a person may write next, and because one rule
-    spelled three ways is what this repo exists to avoid."""
-    args = ", ".join(f"{_param(pr.type, known)[0]} {pr.name}"
-                     for pr in fn.params)
-    ret = f" -> {_cxx(fn.ret, known)[0]}" if fn.ret is not None else ""
-    return f"[]({args}){ret} {{"
-
 
 def wire_fields(cls: Class) -> list[tuple[str, Type, str]]:
     """What this value is made of, as (name, type, how to read).
@@ -1925,21 +641,6 @@ def wire_fields(cls: Class) -> list[tuple[str, Type, str]]:
             for f, m in cls.parts if m.ret is not None]
 
 
-def part_types(cls: Class, known: dict[str, Class]
-               ) -> list[str]:
-    """The C++ each part ARRIVES as, one per wire field.
-
-    From the accessor's own annotation wherever there is one, because
-    that is the only place the width lives: `int` is the wire spelling
-    of both `nar_size` and `registration_time`, and they are a
-    uint64_t and an optional int64_t. `list[StorePath]` has no wire
-    spelling at all.
-
-    Every part has an accessor: `Class.parts` refuses one that does
-    not."""
-    return [_cxx(m.ret, known)[0] for _, m in cls.parts if m.ret is not None]
-
-
 # What `_parts` is for, in one sentence a caller can read.
 PARTS_DOC = ("Wire-serialization helper (private): one value per "
              "_wire_fields entry, in order.")
@@ -1950,101 +651,6 @@ PARTS_DOC = ("Wire-serialization helper (private): one value per "
 # another declared class - because that is the vocabulary the message
 # shape is written in, not C++'s.
 
-
-
-
-def _rebuilt(m: Method | None, known: dict[str, Class]) -> str:
-    """One part, converted back to what the C++ member IS, or "".
-
-    A part arrives as the wire carries it, and a `list[T]` is a
-    vector. Where the member is a SET, aggregate initialisation does
-    not convert - `could not convert 'paths' from
-    'std::vector<std::string>' to 'nix::StringSet'` is what the
-    compiler says, and it says it about a line this emitter wrote.
-
-    Two declarations answer, and they are one fact stated at two
-    scopes. `@binding(collection=...)` on the ELEMENT class says every
-    `list[StorePath]` is a `nix::StorePathSet`. `@reads(member,
-    collection=...)` says THIS member is, and it exists for the case
-    with no element class to ask: `str` is a builtin, and
-    `nix::GCResults::paths` is a `StringSet`.
-
-    The field's own answer wins. It is the more specific of the two,
-    and a class-wide rule that could not be overridden would make the
-    exception unsayable.
-
-Both branches have a user. `GCResults.paths` needs the field's,
-    and `MissingPaths` needs the class's - its three path lists are
-    `StorePathSet`s, and it used to carry a declared `_from_parts`
-    whose whole body was the three `as_set` calls this now writes.
-    That body is gone, which is the point: it was a mapping, and a
-    mapping is derived.
-
-    `PathInfo` still writes its own, for reasons that are not this
-    one - a virtual base, so it is not an aggregate at all."""
-    if m is None or m.ret is None:
-        return ""
-    held = m.member_collection or _collection(m.ret, known)
-    if not held:
-        return ""
-    return f"as_set<{held}>({m.name})"
-
-
-def _from_parts(cls: Class, known: dict[str, Class]
-                ) -> list[str]:
-    """`_from_parts`, for a value nothing constructs.
-
-    A wire value has to be rebuildable from its parts: it crosses as a
-    message and the far side has only those. Where a public
-    constructor takes exactly the parts, `markers` names the class and
-    there is nothing to write. Where there is no public constructor,
-    the C++ one still takes them - PathInfo refuses
-    `PathInfo(...)` in Python and nix::ValidPathInfo takes its fields
-    happily - so this calls it directly, under the private
-    name the wire layer asks for.
-
-    And where neither is true, the DECLARATION carries the body.
-    `nix::ValidPathInfo` has a virtual base, so it is not an aggregate
-    and cannot be brace-initialised; its only constructor takes an
-    `UnkeyedValidPathInfo`; and two of its parts cross rendered and
-    are parsed back. That is a decision rather than a binding, and it
-    goes where a person writes code.
-
-    The SIGNATURE stays here either way. One typed parameter per wire
-    field, in the field list's order, so a declared body cannot
-    disagree with `_parts` about what crosses or in which order - it
-    can only consume what it is handed."""
-    fields = wire_fields(cls)
-    if not fields and not cls.decl.unit:
-        return []
-    types = part_types(cls, known)
-    args = ", ".join(f"{t} {n}" for (n, _, _), t in zip(fields, types,
-                                                        strict=True))
-    # `.none()` on an `nb::object` part, and nothing else needs it.
-    # nanobind refuses None for a parameter unless the ARGUMENT says
-    # it takes one, and an nb::object caster accepts anything - so the
-    # refusal is the argument's rather than the caster's. Measured: a
-    # KeyedBuildResult with no failure arm could not be rebuilt at
-    # all, and the message listed every parameter as compatible
-    # (huggorm#71).
-    keywords = "".join(f', "{n}"_a' + (".none()" if t == "nb::object" else "")
-                       for (n, _, _), t in zip(fields, types, strict=True))
-    written = cls.from_parts
-    if written is not None and written.cxx_body:
-        body = [f"{INDENT * 3}{ln}".rstrip()
-                for ln in written.cxx_body.strip().splitlines()]
-    else:
-        names = ", ".join(
-            f"from_bytes({n})" if t in BYTES_SPELLINGS
-            else _rebuilt(m, known) or n
-            for (n, _, _), (_, m), t in zip(fields, cls.parts, types,
-                                            strict=True))
-        body = [f"{INDENT * 3}return {_held(cls)}({names});"]
-    doc = _doc(written.doc) if written is not None and written.doc \
-        else FROM_PARTS_DOC
-    return [f'{INDENT * 2}.def_static("_from_parts", []({args}) {{',
-            *body,
-            f'{INDENT * 2}}}{keywords}, "{doc}")']
 
 
 def _round_trip(cls: Class) -> list[str]:
@@ -2110,180 +716,6 @@ def markers(cls: Class) -> list[str]:
     return out
 
 
-def bind_function(cls: Class, known: dict[str, Class],
-                  functions: Sequence[Method] = ()) -> str:
-    """The whole `bind_<name>` function for one declared class.
-
-    A function per class, because that is the seam nanopynix already
-    has: `nanopynix_module.cpp` calls `nanopynix_bind_store(store)`
-    and friends. Generated code drops in beside hand-written code, one
-    class at a time, and NB_MODULE does not change."""
-    decl = cls.decl
-    if not decl.cxx and not cls.is_value:
-        raise TypeError(
-            f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
-    held = _held(cls)
-    holds = [held]
-    # A WIRE VALUE is final, and that is a contract rather than a
-    # preference. Such a class crosses as its declared parts, so a
-    # subclass carrying state no part reads would arrive on the far
-    # side silently missing it - and `__eq__` and `__hash__` are
-    # declared over those same parts, so a subclass would compare and
-    # hash equal to a base that is not the same object at all.
-    #
-    # It also closes the one thing that made `__eq__` subtle. A typed
-    # `const T &` comparison accepts a derived instance, so the
-    # same-class rule the declaration states was enforced only by a
-    # cast that happens to fail. Nothing can derive from it now.
-    #
-    # A PROXY is not final: a caller may subclass one to add
-    # behaviour, and nothing about a handle breaks when they do.
-    final = ", nb::is_final()" if decl.wire == "value" else ""
-    # The class's own prose, which a declaration always writes and a
-    # caller could not read: `help(StorePath)` answered with nothing
-    # but the signature until this line existed.
-    doc = _doc(cls.doc)
-    shown = f', "{doc}"' if doc else ""
-    # GC slots, when the class holds Python objects. The declaration
-    # names a `PyType_Slot[]` and the helper supplies it; there is
-    # nothing here to derive, because a traversal is a function over a
-    # member no declaration describes. Without it a class that stores
-    # a callable leaks itself as soon as that callable closes over it
-    # (huggorm#93).
-    slots = (f", nb::type_slots({decl.gc_slots})"
-             if decl.gc_slots else "")
-    lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
-             f'{INDENT}auto cls = nb::class_<{", ".join(holds)}>'
-             f'(m, "{cls.name}"{shown}{final}{slots})']
-    if cls.is_value:
-        # A RECORD: the emitter declared the struct, so every accessor
-        # is a member and the whole binding is derived from the field
-        # list.
-        body = _record_ctor(cls, known)
-        obj = _self(cls)
-        # METHODS, not `def_ro` properties. The declaration writes
-        # `def path(self) -> StorePath`, so a caller writes
-        # `info.path()`. A property would read better and would be a
-        # DIFFERENT surface, which is not a choice an emitter makes
-        # on its own.
-        # ...each carrying the prose the declaration wrote for it.
-        # The accessor is derived from the field list, but what the
-        # field MEANS is a sentence only a person can write, and the
-        # declaration already has one on every method.
-        described = {m.name: _doc(m.doc) for m in cls.methods}
-        body += [f'{INDENT * 2}.def("{name}", [](const {held} &{obj}) '
-                 f"{{ return {obj}.{name}; }}"
-                 + (f', "{described[name]}"' if described.get(name) else "")
-                 + ")"
-                 for name, _ in record_fields(cls, known)]
-        body += _record_semantics(cls, known)
-        # ...which owns `__eq__` for a record, so this contributes
-        # the repr and the hash alone.
-        body += _identity_semantics(cls, known, equality=False)
-        body += _round_trip(cls)
-        body += _value_semantics(cls)
-        # A `@local` method still binds: local keeps it off the wire,
-        # not off the object. The struct has no member for it, so it
-        # needs a body or a `@reads`; with neither, `_method` names a
-        # member that does not exist and the unit fails to compile,
-        # which is the loud answer rather than a quiet absence.
-        for m in cls.methods:
-            if m.local:
-                body += _method(cls, m, known)
-        if body:
-            body[-1] += ";"
-        return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
-    # No nb::init when something else builds one: there is no
-    # constructor to call. A FACTORY takes its place where the
-    # declaration names one. An ABSTRACT class offers neither: a
-    # caller holds one all the time and constructs one never.
-    if not cls.constructs:
-        # No constructor, and a refusal that says so.
-        #
-        # The DOOR, not the C++ fact. `nix::Store` is abstract AND
-        # opened by a factory, so it takes the branch below - reading
-        # `decl.abstract` here sent it to this one instead and
-        # `Store("dummy://")` stopped existing (huggorm#61).
-        #
-        # It used to be a `pointer_and_handle` guard, which refused a
-        # direct call and let a SUBCLASS through - because a Python
-        # class deriving from this one was instantiated as the
-        # trampoline. There are no trampolines any more (huggorm#60),
-        # so there is no door to hold open and no reason for the
-        # binding to know what `nb_inst_python_derived` is.
-        # The sentence says WHICH way the door is shut, because the
-        # two are different mistakes: a declaration that forgot an
-        # `__init__`, and one that is honestly abstract with nothing
-        # to open it. `_produced_ctor` supplies the third wording
-        # itself, from `@produced(by=...)`.
-        body = _produced_ctor(cls, "" if cls.decl.built_by else (
-            "declares no constructor" if cls.ctor is None
-            else "is abstract, and no factory opens one"))
-    elif decl.built_by:
-        # A factory this module BINDS, where the declaration names a
-        # free function - `open_store` becomes `Store.__new__`. Where
-        # it names a method instead, there is no factory to bind and
-        # nothing constructs one, so the constructor says so.
-        body = (_factory(cls, functions, known)
-                or (_produced_ctor(cls) if cls.is_produced else []))
-    else:
-        body = _ctor(cls, known)
-    for m in cls.methods:
-        if m.prop:
-            raise _attribute(cls, m)
-        body += _method(cls, m, known)
-    if decl.wire == "value":
-        body += _identity_semantics(cls, known)
-        body += _round_trip(cls)
-        if cls.ctor is None:
-            body += _from_parts(cls, known)
-    body += _value_semantics(cls)
-    for source in decl.custom.values():
-        body += [f"{INDENT * 2}{line}".rstrip()
-                 for line in source.splitlines()]
-    if body:
-        body[-1] += ";"
-    return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
-
-
-def free_function(fn: Method, known: dict[str, Class]) -> list[str]:
-    """One `m.def`, for a function that belongs to no class.
-
-    nanopynix has 72 of these and they are one shape:
-    `m.def("open_store", &open_store_uri, "uri"_a)`. The C++ helper is
-    hand-written - `open_store_uri` keeps a per-state-directory cache,
-    because two LocalStores in one process deadlock on a temp-roots
-    flock - and the declaration names it rather than pretending to
-    have written it.
-
-    `blocking` has no class to come from here, so a free function says
-    `@blocks` for itself."""
-    if not (fn.binds or fn.cxx_body):
-        raise TypeError(
-            f"{fn.name}: a free function names the C++ it binds, or "
-            f'carries it. Use @binds("cxx_name") or @cxx_body(...).')
-    extras = []
-    if fn.blocks and not fn.instant:
-        extras.append("nb::call_guard<nb::gil_scoped_release>()")
-    for pr in fn.params:
-        arg = f'"{pr.name}"_a'
-        if pr.has_default:
-            arg += f" = {_default(pr, known)}"
-        extras.append(arg)
-    tail = "".join(f", {x}" for x in extras)
-    if not fn.cxx_body:
-        return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
-    # A body, for a function whose C++ is assembled rather than named.
-    # `gc_stats` reads five counters out of gc.h and hands back one
-    # dict; there is no upstream function with that shape to point at.
-    #
-    # `_lambda_head` writes the opening, so a free body and a factory
-    # body spell one the same way - the return type included.
-    body = [f"{INDENT * 2}{ln}".rstrip()
-            for ln in fn.cxx_body.strip().splitlines()]
-    return [f'{INDENT}m.def("{fn.name}", {_lambda_head(fn, known)}', *body,
-            f"{INDENT}}}{tail});"]
-
 
 def public(fns: Sequence[Method],
            classes: Sequence[Class]) -> tuple[Method, ...]:
@@ -2299,20 +731,6 @@ def public(fns: Sequence[Method],
     not naming it there."""
     made = {cls.decl.built_by for cls in classes if cls.ctor is not None}
     return tuple(fn for fn in fns if fn.name not in made)
-
-
-def free_functions(fns: tuple[Method, ...],
-                   known: dict[str, Class]) -> str:
-    """Every free binding, in one function the module can call.
-
-    The same seam a class gets. nanopynix's NB_MODULE already calls
-    `nanopynix_bind_store(store)` and friends, so generated free
-    functions arrive the same way hand-written ones do."""
-    body: list[str] = []
-    for fn in fns:
-        body += free_function(fn, known)
-    return "\n".join(["static void bind_functions(nb::module_ &m) {",
-                       *body, "}"]) + "\n"
 
 
 # The two conversions a CONTAINER needs, and the only ones.
@@ -2398,13 +816,6 @@ inline std::vector<std::string> from_bytes(const std::vector<nb::bytes> & items)
 """
 
 
-def _converts_bytes(classes: Sequence[Class],
-                    known: dict[str, Class]) -> bool:
-    """Whether any accessor here answers bytes, so a unit needs BYTES."""
-    return any(m.ret is not None and _cxx(m.ret, known)[0] in BYTES_SPELLINGS
-               for cls in classes for m in cls.methods)
-
-
 def _crosses_container(classes: Sequence[Class]) -> bool:
     """Whether any declared type here is a list of bound values."""
     for cls in classes:
@@ -2438,89 +849,1642 @@ def bindable(mod: Module) -> tuple[Class, ...]:
     return tuple(c for c in mod.classes if c.decl.cxx or c.is_value)
 
 
-def _errors_used(classes: Sequence[Class],
+class Emitter:
+    """The binding C++ for classes that may name each other.
+
+    `known` is every class a type can resolve to: the module's own and
+    those it imports. A name outside it is refused, never guessed."""
+
+    def __init__(self, known: dict[str, Class]) -> None:
+        self.known = known
+
+    def _bare(self, cls: Class) -> str:
+        """The C++ type behind a declared class, or a refusal."""
+        if cls.is_union:
+            # A SUM, and std::variant is what C++ already calls one.
+            # nanobind casts it natively (<nanobind/stl/variant.h>), so a
+            # parameter of a union type needs no dispatch written by hand:
+            # the caster tries each arm and the body receives the one that
+            # matched.
+            #
+            # The ARMS, not the C++ union type upstream declares.
+            # nix::DerivedPath IS a std::variant, but over
+            # DerivedPathOpaque rather than StorePath - and nanobind's
+            # caster is specialised on std::variant exactly, not on
+            # something deriving from one. So the binding takes the arms
+            # the PYTHON side has and a body converts, which is a decision
+            # and belongs in a body.
+            if cls.decl.variant is not None:
+                # THE UNION'S OWN TYPE. A generated type_caster casts it
+                # to the arms Python has, so a signature names what
+                # libstore names and no body converts.
+                return cls.decl.variant.cxx
+            return self._arms_type(cls)
+        if cls.is_words:
+            # A vocabulary. The member IS the string a Nix parser takes,
+            # so it crosses as one - a fact about the words rather than
+            # about either binding.
+            return "std::string"
+        if not cls.decl.cxx and not cls.decl.built_by:
+            raise TypeError(
+                f"'{cls.name}' has no C++ type behind it. Only a class with "
+                f"@binding(cxx=...) or @produced(by=...) can cross as one.")
+        return _held(cls)
+
+    def _arms_type(self, cls: Class) -> str:
+        """A union as the std::variant of the arms PYTHON has.
+
+        Not what a signature says any more - that is the union's own C++
+        type - but what the caster casts through, and what `from_arms`
+        takes."""
+        inner = ", ".join(self._arm(cls, a) for a in cls.decl.arms)
+        return f"std::variant<{inner}>"
+
+    def _arm(self, cls: Class, arm: str) -> str:
+        """One arm as Python has it, in C++: a builtin from the alias the
+        declaration wrote, and a class through its own declaration."""
+        if (scalar := cls.decl.scalars.get(arm)) is not None:
+            return self._cxx(scalar)[0]
+        return self._bare(self.known[arm])
+
+    def _cxx(self, t: Type) -> tuple[str, str | None]:
+        """A declared type as C++ carries it BY VALUE, and its caster.
+
+        The value form, not the parameter form. A return is a value, a
+        vector's element is a value, and an optional's payload is a
+        value - so this is the shape everything else is built from and
+        `_param` adds the reference where a parameter wants one."""
+        held_type = t.required
+        other = None if held_type.origin else self.known.get(held_type.python)
+        if other is not None and other.decl.kind == "error":
+            # A live Python EXCEPTION, handed over rather than raised. A
+            # BuildResult's failure arm is a nix::BuildError, and reading
+            # a failed result is not an exception (huggorm#71) - so what
+            # crosses is the object.
+            #
+            # `nb::object` whether or not the declaration wrote `| None`,
+            # and the optional is dropped on purpose: `nb::none()` IS the
+            # absent value here, and `std::optional<nb::object>` would
+            # give a Python caller one spelling for absent and the emitter
+            # two.
+            return "nb::object", None
+        if t.optional:
+            held, _ = self._cxx(t.required)
+            return f"std::optional<{held}>", "optional"
+        if t.origin == "list":
+            held, _ = self._cxx(t.element)
+            # A vector, not the std::set libstore keeps them in. A set
+            # casts to a Python set, which has no order - and every one
+            # of these answers is sorted, which is information a caller
+            # can use.
+            return f"std::vector<{held}>", "vector"
+        if t.origin == "dict":
+            held, _ = self._cxx(t.element)
+            # `std::map`, which is what libstore keeps every one of these
+            # in - `OutputPathMap` and `SingleDrvOutputs` are both one -
+            # and what nanobind's <nanobind/stl/map.h> casts.
+            #
+            # str keys only, and that is the wire rather than a shortcut:
+            # a protobuf map key is an integral or a string, so a map
+            # keyed by anything else has no field to be. The declaration
+            # spells `dict[str, V]` and nothing else parses.
+            #
+            # This replaced a hard-coded `"dict[str, int]": nb::dict`
+            # entry that served one free function. A body that builds an
+            # nb::dict by hand IS the mapping this exists to derive, so
+            # the entry went and `gc_stats` returns the map.
+            return f"std::map<std::string, {held}>", "map"
+        inner = t.python
+        if t.bound or inner in self.known:
+            if inner not in self.known:
+                raise TypeError(
+                    f"'{inner}' names a class this run has not read. Pass its "
+                    f"declaration too, so the C++ spelling can be resolved.")
+            other = self.known[inner]
+            spelled = self._bare(other)
+            if other.decl.holder:
+                # Held through something. `@binding(holder="shared_ptr")`
+                # is the declaration saying the factory hands back a
+                # reference-counted handle, so Python has to keep a share
+                # or the object closes under the name for it.
+                return (f"std::{other.decl.holder}<{spelled}>",
+                        other.decl.holder)
+            if other.is_union:
+                # <nanobind/stl/variant.h>, and the ARMS' casters too: a
+                # variant of bound classes needs none of its own, but one
+                # holding a string or a vector does.
+                return spelled, "variant"
+            return spelled, "string" if spelled == "std::string" else None
+        # Three tables, in the order the declaration meant them. A Python
+        # type nanobind casts natively wins outright - `pathlib.Path`
+        # carries Cxx("string"), the coarse answer, and nanobind has a
+        # filesystem caster. Then the alias, which is the declaration
+        # naming a C++ spelling. Then the bare builtin, which names none.
+        spelled, caster = "", None
+        if inner in CXX_PYTHON:
+            spelled, caster = CXX_PYTHON[inner]
+        elif t.cxx is not None and t.cxx.spelling in CXX_PARAM:
+            spelled, caster = CXX_PARAM[t.cxx.spelling]
+        elif inner in CXX_BUILTIN:
+            spelled, caster = CXX_BUILTIN[inner]
+        else:
+            raise TypeError(
+                f"'{t.python}' has no C++ spelling. A bound class names types "
+                f"through an Annotated alias in declare.py.")
+        # Both tables spell a PARAMETER, so both may carry a reference.
+        # A value never does: a `const std::string &` member of a struct
+        # is a dangling reference waiting to happen, and an optional
+        # cannot hold one at all.
+        return spelled.removeprefix("const ").removesuffix(" &"), caster
+
+    def _param(self, t: Type) -> tuple[str, str | None]:
+        """The C++ spelling of a declared type, and the caster it needs.
+
+        A BOUND type - one naming another declared class - resolves
+        through `known`, which maps a declared name to its C++ spelling.
+        So `is_valid_path(path: StorePath)` becomes `const nix::StorePath
+        &`, and neither declaration repeats the other's C++ name."""
+        if t.optional or t.origin or t.python in CXX_PYTHON:
+            spelled, caster = self._cxx(t)
+            # By const reference, because these are the types worth not
+            # copying - and, for `nb::bytes`, because a copy would be
+            # WRONG. A method that releases the GIL runs its whole body
+            # with the guard held, so a by-value Python handle changes a
+            # reference count without the GIL and nanobind aborts the
+            # process: "attempted to change the reference count of a
+            # Python object while the GIL was not held". A reference
+            # binds to the caster's own object, which nanobind destroys
+            # after the guard.
+            if spelled.startswith("const "):
+                return spelled, caster
+            return f"const {spelled} &", caster
+        if t.bound:
+            if t.python not in self.known:
+                raise TypeError(
+                    f"'{t.python}' names a class this run has not read. Pass its "
+                    f"declaration too, so the C++ spelling can be resolved.")
+            other = self.known[t.python]
+            if other.is_words:
+                # A vocabulary. The member IS the string a Nix parser
+                # takes, so it crosses as one. That is a fact about the
+                # words rather than about the binding, which is why the
+                # emitted module is plain Python with no C++ at all.
+                return CXX_PARAM["string"]
+            # A wire value is a copy the call reads, so const. A proxy is an
+            # object the call may act on: `nix::copyClosure` writes into the
+            # destination `Store &`, and a const reference cannot reach it.
+            if other.decl.wire:
+                return f"const {self._bare(other)} &", None
+            return f"{self._bare(other)} &", None
+        if t.cxx is None or t.cxx.spelling not in CXX_PARAM:
+            raise TypeError(
+                f"'{t.python}' has no C++ parameter spelling. A bound class "
+                f"names types through an Annotated alias in declare.py.")
+        return CXX_PARAM[t.cxx.spelling]
+
+    def includes(self, classes: Sequence[Class],
                  functions: Sequence[Method],
-                 known: dict[str, Class]) -> bool:
-    """Whether this unit names a declared EXCEPTION class anywhere.
+                 errors: Sequence[str] = ()) -> list[str]:
+        """Exactly the headers this translation unit needs, and no others.
 
-    One site is enough. A unit that answers with an exception has to
-    look the Python class up by module and name, and the module name
-    is not a literal any declaration may write - huggorm#63 is the
-    day a stale copy of it turned every nix error into a
-    RuntimeError. So the emitter states it once per unit that needs
-    it, and the declaration's body reads it by name."""
-    for _, t in _sites(classes, functions):
+        Derived from the declared types rather than listed. A caster left
+        out does not fail at compile time - nanobind fails the conversion
+        at RUNTIME with a bare std::bad_cast out of module init, which is
+        a bad way to learn about a missing include.
+
+        Every declared type of every method, parameter and return alike.
+        A return needs its caster as much as a parameter does, and the
+        first version only walked the parameters - which held while the
+        only return was a string_view and stopped the moment one was a
+        vector."""
+        casters: set[str] = set()
+
+        def note(t: Type | None) -> None:
+            if t is None:
+                return
+            try:
+                _, caster = self._cxx(t)
+            except TypeError:
+                # A type this emitter cannot spell is reported where it is
+                # emitted, with the method that named it. Failing here
+                # would name only the type.
+                return
+            if caster:
+                casters.add(caster)
+            # A container or an optional needs what it HOLDS cast too:
+            # `list[StorePath]` needs <vector>, and a `list[str]` needs
+            # <string> beneath it. Every argument, so no container kind is
+            # left out: a union held in a map needs <variant> as surely as
+            # a bare one.
+            for arg in t.args:
+                note(arg)
+            # ...and a UNION's arms, for the same reason: the variant
+            # caster casts each arm with that arm's own.
+            held = None if t.origin else self.known.get(t.python)
+            if held is not None and held.is_union:
+                for arm in held.decl.arms:
+                    note(held.decl.scalars.get(arm)
+                         or Type(python=arm, bound=True))
+
+        for pr, t in _sites(classes, functions):
+            note(t)
+            # A CONTAINER that reads None arrives as a std::optional, so
+            # it needs that caster even though no declared type here is
+            # optional. `_signature` builds the optional; this is the
+            # only place that can know it will. Missed until a module had
+            # one and nothing else optional in it - `store` had returns
+            # to hide it, `derived_path` had not.
+            if pr is not None and self.absent(pr):
+                casters.add("optional")
+        # A hook has no signature worth casting, and it still names the
+        # header its C++ lives in. `wanted` below is where that lands.
+
+        # What the hand-written BODIES spell, which no signature says.
+        # Derived from the text the declaration carries - see
+        # BODY_HEADERS for why this is not a header's job.
+        body = " ".join(b for b in _bodies(classes, functions) if b)
+        standard = {h for spelling, h in BODY_HEADERS.items()
+                    if spelling in body}
+
+        out = ["#include <nanobind/nanobind.h>"]
+        out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
+        if any(cls.decl.wire == "value" and cls.decl.text for cls in classes):
+            # std::hash lives in <functional>, and the value hash uses it.
+            out.append("#include <functional>")
+        out += [f"#include <{h}>" for h in sorted(standard)]
+        # The headers that declare the types the CATCH CHAIN names. The
+        # chain is emitted, so the includes it needs are emitted too - the
+        # three of them lived in `cpp/errors.hpp` until now, which is a
+        # fact about generated code stated in a hand-written helper
+        # (huggorm#90). `decl/errors.py` says which header each class is
+        # in, beside the `cxx` that names the class.
+        out += [f'#include "{h}"' for h in errors]
+        # Each class's header, then whatever the bodies reach past it.
+        # Sorted and de-duplicated, because two methods needing one
+        # header is normal and the order of a declaration's methods is
+        # not an order for includes.
+        wanted = {cls.decl.header for cls in classes}
+        # A union's own type, which no `@header` names: the alias carries
+        # it, because a unit that only PASSES one declares none of its
+        # arms and would otherwise include nothing that spells it.
+        wanted |= {u.decl.variant.header for u in self._unions_used(
+            classes, functions) if u.decl.variant is not None}
+        # A vocabulary's enum, for the same reason. `hash.cpp` returns a
+        # HashAlgorithm and declares no class from `nix/util/hash.hh`
+        # beyond its own - the words live in another declaration file.
+        wanted |= {v.decl.header for v in self._vocabularies_used(
+            classes, functions)}
+        # A class from ANOTHER declaration that a signature names. nanobind
+        # casts by type, so a forward declaration is not enough:
+        # `registry.cpp` names `nix::Store` only as a parameter.
+        wanted |= {other.decl.header for _, t in _sites(classes, functions)
+                   if t is not None
+                   and (other := self.known.get(t.leaf.python)) is not None}
+        wanted |= {h for cls in classes for h in cls.decl.headers}
+        wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
+        wanted |= {h for cls in classes if cls.from_parts is not None
+                   for h in cls.from_parts.headers}
+        wanted |= {h for fn in functions for h in fn.headers}
+        out += [f'#include "{h}"' for h in sorted(wanted - {""})]
+        return out
+
+    def _default(self, pr: Param) -> str:
+        """A Python default, as C++ spells the same value.
+
+        Two cases the table cannot hold, because both need the
+        declaration to resolve them.
+
+        A VOCABULARY member is a name in Python and a string in C++:
+        `HashAlgorithm.SHA256` is `"sha256"`, and only the vocabulary
+        knows which. Emitting the Python spelling put an undeclared
+        identifier in the C++.
+
+        `None` on a CONTAINER is an empty one. A repeated field has no
+        presence and needs none - an absent container IS an empty one,
+        which is what the declaration's own docstring says - so `nullptr`
+        would be a null reference where a value belongs."""
+        if not pr.has_default:
+            return ""
+        value = pr.default
+        if pr.member:
+            # A vocabulary member IS the string a Nix parser takes.
+            return json.dumps(value)
+        if value is None and pr.type.optional:
+            # An optional parameter, absent. `nullptr`, what a bare None
+            # becomes below, is a null POINTER, which a std::optional
+            # parameter cannot take.
+            return "nb::none()"
+        if self.absent(pr):
+            # None, and the signature says so. The parameter arrives as a
+            # std::optional and an emitted line turns it into an empty
+            # container - so a caller who passes nothing and a caller who
+            # passes None get the same answer.
+            return "nb::none()"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return "nullptr"
+        if isinstance(value, str):
+            # Double quotes: `'auto'` in C++ is a character literal.
+            return json.dumps(value)
+        if isinstance(value, int):
+            return str(value)
+        raise TypeError(f"{pr.name}: no C++ spelling for the default {value!r}")
+
+    def _extras(self, cls: Class, m: Method) -> str:
+        """The annotations that follow a `.def`, in nanobind's order.
+
+        `nb::call_guard<nb::gil_scoped_release>()` comes from one declared
+        fact: `blocking` on the class, or `@blocks` on the method. The
+        declaration says a call can wait; how a backend spells the release
+        is the emitter's business.
+
+        `"name"_a` follows, because a parameter's name is part of the
+        Python signature rather than decoration, and `= value` after it
+        when the declaration gave a default. Dropping a default would
+        silently change the signature a caller sees."""
+        out = []
+        if waits(cls, m):
+            out.append("nb::call_guard<nb::gil_scoped_release>()")
+        for pr in m.params:
+            arg = f'"{pr.name}"_a'
+            if pr.has_default:
+                arg += f" = {self._default(pr)}"
+            out.append(arg)
+        return "".join(f", {x}" for x in out)
+
+    def _parsed_by(self, t: Type | None) -> str:
+        """The C++ that turns this vocabulary's string into its type.
+
+        `@words(parsed_by=...)` names it, and it was prose until this read
+        it: both `add_*` methods hand-wrote
+        `nix::ContentAddressMethod::parse(method)` in their bodies while
+        the declaration two files away already said what the parser is
+        called. Empty for anything that is not a vocabulary, and for a
+        vocabulary that declares no parser - which crosses as its string
+        and is parsed by whatever it is handed to."""
         if t is None:
-            continue
-        cls = (None if t.required.origin
-               else known.get(t.required.python))
-        if cls is not None and cls.decl.kind == "error":
-            return True
-    return False
+            return ""
+        held = t.required
+        other = None if held.origin else self.known.get(held.python)
+        if other is None or not other.is_words:
+            return ""
+        if not other.decl.parsed_by and other.decl.enumerated:
+            # Upstream has no parser for this enum, so the emitter wrote
+            # one. `from_word` is a template because a return type does
+            # not overload - `as_word` going the other way needs no such
+            # thing, which is why the two names are not symmetrical.
+            return (f"{NAMESPACE}::from_word"
+                    f"<{other.decl.enumerated.held}>")
+        return other.decl.parsed_by
 
+    def _collection(self, t: Type | None) -> str:
+        """The C++ collection type for a declared `list[T]`, if T names one.
 
-def module(classes: Sequence[Class],
-           functions: Sequence[Method],
-           known: dict[str, Class],
-           errors: str = "",
-           error_headers: Sequence[str] = (),
-           package: str = "") -> str:
-    """One translation unit: the includes, then a bind function each.
+        Empty for everything else, which is every list whose element type
+        is a primitive or whose class is happy with a vector."""
+        if t is None or t.origin != "list":
+            return ""
+        element = self.known.get(t.element.python)
+        return element.decl.collection if element else ""
 
-    Several classes, not one. A declaration file owns a module and
-    may declare more than one class in it - `decl/store.py` declares
-    three - and a nanobind extension is one translation unit, so the
-    file and the unit are the same grain."""
-    head = [*includes(classes, functions, known, error_headers),
-            *[f'#include "{records_include(m, package)}"'
-              for m in records_named(classes, functions, known)], "",
-            "namespace nb = nanobind;",
-            "using namespace nb::literals;", ""]
-    if errors and _errors_used(classes, functions, known):
-        # Where `huggorm::as_error` looks a class up. Emitted, never
-        # written: the same string the catch chain is given, from the
-        # same derivation, so a renamed declaration moves both.
-        head += ["namespace huggorm {", "",
-                 "/** Where this build put the exception classes. */",
-                 f'constexpr const char * errors_module = "{errors}";', "",
-                 "}  // namespace huggorm", ""]
-    if _crosses_container(classes):
-        head += [*CONTAINERS.strip().splitlines(), ""]
-    if _converts_bytes(classes, known):
-        head += [*BYTES.strip().splitlines(), ""]
-    # `as_tuple`, for a value whose hash covers a list part. In the
-    # unit, not in `records_header`, because a class that binds a real
-    # Nix type needs the helper just the same: `pathinfo.cpp` has no
-    # record.
-    unions = _unions_used(classes, functions, known)
-    vocabularies = _vocabularies_used(classes, functions, known)
-    if any(_lists(cls) for cls in classes) or unions or vocabularies:
-        head += [f"namespace {NAMESPACE} {{", ""]
-        if any(_lists(cls) for cls in classes):
-            head += [*HASHABLE.strip().splitlines(), ""]
-        for v in vocabularies:
-            head += words_conversion(v)
-            if not v.decl.parsed_by:
-                head += words_from_word(v)
-        for u in unions:
-            head += (bare_check(u, known) if _is_bare(u)
-                     else conversions(u, known))
-        head += [f"}}  // namespace {NAMESPACE}", ""]
-    # The casters come AFTER the conversions and outside the
-    # namespace: each one calls a conversion by name, and a
-    # specialisation has to live in nanobind's own namespace.
-    wrapped = [u for u in unions if not _is_bare(u)]
-    if wrapped:
-        head += ["namespace nanobind::detail {", ""]
-        for u in wrapped:
-            head += caster(u, known)
-        head += ["}  // namespace nanobind::detail", ""]
-    out = "\n".join(head) + "\n" + "\n".join(
-        bind_function(cls, known, functions) for cls in classes)
-    exported = public([fn for fn in functions
-                       if not (fn.startup or fn.translator)], classes)
-    return out + ("\n" + free_functions(exported, known)
-                  if exported else "")
+    def _handle(self, t: Type | None) -> Class | None:
+        """The declared class behind this type, when it binds a HANDLE.
+
+        A handle is a class whose `@binding` carries `via`: the bound C++
+        type owns a lifetime and the object worth calling is one step
+        further in. `None` for everything else, which is almost every
+        type - a bound class that binds its own methods is not a handle,
+        and neither is a str."""
+        if t is None or not t.required.bound:
+            return None
+        other = self.known.get(t.required.python)
+        return other if other is not None and other.decl.via else None
+
+    def _derived(self, cls: Class, m: Method) -> list[str] | None:
+        """The body of a method the emitter can write itself, or None.
+
+        Three mechanical things a HANDLE forces, and each of them was a
+        a verbatim body before this existed:
+
+        - the CALL goes through the handle - `v.get()->type_name()`;
+        - a RETURN of a handle class wraps in it - the C++ hands back
+          what it holds, and Python must get the handle;
+        - a PARAMETER of a handle class unwraps out of it, because the
+          C++ takes what the handle points at.
+
+        ...and one a plain STRUCT forces: `@reads` names a data member,
+        so there is nothing to call - `self.narSize`, not `self.narSize()`.
+        A member read cannot be bound by pointer the way a method can,
+        because `.def` takes a function and `&T::narSize` is not one.
+
+        None when this method needs none of the four. `_method` then
+        binds it by pointer, which is the shorter and better line."""
+        ret_handle = self._handle(m.ret)
+        args = [(pr.name, self._handle(pr.type)) for pr in m.params]
+        # A guarded accessor reaches through the union pair rather than
+        # through `via`, so the two are read separately and `call` below
+        # is rebuilt after the guard picks its reach.
+        # A `list[T]` return needs a body too: the conversion below is
+        # what makes a C++ set answer the list the declaration promised,
+        # and a pointer binding has nowhere to put it.
+        wants_list = m.ret is not None and m.ret.origin in ("list", "dict")
+        if not (cls.decl.via or ret_handle or m.reads or m.guard or m.names
+                or m.produces or wants_list or any(h for _, h in args)):
+            return None
+        obj = _self(cls)
+        reach = f"{obj}.{cls.decl.via}->" if cls.decl.via else f"{obj}."
+        # The GUARD, for an accessor on a tagged union.
+        #
+        # Written here, once, from two declared facts: the class says how
+        # to ask which arm is held, and the accessor says which one it
+        # needs. Twelve accessors used to spell this by hand in
+        # `cpp/eval.hpp`, and a thirteenth could have forgotten it -
+        # which for a `noexcept` reader on the wrong tag is not an error
+        # but a reinterpretation of the payload.
+        # A PRODUCER: allocate on this state, call one initialiser with
+        # the declared arguments, wrap. The declaration names only the
+        # initialiser; the three lines around it are the same for every
+        # producer, which is why they are here and not in twelve bodies.
+        if m.produces:
+            given = ", ".join(pr.name for pr in m.params)
+            return [
+                f"{INDENT * 4}auto * made = {obj}.alloc();",
+                f"{INDENT * 4}made->{m.produces}({given});",
+                f"{INDENT * 4}return {obj}.wrap(made);",
+            ]
+
+        head = self._guard_head(cls, m)
+        if m.guard or m.names:
+            hold, ask, table = cls.decl.tagged  # type: ignore[misc]
+            reach = f"{obj}.{hold}->"
+        if m.names:
+            # The arm table, read the other way. One switch, so the names
+            # a caller sees and the names @guard checks cannot drift.
+            _, _, table = cls.decl.tagged  # type: ignore[misc]
+            lines = [f"{INDENT * 4}switch ({reach}{ask}) {{"]
+            for name, enum in table.items():
+                lines.append(f'{INDENT * 4}case {enum}: return "{name}";')
+            lines.append(f"{INDENT * 4}}}")
+            # Every enumerator is named above, and a compiler still wants
+            # a return past the switch.
+            lines.append(f'{INDENT * 4}return "unknown";')
+            return lines
+        # A declared `list[T]` PARAMETER over a C++ set. libstore takes
+        # StorePathSet in a dozen places and the wire carries a list, so
+        # the conversion is a fact about the two type systems rather than
+        # a decision - and `as_set` is emitted beside this, not written by
+        # hand.
+        # A declared `list[T]` PARAMETER, where T's class says libstore
+        # holds a collection of them some other way. The wire carries a
+        # list either way; this is the two type systems disagreeing, not a
+        # decision, so `as_set` is written here rather than at each site.
+        passed = ", ".join(
+            f"as_set<{self._collection(pr.type)}>({pr.name})"
+            if self._collection(pr.type) else
+            (f"{pr.name}.{h.decl.via}" if h else pr.name)
+            for pr, (_, h) in zip(m.params, args, strict=True))
+        # A member is reached, not called. The declaration says which by
+        # writing @reads, and an accessor that reads one takes no
+        # parameters - so there is no argument list to spell either.
+        call = (f"{reach}{m.reads}" if m.reads
+                else f"{reach}{m.cxx_name or m.name}({passed})")
+        if m.ret is None:
+            return [*head, f"{INDENT * 4}{call};"]
+        if ret_handle is not None:
+            return [*head, f"{INDENT * 4}return {_held(ret_handle)}({call});"]
+        # A declared `Bytes` over a string, and the list of each. A string
+        # is not one implicitly - `nb::bytes` takes only explicit
+        # constructors - so the conversion is written here, once.
+        if self._cxx(m.ret)[0] in BYTES_SPELLINGS:
+            return [*head, f"{INDENT * 4}return to_bytes({call});"]
+        # A declared `list[T]` RETURN over a C++ collection that is not
+        # a vector. libstore answers with a set almost everywhere, and the
+        # declaration already said `list` - so nothing needs to say it
+        # twice. `as_list` is a template over any range, so wrapping is
+        # right whether the call answered a set or a vector.
+        if m.ret is not None and m.ret.origin == "list":
+            return [*head, f"{INDENT * 4}return as_list({call});"]
+        # The same for a `dict[str, V]`: libstore keys many maps with a
+        # transparent `std::less<>`, and nanobind casts only the plain one.
+        if m.ret is not None and m.ret.origin == "dict":
+            return [*head, f"{INDENT * 4}return as_map({call});"]
+        # A declared VOCABULARY return. The enumerator libstore answers
+        # with is not the word Python has, and `as_word` is the switch
+        # that says which - emitted beside this, not written by hand.
+        # Before this, `Hash.algorithm` carried the conversion as a `Cxx`
+        # body, which is a MAPPING written into a declaration.
+        voc = (None if m.ret.required.origin
+               else self.known.get(m.ret.required.python))
+        if voc is not None and voc.is_words and voc.decl.enumerated:
+            return [*head, f"{INDENT * 4}return {NAMESPACE}::as_word({call});"]
+        # A width the DECLARATION spells. `size()` answers a size_t and
+        # the declaration says I64, so the cast is what makes the emitted
+        # C++ say what the declaration says rather than what this
+        # library's version of the call happens to return.
+        spelled, _ = self._cxx(m.ret)
+        if spelled in ("std::int64_t", "std::uint64_t"):
+            return [*head, f"{INDENT * 4}return static_cast<{spelled}>({call});"]
+        return [*head, f"{INDENT * 4}return {call};"]
+
+    def _guard_head(self, cls: Class, m: Method) -> list[str]:
+        """The tag check an accessor on a tagged union owes its caller.
+
+        Separate from HOW the rest of the body reads, so a method with a
+        declared `Cxx` body gets one too. A body is a decision about what
+        to DO once the arm is known; the check that the arm IS known is
+        the same either way, and writing it inside twelve bodies is what
+        this exists to stop."""
+        if m.fills:
+            # The FIRST parameter is the value being filled. A method that
+            # fills takes its target first, which is what makes this
+            # derivable rather than another thing to name.
+            maker, arm = m.fills
+            if not m.params:
+                raise ValueError(f"{cls.name}.{m.name}: @fills needs a target")
+            target = m.params[0].name
+            # The TARGET's class holds the arm table, not this one:
+            # `list_append` is declared on the evaluator and fills a Value.
+            held = self.known.get(m.params[0].type.python)
+            if held is None or held.decl.tagged is None:
+                raise ValueError(
+                    f"{cls.name}.{m.name}: @fills needs its target's class to "
+                    f"carry @tagged, to check the arm being filled")
+            hold, ask, table = held.decl.tagged
+            if arm not in table:
+                raise ValueError(
+                    f'{cls.name}.{m.name}: @fills(..., "{arm}") names no arm; '
+                    f"@tagged offers {sorted(table)}")
+            return [
+                # The arm FIRST. A builder of the wrong kind passes the
+                # builder test and then reads the wrong union member,
+                # which is undefined rather than an error.
+                f"{INDENT * 4}if ({target}.{hold}->{ask} != {table[arm]})",
+                f"{INDENT * 5}{_wrong_arm(target, hold, table[arm])}",
+                f"{INDENT * 4}if (!{target}.is_builder())",
+                f"{INDENT * 5}throw std::invalid_argument(",
+                f'{INDENT * 6}"this value did not come from {maker}, and a "',
+                f'{INDENT * 6}"Nix value is immutable: filling it would "',
+                f'{INDENT * 6}"rewrite memory the evaluator produced");',
+            ]
+        if not (m.guard or m.names):
+            return []
+        if cls.decl.tagged is None:
+            raise ValueError(
+                f"{cls.name}.{m.name}: needs @tagged(reach, ask, ...) on the "
+                f"class to say how to reach the union, how to ask which arm "
+                f"it holds, and what the arms are called")
+        hold, ask, table = cls.decl.tagged
+        if not m.guard:
+            return []
+        if m.guard not in table:
+            raise ValueError(
+                f'{cls.name}.{m.name}: @guard("{m.guard}") names no arm; '
+                f"@tagged offers {sorted(table)}")
+        obj = _self(cls)
+        return [
+            f"{INDENT * 4}if ({obj}.{hold}->{ask} != {table[m.guard]})",
+            f"{INDENT * 5}{_wrong_arm(obj, hold, table[m.guard])}",
+        ]
+
+    def _returns(self, m: Method) -> str:
+        """A lambda's return type, SPELLED, for every body that has one.
+
+        It started as an optional-only rule - a lambda with two return
+        paths, the value and std::nullopt, cannot deduce one - and the
+        same argument covers more than optionals. A body ending
+        `return {};` for an empty container cannot deduce either, and
+        neither can two returns whose types merely convert. The
+        declaration already said which type it is, so saying it in the
+        lambda costs nothing and removes the whole class of "cannot
+        deduce".
+
+        Both branches of `_method`, because the argument never was about
+        who WROTE the body. A declared body had it and a derived body did
+        not, so `@reads` over a `list[T]` deduced `as_list`'s return
+        where the same accessor with a `Cxx` line spelled it - one fact,
+        stated in one branch of two.
+
+        Empty for a method that returns nothing. `force` and the
+        builders' setters do, and a lambda with no return statement is
+        void.
+        """
+        if m.ret is None:
+            return ""
+        return f" -> {self._cxx(m.ret)[0]}"
+
+    def _method(self, cls: Class, m: Method) -> list[str]:
+        """One `.def`, bound by POINTER wherever nanobind allows it.
+
+        A method pointer costs no lambda and no closure, and it keeps the
+        C++ name visible in the emitted line - so a reader can see which
+        upstream function is bound. `m.cxx_name` is the whole of the
+        mapping, and the declaration is the only place it lives.
+
+        A view returns by pointer too, because the string_view caster
+        copies. `includes()` is what makes that safe, and it derives the
+        header from this same declaration rather than trusting a human to
+        remember."""
+        # A method may return nothing - `force` and the builders' setters
+        # do - and a lambda with no return statement is void. Only the
+        # branches that SPELL the return type need one.
+        doc = _doc(m.doc)
+        tail = f', "{doc}"' if doc else ""
+        if m.cxx_body:
+            # A method the declaration could not derive, carried verbatim.
+            obj = _self(cls)
+            args, opening = self._signature(cls, m)
+            head = (f'{INDENT * 2}.def("{m.name}", '
+                    f"[]({_held(cls)} &{obj}{args}){self._returns(m)} {{")
+            body = [f"{INDENT * 4}{ln}".rstrip()
+                    for ln in m.cxx_body.strip().splitlines()]
+            # The tag check goes in FRONT of a declared body. A body says
+            # what to do once the arm is known; @guard says the arm is
+            # known, and the two are separate decisions.
+            return [head, *opening, *self._guard_head(cls, m), *body,
+                    f"{INDENT * 2}}}{self._extras(cls, m)}{tail})"]
+        derived = self._derived(cls, m)
+        if derived is not None:
+            obj = _self(cls)
+            args, opening = self._signature(cls, m)
+            return [f'{INDENT * 2}.def("{m.name}", '
+                    f"[]({_held(cls)} &{obj}{args}){self._returns(m)} {{",
+                    *opening, *derived,
+                    f"{INDENT * 2}}}{self._extras(cls, m)}{tail})"]
+        spelled = m.cxx_name or m.name
+        return [f'{INDENT * 2}.def("{m.name}", &{_held(cls)}::{spelled}'
+                f"{self._extras(cls, m)}{tail})"]
+
+    def absent(self, pr: Param) -> bool:
+        """Whether this parameter's absence is spelled `None`.
+
+        A CONTAINER whose declared default is None. The declaration's own
+        docstring says what that means - a repeated field has no presence
+        and needs none, so an absent container IS an empty one - and a
+        caller passing None explicitly means the same thing.
+
+        It matters because nanobind's vector caster refuses None: it asks
+        for a sequence, and None is not one. So a parameter that reads
+        None has to say so in its own type."""
+        if not pr.has_default or pr.default is not None:
+            return False
+        return pr.type.required.origin == "list"
+
+    def _signature(self, cls: Class, m: Method) -> tuple[str, list[str]]:
+        """A lambda's parameter list, and the lines that open its body.
+
+        Almost always the first alone. The lines exist for one case: a
+        container that reads None. It arrives as a std::optional, and the
+        body wants the plain container - so the parameter is renamed and
+        one derived line puts the declared name back, holding an empty
+        container where the caller passed nothing.
+
+        The body then reads exactly what the declaration wrote."""
+        args, opening = "", []
+        for pr in m.params:
+            spelled, _ = self._param(pr.type)
+            parser = self._parsed_by(pr.type)
+            if parser:
+                # A VOCABULARY arrives as the string libstore's parser
+                # takes, and one call turns it into the C++ type. The
+                # spelling of that call is declared once, by `@words`, so
+                # a body writes the parameter name and gets the parsed
+                # value - and a second method taking the same vocabulary
+                # cannot spell the parse differently.
+                args += f", {spelled} {pr.name}_"
+                opening.append(f"{INDENT * 4}const auto {pr.name} = "
+                               f"{parser}({pr.name}_);")
+                continue
+            if not self.absent(pr):
+                args += f", {spelled} {pr.name}"
+                continue
+            held, _ = self._cxx(pr.type.required)
+            args += f", const std::optional<{held}> & {pr.name}_"
+            opening.append(f"{INDENT * 4}const {held} {pr.name} = "
+                           f"{pr.name}_.value_or({held}{{}});")
+        return args, opening
+
+    def _identity_semantics(self, cls: Class,
+                            equality: bool = True) -> list[str]:
+        """The repr and the hash every wire value owes a reader.
+
+        Both from the declared PARTS, and both through the Python object.
+        `nb::repr(h.attr("path")())` asks StorePath for its own repr,
+        so a part of any type renders without this emitter knowing what it
+        is - which is what lets one line cover a str, a store path and a
+        list of them.
+
+        A list part is hashed as a TUPLE. A list is unhashable for the
+        good reason that it can change, and this one cannot: it is a copy
+        of what the object said.
+
+        The hash agrees with equality because it hashes the same parts in
+        the same order, and equality is either those parts or a C++
+        `operator==` over the members they are read from.
+
+        `equality=False` for a RECORD, whose `__eq__` came from
+        `_record_semantics` one line earlier. Emitting both put two
+        overloads on one name: nanobind tries them in order, the typed
+        one matches every same-type comparison, and the parts one never
+        ran. They agreed only because the members ARE the parts."""
+        fields = wire_fields(cls)
+        if not fields and cls.decl.shown:
+            # A value that declares no FIELDS and one thing worth showing.
+            # The repr then has no name to print, so it prints the value
+            # alone - `ValidPathInfo('/nix/store/...')`. Weaker than a
+            # named field, and it is what the declaration carries.
+            return [f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
+                    f'{INDENT * 3}return nb::str("{cls.name}({{!r}})").format(',
+                    f'{INDENT * 4}h.attr("{cls.decl.shown}")());',
+                    f"{INDENT * 2}}})"]
+        # A UNIT value has no parts and still compares, hashes and prints:
+        # every one is equal, `Deferred()` names it, and the empty tuple
+        # hashes.
+        if not fields and not cls.decl.unit:
+            return []
+        spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
+        reads = ", ".join(read for _, _, read in fields)
+        hashed = ", ".join(
+            f"{NAMESPACE}::as_tuple({read})" if t.required.origin == "list"
+            else read
+            for _, t, read in fields)
+        out = []
+        if equality and cls.decl.compare != "cxx":
+            # Equal when the SAME CLASS carries the same declared parts.
+            #
+            # `b.type().is(a.type())` rather than isinstance: a subclass
+            # of a value type would carry parts this one does not compare,
+            # so saying "equal" would be a claim the parts do not support.
+            #
+            # NotImplemented rather than False for another type, which is
+            # what lets the other side answer - and what `nb::is_operator`
+            # already does for an overload that does not match.
+            out += [
+                f'{INDENT * 2}.def("__eq__", [](nb::handle a, nb::handle b)',
+                f"{INDENT * 3} -> nb::object {{",
+                f"{INDENT * 3}if (!b.type().is(a.type()))",
+                f"{INDENT * 4}return nb::not_implemented();",
+                f'{INDENT * 3}return nb::cast(a.attr("_parts")()'
+                f'.equal(b.attr("_parts")()));',
+                f"{INDENT * 2}}}, nb::is_operator())",
+            ]
+        return [
+            *out,
+            f'{INDENT * 2}.def("__repr__", [](nb::handle h) {{',
+            f'{INDENT * 3}return nb::str("{cls.name}({spec})").format(',
+            f"{INDENT * 4}{reads});",
+            f"{INDENT * 2}}})",
+            f'{INDENT * 2}.def("__hash__", [](nb::handle h) {{',
+            f"{INDENT * 3}return nb::hash(nb::make_tuple({hashed}));",
+            f"{INDENT * 2}}})",
+        ]
+
+    def _ctor(self, cls: Class) -> list[str]:
+        """`nb::init<...>`, with the declared parameter named for Python.
+
+        `"name"_a` is what makes the parameter usable as a keyword, so the
+        declaration's parameter NAME reaches callers rather than being
+        decoration."""
+        if cls.ctor is None:
+            return []
+        names = "".join(
+            f', "{pr.name}"_a'
+            + (f" = {self._default(pr)}" if pr.has_default else "")
+            for pr in cls.ctor.params)
+        if cls.ctor.cxx_body:
+            # Placement new, because `__init__` is handed storage rather
+            # than asked for an object. One Python signature over several
+            # C++ constructors needs this: nb::init picks by C++ type at
+            # compile time, and which constructor to call is a decision
+            # about a VALUE - an OutputsSpec means all outputs when it says
+            # so and a named set when it carries names.
+            obj = _self(cls)
+            args, opening = self._signature(cls, cls.ctor)
+            body = [f"{INDENT * 4}{ln}".rstrip()
+                    for ln in cls.ctor.cxx_body.strip().splitlines()]
+            head = (f'{INDENT * 2}.def("__init__", '
+                    f"[]({_held(cls)} *{obj}{args}) {{")
+            tail = f"{INDENT * 2}}}{names}"
+            if not cls.ctor.doc:
+                return [head, *opening, *body, tail + ")"]
+            doc = _doc(cls.ctor.doc)
+            return [head, *opening, *body, tail + ",",
+                    f'{INDENT * 3}     "{doc}")']
+        types = ", ".join(self._param(pr.type)[0] for pr in cls.ctor.params)
+        line = f"{INDENT * 2}.def(nb::init<{types}>(){names}"
+        if not cls.ctor.doc:
+            return [line + ")"]
+        # One line, however the declaration wrapped it: a C++ string
+        # literal has no continuation and gluing two is noise.
+        doc = _doc(cls.ctor.doc)
+        return [line + ",", f'{INDENT * 3}     "{doc}")']
+
+    def record_fields(self, cls: Class) -> list[tuple[str, str]]:
+        """Every member of a produced value's struct, in declared order.
+
+        Nothing is listed. A produced value's ACCESSORS are its fields -
+        the store flattened one of its own objects and handed over the
+        parts - so the name is the accessor's name and the type is what
+        it returns. Order is the declaration's, which is the order a
+        reader of the declaration sees and the order the constructor
+        takes."""
+        return [(m.name, self._cxx(m.ret)[0])
+                for m in cls.methods if m.ret is not None and not m.local]
+
+    def record(self, cls: Class) -> list[str]:
+        """The C++ struct a produced value crosses as.
+
+        Real types, every one. This is what the Cython route could not do:
+        a pxd cannot declare a std::optional, a std::set or a member with
+        no default constructor, so it turned a store path into its base
+        name, absence into an empty string and a set into a vector of
+        strings - and Python then held nine slots that had each been
+        printed and re-parsed on the way.
+
+        Here a `nix::StorePath` stays one, `std::optional` carries
+        absence, and a list of paths is a list of paths. Nothing is
+        printed and nothing is parsed back.
+
+        An aggregate, so the constructor is the member list in order and
+        C++20's parenthesised aggregate initialisation gives `nb::init`
+        something to call. `operator==` is defaulted rather than written,
+        which is what makes the value compare as its parts."""
+        # The first PARAGRAPH, on one line. A first line alone can stop
+        # mid-sentence, because the declaration wraps its prose for a
+        # reader rather than for this.
+        lead = " ".join(_paragraph(cls.doc))
+        out = [f"/** {lead} */", f"struct {cls.name}", "{"]
+        out += [f"{INDENT}{spelling} {name};"
+                for name, spelling in self.record_fields(cls)]
+        # A value compares as its parts, and `= default` is the whole of
+        # that sentence. Written out, it would be one line per field with
+        # nothing to gate it against the field list.
+        out += [f"{INDENT}bool operator==(const {cls.name} &) const = default;",
+                "};"]
+        return out
+
+    def records(self, classes: Sequence[Class]) -> list[str]:
+        """Every produced value in one unit, inside one namespace."""
+        values = [c for c in classes if c.is_value]
+        if not values:
+            return []
+        out = [f"namespace {NAMESPACE} {{", ""]
+        for cls in values:
+            out += [*self.record(cls), ""]
+        return [*out, f"}}  // namespace {NAMESPACE}", ""]
+
+    def records_named(self, classes: Sequence[Class],
+                      functions: Sequence[Method]) -> list[str]:
+        """Every module whose records this unit names, its own included.
+
+        A record is a struct the emitter declares, so a unit that names one
+        from another module needs that module's struct, not only its
+        Python class. Sorted, for `includes`' reason."""
+        out = {c.module for c in classes if c.is_value}
+        for _, t in _sites(classes, functions):
+            for node in _nodes(t):
+                held = None if node.origin else self.known.get(node.python)
+                if held is not None and held.is_value:
+                    out.add(held.module)
+        return sorted(out)
+
+    def _unions_used(self, classes: Sequence[Class],
+                     functions: Sequence[Method]) -> list[Class]:
+        """Every union with a declared C++ variant this unit names.
+
+        By name, so a union named twice is converted once. Sorted,
+        because the order two methods happen to be declared in is not an
+        order for a translation unit."""
+        out: dict[str, Class] = {}
+        for _, t in _sites(classes, functions):
+            for node in _nodes(t):
+                cls = None if node.origin else self.known.get(node.python)
+                if cls is not None and cls.is_union and cls.decl.variant is not None:
+                    out[cls.name] = cls
+        return [out[name] for name in sorted(out)]
+
+    def _vocabularies_used(self, classes: Sequence[Class],
+                           functions: Sequence[Method]) -> list[Class]:
+        """Every enum-backed vocabulary this unit NAMES, either way round.
+
+        Every site, not only the returns. A unit that only TAKES a word
+        needs no read-back conversion to work, and gets one anyway,
+        because the read-back conversion is the switch and the switch is
+        the gate. `Store.build_paths` takes a BuildMode and returns none,
+        so without this the day upstream adds a fourth mode would pass
+        silently. The emitted function is `inline` and unused, which
+        costs a compiler nothing.
+
+        By name and sorted, for the reason `_unions_used` is: a
+        vocabulary named twice is converted once, and the order two
+        methods happen to be declared in is not an order for a
+        translation unit."""
+        out: dict[str, Class] = {}
+        spelled = [node.python for _, t in _sites(classes, functions)
+                   for node in _nodes(t) if not node.origin]
+        # ...and what a BODY spells, from `@spells`. A signature does not
+        # reach everything: `KeyedBuildResult.error` builds an exception
+        # carrying a failure word, and `-> BuildError | None` says
+        # nothing about it.
+        spelled += [n for cls in classes for m in cls.methods for n in m.spells]
+        spelled += [n for cls in classes if cls.from_parts is not None
+                    for n in cls.from_parts.spells]
+        spelled += [n for fn in functions for n in fn.spells]
+        for name in spelled:
+            cls = self.known.get(name)
+            if cls is not None and cls.is_words and cls.decl.enumerated:
+                out[cls.name] = cls
+        # A `@spells` name has to BE one, and this is where that is
+        # checked. The decorator takes a string because a declaration
+        # holds constants, so nothing above catches a typo - and a
+        # silently skipped name fails much later, as a missing
+        # `huggorm::as_word` overload in the emitted C++.
+        for cls in classes:
+            for m in (*cls.methods, *([cls.from_parts] if cls.from_parts else [])):
+                for name in m.spells:
+                    if name not in out:
+                        raise TypeError(
+                            f"{cls.name}.{m.name}: @spells({name!r}) names no "
+                            f"enum-backed vocabulary this declaration can see. "
+                            f"Import the declaration that declares it.")
+        return [out[name] for name in sorted(out)]
+
+    def _alternative(self, cls: Class, arm: str) -> tuple[str, str]:
+        """One arm as the C++ variant holds it: the type, and the member.
+
+        The member is empty when the variant holds the arm as itself,
+        which is every arm no `wraps` names. `SingleDerivedPathBuilt` is
+        an alternative of `nix::SingleDerivedPath` outright, so nothing
+        has to be said about it - and saying it for every arm would make
+        the one arm that IS wrapped read like the others."""
+        variant = cls.decl.variant
+        assert variant is not None
+        wrap = variant.wraps.get(arm)
+        if wrap is not None:
+            return wrap.cxx, wrap.holds
+        return self._arm(cls, arm), ""
+
+    def conversions(self, cls: Class) -> list[str]:
+        """One union, in both directions, from what its alias declares.
+
+        THE BODIES DO NOT SAY THIS. They call `as_arms` and `from_arms`
+        by name, and every line below comes from the `Variant(...)` the
+        declaration carries - the union's C++ type, how to reach the
+        std::variant inside it, and which arm the variant wraps.
+
+        It was a hand-written header (huggorm#63). Two unions wrote the
+        same visit four times, and the two `drv_path` bodies that called
+        it were identical text in two classes that differ in nothing the
+        line touches. One declared fact answers all of it.
+
+        The last arm is `std::get` rather than another `std::get_if`.
+        A variant holds exactly one alternative, so once every other has
+        been ruled out the last one is what is there - and `std::get`
+        says that, where a fourth `if` would leave a fall-through with
+        nothing to return.
+        """
+        variant = cls.decl.variant
+        assert variant is not None
+        arms = cls.decl.arms
+        held = self._arms_type(cls)
+        reach = f"p.{variant.raw}" if variant.raw else "p"
+        out = [f"/** The arms of a {cls.name}, as Python has them. */",
+               f"inline {held} as_arms(const {variant.cxx} & p)",
+               "{"]
+        for arm in arms[:-1]:
+            alt, member = self._alternative(cls, arm)
+            out += [f"{INDENT}if (auto * arm = std::get_if<{alt}>(&{reach}))",
+                    f"{INDENT * 2}return {'arm->' + member if member else '*arm'};"]
+        alt, member = self._alternative(cls, arms[-1])
+        got = f"std::get<{alt}>({reach})"
+        out += [f"{INDENT}return {got + '.' + member if member else got};",
+                "}", ""]
+
+        out += [f"/** A {cls.name}'s arms, as the C++ union holds them. */",
+                f"inline {variant.cxx} from_arms(const {held} & a)",
+                "{"]
+        for arm in arms[:-1]:
+            alt, member = self._alternative(cls, arm)
+            out += [f"{INDENT}if (auto * arm = "
+                    f"std::get_if<{self._arm(cls, arm)}>(&a))",
+                    f"{INDENT * 2}return {alt + '{*arm}' if member else '*arm'};"]
+        last = arms[-1]
+        alt, member = self._alternative(cls, last)
+        got = f"std::get<{self._arm(cls, last)}>(a)"
+        out += [f"{INDENT}return {alt + '{' + got + '}' if member else got};",
+                "}", ""]
+
+        return out
+
+    def bare_check(self, cls: Class) -> list[str]:
+        """What a `bare` union gets instead of a conversion and a caster.
+
+        The claim that the C++ type IS the arms' `std::variant`, checked by
+        the compiler. A declaration that lists the arms out of order, or
+        names a union that only derives from a variant, fails here rather
+        than casting through the wrong alternative."""
+        variant = cls.decl.variant
+        assert variant is not None
+        return [f"static_assert(std::is_same_v<{variant.cxx}, "
+                f"{self._arms_type(cls)}>,",
+                f'{INDENT}"{cls.name} is declared bare, so its C++ type must '
+                f'be the std::variant of its arms, in order");', ""]
+
+    def caster(self, cls: Class) -> list[str]:
+        """One union as a nanobind type_caster, so no body converts.
+
+        `as_arms` and `from_arms` still do the work; this is where they
+        are CALLED, once, instead of at every site that names the type.
+        The signature then says `nix::DerivedPath` - what libstore says -
+        and `store.parse_derived_path` is one call with nothing round it.
+
+        Composed with the caster nanobind ships for std::variant rather
+        than written out. The arms already cast; the only thing missing
+        was that `nix::DerivedPath` IS a variant and nanobind's caster is
+        specialised on `std::variant` exactly, not on something deriving
+        from one.
+
+        NB_TYPE_CASTER is not used, for the reason nanobind's own variant
+        caster does not use it: the macro declares `Value value;` and
+        neither union is default-constructible - the opaque arm holds a
+        `nix::StorePath`, which has no default constructor. The storage is
+        an optional instead, and the three cast operators reach through
+        it.
+        """
+        variant = cls.decl.variant
+        assert variant is not None
+        arms = self._arms_type(cls)
+        return [
+            f"/** {variant.cxx}, cast as the arms Python has. */",
+            f"template <> struct type_caster<{variant.cxx}> {{",
+            f"{INDENT}using Value = {variant.cxx};",
+            f"{INDENT}using Arms = {arms};",
+            f"{INDENT}using Caster = make_caster<Arms>;",
+            f"{INDENT}static constexpr auto Name = Caster::Name;",
+            f"{INDENT}template <typename T_> using Cast = movable_cast_t<T_>;",
+            f"{INDENT}template <typename T_> static constexpr bool can_cast()"
+            f" {{ return true; }}",
+            "",
+            f"{INDENT}std::optional<Value> held;",
+            f"{INDENT}explicit operator Value *() {{ return &*held; }}",
+            f"{INDENT}explicit operator Value &() {{ return *held; }}",
+            f"{INDENT}explicit operator Value &&() {{ return (Value &&) *held; }}",
+            "",
+            f"{INDENT}bool from_python(handle src, uint8_t flags,",
+            f"{INDENT * 4}     cleanup_list *cleanup) noexcept",
+            f"{INDENT}{{",
+            f"{INDENT * 2}Caster caster;",
+            f"{INDENT * 2}if (!caster.from_python(src, flags, cleanup))",
+            f"{INDENT * 3}return false;",
+            f"{INDENT * 2}held.emplace({NAMESPACE}::from_arms("
+            f"caster.operator cast_t<Arms>()));",
+            f"{INDENT * 2}return true;",
+            f"{INDENT}}}",
+            "",
+            f"{INDENT}static handle from_cpp(const Value &value, rv_policy policy,",
+            f"{INDENT * 4}               cleanup_list *cleanup) noexcept",
+            f"{INDENT}{{",
+            f"{INDENT * 2}return Caster::from_cpp({NAMESPACE}::as_arms(value), "
+            f"policy, cleanup);",
+            f"{INDENT}}}",
+            "",
+            f"{INDENT}static handle from_cpp(const Value *value, rv_policy policy,",
+            f"{INDENT * 4}               cleanup_list *cleanup) noexcept",
+            f"{INDENT}{{",
+            f"{INDENT * 2}if (value == nullptr)",
+            f"{INDENT * 3}return none().release();",
+            f"{INDENT * 2}return from_cpp(*value, policy, cleanup);",
+            f"{INDENT}}}",
+            "};",
+            "",
+        ]
+
+    def _record_semantics(self, cls: Class) -> list[str]:
+        """What a RECORD owes Python beyond reading its own fields.
+
+        Equality, and only equality. The repr and the hash beside it are
+        what EVERY wire value owes and come from `_identity_semantics`,
+        which reads the same declared parts for a record and for a
+        constructed value alike.
+
+        `__ne__` is not here and does not need to be. Python fills the
+        slot as soon as `__eq__` exists."""
+        held = _held(cls)
+        return [
+            f'{INDENT * 2}.def("__eq__", [](const {held} &a, const {held} &b)',
+            f"{INDENT * 3} {{ return a == b; }}, nb::is_operator())",
+        ]
+
+    def _record_ctor(self, cls: Class) -> list[str]:
+        """The two ways a record is and is not built.
+
+        A produced value is PRODUCED. Nothing a caller does should build
+        one from nothing, and `__init__` says so in the sentence
+        `@produced(by=...)` supplied - so a caller who guesses wrong is
+        told where to look instead of getting an argument-count error.
+
+        It still has to be RECONSTRUCTIBLE, because it crosses the wire
+        and the far side has only the parts. So the constructor is bound
+        privately, as `_from_parts`, which is exactly the name the wire
+        layer asks for."""
+        if cls.from_parts is not None:
+            if not cls.from_parts.cxx_body:
+                raise TypeError(
+                    f"{cls.name}: declares `_from_parts` with no body. Write "
+                    f"one, or drop the declaration and let the aggregate "
+                    f"build it.")
+            # A declared body: the signature still comes from the field
+            # list, so the body can only consume what `_parts` sent.
+            return [*_produced_ctor(cls), *self._from_parts(cls)]
+        fields = self.record_fields(cls)
+        if any(f.read != f.name for f, _ in cls.parts):
+            # A part read through another accessor - `@wire_read` - arrives
+            # as that accessor's type, so the aggregate needs the parts
+            # converted back. `_from_parts` initialises POSITIONALLY, so
+            # the parts must be the members, in member order, or a value
+            # lands in the wrong member.
+            names = [f.name for f, _ in cls.parts]
+            if names != [n for n, _ in fields]:
+                raise TypeError(
+                    f"{cls.name}: its parts {names} are not its members "
+                    f"{[n for n, _ in fields]}, in order.")
+            return [*_produced_ctor(cls), *self._from_parts(cls)]
+        held = _held(cls)
+        # `.none()` on an `nb::object` part, and nothing else needs it.
+        # nanobind refuses None for a parameter unless the argument says
+        # it takes one, and an `nb::object` caster accepts anything - so
+        # the refusal is the ARGUMENT's, not the caster's. Measured: a
+        # KeyedBuildResult with no failure arm could not be rebuilt at
+        # all, and the message named every parameter as compatible
+        # (huggorm#71).
+        args = "".join(f', "{name}"_a' + (".none()" if spelling == "nb::object"
+                                          else "")
+                       for name, spelling in fields)
+        made = ", ".join(f"{spelling} {name}" for name, spelling in fields)
+        values = ", ".join(name for name, _ in fields)
+        return [
+            *_produced_ctor(cls),
+            f'{INDENT * 2}.def_static("_from_parts", []({made}) {{',
+            f"{INDENT * 3}return {held}{{{values}}};",
+            f'{INDENT * 2}}}{args}, "{FROM_PARTS_DOC}")',
+        ]
+
+    def _factory(self, cls: Class, functions: Sequence[Method]) -> list[str]:
+        """`nb::new_`, for a class something else makes.
+
+        nix::Store is abstract and its implementation is chosen by a URI,
+        so there is no constructor to bind - and `Store(uri)` is still the
+        Python surface, because that is what the declaration's `__init__`
+        says. `nb::new_` is exactly that shape: a factory returning a
+        handle, bound as `__new__`.
+
+        Both halves are declared, in two places that already had to
+        agree. `@produced(by="open_store")` names the factory by its
+        PYTHON name; the free function called `open_store` names the C++
+        it binds. So this resolves one through the other and neither
+        declaration repeats the other's spelling.
+
+        The extras come from the FACTORY, not from the `__init__` beside
+        it, because the factory is what runs. `open_store` carries
+        `@blocks` - opening a daemon store connects, and a local one may
+        create its database - and it carries the default `uri="auto"`.
+        Reading them off the constructor instead dropped both: the call
+        held the GIL for the length of an open, and `Store()` raised
+        where the declaration said it should work."""
+        if cls.ctor is None:
+            return []
+        made = next((f for f in functions if f.name == cls.decl.built_by), None)
+        if made is None:
+            # A factory this declaration does not carry. The class is
+            # still bound; it just offers no way in, which is the honest
+            # answer until the factory is declared too.
+            return []
+        # Two shapes, and the declaration already says which. A factory
+        # that NAMES its C++ is an address; one that CARRIES it is a
+        # lambda, and the body goes inside.
+        #
+        # Before this, a factory had to be a named symbol, so a class
+        # whose construction needed one line of adaptation had to put a
+        # helper in `cpp/`. That is how `huggorm::open_store` came to
+        # exist: three lines wrapping one call, because the emitter could
+        # not write it (huggorm#63).
+        extras = self._extras(cls, made)
+        doc = _doc(cls.ctor.doc) if cls.ctor.doc else ""
+        if not made.cxx_body:
+            line = f"{INDENT * 2}.def(nb::new_(&{made.binds}){extras}"
+            if not doc:
+                return [line + ")"]
+            # One line, however the declaration wrapped it: a C++ string
+            # literal has no continuation and gluing two is noise.
+            return [line + ",", f'{INDENT * 3}     "{doc}")']
+        lines = [f"{INDENT * 2}.def(nb::new_({self._lambda_head(made)}",
+                 *(f"{INDENT * 3}{ln}".rstrip()
+                   for ln in made.cxx_body.strip().splitlines())]
+        close = f"{INDENT * 2}}}){extras}"
+        if not doc:
+            return [*lines, close + ")"]
+        return [*lines, close + ",", f'{INDENT * 3}     "{doc}")']
+
+    def _lambda_head(self, fn: Method) -> str:
+        """The opening of a lambda for a function that CARRIES its C++.
+
+        The return type is SPELLED, for the reason `_method` spells one:
+        a body whose returns merely CONVERT to the declared type, or that
+        ends `return {}`, cannot deduce it. A free body and a factory
+        body are the same kind of body, so they take the same rule - it
+        was applied to a method and to neither of these, which is one
+        rule in one place out of three.
+
+        NO CURRENT BODY NEEDS IT, and that is worth writing down because
+        the first version of this comment claimed otherwise. It said
+        `nix::openStore` returning a `nix::ref<Store>` would not deduce.
+        Dropping the spelling and rebuilding refuted that: nanobind takes
+        the `ref` and reaches the holder through its implicit conversion
+        to `shared_ptr`, and the module compiles. Two emitted lines
+        change - this one and `gc_stats` - and both compile either way.
+
+        So this is consistency, not a fix. It is kept because the rule is
+        real for bodies a person may write next, and because one rule
+        spelled three ways is what this repo exists to avoid."""
+        args = ", ".join(f"{self._param(pr.type)[0]} {pr.name}"
+                         for pr in fn.params)
+        ret = f" -> {self._cxx(fn.ret)[0]}" if fn.ret is not None else ""
+        return f"[]({args}){ret} {{"
+
+    def part_types(self, cls: Class) -> list[str]:
+        """The C++ each part ARRIVES as, one per wire field.
+
+        From the accessor's own annotation wherever there is one, because
+        that is the only place the width lives: `int` is the wire spelling
+        of both `nar_size` and `registration_time`, and they are a
+        uint64_t and an optional int64_t. `list[StorePath]` has no wire
+        spelling at all.
+
+        Every part has an accessor: `Class.parts` refuses one that does
+        not."""
+        return [self._cxx(m.ret)[0] for _, m in cls.parts if m.ret is not None]
+
+    def _rebuilt(self, m: Method | None) -> str:
+        """One part, converted back to what the C++ member IS, or "".
+
+        A part arrives as the wire carries it, and a `list[T]` is a
+        vector. Where the member is a SET, aggregate initialisation does
+        not convert - `could not convert 'paths' from
+        'std::vector<std::string>' to 'nix::StringSet'` is what the
+        compiler says, and it says it about a line this emitter wrote.
+
+        Two declarations answer, and they are one fact stated at two
+        scopes. `@binding(collection=...)` on the ELEMENT class says every
+        `list[StorePath]` is a `nix::StorePathSet`. `@reads(member,
+        collection=...)` says THIS member is, and it exists for the case
+        with no element class to ask: `str` is a builtin, and
+        `nix::GCResults::paths` is a `StringSet`.
+
+        The field's own answer wins. It is the more specific of the two,
+        and a class-wide rule that could not be overridden would make the
+        exception unsayable.
+
+    Both branches have a user. `GCResults.paths` needs the field's,
+        and `MissingPaths` needs the class's - its three path lists are
+        `StorePathSet`s, and it used to carry a declared `_from_parts`
+        whose whole body was the three `as_set` calls this now writes.
+        That body is gone, which is the point: it was a mapping, and a
+        mapping is derived.
+
+        `PathInfo` still writes its own, for reasons that are not this
+        one - a virtual base, so it is not an aggregate at all."""
+        if m is None or m.ret is None:
+            return ""
+        held = m.member_collection or self._collection(m.ret)
+        if not held:
+            return ""
+        return f"as_set<{held}>({m.name})"
+
+    def _from_parts(self, cls: Class) -> list[str]:
+        """`_from_parts`, for a value nothing constructs.
+
+        A wire value has to be rebuildable from its parts: it crosses as a
+        message and the far side has only those. Where a public
+        constructor takes exactly the parts, `markers` names the class and
+        there is nothing to write. Where there is no public constructor,
+        the C++ one still takes them - PathInfo refuses
+        `PathInfo(...)` in Python and nix::ValidPathInfo takes its fields
+        happily - so this calls it directly, under the private
+        name the wire layer asks for.
+
+        And where neither is true, the DECLARATION carries the body.
+        `nix::ValidPathInfo` has a virtual base, so it is not an aggregate
+        and cannot be brace-initialised; its only constructor takes an
+        `UnkeyedValidPathInfo`; and two of its parts cross rendered and
+        are parsed back. That is a decision rather than a binding, and it
+        goes where a person writes code.
+
+        The SIGNATURE stays here either way. One typed parameter per wire
+        field, in the field list's order, so a declared body cannot
+        disagree with `_parts` about what crosses or in which order - it
+        can only consume what it is handed."""
+        fields = wire_fields(cls)
+        if not fields and not cls.decl.unit:
+            return []
+        types = self.part_types(cls)
+        args = ", ".join(f"{t} {n}" for (n, _, _), t in zip(fields, types,
+                                                            strict=True))
+        # `.none()` on an `nb::object` part, and nothing else needs it.
+        # nanobind refuses None for a parameter unless the ARGUMENT says
+        # it takes one, and an nb::object caster accepts anything - so the
+        # refusal is the argument's rather than the caster's. Measured: a
+        # KeyedBuildResult with no failure arm could not be rebuilt at
+        # all, and the message listed every parameter as compatible
+        # (huggorm#71).
+        keywords = "".join(f', "{n}"_a' + (".none()" if t == "nb::object" else "")
+                           for (n, _, _), t in zip(fields, types, strict=True))
+        written = cls.from_parts
+        if written is not None and written.cxx_body:
+            body = [f"{INDENT * 3}{ln}".rstrip()
+                    for ln in written.cxx_body.strip().splitlines()]
+        else:
+            names = ", ".join(
+                f"from_bytes({n})" if t in BYTES_SPELLINGS
+                else self._rebuilt(m) or n
+                for (n, _, _), (_, m), t in zip(fields, cls.parts, types,
+                                                strict=True))
+            body = [f"{INDENT * 3}return {_held(cls)}({names});"]
+        doc = _doc(written.doc) if written is not None and written.doc \
+            else FROM_PARTS_DOC
+        return [f'{INDENT * 2}.def_static("_from_parts", []({args}) {{',
+                *body,
+                f'{INDENT * 2}}}{keywords}, "{doc}")']
+
+    def bind_function(self, cls: Class,
+                      functions: Sequence[Method] = ()) -> str:
+        """The whole `bind_<name>` function for one declared class.
+
+        A function per class, because that is the seam nanopynix already
+        has: `nanopynix_module.cpp` calls `nanopynix_bind_store(store)`
+        and friends. Generated code drops in beside hand-written code, one
+        class at a time, and NB_MODULE does not change."""
+        decl = cls.decl
+        if not decl.cxx and not cls.is_value:
+            raise TypeError(
+                f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
+        held = _held(cls)
+        holds = [held]
+        # A WIRE VALUE is final, and that is a contract rather than a
+        # preference. Such a class crosses as its declared parts, so a
+        # subclass carrying state no part reads would arrive on the far
+        # side silently missing it - and `__eq__` and `__hash__` are
+        # declared over those same parts, so a subclass would compare and
+        # hash equal to a base that is not the same object at all.
+        #
+        # It also closes the one thing that made `__eq__` subtle. A typed
+        # `const T &` comparison accepts a derived instance, so the
+        # same-class rule the declaration states was enforced only by a
+        # cast that happens to fail. Nothing can derive from it now.
+        #
+        # A PROXY is not final: a caller may subclass one to add
+        # behaviour, and nothing about a handle breaks when they do.
+        final = ", nb::is_final()" if decl.wire == "value" else ""
+        # The class's own prose, which a declaration always writes and a
+        # caller could not read: `help(StorePath)` answered with nothing
+        # but the signature until this line existed.
+        doc = _doc(cls.doc)
+        shown = f', "{doc}"' if doc else ""
+        # GC slots, when the class holds Python objects. The declaration
+        # names a `PyType_Slot[]` and the helper supplies it; there is
+        # nothing here to derive, because a traversal is a function over a
+        # member no declaration describes. Without it a class that stores
+        # a callable leaks itself as soon as that callable closes over it
+        # (huggorm#93).
+        slots = (f", nb::type_slots({decl.gc_slots})"
+                 if decl.gc_slots else "")
+        lines = [f"static void bind_{cls.name.lower()}(nb::module_ &m) {{",
+                 f'{INDENT}auto cls = nb::class_<{", ".join(holds)}>'
+                 f'(m, "{cls.name}"{shown}{final}{slots})']
+        if cls.is_value:
+            # A RECORD: the emitter declared the struct, so every accessor
+            # is a member and the whole binding is derived from the field
+            # list.
+            body = self._record_ctor(cls)
+            obj = _self(cls)
+            # METHODS, not `def_ro` properties. The declaration writes
+            # `def path(self) -> StorePath`, so a caller writes
+            # `info.path()`. A property would read better and would be a
+            # DIFFERENT surface, which is not a choice an emitter makes
+            # on its own.
+            # ...each carrying the prose the declaration wrote for it.
+            # The accessor is derived from the field list, but what the
+            # field MEANS is a sentence only a person can write, and the
+            # declaration already has one on every method.
+            described = {m.name: _doc(m.doc) for m in cls.methods}
+            body += [f'{INDENT * 2}.def("{name}", [](const {held} &{obj}) '
+                     f"{{ return {obj}.{name}; }}"
+                     + (f', "{described[name]}"' if described.get(name) else "")
+                     + ")"
+                     for name, _ in self.record_fields(cls)]
+            body += self._record_semantics(cls)
+            # ...which owns `__eq__` for a record, so this contributes
+            # the repr and the hash alone.
+            body += self._identity_semantics(cls, equality=False)
+            body += _round_trip(cls)
+            body += _value_semantics(cls)
+            # A `@local` method still binds: local keeps it off the wire,
+            # not off the object. The struct has no member for it, so it
+            # needs a body or a `@reads`; with neither, `_method` names a
+            # member that does not exist and the unit fails to compile,
+            # which is the loud answer rather than a quiet absence.
+            for m in cls.methods:
+                if m.local:
+                    body += self._method(cls, m)
+            if body:
+                body[-1] += ";"
+            return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
+        # No nb::init when something else builds one: there is no
+        # constructor to call. A FACTORY takes its place where the
+        # declaration names one. An ABSTRACT class offers neither: a
+        # caller holds one all the time and constructs one never.
+        if not cls.constructs:
+            # No constructor, and a refusal that says so.
+            #
+            # The DOOR, not the C++ fact. `nix::Store` is abstract AND
+            # opened by a factory, so it takes the branch below - reading
+            # `decl.abstract` here sent it to this one instead and
+            # `Store("dummy://")` stopped existing (huggorm#61).
+            #
+            # It used to be a `pointer_and_handle` guard, which refused a
+            # direct call and let a SUBCLASS through - because a Python
+            # class deriving from this one was instantiated as the
+            # trampoline. There are no trampolines any more (huggorm#60),
+            # so there is no door to hold open and no reason for the
+            # binding to know what `nb_inst_python_derived` is.
+            # The sentence says WHICH way the door is shut, because the
+            # two are different mistakes: a declaration that forgot an
+            # `__init__`, and one that is honestly abstract with nothing
+            # to open it. `_produced_ctor` supplies the third wording
+            # itself, from `@produced(by=...)`.
+            body = _produced_ctor(cls, "" if cls.decl.built_by else (
+                "declares no constructor" if cls.ctor is None
+                else "is abstract, and no factory opens one"))
+        elif decl.built_by:
+            # A factory this module BINDS, where the declaration names a
+            # free function - `open_store` becomes `Store.__new__`. Where
+            # it names a method instead, there is no factory to bind and
+            # nothing constructs one, so the constructor says so.
+            body = (self._factory(cls, functions)
+                    or (_produced_ctor(cls) if cls.is_produced else []))
+        else:
+            body = self._ctor(cls)
+        for m in cls.methods:
+            if m.prop:
+                raise _attribute(cls, m)
+            body += self._method(cls, m)
+        if decl.wire == "value":
+            body += self._identity_semantics(cls)
+            body += _round_trip(cls)
+            if cls.ctor is None:
+                body += self._from_parts(cls)
+        body += _value_semantics(cls)
+        for source in decl.custom.values():
+            body += [f"{INDENT * 2}{line}".rstrip()
+                     for line in source.splitlines()]
+        if body:
+            body[-1] += ";"
+        return "\n".join([*lines, *body, *markers(cls), "}"]) + "\n"
+
+    def free_function(self, fn: Method) -> list[str]:
+        """One `m.def`, for a function that belongs to no class.
+
+        nanopynix has 72 of these and they are one shape:
+        `m.def("open_store", &open_store_uri, "uri"_a)`. The C++ helper is
+        hand-written - `open_store_uri` keeps a per-state-directory cache,
+        because two LocalStores in one process deadlock on a temp-roots
+        flock - and the declaration names it rather than pretending to
+        have written it.
+
+        `blocking` has no class to come from here, so a free function says
+        `@blocks` for itself."""
+        if not (fn.binds or fn.cxx_body):
+            raise TypeError(
+                f"{fn.name}: a free function names the C++ it binds, or "
+                f'carries it. Use @binds("cxx_name") or @cxx_body(...).')
+        extras = []
+        if fn.blocks and not fn.instant:
+            extras.append("nb::call_guard<nb::gil_scoped_release>()")
+        for pr in fn.params:
+            arg = f'"{pr.name}"_a'
+            if pr.has_default:
+                arg += f" = {self._default(pr)}"
+            extras.append(arg)
+        tail = "".join(f", {x}" for x in extras)
+        if not fn.cxx_body:
+            return [f'{INDENT}m.def("{fn.name}", &{fn.binds}{tail});']
+        # A body, for a function whose C++ is assembled rather than named.
+        # `gc_stats` reads five counters out of gc.h and hands back one
+        # dict; there is no upstream function with that shape to point at.
+        #
+        # `_lambda_head` writes the opening, so a free body and a factory
+        # body spell one the same way - the return type included.
+        body = [f"{INDENT * 2}{ln}".rstrip()
+                for ln in fn.cxx_body.strip().splitlines()]
+        return [f'{INDENT}m.def("{fn.name}", {self._lambda_head(fn)}', *body,
+                f"{INDENT}}}{tail});"]
+
+    def free_functions(self, fns: tuple[Method, ...]) -> str:
+        """Every free binding, in one function the module can call.
+
+        The same seam a class gets. nanopynix's NB_MODULE already calls
+        `nanopynix_bind_store(store)` and friends, so generated free
+        functions arrive the same way hand-written ones do."""
+        body: list[str] = []
+        for fn in fns:
+            body += self.free_function(fn)
+        return "\n".join(["static void bind_functions(nb::module_ &m) {",
+                           *body, "}"]) + "\n"
+
+    def _converts_bytes(self, classes: Sequence[Class]) -> bool:
+        """Whether any accessor here answers bytes, so a unit needs BYTES."""
+        return any(m.ret is not None and self._cxx(m.ret)[0] in BYTES_SPELLINGS
+                   for cls in classes for m in cls.methods)
+
+    def _errors_used(self, classes: Sequence[Class],
+                     functions: Sequence[Method]) -> bool:
+        """Whether this unit names a declared EXCEPTION class anywhere.
+
+        One site is enough. A unit that answers with an exception has to
+        look the Python class up by module and name, and the module name
+        is not a literal any declaration may write - huggorm#63 is the
+        day a stale copy of it turned every nix error into a
+        RuntimeError. So the emitter states it once per unit that needs
+        it, and the declaration's body reads it by name."""
+        for _, t in _sites(classes, functions):
+            if t is None:
+                continue
+            cls = (None if t.required.origin
+                   else self.known.get(t.required.python))
+            if cls is not None and cls.decl.kind == "error":
+                return True
+        return False
+
+    def module(self, classes: Sequence[Class],
+               functions: Sequence[Method],
+               errors: str = "",
+               error_headers: Sequence[str] = (),
+               package: str = "") -> str:
+        """One translation unit: the includes, then a bind function each.
+
+        Several classes, not one. A declaration file owns a module and
+        may declare more than one class in it - `decl/store.py` declares
+        three - and a nanobind extension is one translation unit, so the
+        file and the unit are the same grain."""
+        head = [*self.includes(classes, functions, error_headers),
+                *[f'#include "{records_include(m, package)}"'
+                  for m in self.records_named(classes, functions)], "",
+                "namespace nb = nanobind;",
+                "using namespace nb::literals;", ""]
+        if errors and self._errors_used(classes, functions):
+            # Where `huggorm::as_error` looks a class up. Emitted, never
+            # written: the same string the catch chain is given, from the
+            # same derivation, so a renamed declaration moves both.
+            head += ["namespace huggorm {", "",
+                     "/** Where this build put the exception classes. */",
+                     f'constexpr const char * errors_module = "{errors}";', "",
+                     "}  // namespace huggorm", ""]
+        if _crosses_container(classes):
+            head += [*CONTAINERS.strip().splitlines(), ""]
+        if self._converts_bytes(classes):
+            head += [*BYTES.strip().splitlines(), ""]
+        # `as_tuple`, for a value whose hash covers a list part. In the
+        # unit, not in `records_header`, because a class that binds a real
+        # Nix type needs the helper just the same: `pathinfo.cpp` has no
+        # record.
+        unions = self._unions_used(classes, functions)
+        vocabularies = self._vocabularies_used(classes, functions)
+        if any(_lists(cls) for cls in classes) or unions or vocabularies:
+            head += [f"namespace {NAMESPACE} {{", ""]
+            if any(_lists(cls) for cls in classes):
+                head += [*HASHABLE.strip().splitlines(), ""]
+            for v in vocabularies:
+                head += words_conversion(v)
+                if not v.decl.parsed_by:
+                    head += words_from_word(v)
+            for u in unions:
+                head += (self.bare_check(u) if _is_bare(u)
+                         else self.conversions(u))
+            head += [f"}}  // namespace {NAMESPACE}", ""]
+        # The casters come AFTER the conversions and outside the
+        # namespace: each one calls a conversion by name, and a
+        # specialisation has to live in nanobind's own namespace.
+        wrapped = [u for u in unions if not _is_bare(u)]
+        if wrapped:
+            head += ["namespace nanobind::detail {", ""]
+            for u in wrapped:
+                head += self.caster(u)
+            head += ["}  // namespace nanobind::detail", ""]
+        out = "\n".join(head) + "\n" + "\n".join(
+            self.bind_function(cls, functions) for cls in classes)
+        exported = public([fn for fn in functions
+                           if not (fn.startup or fn.translator)], classes)
+        return out + ("\n" + self.free_functions(exported)
+                      if exported else "")
 
 
 def imports(mod: Module) -> list[str]:
@@ -2561,7 +2525,6 @@ def extension(mod: Module, dotted: str,
     here no declaration carries, and it is what turns a sibling
     declaration's name into an import a running interpreter can
     follow."""
-    known = mod.known
     classes = bindable(mod)
     package = dotted.rpartition(".")[0]
     reached = [f'{INDENT}nb::module_::import_("'
@@ -2571,8 +2534,9 @@ def extension(mod: Module, dotted: str,
     # Only a unit that HAS a translator catches anything, so only that
     # unit needs the headers behind the chain.
     return "\n".join([
-        module(classes, mod.functions, known, errors,
-               error_headers if translators else (), package),
+        Emitter(mod.known).module(
+            classes, mod.functions, errors,
+            error_headers if translators else (), package),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
         # The declaration file's own docstring, which is the only
@@ -2676,8 +2640,9 @@ if __name__ == "__main__":
     for path in sys.argv[1:]:
         mod = read(path)
         for cls in mod.classes:
-            print(module([cls], (), mod.known) if len(mod.classes) == 1
-                  else bind_function(cls, mod.known))
+            emit = Emitter(mod.known)
+            print(emit.module([cls], ()) if len(mod.classes) == 1
+                  else emit.bind_function(cls))
             c = census(cls)
             total = c["derived"] + c["hatched"]
             print(f"// {cls.name}: {c['derived']}/{total} derived, "
