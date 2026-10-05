@@ -11,7 +11,7 @@ emitted text back.
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 
 from huggorm_gen.ir import ParamModel, TypeRef
 
@@ -37,8 +37,13 @@ class Spelling:
     module may spell a parameter, a constructor argument and a return
     three ways."""
 
-    def __init__(self, proxy: Rename | None = None) -> None:
+    def __init__(self, proxy: Rename | None = None,
+                 expand: Mapping[str, tuple[str, ...]] | None = None) -> None:
         self._proxy = proxy
+        # Union arms to write a union out as, instead of naming its
+        # alias: a binding stub, because a compiled module holds no
+        # alias for a typechecker to find.
+        self._expand = expand
         self.bindings: set[str] = set()
         self.unions: set[str] = set()
         self.protocols: set[str] = set()
@@ -64,10 +69,24 @@ class Spelling:
         if t.kind == "module":
             self.module(t.name)
         elif t.kind == "union":
+            if self._expand is not None:
+                return self._arms(t.name)
             self.unions.add(t.name)
         elif t.name not in BUILTIN:
             self.bindings.add(t.name)
         return t.name
+
+    def _arms(self, union: str) -> str:
+        assert self._expand is not None
+        out = []
+        for arm in self._expand[union]:
+            if arm in self._expand:
+                out.append(self._arms(arm))
+                continue
+            if arm not in BUILTIN:
+                self.bindings.add(arm)
+            out.append(arm)
+        return " | ".join(out)
 
     def need(self, name: str, source: str) -> None:
         if source == "protocols":

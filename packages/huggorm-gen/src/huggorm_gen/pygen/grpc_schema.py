@@ -27,6 +27,12 @@ from typing import Any
 from google.protobuf import descriptor_pb2
 
 from huggorm_gen import ir
+from huggorm_gen.ir import (
+    ACQUIRE,
+    FREE_SERVICE,
+    service_name,
+    wire_method,
+)
 from huggorm_gen.payload.wiretypes import (
     MAP_KEY,
     SCALAR_NAMES,
@@ -40,7 +46,7 @@ from huggorm_gen.payload.wiretypes import (
 
 Proto = dict[str, Any]
 
-PKG = "huggorm.v1"
+PKG = ir.PROTO_PACKAGE
 FILE = "huggorm/v1/api.proto"
 
 # `int` is sint64 and `uint` is uint64, which is the whole of what the
@@ -172,55 +178,6 @@ def fault_msg_name(cls_name: str) -> str:
     return f"{cls_name}Fault"
 
 
-def service_name(cls_name: str) -> str:
-    return f"{cls_name}Service"
-
-
-def _camel(method: str) -> str:
-    """`add_to_store` -> `AddToStore`.
-
-    A message name, not a method name. The rpcs keep the binding's own
-    snake_case on purpose - they are the Python surface spelled once
-    - while a message is a TYPE, and protobuf types are PascalCase.
-
-    One helper because the two used to disagree: the request kept the
-    snake_case and the response camel-cased it, so one method had two
-    spellings in one schema."""
-    return method.title().replace("_", "")
-
-
-def req_name(cls_name: str, method: str) -> str:
-    return f"{cls_name}_{_camel(method)}Req"
-
-
-def resp_name(cls_name: str, method: str) -> str:
-    # Class-prefixed: LocalStore and RemoteStore share method names, and
-    # top-level message names must be unique across the file.
-    return f"{cls_name}_{_camel(method)}Resp"
-
-
-def wire_method(method: str) -> str:
-    """A method's name in the schema. A declared dunder such as
-    `__call__` crosses as `call`: a protobuf identifier starts with a
-    letter. Every Python surface keeps the dunder (huggorm#88)."""
-    if method.startswith("__") and method.endswith("__"):
-        return method.strip("_")
-    return method
-
-
-def method_path(cls_name: str, method: str) -> str:
-    return f"/{PKG}.{service_name(cls_name)}/{wire_method(method)}"
-
-
-# Construction is an rpc on the class's OWN service, not a string-keyed
-# call on Session. Session/Acquire took a class name and no arguments,
-# so it could only ever build things whose constructor takes nothing -
-# and it type-checked neither the name nor the absent arguments.
-ACQUIRE = "Acquire"
-
-# Free functions have no instance, so they cannot hang off a class's
-# service. They share one.
-FREE_SERVICE = "Functions"
 
 
 def annotate(manifest: Proto, model: ir.Model) -> Proto:
@@ -245,12 +202,11 @@ def annotate(manifest: Proto, model: ir.Model) -> Proto:
             # rather than the wrapper set.
             if proto["wire"] != "proxy":
                 continue
-            proto["service"] = service_name(cls_name)
+            typed_cls = model.classes[cls_name]
+            proto["service"] = typed_cls.service
             if group == "wrappers":
-                proto["acquire"] = {
-                    "path": method_path(cls_name, ACQUIRE),
-                    "req": req_name(cls_name, ACQUIRE),
-                }
+                proto["acquire"] = {"path": typed_cls.acquire.path,
+                                    "req": typed_cls.acquire.req}
 
     # Which classes a handle can be USED with: every proxy.
     served = model.served
@@ -264,37 +220,24 @@ def annotate(manifest: Proto, model: ir.Model) -> Proto:
             # offers is a remote call - Store.real_path answers with a
             # path on the machine the store runs on - and such a
             # method still deserves its in-process wrapper.
+            typed_cls = model.classes[cls_name]
             for m in proto["methods"]:
-                typed = model.classes[cls_name].method(m["name"])
+                typed = typed_cls.method(m["name"])
                 m["wire_blockers"] = ir.blockers(typed.params, typed.returns,
                                                  served)
-                if m["wire_blockers"]:
-                    continue
-                m["rpc"] = {
-                    "path": method_path(cls_name, m["name"]),
-                    "req": req_name(cls_name, m["name"]),
-                    "resp": resp_name(cls_name, m["name"]),
-                }
+                if not m["wire_blockers"]:
+                    m["rpc"] = _names(typed_cls.rpc(typed))
 
     for fname, proto in manifest.get("free_functions", {}).items():
-        if not proto["wrapped"]:
-            # No policy, so no wrapper and nothing to call remotely.
-            # It is in the manifest to describe the module, not to be
-            # published.
-            proto["wire_blockers"] = [
-                "no threading policy, so the function has no async form "
-                "for a server to call"]
-            continue
         typed_fn = model.functions[fname]
-        blockers = ir.blockers(typed_fn.params, typed_fn.returns, served)
-        proto["wire_blockers"] = blockers
-        if not blockers:
-            proto["rpc"] = {
-                "path": method_path(FREE_SERVICE, fname),
-                "req": req_name(FREE_SERVICE, fname),
-                "resp": resp_name(FREE_SERVICE, fname),
-            }
+        proto["wire_blockers"] = model.function_blockers(typed_fn)
+        if not proto["wire_blockers"]:
+            proto["rpc"] = _names(typed_fn.rpc)
     return manifest
+
+
+def _names(rpc: ir.RpcNames) -> dict[str, str]:
+    return {"path": rpc.path, "req": rpc.req, "resp": rpc.resp}
 
 
 # -- schema ---------------------------------------------------------------

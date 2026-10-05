@@ -44,9 +44,9 @@ evaluate and no `NIX_VERSION` to import.
 import ast
 import copy
 from types import ModuleType
-from typing import Any
 
 from huggorm_dsl.read import DECLARATIONS, DeclarationError
+from huggorm_gen import ir
 
 # The attribute a declared exception uses to name its C++ class. Not a
 # decorator: an exception declaration has no behaviour to mark, and a
@@ -214,8 +214,8 @@ WIRE_FIELDS = "_wire_fields"
 
 
 def entries(tree: ast.Module,
-            mod: ModuleType) -> dict[str, dict[str, Any]]:
-    """Every declared exception, as the manifest carries it.
+            mod: ModuleType) -> dict[str, ir.ErrorModel]:
+    """Every declared exception, by name.
 
     Two readings of one file, each answering what it is good for. The
     TREE says which classes this document declares and in what order.
@@ -247,14 +247,12 @@ def entries(tree: ast.Module,
     out = {}
     for name in sorted(declared):
         kls = getattr(mod, name)
-        out[name] = {
-            "bases": [b.__name__ for b in kls.__bases__
-                      if b.__module__ == here],
+        out[name] = ir.ErrorModel(
+            name,
+            tuple(b.__name__ for b in kls.__bases__ if b.__module__ == here),
             # Through the MRO, so a class states its parts once and
             # every class below it carries them.
-            "wire_fields": [list(f) for f in
-                            getattr(kls, WIRE_FIELDS, ())],
-        }
+            tuple((f[0], f[1]) for f in getattr(kls, WIRE_FIELDS, ())))
     return out
 
 

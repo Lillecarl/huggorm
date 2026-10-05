@@ -308,7 +308,29 @@ def _walk(how: Proto) -> ast.expr:
                     keywords=[])
 
 
-def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
+def _arg_tuple(pairs: Sequence[tuple[str, str]]) -> ast.expr:
+    """Named, typed parts - wire fields or parameters - as `Arg`s."""
+    return ast.Tuple(elts=[
+        ast.Call(func=ast.Name(id="Arg"),
+                 args=[ast.Constant(value=name), ast.Constant(value=t)],
+                 keywords=[])
+        for name, t in pairs])
+
+
+def _tree(tree: Proto) -> ast.expr:
+    return ast.Call(
+        func=ast.Name(id="Tree"),
+        args=[ast.Constant(value=tree["kind"]),
+              ast.Constant(value=tree.get("identity", "")),
+              ast.Dict(keys=[ast.Constant(value=k) for k in tree["scalars"]],
+                       values=[ast.Tuple(elts=[ast.Constant(value=x)
+                                               for x in v])
+                               for v in tree["scalars"].values()]),
+              _walk(tree["list"]), _walk(tree["attrs"])],
+        keywords=[])
+
+
+def policy_module(model: ir.Model) -> str:
     """`_policy.py`: the wire policy of every declared type.
 
     Four tables the codec needs and no caller does: what KIND each
@@ -329,16 +351,7 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
     A tuple rather than a list, so nothing downstream can reorder them
     in place.
     """
-    kinds, fields = [], []
-    for group in ("wrappers", "returned_types"):
-        for name, proto in manifest[group].items():
-            kinds.append((name, ast.Constant(value=proto["wire"])))
-            fields.append((name, ast.Tuple(elts=[
-                ast.Call(func=ast.Name(id="Arg"),
-                         args=[ast.Constant(value=f[0]),
-                               ast.Constant(value=f[1])],
-                         keywords=[])
-                for f in proto["wire_fields"]])))
+    classes = [*model.constructed, *model.handed_back]
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
         ast.ImportFrom(module="._callspec",
@@ -347,18 +360,19 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
                               ast.alias(name="Walk")], level=0),
     ]
     # The protobuf package every message and service sits in.
-    # grpc_schema decides it, so a rename reaches every consumer.
     body.append(ast.AnnAssign(
         target=ast.Name(id="PKG"), annotation=_ann("str", "PKG"),
-        value=ast.Constant(value=manifest["package"]), simple=1))
-    body.append(_table("WIRE_KIND", "dict[str, str]", kinds))
-    body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]", fields))
+        value=ast.Constant(value=ir.PROTO_PACKAGE), simple=1))
+    body.append(_table("WIRE_KIND", "dict[str, str]",
+                       [(c.name, ast.Constant(value=c.wire)) for c in classes]))
+    body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
+                       [(c.name, _arg_tuple(c.wire_fields)) for c in classes]))
     body.append(ast.AnnAssign(
         target=ast.Name(id="ENUMS"), annotation=_ann("frozenset[str]", "ENUMS"),
         value=ast.Call(func=ast.Name(id="frozenset"),
                        args=[ast.Set(elts=[ast.Constant(value=n)
-                                           for n in sorted(manifest["enums"])])]
-                       if manifest["enums"] else [],
+                                           for n in sorted(model.enums)])]
+                       if model.enums else [],
                        keywords=[]),
         simple=1))
     # The exception surface. ERROR_MODULE is where the emitted module
@@ -366,73 +380,40 @@ def policy_module(manifest: Proto, ordered: list[Proto]) -> str:
     # fields are what it is rebuilt FROM.
     body.append(ast.AnnAssign(
         target=ast.Name(id="ERROR_MODULE"), annotation=_ann("str", "ERROR_MODULE"),
-        value=ast.Constant(value=manifest["errors"]["module"] or ""),
-        simple=1))
-    errs = manifest["errors"]["classes"]
+        value=ast.Constant(value=model.errors.module), simple=1))
     body.append(_table("ERROR_FIELDS", "dict[str, tuple[Arg, ...]]", [
-        (n, ast.Tuple(elts=[
-            ast.Call(func=ast.Name(id="Arg"),
-                     args=[ast.Constant(value=f[0]),
-                           ast.Constant(value=f[1])], keywords=[])
-            for f in e["wire_fields"]]))
-        for n, e in errs.items()]))
+        (n, _arg_tuple(e.wire_fields))
+        for n, e in model.errors.classes.items()]))
     body.append(_table("UNION_ARMS", "dict[str, tuple[str, ...]]", [
         (n, ast.Tuple(elts=[ast.Constant(value=a) for a in arms]))
-        for n, arms in manifest["unions"].items()]))
+        for n, arms in model.unions.items()]))
     # Every method's call spec, ONCE. The client reads these through
     # `rpc.py` and the server reads them through METHODS below, so the
-    # two ends of a call cannot disagree about its shape: there is one
-    # statement of it and both import that.
-    #
-    # They lived in `rpc.py`, which made them the client's. The server
-    # then built the same specs a second time out of the manifest, and
-    # two derivations of one fact is the thing this repo exists to
-    # stop.
+    # two ends of a call cannot disagree about its shape.
     methods = []
-    for proto in ordered:
+    for c in model.ordered_served:
         names = []
-        for m in (m for m in proto["methods"] if "rpc" in m):
-            var = _spec_name(proto["name"], m["name"])
-            body.append(ast.Assign(targets=[ast.Name(id=var)], value=_spec(m)))
+        for m in c.methods:
+            if not model.offered(m):
+                continue
+            var = _spec_name(c.name, m.name)
+            body.append(ast.Assign(
+                targets=[ast.Name(id=var)],
+                value=_spec(m.name, c.rpc(m), m.params, m.returns)))
             names.append(var)
-        methods.append((proto["name"], ast.Tuple(
+        methods.append((c.name, ast.Tuple(
             elts=[ast.Name(id=n) for n in names])))
     body.append(_table("METHODS", "dict[str, tuple[Call, ...]]", methods))
-    # The value TREES, and the async class each proxy is adopted into.
-    # Both were dug out of the manifest by the server's constructor.
-    # Annotated, because the two lists hold different expression
-    # types and an inferred one takes the first branch it sees.
-    trees: list[tuple[str, ast.expr]] = []
-    async_of: list[tuple[str, ast.expr]] = []
-
-    for group in ("wrappers", "returned_types"):
-        for name, proto in manifest[group].items():
-            # SERVED, not merely wrapped. `ir.ClassModel.entry` stamps an
-            # `async_class` NAME on every proxy, and an unserved one
-            # gets no such class emitted - so reading the key alone
-            # put 'LogStream': 'AsyncLogStream' in this table with
-            # nothing behind it, and `server.adopt` would have raised
-            # AttributeError on the first handle (huggorm#32).
-            if proto["wire"] == "proxy" and "async_class" in proto:
-                async_of.append((name,
-                                 ast.Constant(value=proto["async_class"])))
-            tree = proto.get("tree")
-            if tree is None:
-                continue
-            trees.append((name, ast.Call(
-                func=ast.Name(id="Tree"),
-                args=[ast.Constant(value=tree["kind"]),
-                      ast.Constant(value=tree.get("identity", "")),
-                      ast.Dict(keys=[ast.Constant(value=k)
-                                     for k in tree["scalars"]],
-                               values=[ast.Tuple(elts=[ast.Constant(value=x)
-                                                       for x in v])
-                                       for v in tree["scalars"].values()]),
-                      _walk(tree["list"]), _walk(tree["attrs"])],
-                keywords=[])))
-    body.append(_table("TREES", "dict[str, Tree]", trees))
-    body.append(_table("ASYNC_CLASS", "dict[str, str]", async_of))
-    body.extend(_directory(manifest, ordered))
+    # The value TREES, and the async class each served class is adopted
+    # into. SERVED, not merely wrapped: an unserved class has no async
+    # class emitted, and `server.adopt` would raise AttributeError on
+    # its first handle (huggorm#32).
+    body.append(_table("TREES", "dict[str, Tree]", [
+        (c.name, _tree(c.decl.tree)) for c in classes if c.decl.tree]))
+    body.append(_table("ASYNC_CLASS", "dict[str, str]", [
+        (c.name, ast.Constant(value=c.async_name))
+        for c in classes if c.served]))
+    body.extend(_directory(model))
     return ast.unparse(ast.fix_missing_locations(
         ast.Module(body=body, type_ignores=[]))) + "\n"
 
@@ -1058,18 +1039,9 @@ def protocol_module(model: ir.Model) -> ast.Module:
     return mod
 
 
-def _args(params: list[Proto]) -> ast.expr:
-    """A declared parameter list, as a tuple of `Arg`."""
-    return ast.Tuple(elts=[
-        ast.Call(func=ast.Name(id="Arg"),
-                 args=[ast.Constant(value=p["name"]),
-                       ast.Constant(value=p["type"])],
-                 keywords=[])
-        for p in params])
-
-
-def _spec(m: Proto) -> ast.expr:
-    """One method's call spec, as a `Call`.
+def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
+          returns: ir.TypeRef | None) -> ast.expr:
+    """One call's spec, as a `Call`.
 
     A typed value, not a dict literal. The dict came straight out of
     the manifest and carried its whole entry; a checker could see
@@ -1081,69 +1053,57 @@ def _spec(m: Proto) -> ast.expr:
     call reached the runtime, so every argument a spec describes is
     present, and carrying a default here would suggest the runtime
     fills one in."""
-    rpc = m["rpc"]
     return ast.Call(
         func=ast.Name(id="Call"),
-        args=[ast.Constant(value=m["name"]),
-              ast.Constant(value=rpc["path"]),
-              ast.Constant(value=rpc["req"]),
-              ast.Constant(value=rpc["resp"]),
-              _args(m["params"]),
-              ast.Constant(value=m["return_type"])],
+        args=[ast.Constant(value=name),
+              ast.Constant(value=rpc.path),
+              ast.Constant(value=rpc.req),
+              ast.Constant(value=rpc.resp),
+              _arg_tuple([(p.name, p.type.spelling) for p in params]),
+              ast.Constant(value=returns.spelling if returns is not None
+                           else "None")],
         keywords=[])
 
 
-def _directory(manifest: Proto, ordered: list[Proto]) -> list[ast.stmt]:
+def _directory(model: ir.Model) -> list[ast.stmt]:
     """The three tables a caller reaches BY NAME.
 
     `NixClient.acquire("Store", "auto")` and
     `NixClient.call_function("gc_stats")` take a string, so neither
-    can be a generated method - the name is the argument. They read
-    the manifest for it, which was the last thing the client resolved
-    at run time.
-
-    A table, then, and there is no way around one: the lookup is the
-    API. What changes is that it ships as emitted Python whose entries
-    a checker reads, instead of as JSON the build hands over.
+    can be a generated method - the name is the argument. The lookup
+    is the API, so it is a table, emitted as Python a checker reads.
 
     Not every class is here. One that crosses as a VALUE has no handle
     to construct into - a caller builds it locally and passes it as an
-    argument - which is what `acquire` missing from an entry means."""
+    argument - and a class only a call hands back is never built
+    remotely."""
     acquires = []
-    for proto in ordered:
-        acq = proto.get("acquire")
-        # WRAPPERS only, and the restriction is not cosmetic. `ordered`
-        # holds the returned types too, and one of them - Value - has
-        # an acquire path in the schema. Constructing it remotely was
-        # never offered, because a returned type is by definition
-        # something a call HANDS BACK.
-        if acq is None or proto["name"] not in manifest["wrappers"]:
+    for c in model.ordered_served:
+        if c.name in model.returned:
             continue
-        ctor = proto["ctor"]
-        acquires.append((proto["name"], ast.Call(
+        acquires.append((c.name, ast.Call(
             func=ast.Name(id="Acquire"),
-            args=[ast.Constant(value=proto["name"]),
-                  ast.Constant(value=acq["path"]),
-                  ast.Constant(value=acq["req"]),
-                  _args(ctor),
-                  ast.Constant(value=sum(1 for p in ctor
-                                         if p["default"] is None)),
-                  ast.Tuple(elts=[ast.Constant(value=p["name"]) for p in ctor
-                                  if p["default"] == "None"])],
+            args=[ast.Constant(value=c.name),
+                  ast.Constant(value=c.acquire.path),
+                  ast.Constant(value=c.acquire.req),
+                  _arg_tuple([(p.name, p.type.spelling) for p in c.ctor]),
+                  ast.Constant(value=sum(1 for p in c.ctor
+                                         if p.default is None)),
+                  ast.Tuple(elts=[ast.Constant(value=p.name) for p in c.ctor
+                                  if p.default == "None"])],
             keywords=[])))
-    free = [(name, _spec(fn))
-            for name, fn in sorted(manifest["free_functions"].items())
-            if "rpc" in fn]
+    functions = [model.functions[n] for n in sorted(model.functions)]
+    free = [(fn.name, _spec(fn.name, fn.rpc, fn.params, fn.returns))
+            for fn in functions if not model.function_blockers(fn)]
     # ...and the ones the wire cannot carry, with the reason.
     #
     # A separate table rather than absence, because the two answers
     # differ and a caller can act on the difference: a name nobody
     # declared is a typo, and a declared function with no RPC surface
-    # is a policy the build decided and printed. Folding them together
-    # told a caller their spelling was wrong when it was not.
-    blocked = [(name, ast.Constant(value="; ".join(fn["wire_blockers"])))
-               for name, fn in sorted(manifest["free_functions"].items())
-               if "rpc" not in fn]
+    # is a policy the build decided and printed.
+    blocked = [(fn.name, ast.Constant(
+                    value="; ".join(model.function_blockers(fn))))
+               for fn in functions if model.function_blockers(fn)]
     return [_table("ACQUIRE", "dict[str, Acquire]", acquires),
             _table("FREE", "dict[str, Call]", free),
             _table("NO_RPC", "dict[str, str]", blocked)]

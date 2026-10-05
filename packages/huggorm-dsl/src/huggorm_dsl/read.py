@@ -107,7 +107,7 @@ FROM_PARTS = "_from_parts"
 
 # The dunders a declaration may write as an ordinary method. Every
 # emitter carries a method by name, so a dunder needs only a wire
-# spelling a protobuf identifier allows (`grpc_schema.wire_method`).
+# spelling a protobuf identifier allows (`ir.wire_method`).
 # Each one is added when a declaration needs it (huggorm#88).
 DECLARED_DUNDERS = frozenset({"__call__"})
 

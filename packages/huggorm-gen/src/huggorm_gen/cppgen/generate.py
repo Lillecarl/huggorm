@@ -101,8 +101,28 @@ def declared_model() -> ir.Model:
                 fn, PACKAGE, mod.name, resolver)
     unions = {u.name: tuple(u.decl.arms)
               for mod in have.modules for u in mod.unions}
+    enums = {cls.name: ir.EnumModel.of(cls, PACKAGE, vocab.name)
+             for vocab in map(have.module, have.vocabularies)
+             for cls in vocab.classes if cls.is_words}
     return ir.Model(classes, functions, unions, ir.returned_names(seen),
-                    declare.twins())
+                    declare.twins(), enums, _errors())
+
+
+def _errors() -> ir.Errors:
+    """The exception surface. The module name is derived here for the
+    same reason `errors_module` derives it: the emitter that writes the
+    module decides where it goes."""
+    have = corpus()
+    if not have.errors:
+        return ir.Errors("", {})
+    # Named, so a refusal from `entries` carries the file it is about
+    # rather than `<declaration>`. The reader does this for itself;
+    # an emitter reading a tree the corpus already parsed has to say
+    # so (huggorm#61).
+    with reading(str(have.path(have.errors))):
+        return ir.Errors(errors_module(),
+                         pyerrors.entries(have.resolved(have.errors),
+                                          have.imported(have.errors)))
 
 
 def declared_unions() -> dict[str, list[str]]:
@@ -212,17 +232,7 @@ def declared_errors() -> dict[str, Any]:
     The module name is derived here for the same reason
     `errors_module` derives it: the emitter that writes the module
     decides where it goes."""
-    have = corpus()
-    if not have.errors:
-        return {"module": None, "classes": {}}
-    # Named, so a refusal from `entries` carries the file it is about
-    # rather than `<declaration>`. The reader does this for itself;
-    # an emitter reading a tree the corpus already parsed has to say
-    # so (huggorm#61).
-    with reading(str(have.path(have.errors))):
-        return {"module": errors_module(),
-                "classes": pyerrors.entries(have.resolved(have.errors),
-                                            have.imported(have.errors))}
+    return declared_model().errors.entry()
 
 
 def declared_enums() -> dict[str, dict[str, Any]]:
@@ -235,14 +245,7 @@ def declared_enums() -> dict[str, dict[str, Any]]:
 
     Only a `@words` class. A vocabulary declaration holds nothing
     else, and `is_words` is the declaration's own word for it."""
-    out: dict[str, dict[str, Any]] = {}
-    have = corpus()
-    for name in have.vocabularies:
-        mod = have.module(name)
-        for cls in mod.classes:
-            if cls.is_words:
-                out[cls.name] = ir.words_entry(cls, PACKAGE, mod.name)
-    return out
+    return {name: e.entry() for name, e in declared_model().enums.items()}
 
 
 def errors_module() -> str:

@@ -101,7 +101,7 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
     entries = pyerrors.entries(tree, load(path))
     assert sorted(entries) == ["Here", "NixError"]
     # ...and it inherits, which is the half only the IMPORT knows.
-    assert entries["Here"]["bases"] == ["NixError"]
+    assert entries["Here"].bases == ("NixError",)
 
     chain = "\n".join(pyerrors.chain(tree, load(path), "raise_as",
                                       "pkg.errors"))

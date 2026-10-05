@@ -28,10 +28,72 @@ from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED
 # the class name plus one of these.
 PROTO_PACKAGE = "huggorm.v1"
 SERVICE = "Service"
+# Construction is an rpc on the class's OWN service, not a string-keyed
+# call on Session. Session/Acquire took a class name and no arguments,
+# so it could only ever build things whose constructor takes nothing -
+# and it type-checked neither the name nor the absent arguments.
 ACQUIRE = "Acquire"
 PROTOCOL = "Like"
 ASYNC = "Async"
 RPC = "RPC"
+# Free functions have no instance, so they cannot hang off a class's
+# service. They share one.
+FREE_SERVICE = "Functions"
+
+
+def _camel(method: str) -> str:
+    """`add_to_store` -> `AddToStore`.
+
+    A message name, not a method name. The rpcs keep the binding's own
+    snake_case on purpose - they are the Python surface spelled once
+    - while a message is a TYPE, and protobuf types are PascalCase.
+
+    One helper because the two used to disagree: the request kept the
+    snake_case and the response camel-cased it, so one method had two
+    spellings in one schema."""
+    return method.title().replace("_", "")
+
+
+def service_name(owner: str) -> str:
+    return f"{owner}{SERVICE}"
+
+
+def req_name(owner: str, method: str) -> str:
+    return f"{owner}_{_camel(method)}Req"
+
+
+def resp_name(owner: str, method: str) -> str:
+    # Class-prefixed: LocalStore and RemoteStore share method names, and
+    # top-level message names must be unique across the file.
+    return f"{owner}_{_camel(method)}Resp"
+
+
+def wire_method(method: str) -> str:
+    """A method's name in the schema. A declared dunder such as
+    `__call__` crosses as `call`: a protobuf identifier starts with a
+    letter. Every Python surface keeps the dunder (huggorm#88)."""
+    if method.startswith("__") and method.endswith("__"):
+        return method.strip("_")
+    return method
+
+
+def method_path(owner: str, method: str) -> str:
+    return f"/{PROTO_PACKAGE}.{service_name(owner)}/{wire_method(method)}"
+
+
+@dataclass(frozen=True)
+class RpcNames:
+    """What one call is named on the wire. `owner` is a class, or
+    `FREE_SERVICE` for a free function."""
+
+    path: str
+    req: str
+    resp: str
+
+    @classmethod
+    def of(cls, owner: str, method: str) -> RpcNames:
+        return cls(method_path(owner, method), req_name(owner, method),
+                   resp_name(owner, method))
 
 # C++ spelling -> the Python type a caller sees. `bint` and
 # `string_view` have no place above the binding: a caller holds a
@@ -390,6 +452,10 @@ class FunctionModel:
     def wrapped(self) -> bool:
         return self.threading is not None
 
+    @property
+    def rpc(self) -> RpcNames:
+        return RpcNames.of(FREE_SERVICE, self.name)
+
     def entry(self) -> dict[str, Any]:
         return {"name": self.name, "module": self.module,
                 "threading": self.threading, "wrapped": self.wrapped,
@@ -500,7 +566,15 @@ class ClassModel:
 
     @property
     def service(self) -> str:
-        return f"{self.name}{SERVICE}"
+        return service_name(self.name)
+
+    @property
+    def acquire(self) -> RpcNames:
+        """The rpc that constructs one of these remotely."""
+        return RpcNames.of(self.name, ACQUIRE)
+
+    def rpc(self, m: MethodModel) -> RpcNames:
+        return RpcNames.of(self.name, m.name)
 
     @property
     def protocol_name(self) -> str:
@@ -527,8 +601,8 @@ class ClassModel:
         wire_names: dict[str, Any] = ({
             "service": self.service,
             "acquire": {
-                "path": f"/{PROTO_PACKAGE}.{self.service}/{ACQUIRE}",
-                "req": f"{self.name}_{ACQUIRE}Req",
+                "path": self.acquire.path,
+                "req": self.acquire.req,
             },
             "protocol": self.protocol_name,
             "async_class": self.async_name,
@@ -566,6 +640,58 @@ class ClassModel:
 
 
 @dataclass(frozen=True)
+class EnumModel:
+    """One string vocabulary. A member is a str, so it crosses as one."""
+
+    name: str
+    module: str
+    values: tuple[str, ...]
+    doc: str
+
+    @classmethod
+    def of(cls, c: Class, package: str, module: str) -> EnumModel:
+        return cls(c.name, f"{package}.{module}",
+                   tuple(m.value for m in c.members), _clean(c.doc))
+
+    def entry(self) -> dict[str, Any]:
+        return {"name": self.name, "module": self.module,
+                "values": list(self.values), "doc": self.doc}
+
+
+@dataclass(frozen=True)
+class ErrorModel:
+    """One declared exception class. It crosses as its name and its
+    wire fields, which it inherits through the MRO."""
+
+    name: str
+    # Bases declared in the same errors document, not `Exception`.
+    bases: tuple[str, ...]
+    wire_fields: tuple[tuple[str, str], ...]
+
+    def entry(self) -> dict[str, Any]:
+        return {"bases": list(self.bases),
+                "wire_fields": [list(f) for f in self.wire_fields]}
+
+
+@dataclass(frozen=True)
+class Errors:
+    """The exception surface: the module the hierarchy is emitted into
+    ("" when nothing declares one) and its classes, by name."""
+
+    module: str
+    classes: Mapping[str, ErrorModel]
+
+    def entry(self) -> dict[str, Any]:
+        return {"module": self.module or None,
+                "classes": {n: e.entry() for n, e in self.classes.items()}}
+
+
+# Why a free function with no threading policy has no rpc.
+NO_POLICY = ("no threading policy, so the function has no async form for "
+             "a server to call")
+
+
+@dataclass(frozen=True)
 class Model:
     """The whole declaration set, resolved: what every stage reads.
 
@@ -581,6 +707,8 @@ class Model:
     # A type the async surface spells differently: `pathlib.Path` is
     # `anyio.Path` there - same value, awaitable methods.
     twins: Mapping[str, str]
+    enums: Mapping[str, EnumModel]
+    errors: Errors
 
     @property
     def served(self) -> frozenset[str]:
@@ -588,18 +716,34 @@ class Model:
         return frozenset(n for n, c in self.classes.items() if c.served)
 
     @property
+    def constructed(self) -> list[ClassModel]:
+        """Every class a caller builds, by name."""
+        return [self.classes[n] for n in sorted(self.classes)
+                if n not in self.returned]
+
+    @property
+    def handed_back(self) -> list[ClassModel]:
+        """Every class only a call hands back, by name."""
+        return [self.classes[n] for n in sorted(self.classes)
+                if n in self.returned]
+
+    @property
     def ordered_served(self) -> list[ClassModel]:
         """Every served class: the returned ones, then the constructed
         ones, each by name - the order every surface emits them in."""
-        returned = sorted(n for n in self.classes if n in self.returned)
-        built = sorted(n for n in self.classes if n not in self.returned)
-        return [self.classes[n] for n in (*returned, *built)
-                if self.classes[n].served]
+        return [c for c in (*self.handed_back, *self.constructed)
+                if c.served]
 
     def offered(self, m: MethodModel) -> bool:
         """Whether a method crosses the wire, which is also whether the
         protocol may promise it: both implementations must offer it."""
         return not blockers(m.params, m.returns, self.served)
+
+    def function_blockers(self, fn: FunctionModel) -> list[str]:
+        """Why a free function has no rpc, or [] when it has one."""
+        if not fn.wrapped:
+            return [NO_POLICY]
+        return blockers(fn.params, fn.returns, self.served)
 
 
 def returned_names(module_classes: Sequence[tuple[Mapping[str, Class],
@@ -626,9 +770,3 @@ def returned_names(module_classes: Sequence[tuple[Mapping[str, Class],
                 out.add(name)
     return frozenset(out)
 
-
-def words_entry(cls: Class, package: str, module: str) -> dict[str, Any]:
-    """One vocabulary, as the manifest carries it."""
-    return {"name": cls.name, "module": f"{package}.{module}",
-            "values": [m.value for m in cls.members],
-            "doc": inspect.cleandoc(cls.doc)}
