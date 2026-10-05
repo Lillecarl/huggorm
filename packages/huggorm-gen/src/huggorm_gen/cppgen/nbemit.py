@@ -690,7 +690,7 @@ def words_from_word(cls: Class) -> list[str]:
            "{"]
     for word in cls.members:
         out += [f'{INDENT}if (word == "{word.value}")',
-                f"{INDENT * 2}return {{{enum.enumerator(word.name)}}};"]
+                f"{INDENT * 2}return {enum.enumerator(word.name)};"]
     out += [f'{INDENT}throw nix::UsageError(',
             f'{INDENT * 2}"unknown {cls.name} \'%1%\', expect {listed}",'
             if listed else f'{INDENT * 2}"unknown {cls.name} \'%1%\'",',
