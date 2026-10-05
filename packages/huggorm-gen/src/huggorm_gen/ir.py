@@ -457,6 +457,29 @@ class Fill:
     arm: ArmTest
 
 
+def _attribute(owner: Class, m: Method) -> TypeError:
+    """The refusal a `@property` accessor gets, and why it is one.
+
+    `@property` says an accessor is an ATTRIBUTE rather than a call.
+    No stage honours that, and four would have to:
+
+    - `nbemit`, which would bind `def_prop_ro` instead of `def`;
+    - `nbemit._identity_semantics`, which writes `h.attr("nar_size")()`
+      into `__repr__`, `__hash__` and `_parts` - a call, on every part;
+    - `pyi.py`, which emits `def nar_size(self) -> int` in the stub;
+    - `wire.py` and the generated wrappers, which read a part the way
+      `_parts` does.
+
+    So a binding that honoured the word alone would disagree with its
+    own stub and drop the value off the wire (huggorm#76)."""
+    return TypeError(
+        f"{owner.name}.{m.name}: @property makes this accessor an "
+        f"ATTRIBUTE, and every reader of this class calls it - the "
+        f"emitted `_parts`, the stub and the wire all spell "
+        f"`obj.{m.name}()`. Drop the @property and declare a plain "
+        f"accessor, or teach all four (huggorm#76).")
+
+
 def _tagged(owner: Class, m: Method) -> Tagged | None:
     """The owner's union, for a method that `@guard`s or `@names` it."""
     if not (m.guard or m.names):
@@ -516,8 +539,6 @@ class MethodModel:
     fills: Fill | None = None
     # `@local`: bound on the object and kept off the wire.
     local: bool = False
-    # `@property`, which the binding refuses (huggorm#76).
-    prop: bool = False
     # The C++ type of the HANDLE class it returns, or "".
     returns_handle: str = ""
     # It returns a vocabulary with a C++ enum behind it.
@@ -533,6 +554,8 @@ class MethodModel:
         ret = m.ret.required if m.ret is not None else None
         word = (None if ret is None or ret.origin
                 else resolver.known.get(ret.python))
+        if m.prop:
+            raise _attribute(owner, m)
         params = tuple(ParamModel.of(p, resolver) for p in m.params)
         tagged = _tagged(owner, m)
         where = f'{owner.name}.{m.name}: @guard("{m.guard}")'
@@ -545,7 +568,7 @@ class MethodModel:
                    guard=guard, names=tagged if m.names else None,
                    produces=m.produces,
                    fills=_fill(owner, m, params, resolver),
-                   local=m.local, prop=m.prop,
+                   local=m.local,
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
                                  and bool(word.decl.enumerated)),

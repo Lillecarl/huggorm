@@ -755,7 +755,7 @@ def test_a_service_parameter_says_which_64_bit_integer_it_is(
     assert field.type == field.TYPE_UINT64
 
 
-def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
+def test_the_model_refuses_an_accessor_declared_as_an_attribute(
         tmp_path: pathlib.Path) -> None:
     """`@property` is refused, because a binding alone cannot honour it.
 
@@ -768,16 +768,16 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
     The refusal replaced an `_accessor` function that emitted exactly
     that, and that no declaration had ever reached - which is why its
     two-row table of optional return spellings was never seen to be
-    wrong (huggorm#75)."""
+    wrong (huggorm#75).
+
+    The model refuses it, so no surface is built from it first
+    (huggorm#115)."""
     from huggorm_dsl.read import read
     from huggorm_gen import ir
-    from huggorm_gen.cppgen import nbemit
 
-    unit = ir.ModuleModel.of(read(_declaration(tmp_path, ATTRIBUTE)), "")
-    model = ir.Model({c.name: c for c in unit.classes}, {}, {}, frozenset(),
-                     {}, {}, ir.Errors("", {}), (unit,))
+    module = read(_declaration(tmp_path, ATTRIBUTE))
     with pytest.raises(TypeError, match="ATTRIBUTE"):
-        nbemit.Emitter(model, unit, {}).bind_function(unit.classes[0])
+        ir.ModuleModel.of(module, "")
 
 
 TAGGED = '''"""A tagged union, and an accessor declared against it."""

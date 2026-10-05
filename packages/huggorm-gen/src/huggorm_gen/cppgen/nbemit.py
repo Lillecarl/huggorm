@@ -344,38 +344,6 @@ def _value_semantics(cls: ir.ClassModel) -> list[str]:
     return out
 
 
-def _attribute(cls: ir.ClassModel, m: ir.MethodModel) -> TypeError:
-    """The refusal a `@property` accessor gets, and why it is one.
-
-    `@property` says an accessor is an ATTRIBUTE rather than a call.
-    Nothing here honours that, and the four things that would have to
-    are emitted by three files:
-
-    - this one, which binds `def_prop_ro` instead of `def`;
-    - `_identity_semantics`, which writes `h.attr("nar_size")()` into
-      `__repr__`, `__hash__` and `_parts` - a call, on every part;
-    - `pyi.py`, which emits `def nar_size(self) -> int` in the stub;
-    - `wire.py` and the generated wrappers, which read a part the way
-      `_parts` does.
-
-    So a binding that honoured the word alone would disagree with its
-    own stub and drop the value off the wire. Refusing says that in
-    one place, at the declaration that asked (huggorm#76).
-
-    This used to be an `_accessor` function that emitted `def_ro` and
-    `def_prop_ro`, and no declaration ever reached it. It carried its
-    own two-row table of optional return spellings, keyed by the
-    literal annotation, where `_returns` derives the same answer for
-    every type the emitter knows - so the dead path was also the
-    wrong one (huggorm#75)."""
-    return TypeError(
-        f"{cls.name}.{m.name}: @property makes this accessor an ATTRIBUTE, "
-        f"and every reader of this class calls it - the emitted "
-        f"`_parts`, the stub and the wire all spell "
-        f"`obj.{m.name}()`. Drop the @property and declare a plain "
-        f"accessor, or teach all four (huggorm#76).")
-
-
 def _paragraph(doc: str) -> list[str]:
     """The first paragraph of a docstring, as its lines."""
     out: list[str] = []
@@ -1904,8 +1872,6 @@ class Emitter:
         else:
             body = self._ctor(cls)
         for m in cls.bound:
-            if m.prop:
-                raise _attribute(cls, m)
             body += self._method(cls, m)
         if decl.wire == "value":
             body += self._identity_semantics(cls)
