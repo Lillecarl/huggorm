@@ -347,14 +347,8 @@ def main(argv: list[str] | None = None) -> None:
     # derivation. Every one of these WAS a local up there, and passing
     # six of them across the split would have made the boundary a
     # tuple nobody could read.
-    # Every served class adopts through its `_adopt`, so a call can
-    # return any of them: a returned type and a wrapper class alike.
-    served_policies = {p["name"]: p["threading"]
-                       for p in returned_protos + protos
-                       if p["wire"] == "proxy"}
-    async_types = set(served_policies)
-    emitter_protocol_names({surface.protocol_name(n) for n in async_types})
-    async_twins = manifest["async_twins"]
+    model = declared_model()
+    emitter_protocol_names({c.protocol_name for c in model.ordered_served})
     unions = manifest["unions"]
 
     # The in-process wrappers. Emitted here rather than mid-derivation:
@@ -365,30 +359,18 @@ def main(argv: list[str] | None = None) -> None:
     # or not the calls hop threads. The threading policy travels with
     # the proto, so a pool class keeps pool execution - serving is
     # addressability, not affinity.
-    for proto in returned_protos:
-        if proto["wire"] != "proxy":
-            continue
-        fname = f"async_{proto['name'].lower()}.py"
-        (out / fname).write_text(ast.unparse(returned_module(
-            proto, async_types, served_policies, async_twins)) + "\n")
-        print(f"generated {fname} for returned type {proto['name']} "
-              f"({proto['threading']})")
-    for proto in protos:
-        if proto["wire"] != "proxy":
-            continue
-        fname = f"async_{proto['name'].lower()}.py"
-        (out / fname).write_text(ast.unparse(wrapper_module(
-            proto, served_policies, async_twins, async_types)) + "\n")
-        print(f"generated {fname} for {proto['name']} "
-              f"({proto['threading']}, {len(proto['methods'])} methods)")
+    for cls in model.ordered_served:
+        fname = f"async_{cls.name.lower()}.py"
+        emit = (returned_module if cls.name in model.returned
+                else wrapper_module)
+        (out / fname).write_text(ast.unparse(emit(model, cls)) + "\n")
+        print(f"generated {fname} for {cls.name} ({cls.decl.threading})")
 
-    wrapped_free = [p for p in free_protos if p["wrapped"]]
-    free_names = [p["name"] for p in wrapped_free]
-    if wrapped_free:
+    free_names = sorted(f.name for f in model.functions.values() if f.wrapped)
+    if free_names:
         (out / f"{FREE_MODULE}.py").write_text(ast.unparse(
-            free_function_module(wrapped_free, async_types,
-                                 served_policies)) + "\n")
-        print(f"generated {FREE_MODULE}.py for {len(wrapped_free)} free "
+            free_function_module(model)) + "\n")
+        print(f"generated {FREE_MODULE}.py for {len(free_names)} free "
               f"function(s): {', '.join(free_names)}")
 
     ordered = surface.order(manifest)

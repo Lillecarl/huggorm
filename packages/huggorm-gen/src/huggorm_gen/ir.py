@@ -486,6 +486,15 @@ class ClassModel:
         return self.decl.threading == "affine" or self.decl.blocking
 
     @property
+    def execution(self) -> str:
+        """Where a call runs. Served is addressability and WRAPPED is
+        execution: an unwrapped class cannot wait, so its calls run
+        inline - a hop buys nothing, and a request would push a
+        "finalized" marker from a pool thread into the process queue
+        for a call no reader made."""
+        return self.decl.threading if self.wrapped else "inline"
+
+    @property
     def qualified_module(self) -> str:
         return f"{self.package}.{self.module}"
 
@@ -569,6 +578,9 @@ class Model:
     unions: Mapping[str, tuple[str, ...]]
     # The classes that are HANDED BACK rather than constructed.
     returned: frozenset[str]
+    # A type the async surface spells differently: `pathlib.Path` is
+    # `anyio.Path` there - same value, awaitable methods.
+    twins: Mapping[str, str]
 
     @property
     def served(self) -> frozenset[str]:

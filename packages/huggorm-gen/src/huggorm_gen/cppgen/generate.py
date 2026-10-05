@@ -101,7 +101,8 @@ def declared_model() -> ir.Model:
                 fn, PACKAGE, mod.name, resolver)
     unions = {u.name: tuple(u.decl.arms)
               for mod in have.modules for u in mod.unions}
-    return ir.Model(classes, functions, unions, ir.returned_names(seen))
+    return ir.Model(classes, functions, unions, ir.returned_names(seen),
+                    declare.twins())
 
 
 def declared_unions() -> dict[str, list[str]]:

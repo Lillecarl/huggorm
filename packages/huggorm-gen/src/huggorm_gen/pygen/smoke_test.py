@@ -186,7 +186,8 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
     assert len(complaints) == 1 and "unknown field type" in complaints[0]
 
 
-def test_an_optional_return_names_a_value_or_nothing() -> None:
+def test_an_optional_return_names_a_value_or_nothing(
+        out: pathlib.Path) -> None:
     """`T | None` is a real return type, and only for some T.
 
     Absence rides on presence, which is one bit. So it separates ONE
@@ -205,7 +206,6 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     and fails only at the first await on it."""
     from huggorm_gen import ir
     from huggorm_gen.payload.wiretypes import adoptee, optional_value, respell
-    from huggorm_gen.pygen.emitter import _append_hop_method
     from huggorm_gen.pygen.model import check_optional_contract
 
     assert optional_value("StorePath | None") == "StorePath"
@@ -256,15 +256,11 @@ def test_an_optional_return_names_a_value_or_nothing() -> None:
     assert not protocol_blockers(
         {"params": [{"name": "s", "type": "Store"}]})
 
-    cls = ast.ClassDef(name="AsyncProbe", bases=[], keywords=[], body=[],
-                       decorator_list=[], type_params=[])
-    method = {"name": "find", "return_type": "Store | None", "params": [],
-              "doc": ""}
-    _append_hop_method(cls, {}, method, "Probe", set(), {"Store": "affine"}, {})
-    emitted = ast.unparse(ast.fix_missing_locations(cls))
-    assert "return None if result is None else AsyncStore._adopt(result, self._runner)" \
+    # The corpus has the case: a Repl may hand back no Value.
+    emitted = (out / "async_repl.py").read_text()
+    assert "return None if result is None else AsyncValue._adopt(result, self._runner)" \
         in emitted, emitted
-    assert "-> AsyncStore | None" in emitted, emitted
+    assert "-> AsyncValue | None" in emitted, emitted
 
     def proto(rt: str) -> dict[str, object]:
         return {"name": "Probe", "wrapped": True, "threading": "pool",
