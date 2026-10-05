@@ -29,7 +29,7 @@ from typing import Any
 from huggorm_decl import CPP, corpus
 from huggorm_dsl import declare
 from huggorm_dsl.read import FROM_PARTS, Class, Module, reading
-from huggorm_gen import ir
+from huggorm_gen import cxx, ir
 from huggorm_gen.cppgen import nbemit, pyenum, pyerrors, pyinit
 from huggorm_gen.cppgen.nbemit import bindable, extension
 
@@ -123,7 +123,7 @@ def error_chain() -> list[str]:
     have = corpus()
     return pyerrors.chain(have.resolved(have.errors),
                           have.imported(have.errors), "huggorm::raise_as",
-                          errors_module(), nbemit.NAMESPACE)
+                          errors_module(), cxx.NAMESPACE)
 
 
 def error_headers() -> list[str]:
