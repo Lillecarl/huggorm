@@ -301,9 +301,7 @@ class FieldModel:
 
     @classmethod
     def of(cls, name: str, t: Type, resolver: Resolver) -> FieldModel:
-        # `Type.wire` refuses a container of a width, which no field
-        # type can say. The binding's own `_wire_fields` is that string.
-        t.wire  # noqa: B018
+        crossable(t, name)
         return cls(name, type_ref(t, resolver))
 
     @classmethod
@@ -320,17 +318,18 @@ class FieldModel:
 
 
 def crossable(t: Type | None, where: str) -> None:
-    """Refuse a type a service's message cannot spell.
+    """Refuse a container of a C++ width.
 
-    For what a SERVICE carries - a proxy's methods and the parameters
-    that acquire one - and not for a value's accessors, which cross as
-    fields that say their width."""
-    leaf = t.leaf if t is not None else None
-    if leaf is not None and leaf.cxx is not None and leaf.cxx.width:
+    A leaf carries its width to the schema and the codec. A container
+    of one does not: the width reaches the reader on the container,
+    and naming the container `uint` would be wrong (huggorm#79)."""
+    held = t.required if t is not None else None
+    if held is not None and held.origin and held.leaf.cxx is not None \
+            and held.leaf.cxx.width:
         raise TypeError(
-            f"{where} is a {leaf.cxx.spelling}, and a service's message "
-            f"carries no width: every int parameter crosses as sint64, "
-            f"which holds half of one. See huggorm#79.")
+            f"{where}: '{held.python}' holds a {held.leaf.cxx.spelling}, and "
+            f"a container of a width has no wire spelling yet. See "
+            f"huggorm#79.")
 
 
 def _clean(text: str) -> str:

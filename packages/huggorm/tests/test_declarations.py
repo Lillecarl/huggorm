@@ -702,29 +702,36 @@ def test_a_container_of_a_width_is_refused_rather_than_guessed(
                          ir.Resolver.of(module))
 
 
-def test_a_service_refuses_a_parameter_whose_width_it_cannot_spell(
+def test_a_service_parameter_says_which_64_bit_integer_it_is(
         tmp_path: pathlib.Path) -> None:
-    """A proxy method may not take a `U64`.
+    """A proxy method may take a `U64`, and it crosses as a uint64.
 
-    A FIELD says its own width; a parameter does not. `params[].type`
-    is one string, read by the stub emitter as a Python annotation and
-    by the schema builder as a wire type, and `int` cannot be both
-    right for the first and right for the second.
+    It was refused: a parameter was one string read both as a Python
+    annotation and as a wire type, so `int` could not be right for
+    both. The typed model carries the width on the leaf, so the schema
+    writes a uint64 field and the codec's `Wire` names `uint`, while
+    the Python surface still says `int`."""
+    from google.protobuf import descriptor_pb2
 
-    Refused at build time rather than carried, because carrying it
-    means a second key beside `type` that `model.py` cannot reflect
-    off a compiled class - so `check.py` would diff the manifest
-    against a shape reflection has no way to produce. Nothing declares
-    such a parameter, so the refusal costs nothing and the wrong
-    answer would have been a silently truncated number."""
     from huggorm_dsl.read import read
     from huggorm_gen import ir
+    from huggorm_gen.pygen.grpc_schema import build_fdset
 
     module = read(_declaration(tmp_path, TAKES))
     cls = module.classes[0]
     assert not cls.decl.wire, "a plain @binding is a proxy"
-    with pytest.raises(TypeError, match="huggorm#79"):
-        ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module))
+    typed = ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module))
+    limit = typed.method("fits").params[0].type
+    assert (limit.spelling, limit.scalar) == ("int", "uint")
+
+    model = ir.Model({cls.name: typed}, {}, {}, frozenset(), {}, {},
+                     ir.Errors("", {}))
+    fds = descriptor_pb2.FileDescriptorSet()  # type: ignore[attr-defined]
+    fds.ParseFromString(build_fdset(model))
+    req = next(m for m in fds.file[0].message_type
+               if m.name == ir.req_name("Sizes", "fits"))
+    field = next(f for f in req.field if f.name == "limit")
+    assert field.type == field.TYPE_UINT64
 
 
 def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
