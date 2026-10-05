@@ -457,6 +457,22 @@ class Fill:
     arm: ArmTest
 
 
+def _spells(m: Method, where: str, resolver: Resolver) -> tuple[str, ...]:
+    """`@spells`, each name checked to BE an enum-backed vocabulary.
+
+    The decorator takes a string because a declaration holds constants,
+    so nothing else catches a typo - and a skipped name fails much
+    later, as a missing `huggorm::as_word` overload in the C++."""
+    for name in m.spells:
+        held = resolver.known.get(name)
+        if held is None or not (held.is_words and held.decl.enumerated):
+            raise TypeError(
+                f"{where}: @spells({name!r}) names no "
+                f"enum-backed vocabulary this declaration can see. "
+                f"Import the declaration that declares it.")
+    return m.spells
+
+
 def _attribute(owner: Class, m: Method) -> TypeError:
     """The refusal a `@property` accessor gets, and why it is one.
 
@@ -572,7 +588,8 @@ class MethodModel:
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
                                  and bool(word.decl.enumerated)),
-                   headers=m.headers, spells=m.spells)
+                   headers=m.headers,
+                   spells=_spells(m, f"{owner.name}.{m.name}", resolver))
 
     @property
     def return_spelling(self) -> str:
@@ -617,7 +634,7 @@ class FunctionModel:
                    type_ref(fn.ret, resolver) if fn.ret is not None else None,
                    _clean(fn.doc), cxx_name=fn.binds, cxx_body=fn.cxx_body,
                    blocks=fn.blocks, instant=fn.instant, headers=fn.headers,
-                   spells=fn.spells, startup=fn.startup,
+                   spells=_spells(fn, fn.name, resolver), startup=fn.startup,
                    translator=fn.translator)
 
     @property

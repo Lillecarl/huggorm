@@ -1342,19 +1342,6 @@ class Emitter:
             decl = self._decl(name)
             if decl is not None and decl.kind == "words" and decl.enumerated:
                 out[name] = self.model.enums[name]
-        # A `@spells` name has to BE one, and this is where that is
-        # checked. The decorator takes a string because a declaration
-        # holds constants, so nothing above catches a typo - and a
-        # silently skipped name fails much later, as a missing
-        # `huggorm::as_word` overload in the emitted C++.
-        for cls in classes:
-            for m in (*cls.bound, *([cls.from_parts] if cls.from_parts else [])):
-                for name in m.spells:
-                    if name not in out:
-                        raise TypeError(
-                            f"{cls.name}.{m.name}: @spells({name!r}) names no "
-                            f"enum-backed vocabulary this declaration can see. "
-                            f"Import the declaration that declares it.")
         return [out[name] for name in sorted(out)]
 
     def _alternative(self, cls: ir.UnionModel, arm: str) -> tuple[str, str]:

@@ -835,6 +835,35 @@ def test_the_model_refuses_an_arm_it_cannot_check(
         ir.ModuleModel.of(module, "")
 
 
+SPELLS = '''"""A body that spells a vocabulary nothing declares."""
+
+from huggorm_dsl.declare import binding, header, spells
+
+
+@header("nix/expr/eval.hh")
+@binding(cxx="nix::EvalState", threading="pool", blocking=False)
+class State:
+    """The owner of the method under test."""
+
+    @spells("Nowhere")
+    def fail(self) -> None:
+        """."""
+'''
+
+
+def test_the_model_refuses_a_spelling_of_no_vocabulary(
+        tmp_path: pathlib.Path) -> None:
+    """`@spells` must name an enum-backed vocabulary the declaration
+    sees, and the model checks it before any surface is built
+    (huggorm#115)."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    module = read(_declaration(tmp_path, SPELLS))
+    with pytest.raises(TypeError, match="Nowhere"):
+        ir.ModuleModel.of(module, "")
+
+
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     """A directory shaped like `decl/`: two declarations and two
     things that are not one.
