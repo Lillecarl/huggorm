@@ -95,31 +95,6 @@ class RpcNames:
         return cls(method_path(owner, method), req_name(owner, method),
                    resp_name(owner, method))
 
-# C++ spelling -> the Python type a caller sees. `bint` and
-# `string_view` have no place above the binding: a caller holds a
-# `bool` and a `str`.
-PYTHON = {
-    "string": "str",
-    # A view is a str by the time it reaches Python: the binding
-    # copies it, because a view outliving its owner is a dangling
-    # pointer rather than an exception.
-    "string_view": "str",
-    "bint": "bool",
-    # Widths. Python has one integer type, so both read as `int` - the
-    # width is a fact about the crossing, not about the value a caller
-    # holds.
-    "uint64_t": "int",
-    "int64_t": "int",
-    "double": "float",
-    # A span, and Python has a type for one: nanobind's chrono caster
-    # hands a timedelta over already.
-    "microseconds": "datetime.timedelta",
-    # A reference to a Python object: nothing is marshalled either way,
-    # and the binding holds the reference to call back through
-    # (huggorm#33).
-    "nb::object": "object",
-}
-
 # The value dunders, and the fact about the declaration that makes a
 # class define each one. `!=` comes with `__eq__`, and the three
 # comparisons `functools.total_ordering` writes come with `order=`.
@@ -304,33 +279,16 @@ def wire_blocker(t: TypeRef, served: frozenset[str]) -> str | None:
     return None
 
 
-def _spelling(t: Type) -> str:
-    """The Python spelling of a declared type.
-
-    A type with no C++ behind it is already Python. For one that has,
-    an unknown C++ spelling is refused rather than guessed: the
-    surfaces above could not marshal it."""
-    leaf = t.leaf
-    if leaf.cxx is None:
-        return t.python
-    if leaf.cxx.spelling not in PYTHON:
-        raise TypeError(
-            f"'{leaf.cxx.spelling}' has no Python spelling. Add it to "
-            f"ir.PYTHON once the boundary knows how to marshal it.")
-    # The DECLARATION's spelling wins where the two disagree: a
-    # std::string is a `str` most of the time, and `bytes` or a
-    # `pathlib.Path` where the alias says so.
-    return t.python if t.python != "bool" else PYTHON[leaf.cxx.spelling]
-
-
 def type_ref(t: Type, resolver: Resolver) -> TypeRef:
-    leaf = t.leaf
+    # The vocabulary already says the Python half: `Bint` is
+    # `Annotated[bool, Cxx("bint")]`, so `python` is `bool`.
+    name = t.leaf.python
     return TypeRef(
-        spelling=_spelling(t),
+        spelling=t.python,
         origin=t.origin,
         args=tuple(type_ref(a, resolver) for a in t.args),
-        kind=resolver.kind(_spelling(leaf)),
-        name=_spelling(leaf),
+        kind=resolver.kind(name),
+        name=name,
     )
 
 
