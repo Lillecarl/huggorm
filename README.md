@@ -175,27 +175,25 @@ say the same word nine times (#60).
     setup.py            runs pygen, then packages what it wrote
 
 No hand-written source, like the other leaf. The emitter it runs is
-`huggorm_gen/pygen`:
+`huggorm_gen/pygen`, over the typed model:
 
-    pygen/model.py        declaration entries into protocol dicts
-    pygen/surface.py      names for the PYTHON surface, and what a
-                          protocol may carry
-    pygen/grpc_schema.py  names for the WIRE, and the FileDescriptorSet
-    pygen/emitter.py      protocol dicts -> Python, via ast.unparse
-    pygen/generate.py     the driver, and every contract check it runs
+    ir.py                 the typed model every stage reads (#29)
+    contracts.py          the rules the build refuses to break
+    pygen/spell.py        how one module writes a type, and its imports
+    pygen/surface.py      names for the PYTHON surface
+    pygen/grpc_schema.py  the FileDescriptorSet
+    pygen/emitter.py      the model -> Python, via ast.unparse
+    pygen/generate.py     the driver
     pygen/smoke_test.py   the gates that hold the surfaces to each other
-    payload/wiretypes.py  how a declared type STRING is spelled
+    payload/wiretypes.py  how a `_wire_fields` STRING is spelled
     payload/runtime.py    copied into the package as _runtime.py
 
-Read `wiretypes.py` first: it is small and it is where a type's
-spelling is decided. Then `model.py`'s `check_*` functions - each one
-is a rule the build refuses to break, and each names the failure it
-prevents.
+Read `ir.py` first: it is where a type is resolved to what it IS.
+Then `contracts.py` - each function is a rule the build refuses to
+break, and each names the failure it prevents.
 
-Nothing here imports the compiled package at all. Every shape comes
-from `huggorm_gen.cppgen.generate`: `declared_entries`,
-`declared_functions`, `declared_returned`, `declared_enums`,
-`declared_errors` and `declared_bases`.
+Nothing here imports the compiled package at all. The model comes
+from `huggorm_gen.cppgen.generate.declared_model`.
 
 So the two leaves are siblings, not a chain: a change to the Python
 surface does not wait on a C++ compiler. `setup.py` asserts it, by

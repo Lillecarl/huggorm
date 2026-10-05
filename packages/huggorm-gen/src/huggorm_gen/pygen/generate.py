@@ -1,8 +1,8 @@
 """
 CLI: read the declarations, emit the package.
 
-Glue only — the protocol dict comes from `huggorm_gen.cppgen`, its rules
-live in model.py, and emission lives in emitter.py. Installed as the
+Glue only — the model comes from `huggorm_gen.cppgen`, its rules live
+in `huggorm_gen.contracts`, and emission lives in emitter.py. Installed as the
 `codegen-generate` entry point.
 """
 
@@ -15,6 +15,7 @@ from typing import Any
 
 from huggorm_decl import corpus
 from huggorm_dsl import declare
+from huggorm_gen import contracts
 from huggorm_gen.cppgen.generate import (
     declared_entries,
     declared_enums,
@@ -41,15 +42,8 @@ from huggorm_gen.pygen.emitter import (
     wrapper_module,
 )
 from huggorm_gen.pygen.grpc_schema import annotate, build_fdset
-from huggorm_gen.pygen.model import (
-    affine_from_pool,
-    check_collection_contract,
-    check_optional_contract,
-    check_wire_contract,
-    check_wrap_contract,
-)
 
-# See model.Proto: one class, method or function as a plain dict.
+# One class, method or function as a plain dict.
 Proto = dict[str, Any]
 
 
@@ -172,42 +166,11 @@ def build_manifest() -> Proto:
     returned_protos = [_proto(n) for n in returned_names]
     protos = [_proto(n) for n in wrapper_names]
 
-    # Which classes get an async wrapper at all. A pool class whose
-    # methods cannot block gets nothing from one, so it crosses every
-    # layer as the sync binding object itself (huggorm#25).
-    complaints = check_wrap_contract(protos + returned_protos)
-    if complaints:
-        for c in complaints:
-            print(f"wrap contract: {c}", file=sys.stderr)
-        sys.exit(1)
-    # ...and nothing may return a CONTAINER of wrapped types. Every
-    # layer attaches a runner to one object, not to the elements of a
-    # collection, so such a return builds and then fails at the first
-    # call that touches it.
-    complaints = check_collection_contract(protos + returned_protos)
-    if complaints:
-        for c in complaints:
-            print(f"collection contract: {c}", file=sys.stderr)
-        sys.exit(1)
-    # ...and an optional return may name a VALUE, never a wrapped
-    # type. The wire can carry absence - a message field has presence
-    # - but no layer adopts nothing into a runner.
-    complaints = check_optional_contract(protos + returned_protos)
-    if complaints:
-        for c in complaints:
-            print(f"optional contract: {c}", file=sys.stderr)
-        sys.exit(1)
     unwrapped = sorted(p["name"] for p in protos + returned_protos
                        if not p["wrapped"])
     if unwrapped:
         print(f"not wrapped (pool and non-blocking, so nothing to wrap): "
               f"{', '.join(unwrapped)}")
-
-    complaints = affine_from_pool(returned_protos + protos)
-    if complaints:
-        for c in complaints:
-            print(f"policy: {c}", file=sys.stderr)
-        sys.exit(1)
 
     # The async spelling of a type, when the LANGUAGE gives one.
     #
@@ -232,43 +195,12 @@ def build_manifest() -> Proto:
     if unwrapped_free:
         print(f"free functions with no threading policy, so no wrapper: "
               f"{', '.join(unwrapped_free)}")
-    # The wire policy and the serialization contract must agree before
-    # anything downstream trusts either. Loud, at build time.
-    #
-    # The enum NAMES go in with them: an enum is a scalar everywhere
-    # else, so a wire field may declare one. Read here rather than
-    # from the manifest, which is not built yet.
     enums = declared_enums()
-    enum_names = set(enums)
-    # A union is not a class in the manifest's groups either, and for
-    # a sharper reason than an enum: it never reaches an extension at
-    # all. `DerivedPath = StorePath | DerivedPathBuilt` is module-level
-    # Python in the declaration, so the only route here is the
-    # declaration itself.
     unions = declared_unions()
-    # The exception hierarchy, from the module the C++ emitter writes
-    # it into. An error crosses the wire as a NAME, and this is the set
-    # that makes a name safe to construct (huggorm#36).
-    #
-    # Read before the contract check rather than after it: an error
-    # class is a legal FIELD type now, so the check has to know the
-    # names (huggorm#71).
     errors = declared_errors()
-    complaints = check_wire_contract(
-        protos + returned_protos, enum_names, set(unions),
-        set(errors["classes"]))
-    if complaints:
-        for c in complaints:
-            print(f"wire contract: {c}", file=sys.stderr)
-        sys.exit(1)
-    # These probes exist for that check only; they are not surface.
+    # Round-trip probes, not surface.
     for proto in protos + returned_protos:
         proto.pop("_helpers", None)
-
-    # String vocabularies libstore parses. A member is a str, so this
-    # table says only "this NAME is a scalar" - to the schema, to the
-    # codec, and to the stub generator, which needs to import it.
-    # ...and the vocabularies themselves, read above.
 
     manifest: Proto = {
         "wrappers": {p["name"]: p for p in protos},
@@ -284,36 +216,6 @@ def build_manifest() -> Proto:
         # one constructor call.
         "async_twins": async_twins,
     }
-
-    # No silent Any may survive into the artifact: a method whose types
-    # never resolved is uncallable over the wire while looking alive
-    # locally. Fail the build naming every offender; an explicit escape
-    # hatch can be added when a legitimate case first appears.
-    unresolved: list[str] = []
-    for fname, proto in manifest["free_functions"].items():
-        for p in proto["params"]:
-            if p["type"] == "Any":
-                unresolved.append(f"{fname} param {p['name']!r}")
-        if proto["return_type"] == "Any":
-            unresolved.append(f"{fname} return type")
-    for group in ("wrappers", "returned_types"):
-        for cls_name, proto in manifest[group].items():
-            for p in proto.get("ctor", ()):
-                if p["type"] == "Any":
-                    unresolved.append(
-                        f"{cls_name}.__init__ param {p['name']!r}")
-            for m in proto["methods"]:
-                for p in m["params"]:
-                    if p["type"] == "Any":
-                        unresolved.append(
-                            f"{cls_name}.{m['name']} param {p['name']!r} "
-                        f"(the declaration does not spell it)")
-                if m["return_type"] == "Any":
-                    unresolved.append(f"{cls_name}.{m['name']} return type")
-    if unresolved:
-        for u in unresolved:
-            print(f"unresolved type: {u}", file=sys.stderr)
-        sys.exit(1)
 
     # grpc_schema owns wire naming; stamping it into the manifest is what
     # lets the server and the client read the names instead of each
@@ -336,6 +238,13 @@ def main(argv: list[str] | None = None) -> None:
     # Every refusal this build can see, before it derives anything
     # (huggorm#61).
     corpus().read_all()
+    # ...and every rule the typed model must obey, before anything is
+    # written.
+    broken = contracts.complaints(declared_model())
+    for rule, why in broken:
+        print(f"{rule}: {why}", file=sys.stderr)
+    if broken:
+        sys.exit(1)
     manifest = build_manifest()
     protos = list(manifest["wrappers"].values())
     returned_protos = list(manifest["returned_types"].values())

@@ -34,54 +34,81 @@ def test_parse(out: pathlib.Path) -> None:
         ast.parse(py.read_text(), filename=str(py))
 
 
+def _cls(name: str, *, threading: str = "pool", blocking: bool = True,
+         wire: str = "", fields: tuple[tuple[str, str], ...] = (),
+         returns: tuple[tuple[str, Any], ...] = ()) -> Any:
+    """One class model, built by hand for a contract the corpus does
+    not break."""
+    from huggorm_dsl.declare import Decl
+    from huggorm_gen import ir
+
+    return ir.ClassModel(
+        name=name, package="pkg", module="mod", doc="",
+        decl=Decl(name=name, threading=threading, blocking=blocking,
+                  wire=wire),
+        is_value=wire == "value", produced=False, constructs=True,
+        wire_fields=fields, ctor=(),
+        methods=tuple(ir.MethodModel(m, (), t, "") for m, t in returns))
+
+
+def _model(*classes: Any, enums: tuple[str, ...] = ()) -> Any:
+    from huggorm_gen import ir
+
+    return ir.Model({c.name: c for c in classes}, {}, {}, frozenset(), {},
+                    {n: ir.EnumModel(n, "pkg.mod", (), "") for n in enums},
+                    ir.Errors("", {}))
+
+
 def test_a_container_of_wrapped_types_is_refused() -> None:
     """A container of wrapped types builds, emits a schema, and then
     hands back bare sync objects: nothing attaches a runner to
     elements."""
-    from huggorm_gen.pygen.model import check_collection_contract
+    from huggorm_gen import contracts, ir
 
-    protos = [{
-        "name": "V", "wrapped": True, "methods": [
-            {"name": "attrs", "return_type": "dict[str, V]"},
-            {"name": "items", "return_type": "list[V]"},
-            {"name": "one", "return_type": "V"},
-            {"name": "n", "return_type": "int"},
-        ]}]
-    bad = check_collection_contract(protos)
+    v = ir.TypeRef.named("V", "proxy")
+    model = _model(_cls("V", returns=(
+        ("attrs", ir.TypeRef.dict_of(v)), ("items", ir.TypeRef.list_of(v)),
+        ("one", v), ("maybe", ir.TypeRef.optional_of(v)),
+        ("n", ir.TypeRef.named("int", "scalar")))))
+    bad = contracts.collection(model)
     assert len(bad) == 2, bad
     assert all("attrs" in b or "items" in b for b in bad), bad
 
 
-def test_an_enum_is_a_scalar_everywhere() -> None:
-    """One rule, held by all three layers that had an opinion.
+def test_an_unwrapped_class_hands_back_nothing_wrapped() -> None:
+    """A pool class that cannot block is not wrapped, so a caller holds
+    its sync object - and a wrapped return would arrive with no
+    runner."""
+    from huggorm_gen import contracts, ir
 
-    The schema always accepted an enum wherever a scalar goes -
-    alone, in a list, in a map - because a StrEnum member IS a string.
-    check_wire_contract did not: it tested a field type against the
-    primitives and the class protos, and an enum is in neither, so a
-    _wire_fields entry of enum type failed the build as an unknown
-    type while the rpc layer accepted the same declaration.
+    w = ir.TypeRef.named("W", "proxy")
+    bare = _cls("Bare", blocking=False, returns=(("make", w),))
+    assert contracts.wrap(_model(_cls("W"), bare))
+    assert contracts.wrap(_model(_cls("W"))) == []
+
+
+def test_an_enum_is_a_scalar_everywhere() -> None:
+    """One rule, held by every layer that has an opinion: a StrEnum
+    member IS a string, so an enum goes wherever a scalar goes -
+    alone, in a list, in a map, and in a wire field.
 
     The codec half of this is tested where the codec lives; here is
     the half the generator decides."""
-    from huggorm_gen import ir
-    from huggorm_gen.pygen.model import check_wire_contract
+    from huggorm_gen import contracts, ir
 
     word = ir.TypeRef.named("Word", "enum")
     for t in (word, ir.TypeRef.list_of(word), ir.TypeRef.dict_of(word)):
         assert ir.wire_blocker(t, frozenset()) is None, t.spelling
 
-    def proto(ftype: str) -> dict[str, object]:
-        return {"name": "Probe", "wire": "value", "threading": "pool",
-                "wire_fields": [["kind", ftype]],
-                "_helpers": ["_from_parts", "_parts"],
-                "dunders": ["__eq__", "__hash__", "__repr__"]}
+    def probe(ftype: str) -> Any:
+        return _model(_cls("Probe", wire="value", fields=(("kind", ftype),)),
+                      enums=("Word",))
 
     for ftype in ("Word", "list[Word]"):
-        assert check_wire_contract([proto(ftype)], {"Word"}) == [], ftype
+        assert contracts.wire(probe(ftype)) == [], ftype
     # ...and a name that is neither a class nor a declared enum still
     # fails, so the set widened rather than the check weakening.
-    complaints = check_wire_contract([proto("Nonsense")], {"Word"})
+    complaints = contracts.wire(probe("Nonsense"))
     assert len(complaints) == 1 and "unknown field type" in complaints[0]
 
 
@@ -105,7 +132,6 @@ def test_an_optional_return_names_a_value_or_nothing(
     and fails only at the first await on it."""
     from huggorm_gen import ir
     from huggorm_gen.payload.wiretypes import adoptee, optional_value, respell
-    from huggorm_gen.pygen.model import check_optional_contract
 
     assert optional_value("StorePath | None") == "StorePath"
     assert optional_value("None | StorePath") == "StorePath"
@@ -161,27 +187,16 @@ def test_an_optional_return_names_a_value_or_nothing(
         in emitted, emitted
     assert "-> AsyncValue | None" in emitted, emitted
 
-    def proto(rt: str) -> dict[str, object]:
-        return {"name": "Probe", "wrapped": True, "threading": "pool",
-                "methods": [{"name": "find", "return_type": rt, "params": []}]}
+    # No pool class returns an affine one, plain or optional. An affine
+    # class may (huggorm#8).
+    from huggorm_gen import contracts
 
-    assert check_optional_contract([proto("StorePath | None")]) == []
-    assert check_optional_contract([proto("Probe | None")]) == []
-    complaints = check_optional_contract([proto("str | int")])
-    assert len(complaints) == 1 and "no wire representation" in complaints[0]
-
-    # No pool class returns an affine one: a wrapper or a returned
-    # type, plain or optional. An affine class may (huggorm#8).
-    from huggorm_gen.pygen.model import affine_from_pool
-
-    def declared(name: str, threading: str, rt: str) -> dict[str, object]:
-        return {"name": name, "wrapped": True, "threading": threading,
-                "methods": [{"name": "make", "return_type": rt}]}
-
-    state = declared("State", "affine", "State")
-    for rt in ("State", "State | None"):
-        assert affine_from_pool([state, declared("Pool", "pool", rt)]), rt
-    assert affine_from_pool([state]) == []
+    made = ir.TypeRef.named("State", "proxy")
+    state = _cls("State", threading="affine", returns=(("make", made),))
+    for rt in (made, ir.TypeRef.optional_of(made)):
+        pool = _cls("Pool", returns=(("make", rt),))
+        assert contracts.affine_from_pool(_model(state, pool)), rt.spelling
+    assert contracts.affine_from_pool(_model(state)) == []
 
 
 def test_runtime_contract(out: pathlib.Path) -> None:

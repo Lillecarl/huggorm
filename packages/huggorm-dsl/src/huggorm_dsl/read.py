@@ -357,8 +357,8 @@ class Type:
         (huggorm#79).
 
         The vocabulary says which: `U64` carries `Cxx(width="uint")`.
-        `uint` must be one of `wiretypes.SCALAR_NAMES`, and `model.py`
-        refuses an emitted field type it does not know."""
+        `uint` must be one of `wiretypes.SCALAR_NAMES`, and
+        `contracts.wire` refuses a field type it does not know."""
         held = self.required
         inner = held.python
         leaf = held.leaf

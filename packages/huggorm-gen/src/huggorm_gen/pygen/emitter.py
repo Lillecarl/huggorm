@@ -18,7 +18,7 @@ from huggorm_gen.payload.wiretypes import (
 )
 from huggorm_gen.pygen.spell import Spelling
 
-# One class, method or function as a plain dict. See model.Proto.
+# One class, method or function as a plain dict.
 Proto = dict[str, Any]
 
 ASYNC = ir.ASYNC
