@@ -1,30 +1,11 @@
-"""
-The protocol dict, and the rules it has to obey.
-
-The dict shape is the contract between the declarations (which build
-it, in `huggorm_gen.ir`) and the emitter (emitter.py). This
-file holds what neither of them owns: how one annotation is spelled,
-how one default is written back as source, and the `check_*` functions
-the build refuses to pass.
-
-Nothing here reflects a binding class any more. `extract_wrapper` did,
-and it went when the last class it could measure stopped existing -
-a nanobind method is a builtin with no signature, so reflection has
-nothing to read. `extract_errors` still imports a module, because an
-exception hierarchy is plain Python and is not declared.
+"""The `check_*` contracts the build refuses to pass, over the
+manifest dicts. They move onto `ir.Model` with the rest (huggorm#29).
 """
 
-import ast
-import contextlib
-import importlib
-import inspect
-from enum import Enum
-from typing import Any, get_args, get_origin
+from typing import Any
 
 from huggorm_gen.payload.wiretypes import (
-    CONTAINERS,
     adoptee,
-    head,
     list_value,
     map_value,
     names_in,
@@ -49,165 +30,6 @@ BINDINGS_PKG = "huggorm_bindings"
 VALUE_DUNDERS = ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__",
                  "__hash__", "__repr__", "__str__")
 REQUIRED_DUNDERS = ("__eq__", "__hash__", "__repr__")
-
-_PRIMITIVES = {
-    "string": "str",
-    # Real Nix returns views into an object's own storage. A binding
-    # copies before anything reaches Python - a view outliving its
-    # owner is a dangling pointer, not an exception - so by the time a
-    # type reaches this table it is a str (huggorm#15).
-    "string_view": "str",
-    "int": "int",
-    "long": "int",
-    "long long": "int",
-    "size_t": "int",
-    "ssize_t": "int",
-    # <stdint.h> spellings. A declaration says `I64` or `U64`, and
-    # `ir.PYTHON` maps the C++ onto `int` before the name gets
-    # here - so these are what a field type is checked against.
-    "int8_t": "int",
-    "int16_t": "int",
-    "int32_t": "int",
-    "int64_t": "int",
-    "uint8_t": "int",
-    "uint16_t": "int",
-    "uint32_t": "int",
-    "uint64_t": "int",
-    "double": "float",
-    "float": "float",
-    "bool": "bool",
-    "bint": "bool",
-    "void": "None",
-}
-
-def _qualified(cls: Any) -> str:
-    """One resolved class, as the annotation that would name it.
-
-    `__name__` alone is wrong for anything the emitted modules do not
-    import from huggorm_bindings. `pathlib.Path` resolves to a class
-    whose `__name__` is `Path`, and an emitted `-> Path` is a
-    NameError - or worse, an import of `Path` from the bindings.
-
-    That went unnoticed because it depends on something unrelated:
-    get_type_hints resolves a whole function at once, so a method with
-    a `StorePath` parameter can fail to resolve (the name is not a
-    Python global) and keeps its written strings, while a method
-    whose annotations all resolve loses every module. The same
-    declaration meant two different things depending on its
-    NEIGHBOURS.
-
-    The module HEAD, not `__module__`, because that is what the author
-    wrote and what a reader can import: `pathlib.Path` is really
-    `pathlib._local.Path` on 3.14, and the private path is no annotation
-    to emit. Checked rather than assumed - if the head does not
-    re-export the class, the full module path is the honest answer."""
-    name: str = cls.__name__
-    mod = getattr(cls, "__module__", "") or ""
-    if mod == "builtins" or mod.split(".")[0] in ("", BINDINGS_PKG):
-        return name
-    head = mod.split(".")[0]
-    with contextlib.suppress(Exception):
-        if getattr(importlib.import_module(head), name, None) is cls:
-            return f"{head}.{name}"
-    return f"{mod}.{name}"
-
-
-def _annotation_name(ann: Any) -> str:
-    """Stringify one annotation. The empty-check lives HERE so callers
-    can pass either the resolved hint or the raw annotation - passing
-    sig.return_annotation as a 'sentinel' argument was the bug that
-    turned every annotated return into Any.
-
-    A subscripted generic renders in full. `__name__` on one answers
-    with the head - `dict[str, int]` says `dict` - which loses exactly
-    the part that says what the entries hold. Whether that mattered
-    depended on which path resolved the annotation: a free function's
-    stayed the written string and kept its parameters, a method's
-    resolved to a real generic and lost them, so the same declaration
-    meant two different things depending on where it was written.
-
-    A resolved CLASS renders through _qualified, so a type from
-    outside the bindings keeps the module that says where it lives."""
-    if ann is inspect.Signature.empty:
-        return "Any"
-    if ann is None or getattr(ann, "__name__", None) == "NoneType":
-        return "None"
-    origin = get_origin(ann)
-    if origin is not None:
-        inner = ", ".join(_annotation_name(a) for a in get_args(ann))
-        return f"{_annotation_name(origin)}[{inner}]"
-    if isinstance(ann, type):
-        return _qualified(ann)
-    return getattr(ann, "__name__", str(ann))
-
-
-def default_source(value: Any, type_str: str, where: str) -> str | None:
-    """One parameter default, as the source that reproduces it.
-
-    A default is a fact about the SIGNATURE, not about the wire. Every
-    generated surface writes it, so a caller that omits the argument
-    gets the same value in-process and over RPC, and the argument that
-    reaches the wire is always present. That is why this answers with
-    source rather than with a value: the emitter writes it, the runtime
-    never sees it.
-
-    None means the parameter has no default.
-
-    An enum member is written as the member, not as its value. A
-    StrEnum member IS a string, so `repr` would give `'nar'` - which
-    still calls correctly and which a typechecker rejects, because a
-    str is not a ContentAddressMethod.
-
-    Everything else must be a literal that reads back as itself. That
-    check is not ceremony: `repr(float("inf"))` is `inf`, which is a
-    NameError in the module it would be written into.
-
-    A default of None is refused for anything but a CONTAINER. A proxy
-    has no None to send and a scalar field has no presence, so a None
-    default would typecheck here and fail at the first call that took
-    it. A `list[T]` or a `dict[str, V]` is the case where it works: a
-    repeated protobuf field has no presence problem, because an absent
-    one and an empty one are the same field. So None crosses as
-    nothing and the far side reads back the empty container it means.
-
-    `[]` is the alternative and it is worse. It is a mutable default,
-    and every generated surface would carry one - four shared lists
-    where the binding has one.
-
-    A CONSTRUCTOR parameter may still default to None whatever its
-    type, and does not come through here: it comes from
-    constructor_signature, where the overload set says a parameter may
-    be omitted and C++ says nothing about what it would have been."""
-    if value is inspect.Parameter.empty:
-        return None
-    if value is None:
-        if head(type_str) in CONTAINERS:
-            return "None"
-        raise ValueError(
-            f"{where}: a default of None needs an optional type the surface "
-            f"cannot yet spell. {type_str} is not a container, so absence "
-            f"has nothing to travel as. Declare the parameter required.")
-    if isinstance(value, Enum):
-        return f"{type(value).__name__}.{value.name}"
-    if isinstance(value, (list, dict, set, bytearray)):
-        # `repr([])` reads back as itself, so nothing below would stop
-        # this. It is refused because of what it MEANS: one shared
-        # mutable default per generated surface, four of them for a
-        # binding that has one.
-        raise ValueError(
-            f"{where}: {value!r} is a mutable default, and every generated "
-            f"surface would carry its own. Default the parameter to None - a "
-            f"container reads an absent argument back as empty.")
-    src = repr(value)
-    try:
-        if ast.literal_eval(src) != value:
-            raise ValueError("does not read back as itself")
-    except (ValueError, SyntaxError) as exc:
-        raise ValueError(
-            f"{where}: default {value!r} is not a literal the generated "
-            f"surfaces can write ({exc})") from None
-    return src
-
 
 def check_wire_contract(protos: list[Proto],
                         enums: set[str] | None = None,
@@ -284,18 +106,10 @@ def check_wire_contract(protos: list[Proto],
                         f"be optional. A repeated field has no presence, so "
                         f"an absent one IS an empty one - drop the '?'.")
                 ftype = element
-            # `scalar_spelling`, not `_PRIMITIVES.values()`. The two
-            # nearly agree and the difference is the whole of this
-            # check: _PRIMITIVES maps a C++ SPELLING onto a Python name
-            # for a signature, so it knows `float` and `None` - neither
-            # of which a field can be - and it does not know `bytes`,
-            # which one can. A field is checked against what the WIRE
-            # carries, which is the list the schema and the codec both
-            # read. Found when Hash's `digest` crossed as bytes.
-            #
-            # It answers for a SPELLED scalar too - a
-            # `datetime.timedelta` goes in an int field - which is why
-            # this asks a function rather than a tuple.
+            # Against what the WIRE carries, the list the schema and
+            # the codec both read: a field cannot be `float` or `None`
+            # and can be `bytes`. A SPELLED scalar answers too - a
+            # `datetime.timedelta` goes in an int field.
             if scalar_spelling(ftype) is None and ftype not in known:
                 bad.append(f"{name}._wire_fields {fname!r}: unknown field type {ftype!r}")
             elif kinds.get(ftype) == "proxy":

@@ -34,26 +34,12 @@ def test_parse(out: pathlib.Path) -> None:
         ast.parse(py.read_text(), filename=str(py))
 
 
-def test_annotation_rendering() -> None:
-    """A subscripted generic renders in full, wherever it is written.
+def test_a_container_of_wrapped_types_is_refused() -> None:
+    """A container of wrapped types builds, emits a schema, and then
+    hands back bare sync objects: nothing attaches a runner to
+    elements."""
+    from huggorm_gen.pygen.model import check_collection_contract
 
-    `__name__` on one answers with the head, so `dict[str, int]` became
-    `dict` - and whether it did depended on which path resolved the
-    annotation. A free function's stayed the written string and kept
-    its parameters; a method's resolved to a real generic and lost
-    them. The same declaration meant two different things depending on
-    where it appeared."""
-    from huggorm_gen.pygen.model import _annotation_name, check_collection_contract
-
-    assert _annotation_name(dict[str, int]) == "dict[str, int]"
-    assert _annotation_name(list[str]) == "list[str]"
-    assert _annotation_name(dict[str, list[int]]) == "dict[str, list[int]]"
-    assert _annotation_name(int) == "int"
-    assert _annotation_name(None) == "None"
-
-    # ...which is what lets the collection rule see inside one. A
-    # container of wrapped types builds, emits a schema, and then hands
-    # back bare sync objects: nothing attaches a runner to elements.
     protos = [{
         "name": "V", "wrapped": True, "methods": [
             {"name": "attrs", "return_type": "dict[str, V]"},
@@ -64,93 +50,6 @@ def test_annotation_rendering() -> None:
     bad = check_collection_contract(protos)
     assert len(bad) == 2, bad
     assert all("attrs" in b or "items" in b for b in bad), bad
-
-
-def test_a_resolved_class_keeps_its_module() -> None:
-    """An annotation must not depend on its NEIGHBOURS.
-
-    get_type_hints resolves a whole function at once. A method with a
-    `StorePath` parameter can fail to resolve - the name is not a
-    Python global - so its written strings survive; one whose
-    annotations all resolve gets real classes, and `__name__` on a
-    class drops the module it lives in. So `-> pathlib.Path` meant
-    `pathlib.Path` or `Path` depending on what else the method
-    declared, and the second emits a NameError.
-
-    The module HEAD is what gets written, because that is what an
-    author writes and what a reader can import - checked, not assumed,
-    so a class the head does not re-export gets its full path."""
-    import collections.abc
-    import datetime
-    import pathlib
-
-    from huggorm_gen.pygen.model import _annotation_name
-
-    assert _annotation_name(pathlib.Path) == "pathlib.Path"
-    assert _annotation_name(datetime.datetime) == "datetime.datetime"
-
-    # A builtin stays bare, and so does a binding class: every emitted
-    # module imports those from the package root.
-    from huggorm_bindings import StorePath
-
-    assert _annotation_name(str) == "str"
-    assert _annotation_name(StorePath) == "StorePath"
-    assert _annotation_name(dict[str, int]) == "dict[str, int]"
-
-    # collections.Sequence has not existed since 3.10, so the head is
-    # the wrong answer here and the full path is the right one.
-    assert getattr(collections, "Sequence", None) is None
-    assert (_annotation_name(collections.abc.Sequence)
-            == "collections.abc.Sequence")
-
-
-def test_a_default_is_written_or_refused() -> None:
-    """What a parameter default may be, and what happens to the rest.
-
-    The generated surfaces WRITE the default as source, so a default
-    this cannot write has to stop the build - a wrapper missing one
-    the binding has would answer a short call differently depending on
-    where the object lives.
-
-    An enum member is written as the member. A StrEnum member IS a
-    string, so `repr` gives `'nar'`, which calls correctly and which a
-    typechecker rejects: a str is not a ContentAddressMethod."""
-    import enum
-    import inspect
-
-    from huggorm_gen.pygen.model import default_source
-
-    class Word(enum.StrEnum):
-        NAR = "nar"
-
-    def src(value: object, type_str: str = "str") -> str | None:
-        return default_source(value, type_str, "probe:p")
-
-    assert src(inspect.Parameter.empty) is None
-    assert src(Word.NAR) == "Word.NAR"
-    assert src("nar") == "'nar'"
-    assert src(7) == "7" and src(True) == "True" and src(b"x") == "b'x'"
-
-    # None depends on the TYPE. A repeated protobuf field has no
-    # presence problem - an absent one and an empty one are the same
-    # field - so a container may default to None and nothing else may.
-    assert src(None, "list[StorePath]") == "None"
-    assert src(None, "dict[str, int]") == "None"
-
-    # `[]` is what a reader expects instead, and it is worse: a mutable
-    # default, once per generated surface.
-    for bad, type_str, why in (
-            (None, "str", "not a container"),
-            (None, "StorePath", "not a container"),
-            ([], "list[StorePath]", "mutable default"),
-            (float("inf"), "str", "not a literal"),
-            (object(), "str", "not a literal")):
-        try:
-            src(bad, type_str)
-        except ValueError as e:
-            assert why in str(e), (bad, str(e))
-        else:
-            raise AssertionError(f"{bad!r} was accepted as a default")
 
 
 def test_an_enum_is_a_scalar_everywhere() -> None:
