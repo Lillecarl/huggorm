@@ -85,6 +85,7 @@ BUILTIN_DECORATORS = frozenset({"property", "staticmethod", "classmethod",
 # chose. A reader short one of the three arms drops an `async def`
 # out of one reading and not the other (huggorm#88).
 DEFINITIONS = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+type DefinitionNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
 # Where a declaration takes its vocabulary from. Named once: a
@@ -1878,48 +1879,70 @@ def _chosen(path: str) -> tuple[ast.Module, set[int]]:
 
 
 def _read(path: str) -> Module:
-    """`read` with the path already on the stack."""
-    tree, live = _chosen(path)
-    body = tree.body
-    vocab = _vocabulary(tree)
+    """`read` with the path already on the stack.
+
+    The IMPORT drives: `vars` holds every name the build has, in
+    definition order, with each `NIX_VERSION` branch already chosen.
+    The tree supplies each definition's text and position, found by
+    the line the import names. A name the reader can put nowhere is
+    refused, so nothing a declaration writes reaches no output in
+    silence (huggorm#73, #75, #78, #88, #123).
+
+    A module holds declared classes, exceptions, union aliases,
+    decorated functions and imports. IMPORTS are read from the tree:
+    `Str` and a union this file declares are both a `typing` alias,
+    and `NIX_2_36` is a bare bool, so the object cannot say where it
+    came from."""
+    tree = ast.parse(pathlib.Path(path).read_text(), filename=path)
+    mod = load(path)
     fns = _definitions(path)
+    _reconcile(tree, set(fns), path)
+    nodes = {_first_line(n): n for n in ast.walk(tree)
+             if isinstance(n, DEFINITIONS)}
+    assigned = _assignments(tree)
+    vocab = _vocabulary(tree)
     stem = pathlib.Path(path).stem
-    # SIBLINGS, so one bad class does not hide the next. A class is
+    here = str(pathlib.Path(path).resolve())
+    imported = {a.asname or a.name.split(".")[0]
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Import | ast.ImportFrom)
+                for a in n.names}
+    glb = vars(mod)
+    # SIBLINGS, so one bad definition does not hide the next. Each is
     # read in full or not at all - the failure is recorded, its name
     # is marked unsound, and the loop goes on.
-    classes = []
-    for n in body:
-        if not (isinstance(n, ast.ClassDef) and n.decorator_list):
+    classes: list[Class] = []
+    errors: list[Class] = []
+    functions: list[Method] = []
+    unions: list[Class] = []
+    for name, value in glb.items():
+        if _dunder(name) or name in imported:
             continue
+        fn = _written(value, here)
         try:
-            classes.append(_class(n, vocab, stem, live, fns))
+            if isinstance(value, type) and value.__module__ == mod.__name__:
+                node = nodes[value.__firstlineno__]
+                assert isinstance(node, ast.ClassDef)
+                if node.decorator_list:
+                    cls = _class(node, vocab, stem, set(fns), fns)
+                    _class_contents(cls, value, here, node)
+                    classes.append(cls)
+                else:
+                    errors.append(_error(node, value, glb, stem))
+            elif fn is not None:
+                functions.extend(_free(nodes[fn.__code__.co_firstlineno],
+                                       vocab, fns))
+            elif _union(value) is not None and name in assigned:
+                unions.append(_union_class(name, value, stem,
+                                           *assigned[name]))
+            else:
+                raise DeclarationError(
+                    assigned.get(name, (tree, None))[0],
+                    f"{name} ({type(value).__name__}) reaches no output. A "
+                    f"declaration holds declared classes, exceptions, union "
+                    f"aliases, decorated functions and imports.")
         except DeclarationError as e:
-            _survive(e, unsound=n.name)
-    # Module-level functions are FREE bindings - nanopynix has 72 of
-    # them, `m.def("open_store", &open_store_uri, "uri"_a)` and its
-    # kind. Only decorated ones; `_contents` refuses an undecorated
-    # def, because nothing reads it.
-    functions = []
-    for n in body:
-        if isinstance(n, ast.AsyncFunctionDef) and n.decorator_list:
-            # As in a class body, and for the same reason.
-            _survive(DeclarationError(
-                n,
-                f"{n.name}: a declaration describes a C++ binding, so "
-                f"`async def` says nothing here. The async form is "
-                f"DERIVED from @threading - so write a plain `def`."),
-                unsound=n.name)
-            continue
-        if not (isinstance(n, ast.FunctionDef) and n.decorator_list):
-            continue
-        try:
-            functions.append(
-                _method(n, vocab, fns, bound=False, bound_kind=False))
-        except DeclarationError as e:
-            _survive(e, unsound=n.name)
-    mod = load(path)
-    glb = vars(mod)
-    unions = _unions(body, stem, glb)
+            _survive(e, unsound=name)
     uses = _uses(tree, pathlib.Path(path).parent)
     # ...checked once the arms can be resolved, which needs the
     # imports this file made and the classes it declares itself.
@@ -1929,28 +1952,65 @@ def _read(path: str) -> Module:
     # is about a single class or this file's own vocabulary.
     resolvable = {**uses, **{c.name: c for c in classes},
                   **{u.name: u for u in unions}}
-    # The assignment each union was written as, so a refusal points at
-    # the line rather than at the file. `_unions` builds a `Class`,
-    # which carries no position - and the alternative was a field on
-    # the dataclass for the benefit of one message.
-    at = {t.id: item for item in body if isinstance(item, ast.Assign)
-          for t in item.targets if isinstance(t, ast.Name)}
     for u in unions:
         try:
-            _check_arms(u, resolvable, at.get(u.name, tree))
+            _check_arms(u, resolvable, assigned[u.name][0])
         except DeclarationError as e:
             _survive(e, unsound=u.name)
-    out = Module(
+    return Module(
         name=stem,
         doc=ast.get_docstring(tree, clean=False) or "",
         classes=tuple(classes),
-        errors=_errors(body, stem, glb),
+        errors=tuple(errors),
         functions=tuple(functions),
         vocabulary=vocab,
-        unions=unions,
+        unions=tuple(unions),
         uses=uses,
     )
-    _contents(out, mod, tree, path)
+
+
+def _free(node: DefinitionNode, vocab: dict[str, str],
+          fns: dict[int, Any]) -> list[Method]:
+    """One module-level function: a FREE binding, if it is decorated.
+
+    nanopynix has 72 of them, `m.def("open_store", &open_store_uri,
+    "uri"_a)` and its kind. An undecorated one is refused: nothing
+    reads it."""
+    if isinstance(node, ast.ClassDef) or not node.decorator_list:
+        raise DeclarationError(
+            node, f"{node.name} (function) reaches no output. A free "
+                  f"binding is decorated; a declaration holds no helpers.")
+    if isinstance(node, ast.AsyncFunctionDef):
+        # As in a class body, and for the same reason.
+        raise DeclarationError(
+            node,
+            f"{node.name}: a declaration describes a C++ binding, so "
+            f"`async def` says nothing here. The async form is "
+            f"DERIVED from @threading - so write a plain `def`.")
+    return [_method(node, vocab, fns, bound=False, bound_kind=False)]
+
+
+def _assignments(tree: ast.Module) -> dict[str, tuple[ast.Assign, str]]:
+    """Each plain `NAME = ...` the file writes, with the docstring under it.
+
+    Every statement list, so an assignment in either arm of an `if` is
+    found; the import says which arm ran. Python puts an attribute's
+    documentation under the assignment rather than inside it, so the
+    two are read as one pair."""
+    out: dict[str, tuple[ast.Assign, str]] = {}
+    for parent in ast.walk(tree):
+        for body in (getattr(parent, "body", None),
+                     getattr(parent, "orelse", None)):
+            if not isinstance(body, list) or isinstance(parent, ast.ClassDef):
+                continue
+            for i, item in enumerate(body):
+                if not (isinstance(item, ast.Assign) and len(item.targets) == 1
+                        and isinstance(item.targets[0], ast.Name)):
+                    continue
+                nxt = body[i + 1] if i + 1 < len(body) else None
+                doc = (nxt.value.value if nxt is not None and _is_docstring(nxt)
+                       else "")
+                out[item.targets[0].id] = (item, doc)
     return out
 
 
@@ -1984,57 +2044,15 @@ def _binder(tree: ast.AST, name: str) -> ast.AST:
     return tree
 
 
-def _contents(module: Module, mod: ModuleType, tree: ast.Module,
-              path: str) -> None:
-    """Every name the import holds, the reader put somewhere.
+def _class_contents(cls: Class, holder: type, here: str,
+                    node: ast.ClassDef) -> None:
+    """Every name a bound class holds, the reader put somewhere.
 
-    A name in a declaration that reaches no output reads as one nobody
-    wrote. That is the silent skip (huggorm#73, #75, #78, #88), and
-    this refuses it where it starts: the import ran the file, so
-    `vars` holds every name the build has, with each `NIX_VERSION`
-    branch already chosen.
-
-    A module holds declared classes, exceptions, union aliases,
-    decorated functions and imports. A bound class holds its methods,
-    its constructor, `_from_parts` and what its decorators wrote; a
-    vocabulary holds its words. An exception class is not walked: its
-    body is copied through whole.
-
-    IMPORTS are read from the tree. The objects cannot say where they
-    came from: `Str` and a union this file declares are both a
-    `typing` alias, and `NIX_2_36` is a bare bool.
-
-    A name a refusal already marked unsound is skipped, so a class
-    that failed to read is reported once, for its cause."""
-    here = str(pathlib.Path(path).resolve())
-    imported = {a.asname or a.name.split(".")[0]
-                for n in ast.walk(tree)
-                if isinstance(n, ast.Import | ast.ImportFrom)
-                for a in n.names}
-    bound = {c.name: c for c in module.classes}
-    known = {*bound, *(e.name for e in module.errors),
-             *(u.name for u in module.unions),
-             *(f.name for f in module.functions)}
+    Its methods, its constructor, `_from_parts` and what its
+    decorators wrote; a vocabulary holds its words. A method a refusal
+    already marked unsound is skipped, so it is reported once, for its
+    cause."""
     unsound = _COLLECTING.unsound if _COLLECTING is not None else set()
-    for name, value in vars(mod).items():
-        if _dunder(name) or name in imported or name in unsound:
-            continue
-        if name not in known:
-            _survive(DeclarationError(
-                _binder(tree, name),
-                f"{name} ({type(value).__name__}) reaches no output. A "
-                f"declaration holds declared classes, exceptions, union "
-                f"aliases, decorated functions and imports."),
-                unsound=name)
-            continue
-        cls = bound.get(name)
-        if cls is not None:
-            _class_contents(cls, value, here, tree, unsound)
-
-
-def _class_contents(cls: Class, holder: type, here: str, tree: ast.Module,
-                    unsound: set[str]) -> None:
-    """`_contents` for one bound class."""
     kept = {m.name for m in cls.methods} | {DECL, NEEDS}
     kept |= {m.name for m in (cls.ctor, cls.from_parts) if m is not None}
     words = cls.decl.kind == "words"
@@ -2049,16 +2067,26 @@ def _class_contents(cls: Class, holder: type, here: str, tree: ast.Module,
         if name in kept or f"{cls.name}.{name}" in unsound:
             continue
         _survive(DeclarationError(
-            _binder(_binder(tree, cls.name), name),
+            _binder(node, name),
             f"{cls.name}.{name} ({type(value).__name__}) reaches no "
             f"output. A bound class holds its methods, its constructor, "
             f"{FROM_PARTS} and what its decorators wrote."),
             unsound=f"{cls.name}.{name}")
 
 
-def _unions(body: list[ast.stmt], where: str,
-            glb: dict[str, Any]) -> tuple[Class, ...]:
-    """Every module-level union alias, as a Class the emitters can name.
+def _union(alias: object) -> tuple[object, list[object]] | None:
+    """The union an alias holds and its `Annotated` metadata, or None."""
+    held, meta = alias, list[object]()
+    if get_origin(alias) is Annotated:
+        held, *meta = get_args(alias)
+    if get_origin(held) not in (types.UnionType, typing.Union):
+        return None
+    return held, meta
+
+
+def _union_class(name: str, alias: object, where: str,
+                 item: ast.Assign, doc: str) -> Class:
+    """One module-level union alias, as a Class the emitters can name.
 
     A union is written as the alias it is:
 
@@ -2071,37 +2099,21 @@ def _unions(body: list[ast.stmt], where: str,
     It comes back as a `Class` because that is what lets every emitter
     resolve it through `known` - the same way a vocabulary does -
     rather than learning a second kind of thing."""
-    out: list[Class] = []
-    for i, item in enumerate(body):
-        if not isinstance(item, ast.Assign):
-            continue
-        if len(item.targets) != 1 or not isinstance(item.targets[0], ast.Name):
-            continue
-        name = item.targets[0].id
-        alias = glb.get(name)
-        held, meta = alias, list[object]()
-        if get_origin(alias) is Annotated:
-            held, *meta = get_args(alias)
-        if get_origin(held) not in (types.UnionType, typing.Union):
-            continue
-        parts = [(_scalar_arm(a, name, item), a) for a in get_args(held)]
-        scalars = {s.wire: s for s, _ in parts if s is not None}
-        arms = tuple(s.wire if s is not None
-                     else "None" if a is type(None)
-                     else getattr(a, "__name__", repr(a))
-                     for s, a in parts)
-        variant = _variant(name, tuple(meta), arms, item)
-        doc = ""
-        nxt = body[i + 1] if i + 1 < len(body) else None
-        if (isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant)
-                and isinstance(nxt.value.value, str)):
-            doc = nxt.value.value
-        out.append(Class(
-            name=name, doc=doc, ctor=None, module=where,
-            decl=Decl(name=name, kind="union", arms=arms, wire="value",
-                      variant=variant, scalars=scalars),
-        ))
-    return tuple(out)
+    found = _union(alias)
+    assert found is not None
+    held, meta = found
+    parts = [(_scalar_arm(a, name, item), a) for a in get_args(held)]
+    scalars = {s.wire: s for s, _ in parts if s is not None}
+    arms = tuple(s.wire if s is not None
+                 else "None" if a is type(None)
+                 else getattr(a, "__name__", repr(a))
+                 for s, a in parts)
+    variant = _variant(name, tuple(meta), arms, item)
+    return Class(
+        name=name, doc=doc, ctor=None, module=where,
+        decl=Decl(name=name, kind="union", arms=arms, wire="value",
+                  variant=variant, scalars=scalars),
+    )
 
 
 def _scalar_arm(arm: object, union: str, node: ast.AST) -> Type | None:
@@ -2208,45 +2220,34 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
                       f"make every union a bulk-lease problem (huggorm#31).")
 
 
-def _errors(body: list[ast.stmt], stem: str,
-            glb: dict[str, Any]) -> tuple[Class, ...]:
-    """The EXCEPTION classes this file declares, in declared order.
+def _error(node: ast.ClassDef, kls: type, home: dict[str, Any],
+           stem: str) -> Class:
+    """One EXCEPTION class this file declares.
 
     An error declaration wears no decorator - `cxx = "nix::Error"` is
     a bare assignment, because there is no behaviour to mark. So an
     undecorated class IS an exception, and one that derives from none
     is refused: the module transform would copy it through, and no
     model entry and no catch clause would know it.
-    """
-    out: list[Class] = []
-    for node in body:
-        if not isinstance(node, ast.ClassDef) or node.decorator_list:
-            continue
-        # The IMPORT says what the class derives from: `Interrupted`
-        # is a BaseException, as upstream's is, and a match on base
-        # names skipped it.
-        kls = glb[node.name]
-        try:
-            if not (isinstance(kls, type) and issubclass(kls, BaseException)):
-                raise DeclarationError(
-                    node, f"{node.name}: a class with no decorator declares "
-                          f"an exception, so it derives from BaseException.")
-            raised = _raised(node, kls, glb)
-        except DeclarationError as e:
-            _survive(e, unsound=node.name)
-            continue
-        decl = Decl()
-        decl.name = node.name
-        decl.kind = "error"
-        out.append(Class(
-            name=node.name,
-            doc=ast.get_docstring(node, clean=False) or "",
-            decl=decl,
-            ctor=None,
-            module=stem,
-            raised=raised,
-        ))
-    return tuple(out)
+
+    The IMPORT says what the class derives from: `Interrupted` is a
+    BaseException, as upstream's is, and a match on base names
+    skipped it."""
+    if not issubclass(kls, BaseException):
+        raise DeclarationError(
+            node, f"{node.name}: a class with no decorator declares "
+                  f"an exception, so it derives from BaseException.")
+    decl = Decl()
+    decl.name = node.name
+    decl.kind = "error"
+    return Class(
+        name=node.name,
+        doc=ast.get_docstring(node, clean=False) or "",
+        decl=decl,
+        ctor=None,
+        module=stem,
+        raised=_raised(node, kls, home),
+    )
 
 
 def _assigned(node: ast.ClassDef, kls: type, name: str) -> str:
