@@ -54,6 +54,7 @@ binding that compiles and is wrong.
 
 import annotationlib
 import ast
+import builtins
 import contextlib
 import difflib
 import functools
@@ -63,7 +64,7 @@ import pathlib
 import re
 import types
 import typing
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
@@ -99,6 +100,11 @@ VOCABULARY = "huggorm_dsl.declare"
 # another declaration owns imports it from here, and the reader
 # follows that import rather than being told the file.
 DECLARATIONS = "huggorm_decl.decl"
+
+# Every module a declaration may import from, with its submodules.
+# `enum` for a vocabulary's `StrEnum`; `pathlib` and `datetime` reach a
+# declaration only through the vocabulary's aliases.
+IMPORTABLE = (VOCABULARY, DECLARATIONS, "typing", "enum")
 
 # What a hand-written wire reconstructor is called. One name, because
 # the wire layer asks for it by that name and the emitter binds it by
@@ -1526,6 +1532,23 @@ def _mentions(cls: Class, node: ast.AST) -> None:
                 f"send.")
 
 
+def _guarded_import(name: str, globals: Mapping[str, object] | None = None,
+                    locals: Mapping[str, object] | None = None,
+                    fromlist: Sequence[str] = (), level: int = 0) -> ModuleType:
+    """`__import__` for a declaration's own statements.
+
+    A declaration describes C++; it computes nothing, so it needs
+    nothing past the vocabulary, the other declarations and the
+    typing names. Not a sandbox: declarations are trusted repository
+    code, and this catches a mistake (huggorm#123)."""
+    if level or not any(name == m or name.startswith(f"{m}.")
+                        for m in IMPORTABLE):
+        raise ImportError(
+            f"a declaration imports only from {', '.join(IMPORTABLE)}, "
+            f"not {'.' * level}{name}")
+    return builtins.__import__(name, globals, locals, fromlist, level)
+
+
 @functools.cache
 def load(path: str) -> ModuleType:
     """One declaration, IMPORTED.
@@ -1573,6 +1596,10 @@ def load(path: str) -> ModuleType:
         raise DeclarationError.already(
             f"{here}: Python will not load this file as a module at all.")
     mod = importlib.util.module_from_spec(spec)
+    # Scoped to this module's own statements. The modules it imports
+    # run under the real builtins, and a declaration among them is
+    # guarded when it is read itself.
+    mod.__builtins__ = {**vars(builtins), "__import__": _guarded_import}  # type: ignore[attr-defined]
     try:
         spec.loader.exec_module(mod)
     except Exception as e:

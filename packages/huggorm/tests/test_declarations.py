@@ -1148,6 +1148,22 @@ class Digest:
 '''
 
 
+@pytest.mark.parametrize("line", [
+    "import os",
+    "from os import path",
+    "from . import sibling",
+])
+def test_a_declaration_imports_only_from_the_allowed_modules(
+        tmp_path: pathlib.Path, line: str) -> None:
+    """A declaration describes C++ and computes nothing, so it imports
+    only the vocabulary, the other declarations, `typing` and `enum`
+    (huggorm#123)."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    with pytest.raises(DeclarationError, match="imports only from"):
+        read(_declaration(tmp_path, f"{line}\n"))
+
+
 def test_a_declaration_that_will_not_import_is_refused(
         tmp_path: pathlib.Path) -> None:
     """The import error reaches a reader, with Python's own reason.
