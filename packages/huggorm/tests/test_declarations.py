@@ -773,12 +773,11 @@ def test_the_binding_refuses_an_accessor_declared_as_an_attribute(
     from huggorm_gen import ir
     from huggorm_gen.cppgen import nbemit
 
-    mod = read(_declaration(tmp_path, ATTRIBUTE))
-    cls = mod.classes[0]
-    model = ir.ClassModel.of(cls, "", mod.name, ir.Resolver.of(mod))
+    unit = ir.ModuleModel.of(read(_declaration(tmp_path, ATTRIBUTE)), "")
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {}, frozenset(),
+                     {}, {}, ir.Errors("", {}), (unit,))
     with pytest.raises(TypeError, match="ATTRIBUTE"):
-        nbemit.Emitter({cls.name: cls}, {},
-                       {cls.name: model}).bind_function(model)
+        nbemit.Emitter(model, unit, {}).bind_function(unit.classes[0])
 
 
 def _corpus_dir(tmp_path: pathlib.Path) -> pathlib.Path:

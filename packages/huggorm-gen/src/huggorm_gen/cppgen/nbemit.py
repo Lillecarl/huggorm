@@ -52,7 +52,8 @@ becomes the place the real code lives.
 
 from collections.abc import Iterator, Mapping, Sequence
 
-from huggorm_dsl.read import Class, Method, Module, Param, Type
+from huggorm_dsl.declare import Decl
+from huggorm_dsl.read import Class, Method, Module
 from huggorm_gen import cxx, ir
 from huggorm_gen.cxx import NAMESPACE
 from huggorm_gen.cxx import held as _held
@@ -110,37 +111,37 @@ BYTES_SPELLINGS = ("nb::bytes", "std::vector<nb::bytes>")
 
 
 
-def _sites(classes: Sequence[Class],
-           functions: Sequence[Method] = (),
-           ) -> Iterator[tuple[Param | None, Type | None]]:
+def _sites(classes: Sequence[ir.ClassModel],
+           functions: Sequence[ir.FunctionModel] = (),
+           ) -> Iterator[tuple[ir.ParamModel | None, ir.TypeRef | None]]:
     """Every place this translation unit names a declared type.
 
     One walk, because two things read the same sites and a second
     walk would be the same list written twice: the includes need
     every type's caster, and the conversions need every union.
 
-    A parameter comes with the `Param` it was declared as, because a
-    container that reads None arrives as an optional and only the
-    Param says so. A return yields None in its place.
+    A parameter comes with its `ParamModel`, because a container that
+    reads None arrives as an optional and only the parameter says so.
+    A return yields None in its place.
 
     A free function belongs to no class, so its types reach a caller
     of this only from the last loop - and `open_store` is the one
     that brings <nanobind/stl/shared_ptr.h> in.
     """
     for cls in classes:
-        for m in cls.methods:
+        for m in cls.bound:
             for pr in m.params:
                 yield pr, pr.type
-            yield None, m.ret
-        if cls.ctor is not None:
-            for pr in cls.ctor.params:
+            yield None, m.returns
+        if cls.init is not None:
+            for pr in cls.init.params:
                 yield pr, pr.type
         if cls.from_parts is not None:
-            yield None, cls.from_parts.ret
+            yield None, cls.from_parts.returns
     for fn in functions:
         for pr in fn.params:
             yield pr, pr.type
-        yield None, fn.ret
+        yield None, fn.returns
 
 
 # What a `Cxx` body spells, and the standard header that defines it.
@@ -179,18 +180,18 @@ BODY_HEADERS = {
 }
 
 
-def _bodies(classes: Sequence[Class],
-            functions: Sequence[Method] = ()) -> Iterator[str]:
+def _bodies(classes: Sequence[ir.ClassModel],
+            functions: Sequence[ir.FunctionModel] = ()) -> Iterator[str]:
     """Every piece of hand-written C++ this translation unit carries.
 
     One walk, like `_sites`, and for the same reason. A body reaches
     the emitted file from five places and a header it needs is a
     header it needs from any of them."""
     for cls in classes:
-        for m in cls.methods:
+        for m in cls.bound:
             yield m.cxx_body
-        if cls.ctor is not None:
-            yield cls.ctor.cxx_body
+        if cls.init is not None:
+            yield cls.init.cxx_body
         if cls.from_parts is not None:
             yield cls.from_parts.cxx_body
         yield from cls.decl.custom.values()
@@ -213,7 +214,7 @@ def waits(cls: ir.ClassModel,
 
 
 
-def words_from_word(cls: Class) -> list[str]:
+def words_from_word(cls: ir.EnumModel) -> list[str]:
     """A word going TO an enum upstream gives no parser for.
 
     `nix::BuildMode` has none, and it has no rendering either: it
@@ -403,13 +404,14 @@ def records_header(mod: Module, package: str,
     A HEADER, not the unit, because a record is a C++ type another unit
     can name: `eval`'s `LogRecord` holds `path`'s `ErrorInfo`. A struct
     emitted into its own unit is visible nowhere else (huggorm#103)."""
-    values = [c for c in bindable(mod) if c.is_value]
+    unit = model.module(mod.name)
+    values = [c for c in unit.bindable() if c.is_value]
     if not values:
         return None
-    emit = Emitter(mod.known, {}, {})
+    emit = Emitter(model, unit, {})
     others = [m for m in emit.records_named(values, ())
               if m != mod.name]
-    structs = emit.records([model.classes[c.name] for c in values])
+    structs = emit.records(values)
     # What the fields SPELL, read off the structs as `includes` reads
     # a body: `std::int64_t` needs <cstdint>, and no caster names it.
     text = "\n".join(structs)
@@ -425,17 +427,17 @@ def records_header(mod: Module, package: str,
     ])
 
 
-def _lists(cls: Class) -> list[str]:
+def _lists(cls: ir.ClassModel) -> list[str]:
     """The wire parts of this value that cross as lists.
 
     The PARTS, not the accessors. A value's hash is over what it sends,
     and a list is hashed as a tuple because a list is unhashable -
     which is the one thing `as_tuple` exists for."""
-    return [f.name for f, m in cls.parts
-            if m.ret is not None and m.ret.required.origin == "list"]
+    return [f.name for f in cls.wire_fields
+            if f.type.required.origin == "list"]
 
 
-def _nodes(t: Type | None) -> Iterator[Type]:
+def _nodes(t: ir.TypeRef | None) -> Iterator[ir.TypeRef]:
     """A declared type and every type it holds, at any depth."""
     if t is None:
         return
@@ -445,7 +447,7 @@ def _nodes(t: Type | None) -> Iterator[Type]:
 
 
 
-def words_conversion(cls: Class) -> list[str]:
+def words_conversion(cls: ir.EnumModel) -> list[str]:
     """One vocabulary coming BACK from C++, as the switch that checks it.
 
     The direction `parsed_by` does not have. A word going to libstore
@@ -484,8 +486,19 @@ def words_conversion(cls: Class) -> list[str]:
 
 
 
-def _is_bare(cls: Class) -> bool:
+def _is_bare(cls: ir.UnionModel) -> bool:
     return cls.decl.variant is not None and cls.decl.variant.bare
+
+
+def _arm(cls: ir.UnionModel, name: str) -> str:
+    """One arm as the arms' variant holds it."""
+    return next(a.cxx for a in cls.arms if a.name == name)
+
+
+def _arms_type(cls: ir.UnionModel) -> str:
+    """A union as the std::variant of the arms PYTHON has: what the
+    caster casts through, and what `from_arms` takes."""
+    return f"std::variant<{', '.join(a.cxx for a in cls.arms)}>"
 
 
 
@@ -696,16 +709,23 @@ inline std::vector<std::string> from_bytes(const std::vector<nb::bytes> & items)
 """
 
 
-def _crosses_container(classes: Sequence[Class]) -> bool:
+# What a declared class leaf is, as opposed to a builtin, an opaque
+# object or a module type.
+DECLARED = ("enum", "union", "error", "value", "proxy")
+
+
+def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:
     """Whether any declared type here is a list of bound values."""
     for cls in classes:
-        for m in cls.methods:
+        for m in cls.bound:
             declared = [pr.type for pr in m.params]
-            if m.ret is not None:
-                declared.append(m.ret)
+            if m.returns is not None:
+                declared.append(m.returns)
             for one in declared:
                 for node in _nodes(one):
-                    if node.origin == "list" and node.element.bound:
+                    if (node.origin == "list"
+                            and node.args[0].kind in DECLARED
+                            and not node.args[0].origin):
                         return True
                     # Every `dict` return goes through `as_map`.
                     if node.origin == "dict":
@@ -732,18 +752,20 @@ def bindable(mod: Module) -> tuple[Class, ...]:
 class Emitter:
     """The binding C++ for classes that may name each other.
 
-    `known` is every class a type can resolve to: the module's own and
-    those it imports. A name outside it is refused, never guessed.
-    `producers` is each call that hands a class back, from the whole
-    set: what makes a `PathInfo` lives in another module. `classes` is
-    the typed model of every class, which the methods bind from."""
+    `unit` is the module being emitted. A name it cannot see is
+    refused, never resolved from the whole `model`. `producers` is each
+    call that hands a class back, from the whole set: what makes a
+    `PathInfo` lives in another module."""
 
-    def __init__(self, known: dict[str, Class],
-                 producers: Mapping[str, Sequence[str]],
-                 classes: Mapping[str, ir.ClassModel]) -> None:
-        self.known = known
+    def __init__(self, model: ir.Model, unit: ir.ModuleModel,
+                 producers: Mapping[str, Sequence[str]]) -> None:
+        self.model = model
+        self.unit = unit
         self.producers = producers
-        self.classes = classes
+
+    def _decl(self, name: str) -> Decl | None:
+        """The declaration this unit sees behind a name, or None."""
+        return self.unit.visible.get(name)
 
     def _produced_ctor(self, cls: ir.ClassModel,
                        because: str = "") -> list[str]:
@@ -770,23 +792,8 @@ class Emitter:
             f"{INDENT * 2}}})",
         ]
 
-    def _bare(self, cls: Class) -> str:
-        return cxx.bare(cls, self.known)
-
-    def _arms_type(self, cls: Class) -> str:
-        return cxx.arms_type(cls, self.known)
-
-    def _arm(self, cls: Class, arm: str) -> str:
-        return cxx.arm(cls, arm, self.known)
-
-    def _cxx(self, t: Type) -> tuple[str, str | None]:
-        return cxx.value(t, self.known)
-
-    def _param(self, t: Type) -> tuple[str, str | None]:
-        return cxx.param(t, self.known)
-
-    def includes(self, classes: Sequence[Class],
-                 functions: Sequence[Method],
+    def includes(self, classes: Sequence[ir.ClassModel],
+                 functions: Sequence[ir.FunctionModel],
                  errors: Sequence[str] = ()) -> list[str]:
         """Exactly the headers this translation unit needs, and no others.
 
@@ -802,18 +809,11 @@ class Emitter:
         vector."""
         casters: set[str] = set()
 
-        def note(t: Type | None) -> None:
+        def note(t: ir.TypeRef | None) -> None:
             if t is None:
                 return
-            try:
-                _, caster = self._cxx(t)
-            except TypeError:
-                # A type this emitter cannot spell is reported where it is
-                # emitted, with the method that named it. Failing here
-                # would name only the type.
-                return
-            if caster:
-                casters.add(caster)
+            if t.caster:
+                casters.add(t.caster)
             # A container or an optional needs what it HOLDS cast too:
             # `list[StorePath]` needs <vector>, and a `list[str]` needs
             # <string> beneath it. Every argument, so no container kind is
@@ -823,11 +823,9 @@ class Emitter:
                 note(arg)
             # ...and a UNION's arms, for the same reason: the variant
             # caster casts each arm with that arm's own.
-            held = None if t.origin else self.known.get(t.python)
-            if held is not None and held.is_union:
-                for arm in held.decl.arms:
-                    note(held.decl.scalars.get(arm)
-                         or Type(python=arm, bound=True))
+            if not t.origin and t.kind == "union" and self._decl(t.name):
+                for arm in self.model.unions[t.name].arms:
+                    note(arm)
 
         for pr, t in _sites(classes, functions):
             note(t)
@@ -837,7 +835,7 @@ class Emitter:
             # only place that can know it will. Missed until a module had
             # one and nothing else optional in it - `store` had returns
             # to hide it, `derived_path` had not.
-            if pr is not None and cxx.absent(pr):
+            if pr is not None and pr.absent:
                 casters.add("optional")
         # A hook has no signature worth casting, and it still names the
         # header its C++ lives in. `wanted` below is where that lands.
@@ -880,11 +878,11 @@ class Emitter:
         # A class from ANOTHER declaration that a signature names. nanobind
         # casts by type, so a forward declaration is not enough:
         # `registry.cpp` names `nix::Store` only as a parameter.
-        wanted |= {other.decl.header for _, t in _sites(classes, functions)
+        wanted |= {other.header for _, t in _sites(classes, functions)
                    if t is not None
-                   and (other := self.known.get(t.leaf.python)) is not None}
+                   and (other := self._decl(t.leaf.name)) is not None}
         wanted |= {h for cls in classes for h in cls.decl.headers}
-        wanted |= {h for cls in classes for m in cls.methods for h in m.headers}
+        wanted |= {h for cls in classes for m in cls.bound for h in m.headers}
         wanted |= {h for cls in classes if cls.from_parts is not None
                    for h in cls.from_parts.headers}
         wanted |= {h for fn in functions for h in fn.headers}
@@ -1056,7 +1054,9 @@ class Emitter:
             target = m.params[0].name
             # The TARGET's class holds the arm table, not this one:
             # `list_append` is declared on the evaluator and fills a Value.
-            held = self.classes.get(m.params[0].type.spelling)
+            filled = m.params[0].type.spelling
+            held = (self.model.classes.get(filled) if self._decl(filled)
+                    else None)
             if held is None or held.decl.tagged is None:
                 raise ValueError(
                     f"{cls.name}.{m.name}: @fills needs its target's class to "
@@ -1373,8 +1373,8 @@ class Emitter:
             out += [*self.record(cls), ""]
         return [*out, f"}}  // namespace {NAMESPACE}", ""]
 
-    def records_named(self, classes: Sequence[Class],
-                      functions: Sequence[Method]) -> list[str]:
+    def records_named(self, classes: Sequence[ir.ClassModel],
+                      functions: Sequence[ir.FunctionModel]) -> list[str]:
         """Every module whose records this unit names, its own included.
 
         A record is a struct the emitter declares, so a unit that names one
@@ -1383,28 +1383,31 @@ class Emitter:
         out = {c.module for c in classes if c.is_value}
         for _, t in _sites(classes, functions):
             for node in _nodes(t):
-                held = None if node.origin else self.known.get(node.python)
-                if held is not None and held.is_value:
-                    out.add(held.module)
+                held = None if node.origin else self._decl(node.name)
+                if held is not None and held.produced and not held.cxx:
+                    out.add(self.model.classes[node.name].module)
         return sorted(out)
 
-    def _unions_used(self, classes: Sequence[Class],
-                     functions: Sequence[Method]) -> list[Class]:
+    def _unions_used(self, classes: Sequence[ir.ClassModel],
+                     functions: Sequence[ir.FunctionModel],
+                     ) -> list[ir.UnionModel]:
         """Every union with a declared C++ variant this unit names.
 
         By name, so a union named twice is converted once. Sorted,
         because the order two methods happen to be declared in is not an
         order for a translation unit."""
-        out: dict[str, Class] = {}
+        out: dict[str, ir.UnionModel] = {}
         for _, t in _sites(classes, functions):
             for node in _nodes(t):
-                cls = None if node.origin else self.known.get(node.python)
-                if cls is not None and cls.is_union and cls.decl.variant is not None:
-                    out[cls.name] = cls
+                decl = None if node.origin else self._decl(node.name)
+                if (decl is not None and decl.kind == "union"
+                        and decl.variant is not None):
+                    out[node.name] = self.model.unions[node.name]
         return [out[name] for name in sorted(out)]
 
-    def _vocabularies_used(self, classes: Sequence[Class],
-                           functions: Sequence[Method]) -> list[Class]:
+    def _vocabularies_used(self, classes: Sequence[ir.ClassModel],
+                           functions: Sequence[ir.FunctionModel],
+                           ) -> list[ir.EnumModel]:
         """Every enum-backed vocabulary this unit NAMES, either way round.
 
         Every site, not only the returns. A unit that only TAKES a word
@@ -1419,28 +1422,28 @@ class Emitter:
         vocabulary named twice is converted once, and the order two
         methods happen to be declared in is not an order for a
         translation unit."""
-        out: dict[str, Class] = {}
-        spelled = [node.python for _, t in _sites(classes, functions)
+        out: dict[str, ir.EnumModel] = {}
+        spelled = [node.name for _, t in _sites(classes, functions)
                    for node in _nodes(t) if not node.origin]
         # ...and what a BODY spells, from `@spells`. A signature does not
         # reach everything: `KeyedBuildResult.error` builds an exception
         # carrying a failure word, and `-> BuildError | None` says
         # nothing about it.
-        spelled += [n for cls in classes for m in cls.methods for n in m.spells]
+        spelled += [n for cls in classes for m in cls.bound for n in m.spells]
         spelled += [n for cls in classes if cls.from_parts is not None
                     for n in cls.from_parts.spells]
         spelled += [n for fn in functions for n in fn.spells]
         for name in spelled:
-            cls = self.known.get(name)
-            if cls is not None and cls.is_words and cls.decl.enumerated:
-                out[cls.name] = cls
+            decl = self._decl(name)
+            if decl is not None and decl.kind == "words" and decl.enumerated:
+                out[name] = self.model.enums[name]
         # A `@spells` name has to BE one, and this is where that is
         # checked. The decorator takes a string because a declaration
         # holds constants, so nothing above catches a typo - and a
         # silently skipped name fails much later, as a missing
         # `huggorm::as_word` overload in the emitted C++.
         for cls in classes:
-            for m in (*cls.methods, *([cls.from_parts] if cls.from_parts else [])):
+            for m in (*cls.bound, *([cls.from_parts] if cls.from_parts else [])):
                 for name in m.spells:
                     if name not in out:
                         raise TypeError(
@@ -1449,7 +1452,7 @@ class Emitter:
                             f"Import the declaration that declares it.")
         return [out[name] for name in sorted(out)]
 
-    def _alternative(self, cls: Class, arm: str) -> tuple[str, str]:
+    def _alternative(self, cls: ir.UnionModel, arm: str) -> tuple[str, str]:
         """One arm as the C++ variant holds it: the type, and the member.
 
         The member is empty when the variant holds the arm as itself,
@@ -1462,9 +1465,9 @@ class Emitter:
         wrap = variant.wraps.get(arm)
         if wrap is not None:
             return wrap.cxx, wrap.holds
-        return self._arm(cls, arm), ""
+        return _arm(cls, arm), ""
 
-    def conversions(self, cls: Class) -> list[str]:
+    def conversions(self, cls: ir.UnionModel) -> list[str]:
         """One union, in both directions, from what its alias declares.
 
         THE BODIES DO NOT SAY THIS. They call `as_arms` and `from_arms`
@@ -1486,7 +1489,7 @@ class Emitter:
         variant = cls.decl.variant
         assert variant is not None
         arms = cls.decl.arms
-        held = self._arms_type(cls)
+        held = _arms_type(cls)
         reach = f"p.{variant.raw}" if variant.raw else "p"
         out = [f"/** The arms of a {cls.name}, as Python has them. */",
                f"inline {held} as_arms(const {variant.cxx} & p)",
@@ -1506,17 +1509,17 @@ class Emitter:
         for arm in arms[:-1]:
             alt, member = self._alternative(cls, arm)
             out += [f"{INDENT}if (auto * arm = "
-                    f"std::get_if<{self._arm(cls, arm)}>(&a))",
+                    f"std::get_if<{_arm(cls, arm)}>(&a))",
                     f"{INDENT * 2}return {alt + '{*arm}' if member else '*arm'};"]
         last = arms[-1]
         alt, member = self._alternative(cls, last)
-        got = f"std::get<{self._arm(cls, last)}>(a)"
+        got = f"std::get<{_arm(cls, last)}>(a)"
         out += [f"{INDENT}return {alt + '{' + got + '}' if member else got};",
                 "}", ""]
 
         return out
 
-    def bare_check(self, cls: Class) -> list[str]:
+    def bare_check(self, cls: ir.UnionModel) -> list[str]:
         """What a `bare` union gets instead of a conversion and a caster.
 
         The claim that the C++ type IS the arms' `std::variant`, checked by
@@ -1526,11 +1529,11 @@ class Emitter:
         variant = cls.decl.variant
         assert variant is not None
         return [f"static_assert(std::is_same_v<{variant.cxx}, "
-                f"{self._arms_type(cls)}>,",
+                f"{_arms_type(cls)}>,",
                 f'{INDENT}"{cls.name} is declared bare, so its C++ type must '
                 f'be the std::variant of its arms, in order");', ""]
 
-    def caster(self, cls: Class) -> list[str]:
+    def caster(self, cls: ir.UnionModel) -> list[str]:
         """One union as a nanobind type_caster, so no body converts.
 
         `as_arms` and `from_arms` still do the work; this is where they
@@ -1553,7 +1556,7 @@ class Emitter:
         """
         variant = cls.decl.variant
         assert variant is not None
-        arms = self._arms_type(cls)
+        arms = _arms_type(cls)
         return [
             f"/** {variant.cxx}, cast as the arms Python has. */",
             f"template <> struct type_caster<{variant.cxx}> {{",
@@ -2030,13 +2033,13 @@ class Emitter:
         return "\n".join(["static void bind_functions(nb::module_ &m) {",
                            *body, "}"]) + "\n"
 
-    def _converts_bytes(self, classes: Sequence[Class]) -> bool:
+    def _converts_bytes(self, classes: Sequence[ir.ClassModel]) -> bool:
         """Whether any accessor here answers bytes, so a unit needs BYTES."""
-        return any(m.ret is not None and self._cxx(m.ret)[0] in BYTES_SPELLINGS
-                   for cls in classes for m in cls.methods)
+        return any(m.returns is not None and m.returns.cxx in BYTES_SPELLINGS
+                   for cls in classes for m in cls.bound)
 
-    def _errors_used(self, classes: Sequence[Class],
-                     functions: Sequence[Method]) -> bool:
+    def _errors_used(self, classes: Sequence[ir.ClassModel],
+                     functions: Sequence[ir.FunctionModel]) -> bool:
         """Whether this unit names a declared EXCEPTION class anywhere.
 
         One site is enough. A unit that answers with an exception has to
@@ -2048,14 +2051,14 @@ class Emitter:
         for _, t in _sites(classes, functions):
             if t is None:
                 continue
-            cls = (None if t.required.origin
-                   else self.known.get(t.required.python))
-            if cls is not None and cls.decl.kind == "error":
+            decl = (None if t.required.origin
+                    else self._decl(t.required.name))
+            if decl is not None and decl.kind == "error":
                 return True
         return False
 
-    def module(self, classes: Sequence[Class],
-               functions: Sequence[Method],
+    def module(self, classes: Sequence[ir.ClassModel],
+               functions: Sequence[ir.FunctionModel],
                exported: Sequence[ir.FunctionModel],
                errors: str = "",
                error_headers: Sequence[str] = (),
@@ -2111,7 +2114,7 @@ class Emitter:
                 head += self.caster(u)
             head += ["}  // namespace nanobind::detail", ""]
         out = "\n".join(head) + "\n" + "\n".join(
-            self.bind_function(self.classes[cls.name]) for cls in classes)
+            self.bind_function(cls) for cls in classes)
         return out + ("\n" + self.free_functions(exported)
                       if exported else "")
 
@@ -2162,15 +2165,12 @@ def extension(mod: Module, dotted: str, model: ir.Model,
                f'{f"{package}." if package else ""}{stem}");'
                for stem in imports(mod)]
     translators = [translator(fn, chain) for fn in mod.translators]
-    # What this unit can name, as `known` scopes it: a class this module
-    # does not import is refused, not resolved from the whole set.
-    visible = {name: model.classes[name] for name in mod.known
-               if name in model.classes}
+    unit = model.module(mod.name)
     # Only a unit that HAS a translator catches anything, so only that
     # unit needs the headers behind the chain.
     return "\n".join([
-        Emitter(mod.known, producers, visible).module(
-            classes, mod.functions,
+        Emitter(model, unit, producers).module(
+            unit.bindable(), unit.functions,
             [model.functions[fn.name] for fn in public(mod.exported, classes)],
             errors,
             error_headers if translators else (), package),
@@ -2272,21 +2272,18 @@ def census(cls: ir.ClassModel) -> dict[str, int]:
 if __name__ == "__main__":
     import sys
 
-    from huggorm_dsl.read import producers, read
+    from huggorm_decl import corpus
+    from huggorm_gen.cppgen.generate import declared_model
 
-    for path in sys.argv[1:]:
-        mod = read(path)
-        resolver = ir.Resolver.of(mod)
-        models = {c.name: ir.ClassModel.of(c, "", mod.name, resolver,
-                                           mod.functions)
-                  for c in mod.classes}
-        for cls in mod.classes:
-            emit = Emitter(mod.known,
-                           producers(mod.known.values(), mod.functions),
-                           models)
-            print(emit.module([cls], (), ()) if len(mod.classes) == 1
-                  else emit.bind_function(models[cls.name]))
-            c = census(models[cls.name])
+    # A declaration file of the corpus, by module name: `path`, `store`.
+    whole = declared_model()
+    for name in sys.argv[1:]:
+        unit = whole.module(name)
+        emit = Emitter(whole, unit, corpus().producers)
+        for cls in unit.bindable():
+            print(emit.module([cls], (), ()) if len(unit.classes) == 1
+                  else emit.bind_function(cls))
+            c = census(cls)
             total = c["derived"] + c["hatched"]
             print(f"// {cls.name}: {c['derived']}/{total} derived, "
                   f"{c['hatched']} through the hatch "

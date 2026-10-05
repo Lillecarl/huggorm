@@ -61,20 +61,15 @@ def declared_model() -> ir.Model:
     modules: list[ir.ModuleModel] = []
     seen: list[tuple[dict[str, Any], Any]] = []
     for mod in have.modules:
-        resolver = ir.Resolver.of(mod)
-        for cls in mod.classes:
-            classes[cls.name] = ir.ClassModel.of(
-                cls, PACKAGE, mod.name, resolver, mod.functions)
-            seen.append((mod.known, cls))
-        every = {fn.name: ir.FunctionModel.of(fn, PACKAGE, mod.name, resolver)
-                 for fn in mod.functions}
+        unit = ir.ModuleModel.of(mod, PACKAGE)
+        modules.append(unit)
+        classes.update((c.name, c) for c in unit.classes)
+        seen += [(mod.known, cls) for cls in mod.classes]
+        every = {fn.name: fn for fn in unit.functions}
         # `nbemit.public` drops a startup hook, a translator and a
         # factory bound as its class's constructor: none is surface.
         for fn in nbemit.public(mod.exported, mod.classes):
             functions[fn.name] = every[fn.name]
-        modules.append(ir.ModuleModel(
-            mod.name, mod.doc, tuple(classes[c.name] for c in mod.classes),
-            tuple(every.values()), frozenset(mod.known)))
     unions = {}
     for mod in have.modules:
         resolver = ir.Resolver.of(mod)
