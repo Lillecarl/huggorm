@@ -307,16 +307,22 @@ class FieldModel:
     name: str
     type: TypeRef
     # The accessor that reads the part, when it is not `name`.
-    read: str = ""
+    accessor: str = ""
     # The C++ set the part is rebuilt into, or "" when a vector is the
     # member: `@reads(collection=...)`, else the element class's.
     collection: str = ""
 
+    @property
+    def read(self) -> str:
+        """The accessor that reads the part."""
+        return self.accessor or self.name
+
     @classmethod
-    def of(cls, name: str, t: Type, resolver: Resolver, read: str = "",
+    def of(cls, name: str, t: Type, resolver: Resolver, accessor: str = "",
            collection: str = "") -> FieldModel:
         crossable(t, name)
-        return cls(name, type_ref(t, resolver), read, collection)
+        return cls(name, type_ref(t, resolver),
+                   "" if accessor == name else accessor, collection)
 
 
 def crossable(t: Type | None, where: str) -> None:
