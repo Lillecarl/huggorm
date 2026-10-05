@@ -18,6 +18,7 @@ from huggorm import grpc_pb
 from huggorm.wire import WireCodec
 from huggorm_bindings import StorePath
 from huggorm_bindings.errors import BadStorePath, NixError
+from huggorm_generated._callspec import Wire
 
 if TYPE_CHECKING:
     from huggorm_gen import ir
@@ -194,16 +195,11 @@ def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
     codec = WireCodec()
     msg = _message(load_model().classes["PathInfo"].message)()
 
-    # `int | None`, the ANNOTATION spelling. `int?` is how
-    # `_wire_fields` writes it, and `value_to_msg` strips the "?" and
-    # handles absence itself before it ever reaches encode - so the
-    # two entry points take different spellings and this is the one
-    # `encode` is built for.
+    when = Wire("scalar", "int", optional=True)
+
     def roundtrip(value: int | None) -> tuple[Any, bool]:
-        codec.encode(msg, "registration_time", "int | None", value,
-                     _no_proxy)
-        return (codec.decode(msg, "registration_time", "int | None",
-                             _no_proxy),
+        codec.encode(msg, "registration_time", when, value, _no_proxy)
+        return (codec.decode(msg, "registration_time", when, _no_proxy),
                 msg.HasField("registration_time"))
 
     # Nothing written, and nothing read back.

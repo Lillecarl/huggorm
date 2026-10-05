@@ -18,21 +18,43 @@ one part a caller cannot see was the one part still untyped.
 A frozen dataclass answers all three. The emitter builds one per
 method, at import, and the checker reads every field.
 
-## Why the types are still strings
+## Why a type is a `Wire`, not a class
 
-`Arg.type` is `"list[StorePath]"`, not a class. The codec resolves a
-declared type STRING against the wire policy - a scalar goes in as
-itself, a wire-value decomposes into its parts, a proxy crosses as a
-handle - and it does that by name because the name is what the
-declaration wrote. Holding the class here would mean importing every
+`Arg.type` says how a value crosses - `Wire("list", item=Wire("value",
+"StorePath"))` - and names a class only by its declared name. The build
+resolved every type once, so the codec dispatches on `kind` and reads
+no annotation. Holding the class itself would mean importing every
 bound type into a module that only routes them.
-
-The spelling is checked, just not here: `check_wire_contract` refuses
-a type with no policy at build time, and `WireCodec.kind` raises on
-one at run time.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class Wire:
+    """How one declared type crosses, decided at build time.
+
+    `kind` is what the codec does:
+
+    - "scalar": one builtin field. `name` is `str`, `int`, `uint`,
+      `float`, `bool` or `bytes`, or a type that goes in one, such as
+      `datetime.timedelta`.
+    - "enum": a string vocabulary, which crosses as its str value.
+    - "value", "union", "error": a message, rebuilt from its parts.
+      `name` is the declared class or alias.
+    - "proxy": a handle. `name` is the class.
+    - "list", "map": a repeated field or a `map<string, V>`. `item` is
+      what it holds.
+
+    `optional` is presence: the field may be unset, and an unset one
+    reads back as None."""
+
+    kind: str
+    name: str = ""
+    item: Wire | None = None
+    optional: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +73,7 @@ class Arg:
     and it never does."""
 
     name: str
-    type: str
+    type: Wire
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +87,8 @@ class Call:
 
     Everything here is a constant. The client resolves nothing: it
     fills `req` from `args`, sends it to `path`, and reads `result`
-    out of `resp` as `returns`. The server reads the same value the
+    out of `resp` as `returns`, which is None for a call that answers
+    nothing. The server reads the same value the
     other way round, and `name` is the one field only it needs - the
     method to call on the object the handle resolved to.
 
@@ -78,7 +101,7 @@ class Call:
     req: str
     resp: str
     args: tuple[Arg, ...]
-    returns: str
+    returns: Wire | None
 
 
 @dataclass(frozen=True, slots=True)

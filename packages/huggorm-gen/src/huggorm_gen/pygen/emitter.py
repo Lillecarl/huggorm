@@ -12,6 +12,7 @@ from huggorm_gen import ir
 from huggorm_gen.payload.wiretypes import (
     python_spelling,
 )
+from huggorm_gen.pygen import grpc_schema
 from huggorm_gen.pygen.spell import Spelling, import_from
 
 # A declared tree spec, as the declaration states it.
@@ -77,18 +78,9 @@ def _admits_none(annotation: ast.expr) -> bool:
 # readable nor lintable.
 POLICY_DOC = """The wire policy of every declared type.
 
-Four tables the codec needs and no caller does: what KIND each type
-crosses as, what a wire value is made of, which names are string
-vocabularies, and what a sum type's arms are in declared order. The
-exception hierarchy is here too, for the same reason and read by the
-same kind of codec.
-
-They came out of `manifest.json`, read at run time by a codec a
-typechecker could tell nothing about - every one of them was a
-`dict[str, Any]` off a JSON load. `check_manifest` existed for
-exactly that reason: a manifest from another generator "would answer
-wrong, one lookup at a time". An emitted module ships with the code
-that reads it, so there is no other generator to defend against.
+The tables the codec needs and no caller does: what a wire value and
+an error are made of, a sum type's arms, and every call's spec. Each
+type is a `Wire`, resolved by the build, so the codec parses nothing.
 
 Arms in DECLARED order, because that is the order the schema numbered
 the oneof's fields in and a renumbering is a wire change. Tuples
@@ -125,11 +117,37 @@ def _walk(how: Proto) -> ast.expr:
                     keywords=[])
 
 
-def _arg_tuple(pairs: Sequence[tuple[str, str]]) -> ast.expr:
+def _wire(t: ir.TypeRef | None) -> ast.expr:
+    """A resolved type as the `Wire` the codec dispatches on."""
+    if t is None:
+        return ast.Constant(value=None)
+    keywords = []
+    if t.optional:
+        keywords.append(ast.keyword(arg="optional", value=ast.Constant(value=True)))
+        t = t.required
+    if t.container:
+        kind = "list" if t.origin == "list" else "map"
+        return ast.Call(func=ast.Name(id="Wire"), args=[ast.Constant(value=kind)],
+                        keywords=[ast.keyword(arg="item", value=_wire(t.args[0])),
+                                  *keywords])
+    if t.scalar is not None:
+        # The leaf's own name, not the builtin it goes in as: the codec
+        # converts a `datetime.timedelta` by name.
+        kind, name = "scalar", t.width or t.name
+    elif t.kind in ("enum", "value", "union", "error", "proxy"):
+        kind, name = t.kind, t.name
+    else:
+        raise TypeError(f"{t.spelling} is a {t.kind}, which does not cross")
+    return ast.Call(func=ast.Name(id="Wire"),
+                    args=[ast.Constant(value=kind), ast.Constant(value=name)],
+                    keywords=keywords)
+
+
+def _arg_tuple(pairs: Sequence[tuple[str, ir.TypeRef]]) -> ast.expr:
     """Named, typed parts - wire fields or parameters - as `Arg`s."""
     return ast.Tuple(elts=[
         ast.Call(func=ast.Name(id="Arg"),
-                 args=[ast.Constant(value=name), ast.Constant(value=t)],
+                 args=[ast.Constant(value=name), _wire(t)],
                  keywords=[])
         for name, t in pairs])
 
@@ -171,28 +189,16 @@ def policy_module(model: ir.Model) -> str:
     classes = [*model.constructed, *model.handed_back]
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
-        ast.ImportFrom(module="._callspec",
-                       names=[ast.alias(name="Acquire"), ast.alias(name="Arg"),
-                              ast.alias(name="Call"), ast.alias(name="Tree"),
-                              ast.alias(name="Walk")], level=0),
+        import_from("_callspec", "Acquire", "Arg", "Call", "Tree", "Walk", "Wire",
+                    level=1),
     ]
     # The protobuf package every message and service sits in.
     body.append(ast.AnnAssign(
         target=ast.Name(id="PKG"), annotation=_ann("str", "PKG"),
         value=ast.Constant(value=ir.PROTO_PACKAGE), simple=1))
-    body.append(_table("WIRE_KIND", "dict[str, str]",
-                       [(c.name, ast.Constant(value=c.wire)) for c in classes]))
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
-                       [(c.name, _arg_tuple([(f.name, f.wire) for f in c.wire_fields]))
-                        for c in classes]))
-    body.append(ast.AnnAssign(
-        target=ast.Name(id="ENUMS"), annotation=_ann("frozenset[str]", "ENUMS"),
-        value=ast.Call(func=ast.Name(id="frozenset"),
-                       args=[ast.Set(elts=[ast.Constant(value=n)
-                                           for n in sorted(model.enums)])]
-                       if model.enums else [],
-                       keywords=[]),
-        simple=1))
+                       [(c.name, _arg_tuple([(f.name, f.type) for f in c.wire_fields]))
+                        for c in classes if c.wire == "value"]))
     # The exception surface. ERROR_MODULE is where the emitted module
     # lands, which the fault codec imports to construct one; the
     # fields are what it is rebuilt FROM.
@@ -200,10 +206,13 @@ def policy_module(model: ir.Model) -> str:
         target=ast.Name(id="ERROR_MODULE"), annotation=_ann("str", "ERROR_MODULE"),
         value=ast.Constant(value=model.errors.module), simple=1))
     body.append(_table("ERROR_FIELDS", "dict[str, tuple[Arg, ...]]", [
-        (n, _arg_tuple([(f.name, f.wire) for f in e.wire_fields]))
+        (n, _arg_tuple([(f.name, f.type) for f in e.wire_fields]))
         for n, e in model.errors.classes.items()]))
-    body.append(_table("UNION_ARMS", "dict[str, tuple[str, ...]]", [
-        (n, ast.Tuple(elts=[ast.Constant(value=a.name) for a in arms]))
+    body.append(ast.AnnAssign(
+        target=ast.Name(id="LOG_RECORDS"), annotation=_ann("Wire", "LOG_RECORDS"),
+        value=_wire(grpc_schema.LOG_RECORDS), simple=1))
+    body.append(_table("UNION_ARMS", "dict[str, tuple[Wire, ...]]", [
+        (n, ast.Tuple(elts=[_wire(a) for a in arms]))
         for n, arms in model.unions.items()]))
     # Every method's call spec, ONCE. The client reads these through
     # `rpc.py` and the server reads them through METHODS below, so the
@@ -824,9 +833,8 @@ def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
               ast.Constant(value=rpc.path),
               ast.Constant(value=rpc.req),
               ast.Constant(value=rpc.resp),
-              _arg_tuple([(p.name, p.type.spelling) for p in params]),
-              ast.Constant(value=returns.spelling if returns is not None
-                           else "None")],
+              _arg_tuple([(p.name, p.type) for p in params]),
+              _wire(returns)],
         keywords=[])
 
 
@@ -849,7 +857,7 @@ def _directory(model: ir.Model) -> list[ast.stmt]:
             args=[ast.Constant(value=c.name),
                   ast.Constant(value=c.acquire.path),
                   ast.Constant(value=c.acquire.req),
-                  _arg_tuple([(p.name, p.type.spelling) for p in c.ctor]),
+                  _arg_tuple([(p.name, p.type) for p in c.ctor]),
                   ast.Constant(value=sum(1 for p in c.ctor
                                          if p.default is None)),
                   ast.Tuple(elts=[ast.Constant(value=p.name) for p in c.ctor

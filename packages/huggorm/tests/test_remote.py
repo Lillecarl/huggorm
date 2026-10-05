@@ -437,11 +437,13 @@ async def test_a_word_outside_the_vocabulary_stops_before_the_wire(
     becomes a request, and the caller gets a Python error with the
     word in it rather than a decode failure from a server."""
     from huggorm.wire import WireCodec
+    from huggorm_generated._callspec import Wire
 
     codec = WireCodec()
-    assert codec.scalar("BuildMode")("repair") is huggorm_bindings.BuildMode.REPAIR
+    mode = Wire("enum", "BuildMode")
+    assert codec.scalar(mode)("repair") is huggorm_bindings.BuildMode.REPAIR
     with pytest.raises(ValueError, match="not a valid"):
-        codec.scalar("BuildMode")("rebuild")
+        codec.scalar(mode)("rebuild")
 
 
 async def test_a_path_is_read_on_the_store_side(

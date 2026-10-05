@@ -30,6 +30,7 @@ from huggorm_generated._policy import (
     ACQUIRE,
     ASYNC_CLASS,
     FREE,
+    LOG_RECORDS,
     METHODS,
     TREES,
 )
@@ -439,8 +440,7 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
             await anyio.sleep(LOG_POLL)
             continue
         resp = resp_cls()
-        codec.encode(resp, "records", "list[LogRecord]", records,
-                     _never_a_proxy)
+        codec.encode(resp, "records", LOG_RECORDS, records, _never_a_proxy)
         resp.dropped = await sub.dropped()
         await stream.send_message(resp)
 

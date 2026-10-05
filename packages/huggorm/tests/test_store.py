@@ -2040,9 +2040,12 @@ def test_a_duration_crosses_as_whole_microseconds() -> None:
 
     from huggorm.grpc_pb import load_pool
     from huggorm.wire import WireCodec
+    from huggorm_generated._policy import WIRE_FIELDS
 
     codec = WireCodec()
-    assert codec.kind("datetime.timedelta") == "scalar", (
+    durations = {a.type.kind for a in WIRE_FIELDS["KeyedBuildResult"]
+                 if a.type.name == "datetime.timedelta"}
+    assert durations == {"scalar"}, (
         "a duration goes in a scalar field; nothing else can carry it")
 
     pool = load_pool()

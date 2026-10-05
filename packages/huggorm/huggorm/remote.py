@@ -38,7 +38,7 @@ import grpclib.exceptions
 from google.protobuf import message_factory
 
 from huggorm_generated._callspec import Call
-from huggorm_generated._policy import ACQUIRE, FREE, NO_RPC
+from huggorm_generated._policy import ACQUIRE, FREE, LOG_RECORDS, NO_RPC
 
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails
@@ -587,7 +587,7 @@ class NixClient:
                     # by. A LogRecord is a wire value, so the proxy
                     # arm is unreachable and says so.
                     yield (self.codec.decode(
-                        resp, "records", "list[LogRecord]", _no_proxy),
+                        resp, "records", LOG_RECORDS, _no_proxy),
                         int(resp.dropped))
         except grpclib.exceptions.GRPCError as e:
             # Same contract as _rpc: a typed failure rebuilds into the
@@ -620,10 +620,10 @@ class NixClient:
             self.codec.encode(req, a.name, a.type, val,
                               _handle_of)
         resp = await self._rpc(spec.path, req, spec.resp)
-        returned, _ = self.codec.split_optional(spec.returns)
+        returned = spec.returns
         return self.codec.decode(
-            resp, "result", spec.returns,
-            lambda hid: self.proxy(returned, hid))
+            resp, "result", returned,
+            lambda hid: self.proxy(returned.name if returned else "", hid))
 
     async def invoke(self, m: Call, handle_id: str | None,
                      args: list[Any]) -> Any:
@@ -657,10 +657,10 @@ class NixClient:
 
         # Proxies stay remote behind a handle; values come back as real
         # local objects.
-        returned, _ = self.codec.split_optional(m.returns)
+        returned = m.returns
         return self.codec.decode(
-            resp, "result", m.returns,
-            lambda hid: self.proxy(returned, hid))
+            resp, "result", returned,
+            lambda hid: self.proxy(returned.name if returned else "", hid))
 
 
 @contextlib.asynccontextmanager

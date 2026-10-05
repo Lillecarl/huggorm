@@ -318,13 +318,6 @@ class FieldModel:
         t = TypeRef.named(held, resolver.kind(held))
         return cls(name, TypeRef.optional_of(t) if held != spelling else t)
 
-    @property
-    def wire(self) -> str:
-        """The `_wire_fields` string the runtime codec reads."""
-        held = self.type.required
-        out = held.width or held.spelling
-        return f"{out}?" if self.type.optional else out
-
 
 def crossable(t: Type | None, where: str) -> None:
     """Refuse a type a service's message cannot spell.

@@ -175,18 +175,21 @@ def test_a_string_enum_decodes_to_its_class(model: ir.Model) -> None:
     Needs no server: this is the converter both sides use."""
     from huggorm.wire import WireCodec
     from huggorm_bindings import ContentAddressMethod
+    from huggorm_generated._callspec import Wire
+    from huggorm_generated._policy import WIRE_FIELDS
 
     codec = WireCodec()
     assert model.enums, "the bindings declare no vocabularies"
-    assert codec.kind("ContentAddressMethod") == "scalar"
+    method = Wire("enum", "ContentAddressMethod")
+    assert WIRE_FIELDS["ContentAddress"][0].type == method
 
-    rebuild = codec.scalar("ContentAddressMethod")
+    rebuild = codec.scalar(method)
     assert rebuild("flat") is ContentAddressMethod.FLAT
     with pytest.raises(ValueError, match="not a valid"):
         rebuild("nonsense")
 
     # ...and a built-in scalar still resolves to the builtin.
-    assert codec.scalar("bytes") is bytes
+    assert codec.scalar(Wire("scalar", "bytes")) is bytes
 
 
 def test_the_front_door_covers_the_surface() -> None:
@@ -345,33 +348,36 @@ def test_an_enum_survives_a_container() -> None:
     from huggorm.wire import WireCodec
     from huggorm_bindings import ContentAddressMethod as CA
     from huggorm_bindings import HashAlgorithm
+    from huggorm_generated._callspec import Wire
 
     codec = WireCodec()
     probe = _probe_message()
+    words = Wire("list", item=Wire("enum", "HashAlgorithm"))
+    table = Wire("map", item=Wire("enum", "ContentAddressMethod"))
 
-    codec.list_to_msg("list[HashAlgorithm]",
+    codec.list_to_msg(words,
                       [HashAlgorithm.SHA256, HashAlgorithm.SHA512],
                       probe.words)
     assert list(probe.words) == ["sha256", "sha512"], "a member IS its string"
-    assert codec.list_from_msg("list[HashAlgorithm]", probe.words) == [
+    assert codec.list_from_msg(words, probe.words) == [
         HashAlgorithm.SHA256, HashAlgorithm.SHA512]
     assert all(isinstance(v, HashAlgorithm)
-               for v in codec.list_from_msg("list[HashAlgorithm]", probe.words))
+               for v in codec.list_from_msg(words, probe.words))
 
-    codec.map_to_msg("dict[str, ContentAddressMethod]",
+    codec.map_to_msg(table,
                      {"a": CA.NAR, "b": CA.FLAT}, probe.table)
     assert dict(probe.table) == {"a": "nar", "b": "flat"}
-    assert codec.map_from_msg("dict[str, ContentAddressMethod]", probe.table) == {
+    assert codec.map_from_msg(table, probe.table) == {
         "a": CA.NAR, "b": CA.FLAT}
     assert all(isinstance(v, CA) for v in
-               codec.map_from_msg("dict[str, ContentAddressMethod]",
+               codec.map_from_msg(table,
                                   probe.table).values())
 
     # A member that is not one raises here rather than reaching
     # libstore - the same guarantee a singular field has.
     probe.words.append("nonsense")
     with pytest.raises(ValueError, match="not a valid"):
-        codec.list_from_msg("list[HashAlgorithm]", probe.words)
+        codec.list_from_msg(words, probe.words)
 
 
 def test_a_method_with_no_wire_form_is_absent_everywhere(

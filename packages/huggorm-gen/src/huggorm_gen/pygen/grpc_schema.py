@@ -55,8 +55,11 @@ assert set(SCALARS) == set(SCALAR_NAMES), "scalar tables disagree"
 
 HANDLE = "Handle"
 
-# The hand-written Session messages' one scalar.
+# The hand-written Session messages' one scalar, and what a log stream
+# answers with. `_policy.LOG_RECORDS` is emitted from the second, so
+# the codec reads the stream by the type the schema wrote.
 INT = ir.TypeRef.named("int", "scalar")
+LOG_RECORDS = ir.TypeRef.list_of(ir.TypeRef.named("LogRecord", "value"))
 
 
 def _field(msg: Any, name: str, number: int, type_name: str | None = None,
@@ -563,8 +566,7 @@ def _add_log_stream(f: Any, sess: Any) -> None:
     # the same two fields would be the same fact declared twice.
     resp = f.message_type.add()
     resp.name = "LogsResp"
-    _add_typed_field(resp, "records", 1,
-                     ir.TypeRef.list_of(ir.TypeRef.named("LogRecord", "value")))
+    _add_typed_field(resp, "records", 1, LOG_RECORDS)
     _add_typed_field(resp, "dropped", 2, INT)
 
     for name, input_name in (("Logs", "LogsReq"),
