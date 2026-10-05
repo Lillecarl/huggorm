@@ -45,7 +45,7 @@ class Spelling:
     three ways."""
 
     def __init__(self, proxy: Rename | None = None,
-                 expand: Mapping[str, tuple[str, ...]] | None = None) -> None:
+                 expand: Mapping[str, tuple[TypeRef, ...]] | None = None) -> None:
         self._proxy = proxy
         # Union arms to write a union out as, instead of naming its
         # alias: a binding stub, because a compiled module holds no
@@ -87,13 +87,13 @@ class Spelling:
         assert self._expand is not None
         out = []
         for arm in self._expand[union]:
-            if arm in self._expand:
-                out.append(self._arms(arm))
+            if arm.kind == "union":
+                out.append(self._arms(arm.name))
                 continue
-            arm = python_spelling(arm)
-            if arm not in BUILTIN:
-                self.bindings.add(arm)
-            out.append(arm)
+            name = python_spelling(arm.name)
+            if name not in BUILTIN:
+                self.bindings.add(name)
+            out.append(name)
         return " | ".join(out)
 
     def need(self, name: str, source: str) -> None:

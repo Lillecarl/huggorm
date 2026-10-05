@@ -68,8 +68,12 @@ def declared_model() -> ir.Model:
         for fn in nbemit.public(mod.exported, mod.classes):
             functions[fn.name] = ir.FunctionModel.of(
                 fn, PACKAGE, mod.name, resolver)
-    unions = {u.name: tuple(u.decl.arms)
-              for mod in have.modules for u in mod.unions}
+    unions = {}
+    for mod in have.modules:
+        resolver = ir.Resolver.of(mod)
+        for u in mod.unions:
+            unions[u.name] = tuple(ir.TypeRef.named(a, resolver.kind(a))
+                                   for a in u.decl.arms)
     enums = {cls.name: ir.EnumModel.of(cls, PACKAGE, vocab.name)
              for vocab in map(have.module, have.vocabularies)
              for cls in vocab.classes if cls.is_words}
@@ -89,9 +93,13 @@ def _errors() -> ir.Errors:
     # an emitter reading a tree the corpus already parsed has to say
     # so (huggorm#61).
     with reading(str(have.path(have.errors))):
+        # An error's parts name classes from any module.
+        everything = ir.Resolver({n: c for mod in have.modules
+                                  for n, c in mod.known.items()})
         return ir.Errors(errors_module(),
                          pyerrors.entries(have.resolved(have.errors),
-                                          have.imported(have.errors)))
+                                          have.imported(have.errors),
+                                          everything))
 
 
 # The exception hierarchy, declared once. It emits two things that

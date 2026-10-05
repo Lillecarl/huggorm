@@ -38,10 +38,6 @@ from huggorm_gen.payload.wiretypes import (
     SCALAR_NAMES,
     arm_field,
     entry_name,
-    list_value,
-    map_value,
-    optional_value,
-    scalar_spelling,
 )
 
 Proto = dict[str, Any]
@@ -58,6 +54,9 @@ SCALARS = {"str": "string", "int": "sint64", "uint": "uint64",
 assert set(SCALARS) == set(SCALAR_NAMES), "scalar tables disagree"
 
 HANDLE = "Handle"
+
+# The hand-written Session messages' one scalar.
+INT = ir.TypeRef.named("int", "scalar")
 
 
 def _field(msg: Any, name: str, number: int, type_name: str | None = None,
@@ -100,44 +99,10 @@ def _with_presence(msg: Any, f: Any) -> Any:
     return f
 
 
-def _add_field(msg: Any, name: str, number: int, type_str: str,
-               kinds: dict[str, str], optional: bool = False) -> Any:
-    """Append one field of the declared surface type.
-
-    Three shapes, and only the first is a plain lookup. A list is a
-    repeated field of its element type. A map cannot be described by a
-    type constant at all: proto3 spells it as a repeated field of a
-    message the containing type carries, so this builds that message
-    too.
-
-    Optionality arrives two ways and means one thing. `T | None` is
-    how a return type says it; `optional=True` is how a caller passes
-    what a `_wire_fields` "?" or an omissible constructor parameter
-    already decided. Either way the field is built for T and then
-    given presence if it needs any."""
-    if (inner := optional_value(type_str)) is not None:
-        type_str, optional = inner, True
-    if (value_type := map_value(type_str)) is not None:
-        return _add_map_field(msg, name, number,
-                              _msg_arg_type(value_type, kinds))
-    if (item_type := list_value(type_str)) is not None:
-        pt, message = _msg_arg_type(item_type, kinds)
-        f = _field(msg, name, number, proto_type=pt, type_name=message)
-        f.label = f.LABEL_REPEATED
-        return f
-    pt, message = _msg_arg_type(type_str, kinds)
-    f = _field(msg, name, number, proto_type=pt, type_name=message)
-    if optional and pt is not None:
-        # pt is None exactly when the field is a message, and a
-        # message field has presence already.
-        _with_presence(msg, f)
-    return f
-
-
 def _add_map_field(msg: Any, name: str, number: int,
                    value: tuple[int | None, str | None]) -> Any:
     """A `map<string, V>` field, plus the entry message it needs.
-    `value` is V's (proto_type, message), as `_msg_arg_type` answers."""
+    `value` is V's (proto_type, message), as `_leaf` answers."""
     entry = msg.nested_type.add()
     entry.name = entry_name(name)
     entry.options.map_entry = True
@@ -151,9 +116,13 @@ def _add_map_field(msg: Any, name: str, number: int,
 
 def _add_typed_field(msg: Any, name: str, number: int, t: ir.TypeRef,
                      optional: bool = False) -> Any:
-    """`_add_field` for a resolved type: the structure decides the
-    field's shape and the leaf's kind decides its type, with nothing
-    read back out of a spelling."""
+    """One field of a resolved type: the structure decides the field's
+    shape and the leaf's kind decides its type.
+
+    `T | None` and `optional=True` mean one thing: the field is built
+    for T and given presence if it needs any. A map cannot be one type
+    constant: proto3 spells it as a repeated field of an entry message
+    the containing type carries, so this builds that message too."""
     if t.optional:
         t, optional = t.required, True
     if t.origin == "dict":
@@ -177,13 +146,20 @@ def _leaf(t: ir.TypeRef) -> tuple[int | None, str | None]:
         # proto3 nests neither container in the other; `ir.wire_blocker`
         # keeps such a call off the wire before it gets here.
         raise TypeError(f"cannot put {t.spelling!r} in one field")
-    if (builtin := scalar_spelling(t.name)) is not None:
+    if (builtin := t.scalar) is not None:
+        # `datetime.timedelta` is an int of microseconds: a fact about
+        # the WIRE, which `wiretypes.SPELLED` states.
         return _scalar_const(SCALARS[builtin]), None
     if t.kind == "union":
+        # A SUM, as protobuf's own tagged union: one message per alias,
+        # holding one `oneof`, called after the alias.
         return None, union_msg_name(t.name)
     if t.kind == "enum":
+        # A StrEnum member IS a str. The type is for the caller.
         return _scalar_const(SCALARS["str"]), None
     if t.kind == "error":
+        # The message the status details carry: one shape for one
+        # error class, raised or held in a value.
         return None, fault_msg_name(t.name)
     if t.kind == "value":
         return None, value_msg_name(t.name)
@@ -228,62 +204,6 @@ def fault_msg_name(cls_name: str) -> str:
 
 # -- schema ---------------------------------------------------------------
 
-ENUM = "enum"
-UNION = "union"
-ERROR = "error"
-
-
-def _wire_kinds(model: ir.Model) -> dict[str, str]:
-    """Declared name -> what it is on the wire, for the `_wire_fields`
-    spellings, which are still strings: the runtime codec parses the
-    same ones.
-
-    A string enum needs no policy of its own: a StrEnum member is a str
-    and crosses as one. An EXCEPTION class already has a message - the
-    fault detail every typed error crosses in (huggorm#36) - so a field
-    of one points at that rather than inventing a second shape."""
-    out = {name: c.wire for name, c in model.classes.items()}
-    out.update({name: ENUM for name in model.enums})
-    out.update({name: UNION for name in model.unions})
-    out.update({name: ERROR for name in model.errors.classes})
-    return out
-
-
-def _msg_arg_type(type_str: str,
-                  kinds: dict[str, str]) -> tuple[int | None, str | None]:
-    """Surface type string -> (proto_type_const|None, message_name|None)."""
-    if type_str == "None":
-        return None, None
-    if (builtin := scalar_spelling(type_str)) is not None:
-        # A declared type that goes in a field as a builtin. `str` is
-        # itself; `datetime.timedelta` is an int of microseconds,
-        # which is a fact about the WIRE and lives with the other
-        # wire spellings rather than here.
-        return _scalar_const(SCALARS[builtin]), None
-    kind = kinds.get(type_str)
-    if kind == UNION:
-        # A SUM, as protobuf's own tagged union. One message per
-        # alias, holding one `oneof` - which is why the alias needed a
-        # NAME: the message is called after it.
-        return None, union_msg_name(type_str)
-    if kind == ENUM:
-        # A StrEnum member IS a str. Nothing about the transport
-        # changes; the type exists for the caller, not for the wire.
-        return _scalar_const(SCALARS["str"]), None
-    if kind == ERROR:
-        # The same message the status details carry. One shape for one
-        # error class, whether it arrives as the failure of a call or
-        # as a field of a value that is reporting one.
-        return None, fault_msg_name(type_str)
-    if kind == "value":
-        return None, value_msg_name(type_str)
-    if kind == "proxy":
-        return None, HANDLE
-    raise TypeError(
-        f"cannot put {type_str!r} on the wire: it is neither a scalar nor a "
-        f"class carrying a _wire policy. Declare _wire on the binding.")
-
-
 FAULT = "Fault"
 
 
@@ -312,13 +232,11 @@ def _add_faults(file_dp: Any, model: ir.Model) -> None:
     _field(fault, "cause_type", 3, proto_type=_scalar_const("string"))
     _field(fault, "cause_message", 4, proto_type=_scalar_const("string"))
 
-    kinds = _wire_kinds(model)
     for cls_name, error in model.errors.classes.items():
         m = file_dp.message_type.add()
         m.name = fault_msg_name(cls_name)
-        for n, (fname, ftype) in enumerate(error.wire_fields, start=1):
-            _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
-                       optional=ftype.endswith("?"))
+        for n, field in enumerate(error.wire_fields, start=1):
+            _add_typed_field(m, field.name, n, field.type)
 
 
 def _add_common(file_dp: Any, model: ir.Model) -> None:
@@ -327,17 +245,15 @@ def _add_common(file_dp: Any, model: ir.Model) -> None:
     _field(handle, "id", 1, proto_type=_scalar_const("string"))
 
     # Wire-value messages, built from the contract each binding declares.
-    kinds = _wire_kinds(model)
     for c in (*model.constructed, *model.handed_back):
         if c.wire != "value":
             continue
         m = file_dp.message_type.add()
         m.name = value_msg_name(c.name)
-        for n, (fname, ftype) in enumerate(c.wire_fields, start=1):
-            # "?" reaches the schema: the codec once answered it by
-            # reading an empty string as absent (huggorm#48).
-            _add_field(m, fname, n, ftype.removesuffix("?"), kinds,
-                       optional=ftype.endswith("?"))
+        for n, field in enumerate(c.wire_fields, start=1):
+            # Presence reaches the schema: the codec once answered an
+            # optional by reading an empty string as absent (huggorm#48).
+            _add_typed_field(m, field.name, n, field.type)
 
     # ...and one message per UNION, holding one oneof.
     #
@@ -357,7 +273,7 @@ def _add_common(file_dp: Any, model: ir.Model) -> None:
             # An arm is never `optional`: the oneof IS the presence,
             # and marking a member optional would add a second,
             # disagreeing one.
-            f = _add_field(m, arm_field(arm), n, arm, kinds)
+            f = _add_typed_field(m, arm_field(arm.name), n, arm)
             f.oneof_index = 0
 
 
@@ -401,7 +317,7 @@ def _add_service(file_dp: Any, model: ir.Model, c: ir.ClassModel,
         rpc.output_type = f".{PKG}.{resp.name}"
 
 
-def _add_session(f: Any, kinds: dict[str, str]) -> None:
+def _add_session(f: Any) -> None:
     sess = f.service.add()
     sess.name = "Session"
 
@@ -485,7 +401,7 @@ def _add_session(f: Any, kinds: dict[str, str]) -> None:
     relm.output_type = f".{PKG}.ReleaseManyResp"
 
     _add_value_tree(f, sess)
-    _add_log_stream(f, sess, kinds)
+    _add_log_stream(f, sess)
 
 
 # -- the recursive value message ------------------------------------------
@@ -575,7 +491,7 @@ def _add_value_tree(f: Any, sess: Any) -> None:
 # -- the log stream --------------------------------------------------------
 
 
-def _options(req: Any, kinds: dict[str, str], first: int) -> None:
+def _options(req: Any, first: int) -> None:
     """The two fields a log subscription carries, wherever it is made.
 
     Stated once because both requests carry them, and the numbering
@@ -587,11 +503,11 @@ def _options(req: Any, kinds: dict[str, str], first: int) -> None:
     and a zero one have to differ. Capacity 0 is not a queue at all,
     so zero is free to mean "the binding's own default" (huggorm#48).
     """
-    _add_field(req, "capacity", first, "int", kinds)
-    _add_field(req, "level", first + 1, "int", kinds, optional=True)
+    _add_typed_field(req, "capacity", first, INT)
+    _add_typed_field(req, "level", first + 1, INT, optional=True)
 
 
-def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
+def _add_log_stream(f: Any, sess: Any) -> None:
     """The one rpc that travels the other way, unsolicited.
 
     Hand-written, like the rest of Session, and for the reason
@@ -628,7 +544,7 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     # Which state's thread to subscribe on. The tap routes by thread,
     # and an EvalState owns one, so the handle names the subscription.
     _field(req, "state", 1, type_name=HANDLE)
-    _options(req, kinds, 2)
+    _options(req, 2)
 
     # The same subscription with nothing to name. The process-wide
     # sink takes records no subscribed thread claimed, so there is no
@@ -640,15 +556,16 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     # switched off, and a reserved gap would say the opposite.
     process = f.message_type.add()
     process.name = "ProcessLogsReq"
-    _options(process, kinds, 1)
+    _options(process, 1)
 
     # ONE response message for both. A batch of records and a drop
     # count is the whole answer either way, and a second message with
     # the same two fields would be the same fact declared twice.
     resp = f.message_type.add()
     resp.name = "LogsResp"
-    _add_field(resp, "records", 1, "list[LogRecord]", kinds)
-    _add_field(resp, "dropped", 2, "int", kinds)
+    _add_typed_field(resp, "records", 1,
+                     ir.TypeRef.list_of(ir.TypeRef.named("LogRecord", "value")))
+    _add_typed_field(resp, "dropped", 2, INT)
 
     for name, input_name in (("Logs", "LogsReq"),
                              ("ProcessLogs", "ProcessLogsReq")):
@@ -668,7 +585,7 @@ def _add_log_stream(f: Any, sess: Any, kinds: dict[str, str]) -> None:
     _field(barrier, "state", 1, type_name=HANDLE)
     barrier_resp = f.message_type.add()
     barrier_resp.name = "LogsBarrierResp"
-    _add_field(barrier_resp, "request", 1, "int", kinds)
+    _add_typed_field(barrier_resp, "request", 1, INT)
     rpc = sess.method.add()
     rpc.name = "LogsBarrier"
     rpc.input_type = f".{PKG}.LogsBarrierReq"
@@ -712,7 +629,7 @@ def build_fdset(model: ir.Model) -> bytes:
     f.syntax = "proto3"
     _add_common(f, model)
     _add_faults(f, model)
-    _add_session(f, _wire_kinds(model))
+    _add_session(f)
     # Returned types expose methods through handles as well: their
     # operations run wherever the producing wrapper put them.
     acquirable = {c.name for c in model.acquirable}

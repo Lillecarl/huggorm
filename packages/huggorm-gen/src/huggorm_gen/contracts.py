@@ -8,11 +8,6 @@ other than `T | None`, an unknown name - is not checked again here.
 from __future__ import annotations
 
 from huggorm_gen import ir
-from huggorm_gen.payload.wiretypes import (
-    list_value,
-    map_value,
-    scalar_spelling,
-)
 
 
 def _adopted(t: ir.TypeRef | None, names: set[str]) -> str | None:
@@ -93,8 +88,6 @@ def wire(model: ir.Model) -> list[str]:
     A value promises it can be rebuilt from its parts; a proxy promises
     it cannot and stays behind a handle. A value with no fields used to
     surface as a KeyError deep in the server at the first call."""
-    known = (set(model.classes) | set(model.enums) | set(model.unions)
-             | set(model.errors.classes))
     bad = []
     for c in model.classes.values():
         if c.wire == "proxy":
@@ -113,40 +106,23 @@ def wire(model: ir.Model) -> list[str]:
             # serialised off it.
             bad.append(f"{c.name}: wire-value must be threading 'pool', "
                        f"not {c.decl.threading!r}")
-        for fname, spelled in c.wire_fields:
-            bad += _field(model, c.name, fname, spelled, known)
+        for f in c.wire_fields:
+            bad += _field(model, c.name, f)
     return bad
 
 
-def _field(model: ir.Model, owner: str, fname: str, spelled: str,
-           known: set[str]) -> list[str]:
-    where = f"{owner}._wire_fields {fname!r}"
-    optional = spelled.endswith("?")
-    ftype = spelled.removesuffix("?")
-    try:
-        element = list_value(ftype) or map_value(ftype)
-    except TypeError as e:
-        return [f"{where}: {e}"]
-    if element is not None:
-        if optional:
-            return [f"{where}: a container cannot be optional. A repeated "
-                    f"field has no presence, so an absent one IS an empty "
-                    f"one - drop the '?'."]
-        ftype = element
-    # Against what the WIRE carries: a field cannot be `float` or
-    # `None` and can be `bytes`, and a `datetime.timedelta` goes in an
-    # int field.
-    if scalar_spelling(ftype) is None and ftype not in known:
-        return [f"{where}: unknown field type {ftype!r}"]
-    held = model.classes.get(ftype)
-    if held is not None and held.wire == "proxy":
+def _field(model: ir.Model, owner: str, f: ir.FieldModel) -> list[str]:
+    where = f"{owner}._wire_fields {f.name!r}"
+    if (why := ir.wire_blocker(f.type, model.served)) is not None:
+        return [f"{where}: {why}"]
+    if f.type.leaf.kind == "proxy":
         # A wire-value is rebuilt on the far side by _from_parts, which
         # needs a local object for every part, and a proxy has none
         # there (huggorm#31).
-        return [f"{where}: {ftype} is a proxy, so _from_parts has nothing "
-                f"to rebuild it from on the far side. A wire-value copies "
-                f"all the way down. Carry the proxy as a method parameter "
-                f"or return instead."]
+        return [f"{where}: {f.type.leaf.name} is a proxy, so _from_parts has "
+                f"nothing to rebuild it from on the far side. A wire-value "
+                f"copies all the way down. Carry the proxy as a method "
+                f"parameter or return instead."]
     return []
 
 

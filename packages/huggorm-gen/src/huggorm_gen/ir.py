@@ -162,10 +162,23 @@ class TypeRef:
     args: tuple[TypeRef, ...]
     kind: Kind
     name: str
+    # The wire scalar a leaf's C++ width needs: "uint" for a uint64_t.
+    # Python has one int; only the crossing has two (huggorm#79).
+    width: str = ""
 
     @property
     def optional(self) -> bool:
         return self.origin == "optional"
+
+    @property
+    def scalar(self) -> str | None:
+        """The builtin this leaf goes in a field as, or None when it
+        crosses as anything else."""
+        if self.width:
+            return self.width
+        if self.kind == "scalar":
+            return self.name
+        return SPELLED.get(self.name)
 
     @property
     def required(self) -> TypeRef:
@@ -274,7 +287,43 @@ def type_ref(t: Type, resolver: Resolver) -> TypeRef:
         args=tuple(type_ref(a, resolver) for a in t.args),
         kind=resolver.kind(name),
         name=name,
+        width=t.cxx.width if t.cxx is not None and not t.origin else "",
     )
+
+
+@dataclass(frozen=True)
+class FieldModel:
+    """One part a wire value or an error is rebuilt from. Parts are in
+    constructor order: the far side calls `cls(*parts)`."""
+
+    name: str
+    type: TypeRef
+
+    @classmethod
+    def of(cls, name: str, t: Type, resolver: Resolver) -> FieldModel:
+        # `Type.wire` refuses a container of a width, which no field
+        # type can say. The binding's own `_wire_fields` is that string.
+        t.wire  # noqa: B018
+        return cls(name, type_ref(t, resolver))
+
+    @classmethod
+    def spelled(cls, name: str, spelling: str, resolver: Resolver) -> FieldModel:
+        """A part an error declares as a `_wire_fields` string: a name,
+        or a name and `?` for one that may be None."""
+        held = spelling.removesuffix("?")
+        if not held.isidentifier():
+            raise TypeError(
+                f"_wire_fields {name!r} is {spelling!r}: an error's part is a "
+                f"declared name, with a trailing '?' if it may be None")
+        t = TypeRef.named(held, resolver.kind(held))
+        return cls(name, TypeRef.optional_of(t) if held != spelling else t)
+
+    @property
+    def wire(self) -> str:
+        """The `_wire_fields` string the runtime codec reads."""
+        held = self.type.required
+        out = held.width or held.spelling
+        return f"{out}?" if self.type.optional else out
 
 
 def crossable(t: Type | None, where: str) -> None:
@@ -423,7 +472,7 @@ class ClassModel:
     is_value: bool
     produced: bool
     constructs: bool
-    wire_fields: tuple[tuple[str, str], ...]
+    wire_fields: tuple[FieldModel, ...]
     ctor: tuple[ParamModel, ...]
     methods: tuple[MethodModel, ...]
 
@@ -445,8 +494,8 @@ class ClassModel:
             # RAW: the stubs carry the indentation the source had.
             doc=c.doc, decl=decl, is_value=c.is_value,
             produced=c.is_produced, constructs=c.constructs,
-            wire_fields=tuple((f.name, m.ret.wire) for f, m in c.parts
-                              if m.ret is not None),
+            wire_fields=tuple(FieldModel.of(f.name, m.ret, resolver)
+                              for f, m in c.parts if m.ret is not None),
             ctor=tuple(ParamModel.of(p, resolver)
                        for p in _ctor_params(c, functions)),
             # SURFACE only. A private method is bound because the tree
@@ -543,7 +592,7 @@ class ErrorModel:
     name: str
     # Bases declared in the same errors document, not `Exception`.
     bases: tuple[str, ...]
-    wire_fields: tuple[tuple[str, str], ...]
+    wire_fields: tuple[FieldModel, ...]
 
 @dataclass(frozen=True)
 class Errors:
@@ -568,7 +617,7 @@ class Model:
     classes: Mapping[str, ClassModel]
     functions: Mapping[str, FunctionModel]
     # Every union alias, to its arms in declared order.
-    unions: Mapping[str, tuple[str, ...]]
+    unions: Mapping[str, tuple[TypeRef, ...]]
     # The classes that are HANDED BACK rather than constructed.
     returned: frozenset[str]
     # A type the async surface spells differently: `pathlib.Path` is

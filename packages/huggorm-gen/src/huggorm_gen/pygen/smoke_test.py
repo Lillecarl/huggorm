@@ -35,7 +35,7 @@ def test_parse(out: pathlib.Path) -> None:
 
 
 def _cls(name: str, *, threading: str = "pool", blocking: bool = True,
-         wire: str = "", fields: tuple[tuple[str, str], ...] = (),
+         wire: str = "", fields: tuple[Any, ...] = (),
          returns: tuple[tuple[str, Any], ...] = ()) -> Any:
     """One class model, built by hand for a contract the corpus does
     not break."""
@@ -100,16 +100,17 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
     for t in (word, ir.TypeRef.list_of(word), ir.TypeRef.dict_of(word)):
         assert ir.wire_blocker(t, frozenset()) is None, t.spelling
 
-    def probe(ftype: str) -> Any:
-        return _model(_cls("Probe", wire="value", fields=(("kind", ftype),)),
+    def probe(t: ir.TypeRef) -> Any:
+        return _model(_cls("Probe", wire="value",
+                           fields=(ir.FieldModel("kind", t),)),
                       enums=("Word",))
 
-    for ftype in ("Word", "list[Word]"):
-        assert contracts.wire(probe(ftype)) == [], ftype
-    # ...and a name that is neither a class nor a declared enum still
-    # fails, so the set widened rather than the check weakening.
-    complaints = contracts.wire(probe("Nonsense"))
-    assert len(complaints) == 1 and "unknown field type" in complaints[0]
+    for t in (word, ir.TypeRef.list_of(word)):
+        assert contracts.wire(probe(t)) == [], t.spelling
+    # ...and a field that cannot cross still fails, so the set widened
+    # rather than the check weakening.
+    complaints = contracts.wire(probe(ir.TypeRef.named("object", "opaque")))
+    assert len(complaints) == 1 and "not data" in complaints[0]
 
 
 def test_an_optional_return_names_a_value_or_nothing(
@@ -1479,7 +1480,7 @@ def test_a_declared_type_is_the_type_nanobind_BINDS(
     _VOCABULARIES.clear()
     _VOCABULARIES.update(model.enums)
     _UNIONS.clear()
-    _UNIONS.update({n: list(arms) for n, arms in model.unions.items()})
+    _UNIONS.update({n: [a.name for a in arms] for n, arms in model.unions.items()})
     _ERRORS.clear()
     _ERRORS.update(model.errors.classes)
 

@@ -93,12 +93,13 @@ def test_a_version_branch_is_resolved_before_an_emitter_sees_it(
     three. Asserting only one direction would pass on an emitter that
     kept everything."""
     from huggorm_dsl.read import load, resolved
+    from huggorm_gen import ir
     from huggorm_gen.cppgen import pyerrors
 
     path = _declaration(tmp_path, BRANCHED)
     tree = resolved(path)
 
-    entries = pyerrors.entries(tree, load(path))
+    entries = pyerrors.entries(tree, load(path), ir.Resolver({}))
     assert sorted(entries) == ["Here", "NixError"]
     # ...and it inherits, which is the half only the IMPORT knows.
     assert entries["Here"].bases == ("NixError",)
@@ -198,6 +199,7 @@ def test_the_errors_emitter_refuses_a_tree_nothing_resolved(
     All three readings, because all three used to walk the body on
     their own and that is how they came to disagree."""
     from huggorm_dsl.read import DeclarationError, load
+    from huggorm_gen import ir
     from huggorm_gen.cppgen import pyerrors
 
     path = _declaration(tmp_path, BRANCHED)
@@ -205,7 +207,7 @@ def test_the_errors_emitter_refuses_a_tree_nothing_resolved(
     mod = load(path)
 
     readings: list[Callable[[], object]] = [
-        lambda: pyerrors.entries(raw, mod),
+        lambda: pyerrors.entries(raw, mod, ir.Resolver({})),
         lambda: pyerrors.chain(raw, mod, "raise_as", "pkg.errors"),
         lambda: pyerrors.module(raw, "emitted"),
     ]
@@ -672,7 +674,8 @@ def test_a_field_says_which_64_bit_integer_it_is(
             if m.ret is not None] == [("total", "uint"), ("when", "int")]
 
     typed = ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module))
-    assert typed.wire_fields == (("total", "uint"), ("when", "int"))
+    assert [(f.name, f.type.scalar) for f in typed.wire_fields] == [
+        ("total", "uint"), ("when", "int")]
     assert [(m.name, m.return_spelling) for m in typed.methods] == [
         ("total", "int"), ("when", "int")]
 

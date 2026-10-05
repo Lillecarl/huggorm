@@ -120,7 +120,7 @@ def test_every_declared_error_has_a_message(model: ir.Model) -> None:
         desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
             f"{PKG}.{name}Fault")
         assert [f.name for f in desc.fields] == [
-            fname for fname, _ in error.wire_fields], name
+            f.name for f in error.wire_fields], name
 
 
 def test_every_declared_error_rebuilds_from_its_parts(
@@ -153,13 +153,13 @@ def test_every_declared_error_rebuilds_from_its_parts(
             f"on the far side")
         # Distinct values, so a swap is visible. A reordering that kept
         # the same string in both slots would otherwise pass.
-        probe = [f"<{fname}>" for fname, _ in fields]
+        probe = [f"<{f.name}>" for f in fields]
         built = getattr(module, name)(*probe)
-        for (fname, _), sent in zip(fields, probe, strict=True):
-            got = getattr(built, fname, None)
+        for f, sent in zip(fields, probe, strict=True):
+            got = getattr(built, f.name, None)
             assert got == sent, (
-                f"{name}.wire_fields names {fname!r}, but building it from "
-                f"its parts leaves {fname} = {got!r}, not {sent!r}")
+                f"{name}.wire_fields names {f.name!r}, but building it from "
+                f"its parts leaves {f.name} = {got!r}, not {sent!r}")
 
 
 def test_a_string_enum_decodes_to_its_class(model: ir.Model) -> None:
@@ -693,13 +693,13 @@ def test_each_64_bit_width_reaches_its_own_proto_type(
             continue
         desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
             f"{PKG}.{c.message}")
-        for fname, ftype in c.wire_fields:
-            ftype = ftype.removesuffix("?")
+        for f in c.wire_fields:
+            ftype = f.type.required.scalar
             if ftype not in want:
                 continue
             seen[ftype] += 1
-            assert desc.fields_by_name[fname].type == want[ftype], (
-                f"{c.name}.{fname} is declared {ftype} and the schema "
+            assert desc.fields_by_name[f.name].type == want[ftype], (
+                f"{c.name}.{f.name} is declared {ftype} and the schema "
                 f"disagrees")
     assert seen["uint"], "no field crosses unsigned; the width is unproven"
     assert seen["int"], "no field crosses signed; the width is unproven"

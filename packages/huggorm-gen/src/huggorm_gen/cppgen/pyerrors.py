@@ -213,8 +213,8 @@ def _depth(name: str, bases: dict[str, str]) -> int:
 WIRE_FIELDS = "_wire_fields"
 
 
-def entries(tree: ast.Module,
-            mod: ModuleType) -> dict[str, ir.ErrorModel]:
+def entries(tree: ast.Module, mod: ModuleType,
+            resolver: ir.Resolver) -> dict[str, ir.ErrorModel]:
     """Every declared exception, by name.
 
     Two readings of one file, each answering what it is good for. The
@@ -252,7 +252,8 @@ def entries(tree: ast.Module,
             tuple(b.__name__ for b in kls.__bases__ if b.__module__ == here),
             # Through the MRO, so a class states its parts once and
             # every class below it carries them.
-            tuple((f[0], f[1]) for f in getattr(kls, WIRE_FIELDS, ())))
+            tuple(ir.FieldModel.spelled(f[0], f[1], resolver)
+                  for f in getattr(kls, WIRE_FIELDS, ())))
     return out
 
 

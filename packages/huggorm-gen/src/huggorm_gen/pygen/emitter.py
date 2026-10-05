@@ -10,7 +10,6 @@ from typing import Any
 
 from huggorm_gen import ir
 from huggorm_gen.payload.wiretypes import (
-    SCALAR_NAMES,
     python_spelling,
 )
 from huggorm_gen.pygen.spell import Spelling, import_from
@@ -184,7 +183,8 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("WIRE_KIND", "dict[str, str]",
                        [(c.name, ast.Constant(value=c.wire)) for c in classes]))
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
-                       [(c.name, _arg_tuple(c.wire_fields)) for c in classes]))
+                       [(c.name, _arg_tuple([(f.name, f.wire) for f in c.wire_fields]))
+                        for c in classes]))
     body.append(ast.AnnAssign(
         target=ast.Name(id="ENUMS"), annotation=_ann("frozenset[str]", "ENUMS"),
         value=ast.Call(func=ast.Name(id="frozenset"),
@@ -200,10 +200,10 @@ def policy_module(model: ir.Model) -> str:
         target=ast.Name(id="ERROR_MODULE"), annotation=_ann("str", "ERROR_MODULE"),
         value=ast.Constant(value=model.errors.module), simple=1))
     body.append(_table("ERROR_FIELDS", "dict[str, tuple[Arg, ...]]", [
-        (n, _arg_tuple(e.wire_fields))
+        (n, _arg_tuple([(f.name, f.wire) for f in e.wire_fields]))
         for n, e in model.errors.classes.items()]))
     body.append(_table("UNION_ARMS", "dict[str, tuple[str, ...]]", [
-        (n, ast.Tuple(elts=[ast.Constant(value=a) for a in arms]))
+        (n, ast.Tuple(elts=[ast.Constant(value=a.name) for a in arms]))
         for n, arms in model.unions.items()]))
     # Every method's call spec, ONCE. The client reads these through
     # `rpc.py` and the server reads them through METHODS below, so the
@@ -236,7 +236,7 @@ def policy_module(model: ir.Model) -> str:
         ast.Module(body=body, type_ignores=[]))) + "\n"
 
 
-def unions_module(unions: Mapping[str, Sequence[str]]) -> str:
+def unions_module(unions: Mapping[str, Sequence[ir.TypeRef]]) -> str:
     """`_unions.py`: one alias per declared sum type.
 
     Nothing but aliases, and every one derived from the manifest - so
@@ -244,8 +244,8 @@ def unions_module(unions: Mapping[str, Sequence[str]]) -> str:
     once and this is the same sentence in the package a caller
     imports."""
     # A scalar arm is a builtin, and huggorm_bindings has none to import.
-    arms = sorted({a for v in unions.values() for a in v
-                   if a not in SCALAR_NAMES})
+    arms = sorted({a.name for v in unions.values() for a in v
+                   if a.kind != "scalar"})
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=(
             "The declared SUM types, as the aliases they are.\n\n"
@@ -257,10 +257,10 @@ def unions_module(unions: Mapping[str, Sequence[str]]) -> str:
                        names=[ast.alias(name=a) for a in arms], level=0),
     ]
     for alias, members in unions.items():
-        value: ast.expr = ast.Name(id=python_spelling(members[0]))
+        value: ast.expr = ast.Name(id=python_spelling(members[0].name))
         for arm in members[1:]:
             value = ast.BinOp(left=value, op=ast.BitOr(),
-                              right=ast.Name(id=python_spelling(arm)))
+                              right=ast.Name(id=python_spelling(arm.name)))
         body.append(ast.Assign(targets=[ast.Name(id=alias)], value=value))
     body.append(ast.Assign(
         targets=[ast.Name(id="__all__")],
