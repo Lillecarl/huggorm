@@ -18,6 +18,7 @@ dependencies = [
     "asyncinotify>=4",
     "googleapis-common-protos",
     "grpclib>=0.4",
+    "msgpack>=1",
     "protobuf>=4.22",
 ]
 

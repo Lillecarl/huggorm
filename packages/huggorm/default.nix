@@ -58,6 +58,7 @@ python3Packages.buildPythonPackage {
   # what let it beat watchdog - Carl ruled Darwin out for now, so
   # cross-platform bought nothing and cost a thread pool. It
   # propagates nothing but python3 itself.
+  # msgpack: the value format of the Unix socket transport (huggorm#142).
   # The front door and the suite read the declarations for the Nix the
   # bindings link (huggorm#55).
   env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
@@ -72,6 +73,7 @@ python3Packages.buildPythonPackage {
     python3Packages.asyncinotify
     python3Packages.googleapis-common-protos
     python3Packages.grpclib
+    python3Packages.msgpack
     python3Packages.protobuf
   ];
 

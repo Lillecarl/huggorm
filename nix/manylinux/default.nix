@@ -251,8 +251,8 @@ lib.makeScope pkgs.newScope (
       The wheel is the only compiled code under test: pip installs it
       into the image's CPython, and the pure Python around it comes from
       nixpkgs with nixpkgs' bindings filtered out. A nixpkgs C extension
-      built against glibc 2.42 would fail to load here, so protobuf and
-      multidict take their pure Python implementations.
+      built against glibc 2.42 would fail to load here, so protobuf,
+      multidict and msgpack take their pure Python implementations.
     */
     wheelCheck =
       {
@@ -284,7 +284,7 @@ lib.makeScope pkgs.newScope (
           ${interpreter py} -m pip install --no-index --no-deps --target /tmp/site ${self.wheels.${py}}/*.whl
           export PYTHONPATH=/tmp/site:${pythonPath pure}
           export PATH="$PATH:${pkgs.grpcurl}/bin"
-          export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python MULTIDICT_NO_EXTENSIONS=1
+          export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python MULTIDICT_NO_EXTENSIONS=1 MSGPACK_PUREPYTHON=1
           export HUGGORM_NIX_VERSION=${lib.escapeShellArg nixComponents.version} HUGGORM_NIX_GC=1
         ''
         + script;
@@ -318,33 +318,63 @@ lib.makeScope pkgs.newScope (
       the bindings for each CPython, and a pure wheel of each Python
       dependency, from nixpkgs' `dist` output.
 
-      nixpkgs builds protobuf and multidict with their C extensions, for
-      3.14 alone. PyPI publishes a pure wheel of the same versions, which
-      is the one pip takes on any other interpreter. The pin is for this
-      offline install alone; the packages' metadata declares floors.
+      nixpkgs builds protobuf, multidict and msgpack with their C
+      extensions, for 3.14 alone. PyPI publishes a pure wheel of the
+      same protobuf and multidict versions, which is the one pip takes on
+      any other interpreter. msgpack has no pure wheel, so it pins the
+      manylinux wheel for each CPython this lane builds for. The pins
+      are for this offline install alone; the packages' metadata
+      declares floors.
     */
     wheelhouse =
       let
         fromPyPI = {
-          protobuf = {
-            url = "https://files.pythonhosted.org/packages/39/ca/c47f91d3cab175b01fd8c4f0d80fdf8613be876cc616e66ad281a59c5ddf/protobuf-7.36.1-py3-none-any.whl";
-            sha256 = "7d951e46b3f963d6c264c367c437921de9d5aedd9c3f9612b9077736b4e3ad5c";
-          };
-          multidict = {
-            url = "https://files.pythonhosted.org/packages/81/08/7036c080d7117f28a4af526d794aab6a84463126db031b007717c1a6676e/multidict-6.7.1-py3-none-any.whl";
-            sha256 = "55d97cc6dae627efa6a6e548885712d4864b81110ac76fa4e534c03819fa4a56";
-          };
+          protobuf = [
+            {
+              url = "https://files.pythonhosted.org/packages/39/ca/c47f91d3cab175b01fd8c4f0d80fdf8613be876cc616e66ad281a59c5ddf/protobuf-7.36.1-py3-none-any.whl";
+              sha256 = "7d951e46b3f963d6c264c367c437921de9d5aedd9c3f9612b9077736b4e3ad5c";
+            }
+          ];
+          multidict = [
+            {
+              url = "https://files.pythonhosted.org/packages/81/08/7036c080d7117f28a4af526d794aab6a84463126db031b007717c1a6676e/multidict-6.7.1-py3-none-any.whl";
+              sha256 = "55d97cc6dae627efa6a6e548885712d4864b81110ac76fa4e534c03819fa4a56";
+            }
+          ];
+          msgpack = [
+            {
+              url = "https://files.pythonhosted.org/packages/03/8d/671d81534ea0e2b0e8a121be100020da09eb78861fe3aa8f3ef7dcd3bed1/msgpack-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl";
+              sha256 = "a28d076ca7c82b9c8728ad90b7147489449557038bed50e4241eb832395169b4";
+            }
+            {
+              url = "https://files.pythonhosted.org/packages/6a/fd/6adabd4f6d5e686f97dd02ce7fce3fe4cf672cbac36b8f67ff4040e8ad8b/msgpack-1.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl";
+              sha256 = "020e881a764b20d8d7ca1a54fc01b8175519d108e3c3f194fddc200bda95951a";
+            }
+            {
+              url = "https://files.pythonhosted.org/packages/79/d3/36a46a8ed992b781acbc05928bd5bee3c810cb0c3563bf81a7b0c04a1a76/msgpack-1.2.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl";
+              sha256 = "787c9bebb5833e8f6fc8abca3c0597683d8d87f56a8842b6b89c75a5f3176e2d";
+            }
+            {
+              url = "https://files.pythonhosted.org/packages/19/03/8c63e8cf52958534ef688625965ab04c269a6cadd8caef16758b380a821a/msgpack-1.2.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl";
+              sha256 = "0e2bf9280bceb5efca998435904b5d3e9fdbcc11d90dc9df30aec7973252b720";
+            }
+          ];
         };
-        pinned = lib.mapAttrsToList (
-          name: wheel:
-          let
-            inherit (pkgs.python3.pkgs.${name}) version;
-          in
-          if lib.hasInfix "-${version}-" wheel.url then
-            pkgs.fetchurl wheel
-          else
-            throw "nixpkgs' ${name} is ${version}; pin its pure wheel from PyPI in nix/manylinux"
-        ) fromPyPI;
+        pinned = lib.concatLists (
+          lib.mapAttrsToList (
+            name: wheels:
+            let
+              inherit (pkgs.python3.pkgs.${name}) version;
+            in
+            map (
+              wheel:
+              if lib.hasInfix "-${version}-" wheel.url then
+                pkgs.fetchurl wheel
+              else
+                throw "nixpkgs' ${name} is ${version}; pin its wheels from PyPI in nix/manylinux"
+            ) wheels
+          ) fromPyPI
+        );
         dists = map (p: p.dist) (
           lib.filter (p: !lib.elem p.pname ([ "huggorm-bindings" ] ++ lib.attrNames fromPyPI))
             (pythonClosure [

@@ -1690,48 +1690,11 @@ def _failed_result() -> Any:
     return _rebuild(KeyedBuildResult, *seed._parts())
 
 
-@pytest.mark.usefixtures("flakes")
-def test_every_wire_value_survives_its_own_round_trip(
-        chroot: Store, tmp_path: pathlib.Path) -> None:
-    """A wire value must rebuild from the parts it hands over.
+def wire_samples(chroot: Store) -> dict[str, tuple[Any, list[tuple[Any, ...]]]]:
+    """One built sample of every wire value, and parts tuples that
+    reach the states no hermetic producer here makes.
 
-    `_parts()` renders one; `_from_parts(*parts)` rebuilds it. The two
-    are inverses or the type does not cross correctly, and nothing
-    else in the build proves that.
-
-    It used to be true BY CONSTRUCTION. A produced value was a struct
-    the emitter declared, whose members were the wire types, so
-    `_from_parts` was aggregate initialisation and could not disagree
-    with `_parts`. Once a value binds a REAL Nix type, the two become
-    a hand-written bijection - an accessor renders a hash, a
-    `_from_parts` parses it back - and a body that forgets a field
-    compiles and zero-initialises it in silence.
-
-    So the round trip stops being true by construction and has to be
-    proven. This is where (huggorm#56).
-
-    TWO cases per type, not one, and the second is the one that
-    works. A single sample proves nothing about a part that happens to
-    hold its C++ default: deleting `u.ultimate = ultimate` from
-    PathInfo's body passed this test, because the only PathInfo it
-    built came from an ADDED path, whose `ultimate` is already false.
-    The same shadow covered `deriver`, `registration_time`,
-    `references` and `sigs` - five of ten parts asleep. So each type
-    lists a second case whose every part differs, and the test refuses
-    to pass while any part holds one value across all of them.
-
-    SAMPLES is the one hand-written part, and the test refuses to pass
-    if it does not cover every wire value the model declares.
-    Adding a value without adding a sample fails here rather than
-    shipping unproven.
-
-    WHAT IT STILL DOES NOT PROVE, and cannot here: a hand-written case
-    goes parts -> object -> parts, so it exercises the PARSE and the
-    render of a state no producer in this suite reaches. A PathInfo
-    with `ultimate=True` has never been rendered off an object a store
-    actually made, because a hermetic store cannot build one. That
-    wants the live suite, and it is a gap in coverage rather than a
-    hole in this gate."""
+    Shared with the msgpack codec's round trip."""
     held = chroot.add_to_store("round-trip", b"x", CA.NAR, HashAlgorithm.SHA256)
     other = chroot.add_to_store("other", b"yy", CA.NAR, HashAlgorithm.SHA256)
     info, other_info = (chroot.query_path_info(p) for p in (held, other))
@@ -2007,6 +1970,52 @@ def test_every_wire_value_survives_its_own_round_trip(
             "GCSpecificPaths": (GCSpecificPaths([held]),
                                 [([held, other], True)]),
         })
+    return samples
+
+
+@pytest.mark.usefixtures("flakes")
+def test_every_wire_value_survives_its_own_round_trip(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    """A wire value must rebuild from the parts it hands over.
+
+    `_parts()` renders one; `_from_parts(*parts)` rebuilds it. The two
+    are inverses or the type does not cross correctly, and nothing
+    else in the build proves that.
+
+    It used to be true BY CONSTRUCTION. A produced value was a struct
+    the emitter declared, whose members were the wire types, so
+    `_from_parts` was aggregate initialisation and could not disagree
+    with `_parts`. Once a value binds a REAL Nix type, the two become
+    a hand-written bijection - an accessor renders a hash, a
+    `_from_parts` parses it back - and a body that forgets a field
+    compiles and zero-initialises it in silence.
+
+    So the round trip stops being true by construction and has to be
+    proven. This is where (huggorm#56).
+
+    TWO cases per type, not one, and the second is the one that
+    works. A single sample proves nothing about a part that happens to
+    hold its C++ default: deleting `u.ultimate = ultimate` from
+    PathInfo's body passed this test, because the only PathInfo it
+    built came from an ADDED path, whose `ultimate` is already false.
+    The same shadow covered `deriver`, `registration_time`,
+    `references` and `sigs` - five of ten parts asleep. So each type
+    lists a second case whose every part differs, and the test refuses
+    to pass while any part holds one value across all of them.
+
+    SAMPLES is the one hand-written part, and the test refuses to pass
+    if it does not cover every wire value the model declares.
+    Adding a value without adding a sample fails here rather than
+    shipping unproven.
+
+    WHAT IT STILL DOES NOT PROVE, and cannot here: a hand-written case
+    goes parts -> object -> parts, so it exercises the PARSE and the
+    render of a state no producer in this suite reaches. A PathInfo
+    with `ultimate=True` has never been rendered off an object a store
+    actually made, because a hermetic store cannot build one. That
+    wants the live suite, and it is a gap in coverage rather than a
+    hole in this gate."""
+    samples = wire_samples(chroot)
 
     declared = _wire_values()
     missing = sorted(set(declared) - set(samples))
