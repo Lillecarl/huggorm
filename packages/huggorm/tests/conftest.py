@@ -118,6 +118,8 @@ async def _serve(ttl: float | None) -> AsyncIterator[Server]:
     argv = [sys.executable, "-m", "huggorm.server", str(path)]
     if ttl is not None:
         argv.append(str(ttl))
+    # The `flakes` fixture turns the feature on in THIS process only.
+    argv += ["--option", "extra-experimental-features", "flakes"]
     logs: list[str] = []
 
     async with await anyio.open_process(

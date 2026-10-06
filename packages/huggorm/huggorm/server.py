@@ -1042,8 +1042,25 @@ async def serve(path: str, lease_ttl: float = 120.0, *,
             loops.cancel_scope.cancel()
 
 
+def main(argv: list[str] | None = None) -> None:
+    """`python -m huggorm.server PATH [TTL] [--option NAME VALUE]...`
+
+    `--option` sets a process setting as `nix --option` does. The
+    server reads no nix.conf: the caller says what differs."""
+    import argparse
+
+    from huggorm_bindings import set_setting
+
+    parser = argparse.ArgumentParser(prog="huggorm.server")
+    parser.add_argument("path")
+    parser.add_argument("ttl", nargs="?", type=float, default=120.0)
+    parser.add_argument("--option", nargs=2, action="append", default=[],
+                        metavar=("NAME", "VALUE"))
+    args = parser.parse_args(argv)
+    for name, value in args.option:
+        set_setting(name, value)
+    anyio.run(serve, args.path, args.ttl)
+
+
 if __name__ == "__main__":
-    import sys
-    path = sys.argv[1]
-    ttl = float(sys.argv[2]) if len(sys.argv) > 2 else 120.0
-    anyio.run(serve, path, ttl)
+    main()
