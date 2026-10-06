@@ -247,6 +247,44 @@ return self.to_string(nix::HashFormat::Base16, /*includeAlgo=*/false);
 '''
 
 
+OVERLOADED = '''"""One bound class with an overloaded method."""
+
+from typing import overload
+
+from huggorm_dsl.declare import Cxx, I64, Str, binding, header
+
+
+@header("nix/util/hash.hh")
+@binding(cxx="nix::Hash", threading="pool", blocking=False)
+class Digest:
+    """A digest, for a test that never compiles one."""
+
+    @overload
+    def part(self, at: I64) -> Str:
+        """By position."""
+        Cxx("return self.at(at);")
+
+    @overload
+    def part(self, at: Str) -> Str:
+        """By name."""
+        Cxx("return self.named(at);")
+
+    def part(self, at: Str) -> Str:
+        """Either."""
+'''
+
+
+def test_every_overload_is_read(tmp_path: pathlib.Path) -> None:
+    """`@overload` leaves only the last definition under the name, so a
+    reader driven by `vars` reads the earlier ones through
+    `typing.get_overloads` or drops them in silence (huggorm#123)."""
+    from huggorm_dsl.read import read
+
+    [cls] = read(_declaration(tmp_path, OVERLOADED)).classes
+    assert [(m.name, m.overload) for m in cls.methods] == [
+        ("part", True), ("part", True), ("part", False)]
+
+
 def test_the_reader_sees_an_accessor_the_import_kept_as_a_descriptor(
         tmp_path: pathlib.Path) -> None:
     """A `@property` accessor survives the read, and says it is one.

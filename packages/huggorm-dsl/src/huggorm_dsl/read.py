@@ -1386,6 +1386,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     # one's text, found by the line the import names.
     nodes = {_first_line(n): n for n in ast.walk(node)
              if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
+    items: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
     for name, value in vars(holder).items():
         fn = _written(value, here)
         if fn is None:
@@ -1397,7 +1398,10 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                     f"constructor, {FROM_PARTS} and what its decorators "
                     f"wrote."), unsound=f"{node.name}.{name}")
             continue
-        item = nodes[fn.__code__.co_firstlineno]
+        # `@overload` keeps only the last definition under the name.
+        items += [nodes[one.__code__.co_firstlineno]
+                  for one in (*get_overloads(fn), fn)]
+    for item in items:
         if isinstance(item, ast.AsyncFunctionDef):
             # A declaration says what the BINDING is, and a binding is
             # C++. Which methods get an async form is decided from
@@ -1944,8 +1948,9 @@ def _read(path: str) -> Module:
                 else:
                     errors.append(_error(node, value, glb, stem))
             elif fn is not None:
-                functions.extend(_free(nodes[fn.__code__.co_firstlineno],
-                                       vocab, fns))
+                functions.extend(_free(nodes[one.__code__.co_firstlineno],
+                                       vocab, fns)
+                                 for one in (*get_overloads(fn), fn))
             elif _union(value) is not None and name in assigned:
                 unions.append(_union_class(name, value, stem,
                                            *assigned[name]))
@@ -1984,7 +1989,7 @@ def _read(path: str) -> Module:
 
 
 def _free(node: DefinitionNode, vocab: dict[str, str],
-          fns: dict[int, Any]) -> list[Method]:
+          fns: dict[int, Any]) -> Method:
     """One module-level function: a FREE binding, if it is decorated.
 
     nanopynix has 72 of them, `m.def("open_store", &open_store_uri,
@@ -2001,7 +2006,7 @@ def _free(node: DefinitionNode, vocab: dict[str, str],
             f"{node.name}: a declaration describes a C++ binding, so "
             f"`async def` says nothing here. The async form is "
             f"DERIVED from @threading - so write a plain `def`.")
-    return [_method(node, vocab, fns, bound=False, bound_kind=False)]
+    return _method(node, vocab, fns, bound=False, bound_kind=False)
 
 
 def _assignments(tree: ast.Module) -> dict[str, tuple[ast.Assign, str]]:
