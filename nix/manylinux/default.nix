@@ -251,8 +251,8 @@ lib.makeScope pkgs.newScope (
       The wheel is the only compiled code under test: pip installs it
       into the image's CPython, and the pure Python around it comes from
       nixpkgs with nixpkgs' bindings filtered out. A nixpkgs C extension
-      built against glibc 2.42 would fail to load here, so protobuf,
-      multidict and msgpack take their pure Python implementations.
+      built against glibc 2.42 would fail to load here, so msgpack
+      takes its pure Python implementation.
     */
     wheelCheck =
       {
@@ -283,8 +283,7 @@ lib.makeScope pkgs.newScope (
         script = ''
           ${interpreter py} -m pip install --no-index --no-deps --target /tmp/site ${self.wheels.${py}}/*.whl
           export PYTHONPATH=/tmp/site:${pythonPath pure}
-          export PATH="$PATH:${pkgs.grpcurl}/bin"
-          export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python MULTIDICT_NO_EXTENSIONS=1 MSGPACK_PUREPYTHON=1
+          export MSGPACK_PUREPYTHON=1
           export HUGGORM_NIX_VERSION=${lib.escapeShellArg nixComponents.version} HUGGORM_NIX_GC=1
         ''
         + script;
@@ -318,29 +317,15 @@ lib.makeScope pkgs.newScope (
       the bindings for each CPython, and a pure wheel of each Python
       dependency, from nixpkgs' `dist` output.
 
-      nixpkgs builds protobuf, multidict and msgpack with their C
-      extensions, for 3.14 alone. PyPI publishes a pure wheel of the
-      same protobuf and multidict versions, which is the one pip takes on
-      any other interpreter. msgpack has no pure wheel, so it pins the
-      manylinux wheel for each CPython this lane builds for. The pins
-      are for this offline install alone; the packages' metadata
-      declares floors.
+      nixpkgs builds msgpack with its C extension, for 3.14 alone, and
+      PyPI publishes no pure wheel of it. So this pins the manylinux
+      wheel for each CPython this lane builds for. The pins are for
+      this offline install alone; the packages' metadata declares
+      floors.
     */
     wheelhouse =
       let
         fromPyPI = {
-          protobuf = [
-            {
-              url = "https://files.pythonhosted.org/packages/39/ca/c47f91d3cab175b01fd8c4f0d80fdf8613be876cc616e66ad281a59c5ddf/protobuf-7.36.1-py3-none-any.whl";
-              sha256 = "7d951e46b3f963d6c264c367c437921de9d5aedd9c3f9612b9077736b4e3ad5c";
-            }
-          ];
-          multidict = [
-            {
-              url = "https://files.pythonhosted.org/packages/81/08/7036c080d7117f28a4af526d794aab6a84463126db031b007717c1a6676e/multidict-6.7.1-py3-none-any.whl";
-              sha256 = "55d97cc6dae627efa6a6e548885712d4864b81110ac76fa4e534c03819fa4a56";
-            }
-          ];
           msgpack = [
             {
               url = "https://files.pythonhosted.org/packages/03/8d/671d81534ea0e2b0e8a121be100020da09eb78861fe3aa8f3ef7dcd3bed1/msgpack-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl";

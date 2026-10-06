@@ -9,17 +9,13 @@ description = "Python library over the generated Nix bindings"
 requires-python = ">=3.11"
 # Floors, never ceilings: a wheel installed beside a distribution's own
 # packages has to take the versions already there (huggorm#107).
-# protobuf 4.22 is the first with `message_factory.GetMessageClass`.
 # anyio 4 is the first whose task groups always raise ExceptionGroup.
 dependencies = [
     "huggorm-bindings",
     "huggorm-generated",
     "anyio>=4",
     "asyncinotify>=4",
-    "googleapis-common-protos",
-    "grpclib>=0.4",
     "msgpack>=1",
-    "protobuf>=4.22",
 ]
 
 [tool.setuptools.packages.find]

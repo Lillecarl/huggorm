@@ -803,19 +803,16 @@ def test_a_container_of_a_width_is_refused_rather_than_guessed(
 
 def test_a_service_parameter_says_which_64_bit_integer_it_is(
         tmp_path: pathlib.Path) -> None:
-    """A proxy method may take a `U64`, and it crosses as a uint64.
+    """A proxy method may take a `U64`, and its `Wire` says `uint`.
 
     It was refused: a parameter was one string read both as a Python
     annotation and as a wire type, so `int` could not be right for
-    both. The typed model carries the width on the leaf, so the schema
-    writes a uint64 field and the codec's `Wire` names `uint`, while
-    the Python surface still says `int`."""
-    from google.protobuf import descriptor_pb2
-
+    both. The typed model carries the width on the leaf, so the call
+    spec names `uint` while the Python surface still says `int`."""
     from huggorm_dsl.declare import Crossing
     from huggorm_dsl.read import read
     from huggorm_gen import ir
-    from huggorm_gen.pygen.grpc_schema import build_fdset
+    from huggorm_gen.pygen.emitter import _spec
 
     module = read(_declaration(tmp_path, TAKES))
     cls = module.classes[0]
@@ -824,14 +821,9 @@ def test_a_service_parameter_says_which_64_bit_integer_it_is(
     limit = typed.method("fits").params[0].type
     assert (limit.spelling, limit.scalar) == ("int", "uint")
 
-    model = ir.Model({cls.name: typed}, {}, {}, {},
-                     ir.Errors("", {}))
-    fds = descriptor_pb2.FileDescriptorSet()  # type: ignore[attr-defined]
-    fds.ParseFromString(build_fdset(model))
-    req = next(m for m in fds.file[0].message_type
-               if m.name == ir.req_name("Sizes", "fits"))
-    field = next(f for f in req.field if f.name == "limit")
-    assert field.type == field.TYPE_UINT64
+    fits = typed.method("fits")
+    spec = _spec(0, fits.name, fits.params, fits.returns)
+    assert spec.args[0].type.name == "uint"
 
 
 def test_the_model_refuses_an_accessor_declared_as_an_attribute(

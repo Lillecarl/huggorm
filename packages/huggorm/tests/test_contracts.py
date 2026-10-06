@@ -4,7 +4,7 @@ Contracts that hold without a server running.
 
 import ast
 import pathlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -29,8 +29,8 @@ def test_no_hardcoded_domain_types(model: ir.Model) -> None:
     domain |= set(model.errors.classes)
     here = pathlib.Path(__file__).resolve().parent.parent / "huggorm"
     offenders = []
-    for mod in ("server.py", "remote.py", "wire.py", "faults.py",
-                "lifecycle.py", "grpc_pb.py", "codec.py", "protocol.py"):
+    for mod in ("server.py", "remote.py", "lifecycle.py", "codec.py",
+                "protocol.py"):
         tree = ast.parse((here / mod).read_text(), filename=mod)
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and node.value in domain:
@@ -39,87 +39,42 @@ def test_no_hardcoded_domain_types(model: ir.Model) -> None:
 
 
 def test_a_declared_error_crosses_as_its_own_message() -> None:
-    """The class identity is the MESSAGE TYPE, not a name to look up.
-
-    That is the whole reason a fault travels in the status details
-    rather than as text: an Any carries the type name of a message,
-    the far side resolves it in the schema pool, and a name it cannot
-    resolve resolves to nothing. Nothing has to decide whether a class
-    name is safe to construct, because no class name crosses on its
-    own (huggorm#36).
+    """The class identity is an index into the declared errors, not a
+    name to look up. A name crosses only for an undeclared cause, and
+    only a builtin exception class is built from one (huggorm#36).
 
     Needs no server: this is what the server would put on the wire."""
-    from huggorm.faults import FaultCodec
-    from huggorm.grpc_pb import PKG, load_pool
+    from huggorm.protocol import Faults
     from huggorm_bindings.errors import BadStorePath
+    from huggorm_generated._policy import ERROR_FIELDS
     from huggorm_generated._runtime import InternalError
 
-    codec = FaultCodec(load_pool())
+    faults = Faults()
     failed = InternalError("Store.parse_store_path failed",
                            cause=BadStorePath("plain", "coloured"))
-    names = [d.DESCRIPTOR.full_name for d in codec.details(failed)]
-    assert names == [f"{PKG}.Fault", f"{PKG}.BadStorePathFault"], names
+    raw = faults.encode(failed)
+    assert raw[4] == list(ERROR_FIELDS).index("BadStorePath"), raw
 
-    # An UNDECLARED cause carries no message of its own, so the far
-    # side gets the Fault and nothing to resolve.
-    plain = InternalError("something else failed", cause=ValueError("nope"))
-    assert [d.DESCRIPTOR.full_name for d in codec.details(plain)] \
-        == [f"{PKG}.Fault"]
-
-
-def test_the_schema_offers_acquire_exactly_where_the_server_routes_it(
-) -> None:
-    """The server registers Acquire for `_policy.ACQUIRE` and nothing
-    else, so an Acquire rpc the schema names beyond that is one a
-    reflecting client can call and nothing answers."""
-    from huggorm.grpc_pb import PKG, load_pool
-    from huggorm_generated._policy import ACQUIRE
-
-    pool = load_pool()
-    api = pool.FindFileContainingSymbol(  # type: ignore[no-untyped-call]
-        f"{PKG}.Handle")
-    offered = {svc.name.removesuffix("Service")
-               for svc in api.services_by_name.values()
-               if "Acquire" in svc.methods_by_name}
-    assert offered == set(ACQUIRE), offered ^ set(ACQUIRE)
+    # An UNDECLARED cause crosses by name, with no parts.
+    plain = faults.encode(InternalError("something else failed",
+                                        cause=ValueError("nope")))
+    assert plain[2:] == ["ValueError", "nope", None, None], plain
 
 
-def test_an_error_s_info_survives_the_wire() -> None:
-    """The record part crosses as a message, and comes back equal.
+def test_every_declared_error_has_its_parts(model: ir.Model) -> None:
+    """The emitted error table holds every declared error, with the
+    parts the model declares, in order.
 
-    Not `str()` of each part: that is a record's repr, and a proto
-    message field refuses a string (huggorm#100)."""
-    from huggorm.faults import FaultCodec
-    from huggorm.grpc_pb import load_pool
-    from huggorm_bindings import EvalState, Store
-    from huggorm_bindings.errors import MissingAttribute
+    The emitter loops the error table; it names no class. So adding an
+    error to the bindings adds it here, and this holds the two in
+    step."""
+    from huggorm_generated._policy import ERROR_FIELDS
 
-    with pytest.raises(MissingAttribute) as caught:
-        EvalState(Store("dummy://")).eval_expr("{ foo = 1; }").get("fo")
-    sent = caught.value
-    codec = FaultCodec(load_pool())
-    rebuilt = codec.rebuild(codec.details(sent))
-    assert isinstance(rebuilt, MissingAttribute)
-    assert rebuilt.info is not None
-    assert rebuilt.info == sent.info
-    assert rebuilt == sent
-
-
-def test_every_declared_error_has_a_message(model: ir.Model) -> None:
-    """One message per declared class, emitted from the model.
-
-    The schema builder loops the error table; it names no class. So
-    adding an error to the bindings adds its message here, and this
-    holds the two in step."""
-    from huggorm.grpc_pb import PKG, load_pool
-
-    pool = load_pool()
     declared = model.errors.classes
     assert declared, "the bindings declare no errors at all"
+    assert set(ERROR_FIELDS) == set(declared)
     for name, error in declared.items():
-        desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            f"{PKG}.{name}Fault")
-        assert [f.name for f in desc.fields] == [
+        assert [a.name for a in ERROR_FIELDS[name]] == [
             f.name for f in error.wire_fields], name
 
 
@@ -165,31 +120,27 @@ def test_every_declared_error_rebuilds_from_its_parts(
 def test_a_string_enum_decodes_to_its_class(model: ir.Model) -> None:
     """A value read off the wire comes back typed.
 
-    A StrEnum crosses as a plain string - it IS one - so nothing about
-    the transport changes. What the declared enum table buys is the
-    other direction: the codec knows which class to rebuild, so a
-    caller gets ContentAddressMethod.FLAT rather than "flat", and a
-    value that is not a member raises here instead of reaching
-    libstore.
+    A StrEnum crosses as a plain string - it IS one. What the declared
+    enum table buys is the other direction: the codec knows which
+    class to rebuild, so a caller gets ContentAddressMethod.FLAT
+    rather than "flat", and a value that is not a member raises here
+    instead of reaching libstore.
 
     Needs no server: this is the converter both sides use."""
-    from huggorm.wire import WireCodec
+    from conftest import across
+
+    from huggorm.codec import Codec
     from huggorm_bindings import ContentAddressMethod
     from huggorm_generated._callspec import Wire, WireKind
     from huggorm_generated._policy import WIRE_FIELDS
 
-    codec = WireCodec()
     assert model.enums, "the bindings declare no vocabularies"
     method = Wire(WireKind.ENUM, "ContentAddressMethod")
     assert WIRE_FIELDS["ContentAddress"][0].type == method
 
-    rebuild = codec.scalar(method)
-    assert rebuild("flat") is ContentAddressMethod.FLAT
+    assert across(method, ContentAddressMethod.FLAT) is ContentAddressMethod.FLAT
     with pytest.raises(ValueError, match="not a valid"):
-        rebuild("nonsense")
-
-    # ...and a built-in scalar still resolves to the builtin.
-    assert codec.scalar(Wire(WireKind.SCALAR, "bytes")) is bytes
+        Codec().decode(method, "nonsense", lambda _: None)
 
 
 def test_the_front_door_covers_the_surface() -> None:
@@ -291,93 +242,34 @@ def test_the_package_ships_no_demos() -> None:
     assert demos == [], demos
 
 
-def _probe_message() -> Any:
-    """A message with one repeated string and one map<string, string>.
-
-    Built here rather than borrowed from the real schema, because no
-    binding declares an enum container yet - which is the point of
-    huggorm#47. The two field shapes are the ones the schema builder
-    gives an enum, since an enum crosses as a string.
-
-    Hand-built the way grpc_schema builds one: a map is not a type
-    constant in proto3, it is a repeated field of an entry message the
-    containing type carries."""
-    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
-
-    file_dp = descriptor_pb2.FileDescriptorProto()  # type: ignore[attr-defined]
-    file_dp.name, file_dp.package, file_dp.syntax = "probe.proto", "probe", "proto3"
-    msg = file_dp.message_type.add()
-    msg.name = "Probe"
-
-    words = msg.field.add()
-    words.name, words.number = "words", 1
-    words.type, words.label = words.TYPE_STRING, words.LABEL_REPEATED
-
-    entry = msg.nested_type.add()
-    entry.name = "TableEntry"
-    entry.options.map_entry = True
-    for name, number in (("key", 1), ("value", 2)):
-        f = entry.field.add()
-        f.name, f.number = name, number
-        f.type, f.label = f.TYPE_STRING, f.LABEL_OPTIONAL
-    table = msg.field.add()
-    table.name, table.number = "table", 2
-    table.type, table.label = table.TYPE_MESSAGE, table.LABEL_REPEATED
-    table.type_name = ".probe.Probe.TableEntry"
-
-    pool = descriptor_pool.DescriptorPool()
-    pool.Add(file_dp)  # type: ignore[no-untyped-call]
-    # protobuf ships no stubs for its own factory or pool lookups.
-    return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            "probe.Probe"))()
-
-
 def test_an_enum_survives_a_container() -> None:
     """An enum is a scalar, and a container does not change that.
 
-    The schema already said so - wire_blocker accepts an enum
-    anywhere a scalar goes - while the codec's container helpers
-    indexed the raw scalar TABLE, which holds no enum. Two of the four
-    sites raised KeyError on the first call; the other two returned
-    bare strs and broke the promise the test above asserts for a
-    singular field.
-
     Nothing declares an enum container today, so the case is built
-    here. That is the whole reason it stayed latent."""
-    from huggorm.wire import WireCodec
+    here. That is the whole reason it stayed latent (huggorm#47)."""
+    from conftest import across, crossed
+
+    from huggorm.codec import Codec
     from huggorm_bindings import ContentAddressMethod as CA
     from huggorm_bindings import HashAlgorithm
     from huggorm_generated._callspec import Wire, WireKind
 
-    codec = WireCodec()
-    probe = _probe_message()
     words = Wire(WireKind.LIST, item=Wire(WireKind.ENUM, "HashAlgorithm"))
     table = Wire(WireKind.MAP, item=Wire(WireKind.ENUM, "ContentAddressMethod"))
 
-    codec.list_to_msg(words,
-                      [HashAlgorithm.SHA256, HashAlgorithm.SHA512],
-                      probe.words)
-    assert list(probe.words) == ["sha256", "sha512"], "a member IS its string"
-    assert codec.list_from_msg(words, probe.words) == [
-        HashAlgorithm.SHA256, HashAlgorithm.SHA512]
-    assert all(isinstance(v, HashAlgorithm)
-               for v in codec.list_from_msg(words, probe.words))
+    sent = [HashAlgorithm.SHA256, HashAlgorithm.SHA512]
+    assert crossed(words, sent) == ["sha256", "sha512"], "a member IS its string"
+    back = across(words, sent)
+    assert back == sent and all(isinstance(v, HashAlgorithm) for v in back)
 
-    codec.map_to_msg(table,
-                     {"a": CA.NAR, "b": CA.FLAT}, probe.table)
-    assert dict(probe.table) == {"a": "nar", "b": "flat"}
-    assert codec.map_from_msg(table, probe.table) == {
-        "a": CA.NAR, "b": CA.FLAT}
-    assert all(isinstance(v, CA) for v in
-               codec.map_from_msg(table,
-                                  probe.table).values())
+    by_name = {"a": CA.NAR, "b": CA.FLAT}
+    assert crossed(table, by_name) == {"a": "nar", "b": "flat"}
+    assert all(isinstance(v, CA) for v in across(table, by_name).values())
 
     # A member that is not one raises here rather than reaching
     # libstore - the same guarantee a singular field has.
-    probe.words.append("nonsense")
     with pytest.raises(ValueError, match="not a valid"):
-        codec.list_from_msg(words, probe.words)
+        Codec().decode(words, ["sha256", "nonsense"], lambda _: None)
 
 
 def test_a_method_with_no_wire_form_is_absent_everywhere(
@@ -425,7 +317,7 @@ def test_an_untyped_cause_rebuilds_from_builtins_only() -> None:
     without anything keeping a list. Nothing else the peer names gets
     near a constructor, and a name that vanished before is now kept in
     the message."""
-    from huggorm.faults import _approximate
+    from huggorm.protocol import _approximate
 
     # A builtin exception rebuilds as itself.
     for name in ("ValueError", "KeyError", "OSError", "IndexError",
@@ -688,46 +580,3 @@ def test_a_wire_value_cannot_be_subclassed(model: ir.Model) -> None:
             type(f"Sub{c.name}", (cls,), {})
         checked.append(c.name)
     assert checked, "the model declares no wire value"
-
-
-def test_each_64_bit_width_reaches_its_own_proto_type(
-        model: ir.Model) -> None:
-    """A `uint` field is a uint64 and an `int` field is a sint64.
-
-    Python has one integer type and C++ has two of 64 bits, so the
-    declaration is the only place the width lives. It used to stop
-    there: every int field became one proto type, `sint64`, which
-    holds an int64_t and half of a uint64_t.
-
-    The half it drops is not hypothetical. Upstream spells "no limit"
-    as the largest uint64_t, and sending `GCOptions()` raised
-    `ValueError: Value out of range: 18446744073709551615` -
-    the default options object could not cross an RPC (huggorm#79).
-
-    Derived from the model, so a field that changes width is checked
-    by the same run that emits it. Both counts are asserted: a model
-    that stopped spelling `uint` would otherwise pass this by having
-    nothing to check."""
-    from google.protobuf.descriptor import FieldDescriptor
-
-    from huggorm.grpc_pb import PKG, load_pool
-
-    pool = load_pool()
-    want = {"uint": FieldDescriptor.TYPE_UINT64,
-            "int": FieldDescriptor.TYPE_SINT64}
-    seen = {"uint": 0, "int": 0}
-    for c in model.classes.values():
-        if c.wire != "value":
-            continue
-        desc = pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            f"{PKG}.{c.message}")
-        for f in c.wire_fields:
-            ftype = f.type.required.scalar
-            if ftype not in want:
-                continue
-            seen[ftype] += 1
-            assert desc.fields_by_name[f.name].type == want[ftype], (
-                f"{c.name}.{f.name} is declared {ftype} and the schema "
-                f"disagrees")
-    assert seen["uint"], "no field crosses unsigned; the width is unproven"
-    assert seen["int"], "no field crosses signed; the width is unproven"

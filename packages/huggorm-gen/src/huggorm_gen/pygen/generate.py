@@ -31,7 +31,6 @@ from huggorm_gen.pygen.emitter import (
     wrapper_module,
 )
 from huggorm_gen.pygen.fmt import format_paths
-from huggorm_gen.pygen.grpc_schema import build_fdset
 
 # Nothing here imports huggorm_bindings.
 #
@@ -100,7 +99,7 @@ def main(argv: list[str] | None = None) -> None:
     # Served, not wrapped: every proxy gets its async form, because a
     # handle the server adopts needs an Async class behind it whether
     # or not the calls hop threads. The threading policy travels with
-    # the proto, so a pool class keeps pool execution - serving is
+    # the class, so a pool class keeps pool execution - serving is
     # addressability, not affinity.
     for cls in model.ordered_served:
         fname = f"async_{cls.name.lower()}.py"
@@ -162,9 +161,6 @@ def main(argv: list[str] | None = None) -> None:
             for why in ir.blockers(m.params, m.returns, model.served):
                 print(f"warning: {c.name}.{m.name} has no RPC surface "
                       f"and is not on the protocol - {why}")
-
-    (out / "grpc_schema.pb").write_bytes(build_fdset(model))
-    print(f"wrote grpc_schema.pb to {out / 'grpc_schema.pb'}")
 
     # The payload ships rather than runs, so it lives beside the
     # two backends rather than inside either one.

@@ -4,8 +4,8 @@ Nix, bound to Python through nanobind, with the bindings THEMSELVES
 generated from a declaration, and everything above them generated from
 the same declaration.
 
-One file decides six surfaces: the C++ binding, the type stub, the
-wire policy, the async wrapper, the RPC client and the gRPC schema.
+One file decides five surfaces: the C++ binding, the type stub, the
+wire policy, the async wrapper and the RPC client.
 Adding a type means editing one declaration and nothing else. That is
 the whole premise, and it is what a reviewer should push on.
 
@@ -49,12 +49,11 @@ neither exists in the tree.
 ### Reading what the build produced
 
     nix run --file . show                # where everything landed
-    nix run --file . show -- proto       # the whole wire schema, as text
     nix run --file . show -- surface     # every emitted Python module
 
-`proto` is the one a reviewer wants. The schema is a binary
-FileDescriptorSet that no editor renders, and it is generated - so the
-only honest way to review the wire is to read what actually came out.
+`surface` ends with `_policy.py`, the tables both ends of the wire
+read. They are generated, so the only honest way to review the wire is
+to read what actually came out.
 
 The emitted C++ is not in the tree either. It is written into the
 build's copy of `huggorm-bindings`, so to read it:
@@ -119,14 +118,13 @@ a fact about this set of documents, not about a backend reading them.
 
     src/huggorm_gen/
       cppgen/         -> huggorm_bindings: C++, stubs, enums, errors
-      pygen/          -> huggorm_generated: async, protocols, RPC, proto
+      pygen/          -> huggorm_generated: async, protocols, RPC, wire tables
       payload/        -> neither: hand-written Python that SHIPS
 
 One package, not two, because both backends read one IR from one
 reader. pygen reflected on the compiled extension for enums, errors
 and free functions until 065; a package boundary would have made that
-seam permanent. protobuf is pygen's extra rather than a dependency,
-so compiling the bindings does not drag it in.
+seam permanent.
 
 One Nix header, one declaration, named after it:
 `nix/store/store-api.hh` is `decl/store.py`, and
@@ -179,7 +177,6 @@ No hand-written source, like the other leaf. The emitter it runs is
     ir.py                 the typed model every stage reads (#29)
     contracts.py          the rules the build refuses to break
     pygen/spell.py        how one module writes a type, and its imports
-    pygen/grpc_schema.py  the FileDescriptorSet
     pygen/emitter.py      the model -> Python, via ast.unparse
     pygen/fmt.py          ruff sorts and lays out what the emitters wrote
     pygen/generate.py     the driver
@@ -205,14 +202,14 @@ reached for it.
 ### huggorm
 
     huggorm/
-      wire.py       the codec both sides share. Knows shapes, no types.
-      server.py     the emitted call specs -> gRPC service, dispatch, handles
+      codec.py      the msgpack codec both sides share. Knows shapes, no types.
+      protocol.py   the Unix socket frames, the build identity, faults
+      server.py     the emitted call specs -> dispatch, handles, sessions
       remote.py     the client
       lifecycle.py  connections, leases, detach and reclaim
-      faults.py     a typed error, across the wire
       tests/        the suite, hermetic unless marked live
 
-`wire.py` is the sharpest single file: it names no concrete type at
+`codec.py` is the sharpest single file: it names no concrete type at
 all. Every type it acts on is a `Wire` the build emitted into `_policy`.
 
 ## How a change flows
@@ -299,6 +296,6 @@ For the DESIGN: #106, then the newest [issues](https://github.com/Lillecarl/hugg
 current thinking, and the older ones record how it got there.
 
 For the CODE: `packages/huggorm-decl/src/huggorm_decl/decl/path.py`, then
-`nbemit.py` beside it, then `huggorm/huggorm/wire.py`.
+`nbemit.py` beside it, then `huggorm/huggorm/codec.py`.
 
-For the OUTPUT: `nix run --file . show -- proto`.
+For the OUTPUT: `nix run --file . show -- surface`.

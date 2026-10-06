@@ -17,7 +17,6 @@ from huggorm_gen.payload import callspec as cs
 from huggorm_gen.payload.wiretypes import (
     python_spelling,
 )
-from huggorm_gen.pygen import grpc_schema
 from huggorm_gen.pygen.spell import (
     BINDINGS,
     PROTOCOLS,
@@ -324,10 +323,6 @@ def policy_module(model: ir.Model) -> str:
         import_from("_callspec", "Acquire", "Arg", "Call", "Entries", "Items",
                     "Leaf", "Tree", "Wire", "WireKind", level=1),
     ]
-    # The protobuf package every message and service sits in.
-    body.append(ast.AnnAssign(
-        target=ast.Name(id="PKG"), annotation=_ann("str", "PKG"),
-        value=ast.Constant(value=ir.PROTO_PACKAGE), simple=1))
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
                        [(c.name, _args([(f.name, f.type) for f in c.wire_fields]))
                         for c in classes if c.wire is Crossing.VALUE]))
@@ -340,9 +335,6 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("ERROR_FIELDS", "dict[str, tuple[Arg, ...]]", [
         (n, _args([(f.name, f.type) for f in e.wire_fields]))
         for n, e in model.errors.classes.items()]))
-    body.append(ast.AnnAssign(
-        target=ast.Name(id="LOG_RECORDS"), annotation=_ann("Wire", "LOG_RECORDS"),
-        value=_literal(_wire(grpc_schema.LOG_RECORDS)), simple=1))
     body.append(_table("UNION_ARMS", "dict[str, tuple[Wire, ...]]", [
         (n, tuple(_wire(a) for a in u.arms))
         for n, u in model.unions.items()]))
@@ -354,7 +346,7 @@ def policy_module(model: ir.Model) -> str:
     for c in model.ordered_served:
         methods.append((c.name, ast.Tuple(elts=[
             specs.add(_spec_name(c.name, m.name),
-                      _spec(specs.next, m.name, c.rpc(m), m.params, m.returns))
+                      _spec(specs.next, m.name, m.params, m.returns))
             for m in c.methods if model.offered(m)])))
     body.append(_table("METHODS", "dict[str, tuple[Call, ...]]", methods))
     # The value TREES, and the async class each served class is adopted
@@ -698,8 +690,7 @@ def protocol_module(model: ir.Model) -> ast.Module:
     return mod
 
 
-def _spec(index: int, name: str, rpc: ir.RpcNames,
-          params: Sequence[ir.ParamModel],
+def _spec(index: int, name: str, params: Sequence[ir.ParamModel],
           returns: ir.TypeRef | None) -> cs.Call:
     """One call's spec.
 
@@ -712,8 +703,8 @@ def _spec(index: int, name: str, rpc: ir.RpcNames,
     call reached the runtime, so every argument a spec describes is
     present, and carrying a default here would suggest the runtime
     fills one in."""
-    return cs.Call(index, name, rpc.path,
-                   _args([(p.name, p.type) for p in params]), _wire(returns))
+    return cs.Call(index, name, _args([(p.name, p.type) for p in params]),
+                   _wire(returns))
 
 
 def _directory(model: ir.Model, specs: _Specs) -> list[ast.stmt]:
@@ -729,14 +720,12 @@ def _directory(model: ir.Model, specs: _Specs) -> list[ast.stmt]:
     argument - and a class only a call hands back is never built
     remotely."""
     acquires = [(c.name, specs.add(f"_acquire_{c.name}", cs.Acquire(
-        specs.next, c.name, c.acquire.path,
-        _args([(p.name, p.type) for p in c.ctor]),
-        sum(1 for p in c.ctor if p.default is None),
-        tuple(p.name for p in c.ctor if p.defaults_to_none))))
+        specs.next, c.name, _args([(p.name, p.type) for p in c.ctor]),
+        sum(1 for p in c.ctor if p.default is None))))
         for c in model.acquirable]
     functions = [model.functions[n] for n in sorted(model.functions)]
     free = [(fn.name, specs.add(f"_fn_{fn.name}", _spec(
-        specs.next, fn.name, fn.rpc, fn.params, fn.returns)))
+        specs.next, fn.name, fn.params, fn.returns)))
         for fn in functions if not model.function_blockers(fn)]
     # ...and the ones the wire cannot carry, with the reason.
     #

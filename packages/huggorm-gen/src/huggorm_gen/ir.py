@@ -35,78 +35,13 @@ from huggorm_dsl.read import (
 from huggorm_dsl.read import Origin as Origin
 from huggorm_gen import cxx
 from huggorm_gen.payload import callspec
-from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED, TREE_ARMS
+from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED, TREE_LEAVES
 
-# The words a proxy's RPC surface is spelled with. Every name below is
+# The words a proxy's surfaces are spelled with. Every name below is
 # the class name plus one of these.
-PROTO_PACKAGE = "huggorm.v1"
-SERVICE = "Service"
-# Construction is an rpc on the class's OWN service, not a string-keyed
-# call on Session. Session/Acquire took a class name and no arguments,
-# so it could only ever build things whose constructor takes nothing -
-# and it type-checked neither the name nor the absent arguments.
-ACQUIRE = "Acquire"
 PROTOCOL = "Like"
 ASYNC = "Async"
 RPC = "RPC"
-# Free functions have no instance, so they cannot hang off a class's
-# service. They share one.
-FREE_SERVICE = "Functions"
-
-
-def _camel(method: str) -> str:
-    """`add_to_store` -> `AddToStore`.
-
-    A message name, not a method name. The rpcs keep the binding's own
-    snake_case on purpose - they are the Python surface spelled once
-    - while a message is a TYPE, and protobuf types are PascalCase.
-
-    One helper because the two used to disagree: the request kept the
-    snake_case and the response camel-cased it, so one method had two
-    spellings in one schema."""
-    return method.title().replace("_", "")
-
-
-def service_name(owner: str) -> str:
-    return f"{owner}{SERVICE}"
-
-
-def req_name(owner: str, method: str) -> str:
-    return f"{owner}_{_camel(method)}Req"
-
-
-def resp_name(owner: str, method: str) -> str:
-    # Class-prefixed: LocalStore and RemoteStore share method names, and
-    # top-level message names must be unique across the file.
-    return f"{owner}_{_camel(method)}Resp"
-
-
-def wire_method(method: str) -> str:
-    """A method's name in the schema. A declared dunder such as
-    `__call__` crosses as `call`: a protobuf identifier starts with a
-    letter. Every Python surface keeps the dunder (huggorm#88)."""
-    if method.startswith("__") and method.endswith("__"):
-        return method.strip("_")
-    return method
-
-
-def method_path(owner: str, method: str) -> str:
-    return f"/{PROTO_PACKAGE}.{service_name(owner)}/{wire_method(method)}"
-
-
-@dataclass(frozen=True)
-class RpcNames:
-    """What one call is named on the wire. `owner` is a class, or
-    `FREE_SERVICE` for a free function."""
-
-    path: str
-    req: str
-    resp: str
-
-    @classmethod
-    def of(cls, owner: str, method: str) -> RpcNames:
-        return cls(method_path(owner, method), req_name(owner, method),
-                   resp_name(owner, method))
 
 # The value dunders, and the fact about the declaration that makes a
 # class define each one. `!=` comes with `__eq__`, and the three
@@ -688,10 +623,6 @@ class FunctionModel:
     def wrapped(self) -> bool:
         return self.threading is not None
 
-    @property
-    def rpc(self) -> RpcNames:
-        return RpcNames.of(FREE_SERVICE, self.name)
-
 @dataclass(frozen=True)
 class Semantics:
     """What a value owes Python, from `@wire_value`."""
@@ -907,18 +838,6 @@ class ClassModel:
         return "" if self.is_value else f"C{self.name}"
 
     @property
-    def service(self) -> str:
-        return service_name(self.name)
-
-    @property
-    def acquire(self) -> RpcNames:
-        """The rpc that constructs one of these remotely."""
-        return RpcNames.of(self.name, ACQUIRE)
-
-    def rpc(self, m: MethodModel) -> RpcNames:
-        return RpcNames.of(self.name, m.name)
-
-    @property
     def protocol_name(self) -> str:
         return f"{self.name}{PROTOCOL}"
 
@@ -960,11 +879,10 @@ def _walkable(cls: ClassModel, spec: callspec.Tree) -> None:
     for how in spec.kinds.values():
         match how:
             case callspec.Leaf():
-                if how.wire not in TREE_ARMS:
+                if how.wire not in TREE_LEAVES:
                     raise TypeError(
-                        f"{cls.name}: a tree leaf is a {how.wire}, which has "
-                        f"no arm in the value message. The arms are "
-                        f"{sorted(TREE_ARMS)}.")
+                        f"{cls.name}: a tree leaf is a {how.wire}. A leaf "
+                        f"is one of {sorted(TREE_LEAVES)}.")
                 names.append(how.read)
             case callspec.Items():
                 names += [how.size, how.item]

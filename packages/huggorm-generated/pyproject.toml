@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "protobuf"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -17,7 +17,7 @@ include = ["huggorm_generated*"]
 # Everything the generator writes that is NOT a Python module, and
 # every one of them in ONE place. `setup()` takes a `package_data`
 # argument too, and this table overrides it rather than merging - so a
-# file listed only there ships from neither. That is how grpc_schema.pb
-# and py.typed went missing.
+# file listed only there ships from neither. That is how py.typed went
+# missing.
 [tool.setuptools.package-data]
-huggorm_generated = ["manifest.json", "grpc_schema.pb", "py.typed"]
+huggorm_generated = ["manifest.json", "py.typed"]

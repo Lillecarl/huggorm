@@ -37,10 +37,6 @@ rec {
   #
   # One package because they read ONE IR from one reader. A boundary
   # between them would say the split is architectural, and it is not.
-  #
-  # protobuf is pygen's alone and is NOT a dependency here - it is an
-  # extra, so compiling the bindings does not drag it in. The build
-  # that needs it declares it.
   huggorm-gen = pkgs.python3Packages.buildPythonPackage {
     pname = "huggorm-gen";
     version = "0.1.0";
@@ -446,7 +442,6 @@ rec {
     name = "test";
     runtimeInputs = [
       pkgs.gitMinimal
-      pkgs.grpcurl
       ourPython
     ];
     text = ''
@@ -472,20 +467,14 @@ rec {
     '';
   };
 
-  # nix run --file . show -- [files|proto|surface]
+  # nix run --file . show -- [files|surface]
   #
   # Read what the build produced, without knowing where the store put
-  # it. The schema is a binary FileDescriptorSet that no editor
-  # renders, and the package sits at a store path nobody types.
-  #
-  # So this exists for a reader rather than for the build. `proto`
-  # especially: the wire is generated from declarations next to the
-  # bindings, and the only honest way to review it is to read what
-  # actually got emitted.
+  # it: the package sits at a store path nobody types. `surface` prints
+  # the generated modules and `_policy.py`, the tables the wire reads.
   show = pkgs.writeShellApplication {
     name = "show";
     runtimeInputs = [
-      pkgs.grpcurl
       ourPython
     ];
     text = ''
@@ -499,36 +488,15 @@ rec {
                 echo "binding stubs: $pkg/huggorm_bindings-stubs"
                 ls -1 "$pkg/huggorm_bindings-stubs"
                 ;;
-              proto)
-                # Every service and every message, as .proto text. The names
-                # come from the descriptor set itself, so nothing here has a
-                # list to keep in step.
-                names=$(python3 -c "
-            import sys
-            from google.protobuf import descriptor_pb2
-            fds = descriptor_pb2.FileDescriptorSet()
-            fds.ParseFromString(open(sys.argv[1], 'rb').read())
-            for f in fds.file:
-                for m in f.message_type:
-                    print(f'{f.package}.{m.name}')
-                for s in f.service:
-                    print(f'{f.package}.{s.name}')
-            " "$gen/grpc_schema.pb")
-                # One symbol per call: grpcurl describes one at a time.
-                for name in $names; do
-                  grpcurl -protoset "$gen/grpc_schema.pb" describe "$name"
-                  echo
-                done
-                ;;
               surface)
                 for f in "$gen"/async_*.py "$gen"/protocols.py "$gen"/rpc.py \
-                         "$gen"/free_functions.py; do
+                         "$gen"/free_functions.py "$gen"/_policy.py; do
                   echo "=== $f ==="
                   cat "$f"
                 done
                 ;;
               *)
-                echo "usage: show [files|proto|surface]" >&2
+                echo "usage: show [files|surface]" >&2
                 exit 2
                 ;;
             esac
@@ -566,7 +534,6 @@ rec {
     packages = [
       ourPython
       pkgs.zuban
-      pkgs.grpcurl
     ];
     shellHook = # bash
       ''

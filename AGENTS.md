@@ -1,9 +1,9 @@
 # What this is for
 
 huggorm binds Nix to Python, and generates the binding itself from a
-declaration. One file per Nix class decides six surfaces: the C++
-binding, the type stub, the wire policy, the async wrapper, the RPC
-client and the gRPC schema.
+declaration. One file per Nix class decides five surfaces: the C++
+binding, the type stub, the wire policy, the async wrapper and the
+RPC client.
 
 **The destination is an evaluation service, not a binding.** A binding
 that opens a store and evaluates an expression is the floor. What this
@@ -20,8 +20,8 @@ is how a later client finds the state an earlier one left warm.
 #16 holds the detail and the lifecycle contract.
 
 The binding exists because that service needs Nix in-process. The
-codegen exists because that service needs six surfaces to agree, and a
-fact stated six times disagrees once.
+codegen exists because that service needs five surfaces to agree, and a
+fact stated five times disagrees once.
 
 Three audiences, and the order is not a ranking - all three are real:
 Carl's own Nix tooling, editor and direnv-style workflows that want a
@@ -215,9 +215,9 @@ reaches the caller. `asyncio.create_task` holds a weak reference, so a
 fire-and-forget task can be collected before it runs - which this repo
 worked around by retaining a set of them by hand.
 
-grpclib is asyncio-only and always will be, so the backend stays
-asyncio. That is not a reason to write asyncio: anyio runs ON asyncio,
-and everything above is available there.
+The thread bridge below needs asyncio, so the backend stays asyncio.
+That is not a reason to write asyncio: anyio runs ON asyncio, and
+everything above is available there.
 
 **One exception, and it is measured.** The thread bridge in the
 emitted runtime (`huggorm_gen/payload/runtime.py`) keeps

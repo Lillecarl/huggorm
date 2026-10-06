@@ -1,8 +1,8 @@
 """
 Handle lifecycle core: leased graph with connection-backed holders.
 
-Transport-agnostic by design - grpclib, SSH, stdio or multiprocessing
-shims all surface just two things: a request token and periodic pings.
+Transport-agnostic by design: a transport surfaces just two things, a
+request token and periodic pings.
 
 Model (huggorm#2):
 - Holders are CONNECTIONS identified by a token. Every handle crossing
@@ -51,10 +51,6 @@ class ShareMode(StrEnum):
     COPY = "copy"
     TRANSFER = "transfer"
 
-# The metadata key carrying the connection token on every request.
-# Reference convention for all transports (grpclib, SSH, stdio shims).
-TOKEN_HEADER = "x-huggorm-conn"
-
 
 def _new_id() -> str:
     return uuid.uuid4().hex
@@ -84,7 +80,7 @@ class Connection:
 
 
 class HandleTable:
-    """Owns entries, connections and escrow; knows nothing about gRPC."""
+    """Owns entries, connections and escrow; knows nothing about the transport."""
 
     def __init__(self, ttl: float | None = 120.0,
                  escrow_ttl: float | None = 300.0):

@@ -10,12 +10,10 @@ It stands beside the mock's StorePath rather than replacing it.
 """
 
 import copy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
-from huggorm import grpc_pb
-from huggorm.wire import WireCodec
 from huggorm_bindings import StorePath
 from huggorm_bindings.errors import BadStorePath, NixError
 from huggorm_generated._callspec import Wire, WireKind
@@ -99,22 +97,19 @@ def test_a_real_path_copies() -> None:
 
 
 def test_a_real_path_crosses_the_wire() -> None:
-    """It is a wire-value like any other: the codec builds its message
-    from the _wire_fields the binding declares, and rebuilds it on the
-    far side through _from_parts. No layer above the binding knows the
-    type exists."""
-    from conftest import load_model
+    """It is a wire-value like any other: the codec sends the
+    _wire_fields the binding declares, and rebuilds it on the far side
+    through _from_parts. No layer above the binding knows the type
+    exists."""
+    from conftest import across, crossed, load_model, part
 
     path = load_model().classes["StorePath"]
     assert path.binds == "CStorePath"
     assert path.wire == "value"
 
-    codec = WireCodec()
-    msg = _message(path.message)()
-    codec.value_to_msg("StorePath", StorePath(HELLO), msg)
-    assert msg.base_name == HELLO
-
-    back = codec.value_from_msg("StorePath", msg)
+    w = Wire(WireKind.VALUE, "StorePath")
+    assert part("StorePath", crossed(w, StorePath(HELLO)), "base_name") == HELLO
+    back = across(w, StorePath(HELLO))
     assert isinstance(back, StorePath)
     assert back.to_string() == HELLO
 
@@ -172,56 +167,17 @@ def test_every_value_type_has_value_semantics(model: ir.Model) -> None:
 def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
     """A falsy value that was SET reads back as itself, not as None.
 
-    This is 048's property. The codec used to read a scalar back as
+    This is 048's property. The codec once read a scalar back as
     `None if not raw`, so an explicitly-passed 0 or "" arrived as
-    None - and only a SCALAR can be falsy-but-set, because a message
-    field has presence of its own. The schema gives an optional
-    scalar the synthetic oneof proto3 has had since 3.15, and
-    HasField answers exactly.
+    None. Absence is msgpack's nil and nothing else.
 
-    Asked of the CODEC rather than of a type, and that is a change
-    forced by the mock going away (huggorm#60). It used to drive
-    SingleDerivedPathBuilt's `output`, which is `str?` and whose "" and None
-    mean different things. Real Nix has no such field: its optional
-    scalars are `PathInfo.registration_time`, where upstream spells
-    unknown as 0 so the accessor COLLAPSES the two on purpose, and
-    two optional MESSAGES, which have presence without any of this.
-
-    So there is no object whose accessors can pose the question, and
-    driving encode/decode directly is the honest way to keep asking
-    it. It is also closer to the bug: 048 was a codec fix."""
-    from conftest import load_model
-
-    codec = WireCodec()
-    msg = _message(load_model().classes["PathInfo"].message)()
+    Asked of the CODEC rather than of a type (huggorm#60): real Nix's
+    one optional scalar, `PathInfo.registration_time`, collapses 0 and
+    unknown on purpose, so no object's accessors can pose the
+    question."""
+    from conftest import across, crossed
 
     when = Wire(WireKind.SCALAR, "int", optional=True)
-
-    def roundtrip(value: int | None) -> tuple[Any, bool]:
-        codec.encode(msg, "registration_time", when, value, _no_proxy)
-        return (codec.decode(msg, "registration_time", when, _no_proxy),
-                msg.HasField("registration_time"))
-
-    # Nothing written, and nothing read back.
-    assert roundtrip(None) == (None, False)
-
-    # ...and the case the bug was: falsy, and SET.
-    assert roundtrip(0) == (0, True)
-    assert roundtrip(1_700_000_000) == (1_700_000_000, True)
-
-
-def _no_proxy(_: Any) -> Any:
-    """A proxy resolver for a field that cannot hold one."""
-    raise AssertionError("an int field asked for a proxy")
-
-
-def _message(name: str) -> Any:
-    # protobuf ships no stubs for its own descriptor machinery, so
-    # these calls are opaque to a typechecker. The shapes are fixed by
-    # the protobuf spec; grpc_pb.py carries the same note.
-    from google.protobuf import message_factory
-
-    pool = grpc_pb.load_pool()
-    return message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            f"{grpc_pb.PKG}.{name}"))
+    assert crossed(when, None) is None and across(when, None) is None
+    assert crossed(when, 0) == 0 and across(when, 0) == 0
+    assert across(when, 1_700_000_000) == 1_700_000_000

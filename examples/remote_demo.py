@@ -45,7 +45,7 @@ async def main(path: str | Path) -> None:
               "| class:", type(v).__name__)
         print("integer:", await v.integer())
         await state.force(await state.parse_expr("7"))  # proxy arg over the wire
-        text = await state.eval_expr('"hello over grpc"')
+        text = await state.eval_expr('"hello over a socket"')
         print(f"eval: {await text.string_value()!r}")
 
         print("\n=== one function, either location, no branching ===")

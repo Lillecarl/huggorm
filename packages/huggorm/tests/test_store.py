@@ -1573,67 +1573,40 @@ def test_a_union_nested_past_the_limit_is_refused_by_name() -> None:
     depth is a fact about crossing rather than about the type. It is
     generous: anything real is one or two deep, so only a bug or an
     attack sees this."""
-    from google.protobuf import message_factory
+    from conftest import across
 
-    from huggorm.grpc_pb import load_pool
-    from huggorm.wire import WireCodec
+    from huggorm_generated._callspec import Wire, WireKind
     from huggorm_generated._wiretypes import MAX_UNION_DEPTH
 
-    codec = WireCodec()
-    pool = load_pool()
-
-    def message() -> Any:
-        # protobuf ships no stubs for either call, and both are the
-        # ordinary way to reach a message class from a pool.
-        kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-            pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-                "huggorm.v1.SingleDerivedPathMsg"))
-        return kls()
-
+    w = Wire(WireKind.UNION, "SingleDerivedPath")
     # A chain one deeper than the cap, built from the inside out.
     deep: Any = StorePath(HELLO)
     for _ in range(MAX_UNION_DEPTH + 1):
         deep = SingleDerivedPathBuilt(deep, "out")
-
-    msg = message()
     with pytest.raises(ValueError, match=str(MAX_UNION_DEPTH)):
-        codec.union_to_msg("SingleDerivedPath", deep, msg)
+        across(w, deep)
 
     # ...and one at the cap crosses, so the limit is a limit rather
     # than a refusal of the whole shape.
     fine: Any = StorePath(HELLO)
     for _ in range(MAX_UNION_DEPTH - 1):
         fine = SingleDerivedPathBuilt(fine, "out")
-    ok = message()
-    codec.union_to_msg("SingleDerivedPath", fine, ok)
-    assert codec.union_from_msg("SingleDerivedPath", ok) == fine
+    assert across(w, fine) == fine
 
 
 
 @pytest.mark.parametrize("arm", [StoreReferenceAuto, StoreReferenceDaemon,
                                  StoreReferenceLocal])
 def test_a_unit_arm_of_a_union_crosses_as_itself(arm: Any) -> None:
-    """An arm with no fields still names itself on the wire.
+    """An arm with no fields still names itself on the wire: a union
+    crosses as its arm index and the arm's parts, and a unit arm's
+    parts are empty (huggorm#55)."""
+    from conftest import across
 
-    protobuf sets a oneof only when its message is written, and a unit
-    arm writes no field. So the codec sent no arm at all, and the far
-    side refused the message: found when 2.35's `GCWholeStore` could
-    not cross (huggorm#55).
+    from huggorm_generated._callspec import Wire, WireKind
 
-    Perturbation: drop `SetInParent` from `WireCodec.union_to_msg` and
-    this fails with "arrived with no arm set"."""
-    from google.protobuf import message_factory
-
-    from huggorm.grpc_pb import load_pool
-    from huggorm.wire import WireCodec
-
-    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-        load_pool().FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            "huggorm.v1.StoreReferenceVariantMsg"))
-    msg = kls()
-    codec = WireCodec()
-    codec.union_to_msg("StoreReferenceVariant", arm(), msg)
-    assert isinstance(codec.union_from_msg("StoreReferenceVariant", msg), arm)
+    back = across(Wire(WireKind.UNION, "StoreReferenceVariant"), arm())
+    assert isinstance(back, arm)
 
 
 # --- the wire-value round trip --------------------------------------
@@ -2077,23 +2050,16 @@ def test_a_duration_crosses_as_whole_microseconds() -> None:
     back. A wire that carried seconds would round-trip a whole second
     happily and lose the 250 microseconds beside it, so the case
     that catches it must not be a whole second."""
-    from google.protobuf import message_factory
+    from conftest import across, crossed, part
 
-    from huggorm.grpc_pb import load_pool
-    from huggorm.wire import WireCodec
+    from huggorm_generated._callspec import Wire, WireKind
     from huggorm_generated._policy import WIRE_FIELDS
 
-    codec = WireCodec()
     durations = {a.type.kind for a in WIRE_FIELDS["KeyedBuildResult"]
                  if a.type.name == "datetime.timedelta"}
     assert durations == {"scalar"}, (
         "a duration goes in a scalar field; nothing else can carry it")
-
-    pool = load_pool()
-    # protobuf ships no stubs for either call; see the note above.
-    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            "huggorm.v1.KeyedBuildResultMsg"))
+    w = Wire(WireKind.VALUE, "KeyedBuildResult")
 
     sent = _rebuild(
         KeyedBuildResult, StorePath("dc7sp11s8vykw8xq6a64hn9kzpvhdpji-x"),
@@ -2101,28 +2067,23 @@ def test_a_duration_crosses_as_whole_microseconds() -> None:
         1, 100, 200,
         datetime.timedelta(seconds=1, microseconds=250),
         datetime.timedelta(microseconds=7))
+    raw = crossed(w, sent)
+    assert part("KeyedBuildResult", raw, "cpu_user") == 1_000_250
+    assert part("KeyedBuildResult", raw, "cpu_system") == 7
 
-    msg = kls()
-    codec.value_to_msg("KeyedBuildResult", sent, msg)
-    assert msg.cpu_user == 1_000_250
-    assert msg.cpu_system == 7
-
-    back = codec.value_from_msg("KeyedBuildResult", msg)
+    back = across(w, sent)
     assert back.cpu_user() == datetime.timedelta(seconds=1, microseconds=250)
     assert back.cpu_system() == datetime.timedelta(microseconds=7)
     assert back == sent
 
     # ...and ABSENCE crosses as absence rather than as a zero
-    # duration. The field carries presence, which is what lets a
-    # target that never ran say so.
+    # duration, which is what lets a target that never ran say so.
     none = _rebuild(
         KeyedBuildResult, StorePath("dc7sp11s8vykw8xq6a64hn9kzpvhdpji-x"),
         _rebuild(BuildSuccess, BuildSuccessStatus.BUILT, {}), None,
         0, 0, 0, None, None)
-    empty = kls()
-    codec.value_to_msg("KeyedBuildResult", none, empty)
-    assert not empty.HasField("cpu_user")
-    assert codec.value_from_msg("KeyedBuildResult", empty).cpu_user() is None
+    assert part("KeyedBuildResult", crossed(w, none), "cpu_user") is None
+    assert across(w, none).cpu_user() is None
 
 
 @pytest.mark.live
@@ -2458,34 +2419,23 @@ def test_the_default_max_freed_crosses_the_wire() -> None:
     `nar_size` never reached this. A real NAR size stays under 2**63,
     so the width has been academic until now. The width question
     itself is not answered here; huggorm#79 holds it."""
-    from google.protobuf import message_factory
+    from conftest import across, crossed, part
 
-    from huggorm.grpc_pb import load_pool
-    from huggorm.wire import WireCodec
+    from huggorm_generated._callspec import Wire, WireKind
 
-    codec = WireCodec()
-    pool = load_pool()
-    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            "huggorm.v1.GCOptionsMsg"))
-
+    w = Wire(WireKind.VALUE, "GCOptions")
     sent = GCOptions()
     assert sent.max_freed() is None, (
         "no limit is an absence, not the sentinel upstream stores")
-
-    msg = kls()
-    codec.value_to_msg("GCOptions", sent, msg)
-    assert not msg.HasField("max_freed")
-    back = codec.value_from_msg("GCOptions", msg)
+    assert part("GCOptions", crossed(w, sent), "max_freed") is None
+    back = across(w, sent)
     assert back.max_freed() is None
     assert back == sent
 
     # ...and a real limit still crosses as itself.
     limited = GCOptions(max_freed=1 << 30)
-    other = kls()
-    codec.value_to_msg("GCOptions", limited, other)
-    assert other.max_freed == 1 << 30
-    assert codec.value_from_msg("GCOptions", other).max_freed() == 1 << 30
+    assert part("GCOptions", crossed(w, limited), "max_freed") == 1 << 30
+    assert across(w, limited).max_freed() == 1 << 30
 
 
 def test_a_limit_above_the_signed_range_crosses_as_itself() -> None:
@@ -2504,25 +2454,16 @@ def test_a_limit_above_the_signed_range_crosses_as_itself() -> None:
     the largest IS upstream's "no limit" sentinel, so the accessor
     answers None for it and an absence would cross instead. This is a
     number a caller meant."""
-    from google.protobuf import message_factory
+    from conftest import across, crossed, part
 
-    from huggorm.grpc_pb import load_pool
-    from huggorm.wire import WireCodec
+    from huggorm_generated._callspec import Wire, WireKind
 
-    codec = WireCodec()
-    pool = load_pool()
-    kls = message_factory.GetMessageClass(  # type: ignore[no-untyped-call]
-        pool.FindMessageTypeByName(  # type: ignore[no-untyped-call]
-            "huggorm.v1.GCOptionsMsg"))
-
+    w = Wire(WireKind.VALUE, "GCOptions")
     huge = (1 << 63) + 1
     sent = GCOptions(max_freed=huge)
     assert sent.max_freed() == huge, "the binding keeps it before the wire does"
-
-    msg = kls()
-    codec.value_to_msg("GCOptions", sent, msg)
-    assert msg.max_freed == huge
-    assert codec.value_from_msg("GCOptions", msg).max_freed() == huge
+    assert part("GCOptions", crossed(w, sent), "max_freed") == huge
+    assert across(w, sent).max_freed() == huge
 
 
 def test_a_closure_copies_with_what_it_references(

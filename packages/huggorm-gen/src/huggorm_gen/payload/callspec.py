@@ -88,14 +88,13 @@ class Arg:
 class Call:
     """One remote method, decided at build time.
 
-    `name` is the declared method, `path` is the gRPC route, `args` is
-    the declared parameter list in order, and `returns` is the declared
-    return type. The two messages are the schema's, read by `path`.
+    `name` is the declared method, `args` is the declared parameter list
+    in order, and `returns` is the declared return type.
 
     Everything here is a constant. The client resolves nothing: it
-    fills the request from `args`, sends it to `path`, and reads
-    `result` out of the response as `returns`, which is None for a call
-    that answers nothing. The server reads the same value the other way
+    encodes the arguments by `args`, sends them under `index`, and
+    decodes the answer as `returns`, which is None for a call that
+    answers nothing. The server reads the same value the other way
     round, and `name` is the one field only it needs - the method to
     call on the object the handle resolved to.
 
@@ -109,7 +108,6 @@ class Call:
 
     index: int
     name: str
-    path: str
     args: tuple[Arg, ...]
     returns: Wire | None
 
@@ -129,7 +127,6 @@ class Acquire:
 
     index: int
     cls: str
-    path: str
     args: tuple[Arg, ...]
     # How many of `args` a caller MUST pass. A constructor parameter
     # may carry a default, and the far side fills one in - so the
@@ -140,18 +137,6 @@ class Acquire:
     # be a second place for it to be wrong, and nothing on this side
     # would ever apply it.
     required: int
-    # The parameters whose declared default is the None LITERAL, by
-    # name. A different fact from `required`, and conflating them
-    # decoded `Store(uri="auto")` as an optional field and hit
-    # "Field Store_AcquireReq.uri does not have presence".
-    #
-    # `required` is about ARITY: how many arguments a caller must
-    # pass. This is about PRESENCE: whether the proto field can tell
-    # unset from the zero value. A parameter with no default at all is
-    # required and has no presence; one defaulting to "auto" is
-    # optional to the caller and still has no presence; only one
-    # defaulting to None has it.
-    optional: tuple[str, ...]
 
 
 # How one node of a value tree is read. Accessor NAMES, not bound

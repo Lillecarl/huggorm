@@ -210,3 +210,29 @@ def load_model() -> ir.Model:
 @pytest.fixture
 def model() -> ir.Model:
     return load_model()
+
+
+def _no_proxy(handle: Any) -> Any:
+    raise AssertionError(f"{handle!r} crossed as a proxy")
+
+
+def crossed(w: Any, value: Any) -> Any:
+    """`value` as the far side reads it off the socket: encoded, packed
+    and unpacked."""
+    from huggorm.codec import Codec, pack, unpack
+
+    return unpack(pack(Codec().encode(w, value, _no_proxy)))
+
+
+def across(w: Any, value: Any) -> Any:
+    """`value` encoded, packed, unpacked and decoded."""
+    from huggorm.codec import Codec
+
+    return Codec().decode(w, crossed(w, value), _no_proxy)
+
+
+def part(cls: str, raw: list[Any], field: str) -> Any:
+    """One declared part of an encoded wire value, by name."""
+    from huggorm_generated._policy import WIRE_FIELDS
+
+    return raw[[a.name for a in WIRE_FIELDS[cls]].index(field)]

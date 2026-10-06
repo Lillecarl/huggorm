@@ -39,7 +39,6 @@ python3Packages.buildPythonPackage {
 
   build-system = with python3Packages; [
     setuptools
-    protobuf
     huggorm-gen
     huggorm-decl
     huggorm-dsl
@@ -47,11 +46,6 @@ python3Packages.buildPythonPackage {
 
   # generated is propagated so anyone writing code in/downstream of
   # huggorm sees huggorm_generated in their environment.
-  # grpclib: asyncio gRPC transport for the remote layer. protobuf
-  # runtime feeds the model-built descriptor schema.
-  # googleapis-common-protos: google.rpc.Status, which is the message
-  # gRPC puts in grpc-status-details-bin - the only place a FAILED
-  # call can carry a typed answer (huggorm#36).
   # asyncinotify: the kernel telling the watcher a file moved, instead
   # of the watcher stat-ing for it (huggorm#83). Linux only, which is
   # what let it beat watchdog - Carl ruled Darwin out for now, so
@@ -70,10 +64,7 @@ python3Packages.buildPythonPackage {
     huggorm-bindings
     huggorm-generated
     python3Packages.asyncinotify
-    python3Packages.googleapis-common-protos
-    python3Packages.grpclib
     python3Packages.msgpack
-    python3Packages.protobuf
   ];
 
   # The integration suites run here, over a real Unix socket, under

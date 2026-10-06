@@ -85,10 +85,8 @@ class Spelled:
 
 SPELLED = {"datetime.timedelta": Spelled("int", _duration_out, _duration_in)}
 
-# The scalar arms of the recursive value message, by declared type,
-# with the oneof field each one goes in. In field-number order: the
-# schema numbers the arms in this order, so a reorder is a wire change.
-TREE_ARMS = {"str": "s", "int": "i", "bool": "b", "float": "f"}
+# The scalars a value tree's leaf may be.
+TREE_LEAVES = frozenset({"str", "int", "bool", "float"})
 
 def python_spelling(type_str: str) -> str:
     """The Python type a wire scalar is above the boundary.
@@ -97,11 +95,6 @@ def python_spelling(type_str: str) -> str:
     Every other name answers itself, a class's included."""
     return "int" if type_str == "uint" else type_str
 
-
-# Every Nix attribute name is a string, so a map key is always one.
-# That is what makes an attribute set representable as a protobuf map
-# at all (huggorm#30).
-MAP_KEY = "str"
 
 # How deep a UNION may nest before the codec refuses.
 #
@@ -114,27 +107,3 @@ MAP_KEY = "str"
 # Generous on purpose: anything real is one or two deep, so only a bug
 # or an attack sees this.
 MAX_UNION_DEPTH = 32
-
-
-def arm_field(arm: str) -> str:
-    """One union arm's field name inside its oneof.
-
-    The arm's own type name, lowercased with underscores, so
-    `DerivedPathBuilt` is `derived_path_built` and a reader of the
-    schema sees which arm they have without a table.
-
-    Here rather than in either side, because BOTH sides name it: the
-    schema builder when it writes the field, and the codec when it
-    reads `WhichOneof` back."""
-    out: list[str] = []
-    for i, ch in enumerate(arm):
-        if ch.isupper() and i:
-            out.append("_")
-        out.append(ch.lower())
-    return "".join(out)
-
-
-def entry_name(field_name: str) -> str:
-    """The synthesised MapEntry message for one map field, following
-    protobuf's own convention: field `gc_counts` -> `GcCountsEntry`."""
-    return "".join(part.title() for part in field_name.split("_")) + "Entry"
