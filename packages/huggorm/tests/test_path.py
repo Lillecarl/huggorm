@@ -18,7 +18,7 @@ from huggorm import grpc_pb
 from huggorm.wire import WireCodec
 from huggorm_bindings import StorePath
 from huggorm_bindings.errors import BadStorePath, NixError
-from huggorm_generated._callspec import Wire
+from huggorm_generated._callspec import Wire, WireKind
 
 if TYPE_CHECKING:
     from huggorm_gen import ir
@@ -195,7 +195,7 @@ def test_an_explicit_DEFAULT_is_not_an_absent_field() -> None:
     codec = WireCodec()
     msg = _message(load_model().classes["PathInfo"].message)()
 
-    when = Wire("scalar", "int", optional=True)
+    when = Wire(WireKind.SCALAR, "int", optional=True)
 
     def roundtrip(value: int | None) -> tuple[Any, bool]:
         codec.encode(msg, "registration_time", when, value, _no_proxy)

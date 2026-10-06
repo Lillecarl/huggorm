@@ -21,9 +21,9 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import Any
+from typing import Any, assert_never
 
-from huggorm_generated._callspec import Arg, Wire
+from huggorm_generated._callspec import Arg, Wire, WireKind
 from huggorm_generated._policy import (
     ERROR_FIELDS,
     ERROR_MODULE,
@@ -53,7 +53,11 @@ _SCALARS: dict[str, Callable[[Any], Any]] = {
 
 # The kinds that go in a field as one scalar. A StrEnum member is a
 # str, so a vocabulary is one.
-_FLAT = ("scalar", "enum")
+_FLAT = (WireKind.SCALAR, WireKind.ENUM)
+# The kinds rebuilt from a message of their own.
+_MESSAGE = (WireKind.VALUE, WireKind.UNION)
+# The kinds a repeated field holds, which has no presence.
+_CONTAINER = (WireKind.LIST, WireKind.MAP)
 
 
 def _no_proxy(owner: str, fname: str) -> Callable[[Any], Any]:
@@ -103,7 +107,7 @@ class WireCodec:
         wire arrives as ContentAddressMethod.FLAT rather than as
         "flat", and one that is not a member raises here instead of
         reaching libstore."""
-        if w.kind == "enum":
+        if w.kind is WireKind.ENUM:
             kls: Callable[[Any], Any] = getattr(self.bindings, w.name)
             return kls
         if (spelled := SPELLED.get(w.name)) is not None:
@@ -201,8 +205,8 @@ class WireCodec:
     # covers every dict this API returns (huggorm#30).
     def map_to_msg(self, w: Wire, obj: dict[str, Any], msg: Any) -> None:
         item = self._item(w)
-        if item.kind in ("value", "union"):
-            fill = (self.value_to_msg if item.kind == "value"
+        if item.kind in _MESSAGE:
+            fill = (self.value_to_msg if item.kind is WireKind.VALUE
                     else self.union_to_msg)
             for key, val in obj.items():
                 # A message-valued map entry is filled in place; there
@@ -217,8 +221,8 @@ class WireCodec:
 
     def map_from_msg(self, w: Wire, msg: Any) -> dict[str, Any]:
         item = self._item(w)
-        if item.kind in ("value", "union"):
-            read = (self.value_from_msg if item.kind == "value"
+        if item.kind in _MESSAGE:
+            read = (self.value_from_msg if item.kind is WireKind.VALUE
                     else self.union_from_msg)
             return {k: read(item.name, v) for k, v in msg.items()}
         # Cast on the way back too, so an enum map arrives typed.
@@ -233,8 +237,8 @@ class WireCodec:
     def list_to_msg(self, w: Wire, seq: list[Any], field: Any,
                     depth: int = 0) -> None:
         item = self._item(w)
-        if item.kind in ("value", "union"):
-            fill = (self.value_to_msg if item.kind == "value"
+        if item.kind in _MESSAGE:
+            fill = (self.value_to_msg if item.kind is WireKind.VALUE
                     else self.union_to_msg)
             for one in seq:
                 # Same as a map entry: a message element is filled in
@@ -247,8 +251,8 @@ class WireCodec:
     def list_from_msg(self, w: Wire, field: Any,
                       depth: int = 0) -> list[Any]:
         item = self._item(w)
-        if item.kind in ("value", "union"):
-            read = (self.value_from_msg if item.kind == "value"
+        if item.kind in _MESSAGE:
+            read = (self.value_from_msg if item.kind is WireKind.VALUE
                     else self.union_from_msg)
             return [read(item.name, m, depth) for m in field]
         cast = self.scalar(item)
@@ -412,7 +416,7 @@ class WireCodec:
         returns nothing."""
         if w is None:
             return
-        if value is None and (w.optional or w.kind in ("map", "list")):
+        if value is None and (w.optional or w.kind in _CONTAINER):
             # Two absences, one answer: write nothing.
             #
             # An optional leaves its message field unset, and proto3
@@ -422,24 +426,27 @@ class WireCodec:
             # one, which is what None means for a container
             # (huggorm#41).
             return
-        if w.kind in _FLAT:
-            # str() of a StrEnum member is its value, so an enum needs
-            # no special case going out.
-            setattr(container, field, self.to_wire(w)(value))
-        elif w.kind == "map":
-            self.map_to_msg(w, value, getattr(container, field))
-        elif w.kind == "list":
-            self.list_to_msg(w, value, getattr(container, field), depth)
-        elif w.kind == "value":
-            self.value_to_msg(w.name, value, getattr(container, field), depth)
-        elif w.kind == "union":
-            self.union_to_msg(w.name, value, getattr(container, field), depth)
-        elif w.kind == "error":
-            self.error_to_msg(w.name, value, getattr(container, field))
-        elif w.kind == "proxy":
-            getattr(container, field).id = proxy_id(value)
-        else:
-            raise TypeError(f"{w.kind!r} is not a wire kind")
+        match w.kind:
+            case WireKind.SCALAR | WireKind.ENUM:
+                # str() of a StrEnum member is its value, so an enum
+                # needs no special case going out.
+                setattr(container, field, self.to_wire(w)(value))
+            case WireKind.MAP:
+                self.map_to_msg(w, value, getattr(container, field))
+            case WireKind.LIST:
+                self.list_to_msg(w, value, getattr(container, field), depth)
+            case WireKind.VALUE:
+                self.value_to_msg(w.name, value, getattr(container, field),
+                                  depth)
+            case WireKind.UNION:
+                self.union_to_msg(w.name, value, getattr(container, field),
+                                  depth)
+            case WireKind.ERROR:
+                self.error_to_msg(w.name, value, getattr(container, field))
+            case WireKind.PROXY:
+                getattr(container, field).id = proxy_id(value)
+            case _:
+                assert_never(w.kind)
 
     def decode(self, container: Any, field: str, w: Wire | None,
                proxy_obj: Callable[[str], Any],
@@ -458,22 +465,24 @@ class WireCodec:
         optional = optional or w.optional
         # A container is the one kind with nothing to ask: a repeated
         # field has no presence and needs none.
-        if (optional and w.kind not in ("list", "map")
+        if (optional and w.kind not in _CONTAINER
                 and not container.HasField(field)):
             return None
         raw = getattr(container, field)
-        if w.kind in _FLAT:
-            return self.scalar(w)(raw)
-        if w.kind == "map":
-            return self.map_from_msg(w, raw)
-        if w.kind == "list":
-            return self.list_from_msg(w, raw, depth)
-        if w.kind == "value":
-            return self.value_from_msg(w.name, raw, depth)
-        if w.kind == "union":
-            return self.union_from_msg(w.name, raw, depth)
-        if w.kind == "error":
-            return self.error_from_msg(w.name, raw)
-        if w.kind == "proxy":
-            return proxy_obj(raw.id)
-        raise TypeError(f"{w.kind!r} is not a wire kind")
+        match w.kind:
+            case WireKind.SCALAR | WireKind.ENUM:
+                return self.scalar(w)(raw)
+            case WireKind.MAP:
+                return self.map_from_msg(w, raw)
+            case WireKind.LIST:
+                return self.list_from_msg(w, raw, depth)
+            case WireKind.VALUE:
+                return self.value_from_msg(w.name, raw, depth)
+            case WireKind.UNION:
+                return self.union_from_msg(w.name, raw, depth)
+            case WireKind.ERROR:
+                return self.error_from_msg(w.name, raw)
+            case WireKind.PROXY:
+                return proxy_obj(raw.id)
+            case _:
+                assert_never(w.kind)

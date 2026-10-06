@@ -6,6 +6,7 @@ the model.
 
 import ast
 import dataclasses
+import enum
 import textwrap
 from collections.abc import Mapping, Sequence
 from string import Template
@@ -192,8 +193,14 @@ def _literal(v: object) -> ast.expr:
 
     A dataclass is called positionally until a field holds its
     default; each later field that differs is a keyword. So
-    `Wire("list", item=...)` leaves `name` out, and the emitted call
-    is the one a person would write."""
+    `Wire(WireKind.LIST, item=...)` leaves `name` out, and the emitted
+    call is the one a person would write.
+
+    An enum member is written as its attribute, and is tested before
+    `str`: a StrEnum member IS a str, and as a constant it would lose
+    its class."""
+    if isinstance(v, enum.Enum):
+        return ast.Attribute(value=ast.Name(id=type(v).__name__), attr=v.name)
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
         args: list[ast.expr] = []
         keywords: list[ast.keyword] = []
@@ -235,14 +242,16 @@ def _wire(t: ir.TypeRef | None) -> cs.Wire | None:
     optional = t.optional
     t = t.required
     if t.container:
-        return cs.Wire("list" if t.origin == "list" else "map",
+        return cs.Wire(cs.WireKind.LIST if t.origin == "list"
+                       else cs.WireKind.MAP,
                        item=_wire(t.args[0]), optional=optional)
     if t.scalar is not None:
         # The leaf's own name, not the builtin it goes in as: the codec
         # converts a `datetime.timedelta` by name.
-        return cs.Wire("scalar", t.width or t.name, optional=optional)
+        return cs.Wire(cs.WireKind.SCALAR, t.width or t.name,
+                       optional=optional)
     if t.kind in ("enum", "value", "union", "error", "proxy"):
-        return cs.Wire(t.kind, t.name, optional=optional)
+        return cs.Wire(cs.WireKind(t.kind), t.name, optional=optional)
     raise TypeError(f"{t.spelling} is a {t.kind}, which does not cross")
 
 
@@ -279,7 +288,7 @@ def policy_module(model: ir.Model) -> str:
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
         import_from("_callspec", "Acquire", "Arg", "Call", "Tree", "Walk", "Wire",
-                    level=1),
+                    "WireKind", level=1),
     ]
     # The protobuf package every message and service sits in.
     body.append(ast.AnnAssign(

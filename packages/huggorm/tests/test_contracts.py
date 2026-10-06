@@ -175,12 +175,12 @@ def test_a_string_enum_decodes_to_its_class(model: ir.Model) -> None:
     Needs no server: this is the converter both sides use."""
     from huggorm.wire import WireCodec
     from huggorm_bindings import ContentAddressMethod
-    from huggorm_generated._callspec import Wire
+    from huggorm_generated._callspec import Wire, WireKind
     from huggorm_generated._policy import WIRE_FIELDS
 
     codec = WireCodec()
     assert model.enums, "the bindings declare no vocabularies"
-    method = Wire("enum", "ContentAddressMethod")
+    method = Wire(WireKind.ENUM, "ContentAddressMethod")
     assert WIRE_FIELDS["ContentAddress"][0].type == method
 
     rebuild = codec.scalar(method)
@@ -189,7 +189,7 @@ def test_a_string_enum_decodes_to_its_class(model: ir.Model) -> None:
         rebuild("nonsense")
 
     # ...and a built-in scalar still resolves to the builtin.
-    assert codec.scalar(Wire("scalar", "bytes")) is bytes
+    assert codec.scalar(Wire(WireKind.SCALAR, "bytes")) is bytes
 
 
 def test_the_front_door_covers_the_surface() -> None:
@@ -348,12 +348,12 @@ def test_an_enum_survives_a_container() -> None:
     from huggorm.wire import WireCodec
     from huggorm_bindings import ContentAddressMethod as CA
     from huggorm_bindings import HashAlgorithm
-    from huggorm_generated._callspec import Wire
+    from huggorm_generated._callspec import Wire, WireKind
 
     codec = WireCodec()
     probe = _probe_message()
-    words = Wire("list", item=Wire("enum", "HashAlgorithm"))
-    table = Wire("map", item=Wire("enum", "ContentAddressMethod"))
+    words = Wire(WireKind.LIST, item=Wire(WireKind.ENUM, "HashAlgorithm"))
+    table = Wire(WireKind.MAP, item=Wire(WireKind.ENUM, "ContentAddressMethod"))
 
     codec.list_to_msg(words,
                       [HashAlgorithm.SHA256, HashAlgorithm.SHA512],

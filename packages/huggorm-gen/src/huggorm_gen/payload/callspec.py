@@ -18,38 +18,48 @@ method, at import, and the checker reads every field.
 
 ## Why a type is a `Wire`, not a class
 
-`Arg.type` says how a value crosses - `Wire("list", item=Wire("value",
-"StorePath"))` - and names a class only by its declared name. The build
-resolved every type once, so the codec dispatches on `kind` and reads
-no annotation. Holding the class itself would mean importing every
+`Arg.type` says how a value crosses - `Wire(WireKind.LIST,
+item=Wire(WireKind.VALUE, "StorePath"))` - and names a class only by
+its declared name. The build resolved every type once, so the codec
+dispatches on `kind` and reads no annotation. Holding the class itself would mean importing every
 bound type into a module that only routes them.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+
+
+class WireKind(StrEnum):
+    """What the codec does with one `Wire`."""
+
+    # One builtin field. `name` is `str`, `int`, `uint`, `float`,
+    # `bool` or `bytes`, or a type that goes in one, such as
+    # `datetime.timedelta`.
+    SCALAR = "scalar"
+    # A string vocabulary, which crosses as its str value.
+    ENUM = "enum"
+    # A message, rebuilt from its parts. `name` is the declared class
+    # or alias.
+    VALUE = "value"
+    UNION = "union"
+    ERROR = "error"
+    # A handle. `name` is the class.
+    PROXY = "proxy"
+    # A repeated field or a `map<string, V>`. `item` is what it holds.
+    LIST = "list"
+    MAP = "map"
 
 
 @dataclass(frozen=True, slots=True)
 class Wire:
     """How one declared type crosses, decided at build time.
 
-    `kind` is what the codec does:
-
-    - "scalar": one builtin field. `name` is `str`, `int`, `uint`,
-      `float`, `bool` or `bytes`, or a type that goes in one, such as
-      `datetime.timedelta`.
-    - "enum": a string vocabulary, which crosses as its str value.
-    - "value", "union", "error": a message, rebuilt from its parts.
-      `name` is the declared class or alias.
-    - "proxy": a handle. `name` is the class.
-    - "list", "map": a repeated field or a `map<string, V>`. `item` is
-      what it holds.
-
     `optional` is presence: the field may be unset, and an unset one
     reads back as None."""
 
-    kind: str
+    kind: WireKind
     name: str = ""
     item: Wire | None = None
     optional: bool = False
