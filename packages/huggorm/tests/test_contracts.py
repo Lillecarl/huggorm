@@ -567,10 +567,11 @@ def test_a_blocking_method_on_a_value_gets_a_coroutine(
     package exports it, and the method's stub names it."""
     import sys
 
+    from huggorm_gen.ir import MethodRef
     from huggorm_gen.pygen.emitter import package_exports
 
     found = {f.calls: f.name for f in model.blocking_methods}
-    assert found.get("Input.fingerprint") == "input_fingerprint", found
+    assert found.get(MethodRef("Input", "fingerprint")) == "input_fingerprint", found
     assert "input_fingerprint" in package_exports(model)
 
     stubs = next(pathlib.Path(entry) / "huggorm_bindings-stubs"

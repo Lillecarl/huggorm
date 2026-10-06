@@ -878,8 +878,8 @@ def free_function_module(model: ir.Model) -> ast.Module:
     spell = Spelling()
     signatures = {}
     for fn in fns:
-        if fn.calls:
-            spell.need(fn.calls.partition(".")[0], BINDINGS)
+        if fn.calls is not None:
+            spell.need(fn.calls.cls, BINDINGS)
         params = [_widened(spell, model, p.type) for p in fn.params]
         r = fn.returns
         ret = (spell.returns(r, _as_async)
@@ -900,14 +900,16 @@ def free_function_module(model: ir.Model) -> ast.Module:
     mod.body.append(ast.ImportFrom(
         module="huggorm_bindings",
         names=[ast.alias(name=f.name, asname="_" + f.name)
-               for f in fns if not f.calls],
+               for f in fns if f.calls is None],
         level=0))
     runtime_names = ["call_function"] + (["PoolRunner"] if pool_parent else [])
     mod.body.append(import_from("_runtime", *runtime_names, level=1))
 
     for fn in fns:
         params, ret = signatures[fn.name]
-        call = (f"call_function({fn.calls or '_' + fn.name}, "
+        target = ("_" + fn.name if fn.calls is None
+                  else f"{fn.calls.cls}.{fn.calls.method}")
+        call = (f"call_function({target}, "
                 f"[{', '.join(p.name for p in fn.params)}])")
         r = fn.returns
         if (adopted := model.adopted(r)) is not None:
@@ -966,7 +968,7 @@ def _stub_dunders(name: str, dunders: list[str]) -> list[ast.stmt]:
 
 
 def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
-                coroutines: Mapping[str, str]) -> ast.ClassDef:
+                coroutines: Mapping[ir.MethodRef | None, str]) -> ast.ClassDef:
     name = c.name
     cls = ast.ClassDef(name=name, bases=[], keywords=[], body=[],
                        decorator_list=[], type_params=[])
@@ -992,7 +994,7 @@ def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
         spell.defaults(m.params)
         params = [spell(p.type) for p in m.params]
         doc = m.doc
-        if (coroutine := coroutines.get(f"{name}.{m.name}")) is not None:
+        if (coroutine := coroutines.get(ir.MethodRef(name, m.name))) is not None:
             doc = (f"{doc}\n\n" if doc else "") + (
                 f"Blocks. From async code, await `huggorm.{coroutine}` "
                 f"(huggorm#25).")

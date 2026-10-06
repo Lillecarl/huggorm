@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from huggorm_dsl.declare import Crossing, Decl, Threading
 from huggorm_dsl.read import (
@@ -623,6 +623,13 @@ class Execution(StrEnum):
     INLINE = "inline"
 
 
+class MethodRef(NamedTuple):
+    """A bound method, by its class and its own name."""
+
+    cls: str
+    method: str
+
+
 @dataclass(frozen=True)
 class FunctionModel:
     """One free function. No policy means it opted into nothing: it
@@ -634,9 +641,9 @@ class FunctionModel:
     params: tuple[ParamModel, ...]
     returns: TypeRef | None
     doc: str
-    # The binding this calls, when it is not the function of the same
+    # The method this calls, when it is not the binding of the same
     # name: `Input.fingerprint` for `input_fingerprint`.
-    calls: str = ""
+    calls: MethodRef | None = None
     # The C++ it binds by name (`@binds`), or the body it carries.
     cxx_name: str = ""
     cxx_body: str = ""
@@ -1371,7 +1378,7 @@ class Model:
                 out.append(FunctionModel(
                     name, c.qualified_module, c.threading,
                     (ParamModel(_snake(c.name), me, None), *m.params),
-                    m.returns, m.doc, calls=f"{c.name}.{m.name}"))
+                    m.returns, m.doc, calls=MethodRef(c.name, m.name)))
         return out
 
     @property
