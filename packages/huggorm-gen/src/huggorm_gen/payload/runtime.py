@@ -110,6 +110,28 @@ def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
         return _POOL
 
 
+# Nix's evaluator stack: `nix::setStackSize(60 * 1024 * 1024)` in
+# `src/nix/main.cc`. Only the CLI's `main()` sets it, so an embedder's thread
+# keeps the 8 MiB `RLIMIT_STACK` gives it, and the default `max-call-depth`
+# of 10000 needs about 27 MB: `let f = n: f (n + 1); in f 0` segfaults the
+# process instead of raising. A pthread stack is mmap'd and no rlimit bounds
+# it. nanopynix measured all of this (`_core/_nix_executor.py`).
+EVAL_STACK = 60 * 1024 * 1024
+# `threading.stack_size` is process-global, so it is held only across the
+# one spawn it is for.
+_STACK_LOCK = threading.Lock()
+
+
+def _start_with_eval_stack(pool: concurrent.futures.ThreadPoolExecutor) -> None:
+    """Spawn `pool`'s single thread now, with `EVAL_STACK`."""
+    with _STACK_LOCK:
+        previous = threading.stack_size(EVAL_STACK)
+        try:
+            pool.submit(lambda: None).result()
+        finally:
+            threading.stack_size(previous)
+
+
 _REQUEST_LOCK = threading.Lock()
 _REQUEST_SEQ = 0
 
@@ -494,6 +516,8 @@ class AffineRunner(BaseRunner):
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix=name
         )
+        # An evaluator recurses on this thread.
+        _start_with_eval_stack(self._pool)
 
     def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         return self._pool
