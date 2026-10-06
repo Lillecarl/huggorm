@@ -196,30 +196,15 @@ def wire_blocker(t: TypeRef, served: frozenset[str]) -> str | None:
     Reported rather than raised: a method that cannot cross keeps its
     in-process wrapper, and the build says exactly what is missing.
     The reader has already refused what no binding carries - a set, a
-    non-str map key, a bare container - so only what a protobuf field
-    cannot hold is left to say."""
+    non-str map key, a bare container. msgpack carries nil anywhere
+    and nests containers, so what is left is about leases and
+    meaning, not about the format."""
     if t.optional:
-        inner = t.required
-        # A repeated field has no presence, and needs none.
-        if inner.container:
-            return (f"{t.spelling}: a repeated field has no presence and "
-                    f"needs none - an absent container IS an empty one. "
-                    f"Declare {inner.spelling} and return it empty.")
-        t = inner
-    if t.container:
+        t = t.required
+    while t.container:
         element = t.args[0]
-        if element.container:
-            return (f"{t.spelling}: proto3 cannot put a {element.origin} "
-                    f"inside a map. A nested attribute set needs the "
-                    f"recursive value message (huggorm#30)"
-                    if t.origin is Origin.DICT else
-                    f"{t.spelling}: proto3 cannot repeat a {element.origin}. "
-                    f"A list of them needs the recursive value message "
-                    f"(huggorm#30)")
         if element.optional:
-            return (f"{t.spelling}: an element of a map or a repeated field "
-                    f"has no presence, so {element.spelling} cannot say "
-                    f"None there")
+            element = element.required
         if element.kind == Kind.PROXY:
             # One lease per element, and nothing grants leases in bulk.
             return (f"{t.spelling}: a container of proxies would grant one "
@@ -345,9 +330,8 @@ class ParamModel:
     def of(cls, p: Param, resolver: Resolver) -> ParamModel:
         declared = p.type
         # A LIST that defaults to None is the list: an absent list IS
-        # an empty one, and a repeated field has no presence to say
-        # otherwise. Carried as `list[X] | None`, the schema refuses it
-        # and the method loses its rpc in silence (huggorm#104).
+        # an empty one, so every surface spells it `list[X]`
+        # (huggorm#104).
         if (p.has_default and p.default is None
                 and declared.required.origin is Origin.LIST):
             declared = declared.required

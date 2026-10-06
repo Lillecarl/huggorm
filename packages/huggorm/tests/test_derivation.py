@@ -131,6 +131,20 @@ def test_a_derivation_value_names_its_outputs(
     assert paths == store.query_derivation_output_map(value.drv_path())
 
 
+async def test_output_paths_cross_the_socket(
+        client: Any, tmp_path: pathlib.Path) -> None:
+    """`dict[str, StorePath | None]`: an element that may be None,
+    which a proto3 map could not carry, so the call had no remote form
+    until the socket protocol (huggorm#142)."""
+    from huggorm_bindings import EvalState, Store
+
+    store = await client.acquire("Store", str(tmp_path))
+    value = await (await client.acquire("EvalState", store)).eval_expr(
+        LEAF, str(tmp_path))
+    local = EvalState(Store(str(tmp_path))).eval_expr(LEAF, str(tmp_path))
+    assert await value.output_paths() == local.output_paths()
+
+
 def test_a_floating_output_is_not_a_store_path_yet(
         tmp_path: pathlib.Path, dynamic_derivations: None) -> None:
     from huggorm_bindings import EvalState, Store

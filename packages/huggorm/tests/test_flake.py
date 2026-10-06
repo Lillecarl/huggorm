@@ -9,6 +9,7 @@ global one is a URL.
 
 import json
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -122,3 +123,17 @@ def test_the_flake_builtins_are_there(state: EvalState) -> None:
 def test_a_probe_flake_is_got(state: EvalState, probe: pathlib.Path) -> None:
     got = state.eval_expr(f'(builtins.getFlake "path:{probe}").x', "/")
     assert got.integer() == 7
+
+
+async def test_a_flake_locks_over_the_socket(
+        client: Any, tmp_path: pathlib.Path, probe: pathlib.Path) -> None:
+    """`lock_flake` takes `settings: dict[str, str] | None`, which a
+    proto3 field could not carry, so it had no remote form until the
+    socket protocol (huggorm#142). None and a real mapping both cross."""
+    store = await client.acquire("Store", str(tmp_path / "remote"))
+    state = await client.acquire("EvalState", store, NO_GLOBAL)
+    locked = await state.lock_flake(parse_flake_ref(f"path:{probe}"))
+    assert await locked.description() == "probe"
+    with pytest.raises(UsageError, match="not a setting this call takes"):
+        await state.lock_flake(parse_flake_ref(f"path:{probe}"),
+                               settings={"pure-eval": "true"})

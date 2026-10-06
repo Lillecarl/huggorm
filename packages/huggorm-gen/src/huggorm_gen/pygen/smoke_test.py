@@ -114,18 +114,12 @@ def test_an_optional_return_names_a_value_or_nothing(
         out: pathlib.Path) -> None:
     """`T | None` is a real return type, and only for some T.
 
-    Absence rides on presence, which is one bit. So it separates ONE
-    type from nothing: a union of two real types has no field to put
-    either arm in.
+    Absence is msgpack's nil, so any T may be optional: a scalar, a
+    value, a container, an element of a container (huggorm#48,
+    huggorm#142).
 
-    A scalar is allowed, and used not to be. proto3 has had explicit
-    `optional` since 3.15 - a synthetic oneof gives a scalar field
-    real presence - so the old refusal described what this schema
-    builder emitted rather than what proto3 can say (huggorm#48).
-
-    A WRAPPED T is allowed too. A Handle is a message, so the wire has
-    presence already, and every layer adopts T when it is there and
-    passes None through. The emitted async body is checked here,
+    A WRAPPED T is allowed too. Every layer adopts T when it is there
+    and passes None through. The emitted async body is checked here,
     because a body that adopts None builds a wrapper around nothing
     and fails only at the first await on it."""
     from huggorm_gen import ir
@@ -136,13 +130,10 @@ def test_an_optional_return_names_a_value_or_nothing(
     for good in (path, T.named("str", ir.Kind.SCALAR), T.named("int", ir.Kind.SCALAR),
                  T.named("Word", ir.Kind.ENUM), T.named("Store", ir.Kind.PROXY)):
         assert ir.wire_blocker(T.optional_of(good), served) is None, good
-    blocker = ir.wire_blocker(T.optional_of(T.list_of(path)), served)
-    assert blocker is not None and "IS an empty one" in blocker, blocker
-    # The element's own None, not a missing type: StorePath is a value.
-    for shape in (T.dict_of(T.optional_of(path)),
+    for shape in (T.optional_of(T.list_of(path)),
+                  T.dict_of(T.optional_of(path)),
                   T.list_of(T.optional_of(path))):
-        blocker = ir.wire_blocker(shape, served)
-        assert blocker is not None and "has no presence" in blocker, blocker
+        assert ir.wire_blocker(shape, served) is None, shape.spelling
     # An unserved proxy is refused whether or not it may be None.
     lost = T.named("Lost", ir.Kind.PROXY)
     for shape in (lost, T.optional_of(lost)):
@@ -332,18 +323,17 @@ def test_the_wire_refuses_what_it_cannot_carry() -> None:
     exercises the blocker path. Exercised directly, or the mechanism
     that keeps an unrepresentable type out of the schema goes untested.
 
-    A container of PROXIES stays refused whichever container it is: one
-    lease per element is not something anything grants in bulk. Neither
-    container nests in the other - proto3 has no repeated map field and
-    no map of repeated values. An opaque object and a module type with
-    no wire spelling have no field at all."""
+    A container of PROXIES stays refused whichever container it is, at
+    any depth: one lease per element is not something anything grants
+    in bulk. An opaque object and a module type with no wire spelling
+    have no wire form at all. Containers nest freely (huggorm#142)."""
     from huggorm_gen import ir
     from huggorm_gen.cppgen.generate import declared_model
 
     free = declared_model().functions
     assert free["collect_garbage"].returns is None
-    # gc_stats returns dict[str, int], a protobuf map now that the
-    # declaration says what the entries hold (huggorm#30).
+    # gc_stats returns dict[str, int]: the declaration says what the
+    # entries hold (huggorm#30).
     gc_return = free["gc_stats"].returns
     assert gc_return is not None and gc_return.spelling == "dict[str, int]"
 
@@ -351,13 +341,15 @@ def test_the_wire_refuses_what_it_cannot_carry() -> None:
     i, s = T.named("int", ir.Kind.SCALAR), T.named("str", ir.Kind.SCALAR)
     value, path = T.named("Value", ir.Kind.PROXY), T.named("StorePath", ir.Kind.VALUE)
     served = frozenset({"Value"})
-    for t in (T.dict_of(T.dict_of(i)), T.dict_of(T.list_of(i)),
-              T.dict_of(value), T.list_of(value), T.list_of(T.list_of(i)),
-              T.list_of(T.dict_of(i)), T.named("object", ir.Kind.OPAQUE),
+    for t in (T.dict_of(value), T.list_of(value),
+              T.list_of(T.dict_of(value)), T.dict_of(T.optional_of(value)),
+              T.named("object", ir.Kind.OPAQUE),
               T.named("pathlib.Path", ir.Kind.MODULE)):
         assert ir.wire_blocker(t, served), f"{t.spelling} should be blocked"
     for t in (s, i, value, path, T.dict_of(i), T.dict_of(path),
-              T.list_of(i), T.list_of(path),
+              T.list_of(i), T.list_of(path), T.dict_of(T.dict_of(i)),
+              T.dict_of(T.list_of(i)), T.list_of(T.list_of(i)),
+              T.list_of(T.dict_of(path)),
               T.named("datetime.timedelta", ir.Kind.MODULE)):
         assert not ir.wire_blocker(t, served), (t.spelling,
                                                 ir.wire_blocker(t, served))
