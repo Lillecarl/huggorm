@@ -23,6 +23,7 @@ from conftest import HOST, SHORT_TTL, Server
 from nixversion import MISSING_FILE, MissingFileError
 
 from huggorm import remote
+from huggorm.lifecycle import ShareMode
 
 
 async def wrapper_error(coro: Any) -> dict[str, str]:
@@ -123,7 +124,7 @@ async def test_share_copy_survives_the_granter(ttl_server: Server) -> None:
         assert b.token is not None  # connect() binds
         store = await a.acquire("Store", "dummy://")
         hid = store.handle_id
-        await a.share(store, b.token, mode="copy")
+        await a.share(store, b.token, mode=ShareMode.COPY)
         await a.release(store)
         assert await b.proxy("Store", hid).get_uri() == "dummy://"
 
@@ -134,7 +135,7 @@ async def test_share_transfer_moves_ownership(ttl_server: Server) -> None:
         assert b.token is not None
         store = await a.acquire("Store", "dummy://")
         hid = store.handle_id
-        await a.share(store, b.token, mode="transfer")
+        await a.share(store, b.token, mode=ShareMode.TRANSFER)
         threw = await wrapper_error(a.release(store))
         assert threw["cause_type"] == "ValueError", threw
         assert await b.proxy("Store", hid).get_uri() == "dummy://"

@@ -41,9 +41,15 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable, Iterable
+from enum import StrEnum
 from typing import Any
 
 ANON = "\x00anon"
+
+
+class ShareMode(StrEnum):
+    COPY = "copy"
+    TRANSFER = "transfer"
 
 # The metadata key carrying the connection token on every request.
 # Reference convention for all transports (grpclib, SSH, stdio shims).
@@ -246,7 +252,8 @@ class HandleTable:
         self.entries[hid].leases -= n
         self._reap()
 
-    def share(self, from_token: str, to_token: str, hid: str, mode: str = "copy") -> None:
+    def share(self, from_token: str, to_token: str, hid: str,
+              mode: ShareMode = ShareMode.COPY) -> None:
         """Duplicate or move one lease onto another LIVE connection."""
         src = self._require_conn(from_token)
         if to_token == (from_token or ANON):
@@ -257,16 +264,15 @@ class HandleTable:
         held = src.leases.get(hid, 0)
         if held < 1:
             raise ValueError(f"granting connection does not hold {hid[:8]}")
-        if mode == "transfer":
-            if held == 1:
-                del src.leases[hid]
-            else:
-                src.leases[hid] = held - 1
-            # Net entry count unchanged: the lease moved, not multiplied.
-        elif mode == "copy":
-            self.entries[hid].leases += 1
-        else:
-            raise ValueError(f"unknown share mode {mode!r} (copy|transfer)")
+        match mode:
+            case ShareMode.TRANSFER:
+                if held == 1:
+                    del src.leases[hid]
+                else:
+                    src.leases[hid] = held - 1
+                # Net entry count unchanged: the lease moved, not multiplied.
+            case ShareMode.COPY:
+                self.entries[hid].leases += 1
         dst.leases[hid] = dst.leases.get(hid, 0) + 1
         # The target now holds this object under this handle, so a
         # later put() of the same object must reuse it rather than

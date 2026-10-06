@@ -41,7 +41,7 @@ from huggorm_generated._policy import ACQUIRE, FREE, LOG_RECORDS, NO_RPC
 
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails
-from .lifecycle import TOKEN_HEADER
+from .lifecycle import TOKEN_HEADER, ShareMode
 from .wire import WireCodec
 
 logger = logging.getLogger(__name__)
@@ -362,7 +362,7 @@ class NixClient:
             return False
 
     async def share(self, obj: Any, to_token: str,
-                    mode: str = "copy") -> None:
+                    mode: ShareMode = ShareMode.COPY) -> None:
         await self._rpc(schema.session("Share"), handle={"id": obj.handle_id},
                         to_token=to_token, mode=mode)
 

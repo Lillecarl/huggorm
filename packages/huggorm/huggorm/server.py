@@ -36,7 +36,7 @@ from huggorm_generated._policy import (
 
 from . import grpc_pb as schema
 from .faults import FaultCodec, SchemaStatusDetails
-from .lifecycle import TOKEN_HEADER, HandleTable
+from .lifecycle import TOKEN_HEADER, HandleTable, ShareMode
 from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
 from .wire import WireCodec
 
@@ -887,8 +887,8 @@ class Dispatcher:
 
         async def share(stream: Any) -> None:
             req = await stream.recv_message()
-            self.table.share(_tok(stream), req.to_token,
-                             req.handle.id, mode=req.mode or "copy")
+            self.table.share(_tok(stream), req.to_token, req.handle.id,
+                             mode=ShareMode(req.mode or ShareMode.COPY))
             ack = reply("Share")()
             ack.ok = True
             await stream.send_message(ack)

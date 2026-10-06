@@ -16,7 +16,7 @@ Run:  nix develop --file . shell --command pytest huggorm/tests
 
 import pytest
 
-from huggorm.lifecycle import ANON, HandleTable
+from huggorm.lifecycle import ANON, HandleTable, ShareMode
 
 
 class Obj:
@@ -116,7 +116,7 @@ def test_share_indexes_the_target() -> None:
     a, b = t.bind(), t.bind()
     obj = Obj("handed over")
     ha = t.put(obj, a)
-    t.share(a, b, ha, "copy")
+    t.share(a, b, ha, ShareMode.COPY)
     t.audit()
     hb = t.put(obj, b)
     t.audit()
@@ -134,7 +134,7 @@ def test_transfer_leaves_the_source_indexed() -> None:
     a, b = t.bind(), t.bind()
     obj = Obj("moved")
     ha = t.put(obj, a)
-    t.share(a, b, ha, "transfer")
+    t.share(a, b, ha, ShareMode.TRANSFER)
     t.audit()
     assert ha not in t.connections[a].leases, "transfer left the source holding nothing"
     again = t.put(obj, a)

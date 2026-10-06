@@ -18,7 +18,7 @@ import random
 
 import pytest
 
-from huggorm.lifecycle import HandleTable
+from huggorm.lifecycle import HandleTable, ShareMode
 
 SEEDS = range(64)
 STEPS = 300
@@ -48,7 +48,7 @@ def _step(table: HandleTable, rng: random.Random) -> str:
         table.release(token, hid)
     elif op == "share":
         table.share(token, rng.choice(tokens), hid,
-                    mode=rng.choice(["copy", "transfer"]))
+                    mode=rng.choice(list(ShareMode)))
     elif op == "detach":
         table.detach(token, hid if rng.random() < 0.5 else None)
     else:

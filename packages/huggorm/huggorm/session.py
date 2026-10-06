@@ -29,6 +29,7 @@ import anyio
 
 from huggorm_generated import AsyncEvalState, AsyncStore, RPCEvalState, RPCStore, collect_garbage
 
+from .lifecycle import ShareMode
 from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
 from .remote import NixClient, connect
 
@@ -567,7 +568,8 @@ class AsyncRemoteSession:
                 self._stores.discard(obj)
         return done
 
-    async def share(self, obj: Any, to_token: str, mode: str = "copy") -> None:
+    async def share(self, obj: Any, to_token: str,
+                    mode: ShareMode = ShareMode.COPY) -> None:
         """Give another live connection a lease on `obj`."""
         await self._client.share(obj, to_token, mode)
 
