@@ -41,7 +41,7 @@ nanopynix stays until this file says otherwise. No shortcut.
 | Dev-shell derivation rewrite | done | `huggorm.devshell` over generated ops, local sync+async; `read_derivation` and `to_json` cross RPC, the build stays where the environment is sourced |
 | One consumer over sync, async and RPC | done | Every proxy has a service, and a proxy parameter is protocol-typed on every surface. `test_parity` runs eval, force, drv_path and the dev-shell rewrite as one body on all three, and `awrite_dev_shell_derivation` takes any `StoreLike` |
 | print-dev-env (build + read + render) | done | `get_build_environment`/`print_dev_env` (+async): build every output, parse the dumped JSON into `BuildEnvironment`, render sourcable shell or `to_dict` JSON; redirects need installables and stay CLI. A `live` test compares both renderings with the `nix` CLI of the same version, flat and structured |
-| Python store implementations | gap | Blocked on huggorm#84 |
+| Python store implementations | superseded | No consumer: nanopynix's `StoreImpl` is used only by its own tests. A need reopens it as huggorm#84, a declaration that implements virtuals |
 | Typed settings models | superseded | Pydantic costs startup (CLI, completion); plain `dict[str, str]` is the surface |
 | Typed store URI models | superseded | Same cost as above; plain URI strings are the surface |
 | YAML primop set | refused | Tooling policy; lives in a consumer, over the primitives above |
