@@ -107,9 +107,10 @@ def _twinned(call: str, t: ir.TypeRef) -> str:
                     f"a {t.origin}")
 
 
-RUNNER_BY_THREADING = {
-    Threading.AFFINE: "AffineRunner",
-    Threading.POOL: "PoolRunner",
+RUNNER = {
+    ir.Execution.AFFINE: "AffineRunner",
+    ir.Execution.POOL: "PoolRunner",
+    ir.Execution.INLINE: "InlineRunner",
 }
 
 def _arguments(leading: list[ast.arg], params: Sequence[ir.ParamModel],
@@ -479,9 +480,9 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
             @classmethod
             def _adopt(cls, obj: $svc, runner: BaseRunner) -> Self:
                 adopted = cls.__new__(cls)
-                adopted._runner = attach_runner(obj, runner, $execution)
+                adopted._runner = $adopter.adopt(obj, runner)
                 return adopted
-            """, svc=c.name, execution=repr(str(c.execution))),
+            """, svc=c.name, adopter=RUNNER[c.execution]),
     ])
     for m in c.methods:
         _hop_method(cls, model, m, c.name, methods[m.name])
@@ -501,8 +502,8 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
         ast.Expr(value=ast.Constant(value=doc)),
         _future_annotations(),
         import_from("typing", "Self", *typing_names),
-        import_from("_runtime", "BaseRunner", "attach_runner", *runtime_names,
-                    level=1),
+        import_from("_runtime", "BaseRunner",
+                    *sorted({RUNNER[c.execution], *runtime_names}), level=1),
         # A value that produces values names its OWN async class, which
         # is defined right here: importing it would be a self-import.
         *spell.imports(own=c.async_name),
@@ -516,14 +517,14 @@ def returned_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     """Async<X> for a class some call hands back.
 
     Built with (obj, runner): the object was produced on the producer's
-    thread, and `attach_runner` picks the execution its own policy
-    says. A returned class can produce another one - a Value holds
-    Values - and that return is adopted too."""
+    thread, and the runner its own execution names adopts it. A
+    returned class can produce another one - a Value holds Values -
+    and that return is adopted too."""
     policy = c.threading
     init = _code("""
         def __init__(self, obj: $svc, runner: BaseRunner) -> None:
-            self._runner = attach_runner(obj, runner, $execution)
-        """, svc=c.name, execution=repr(str(c.execution)))
+            self._runner = $adopter.adopt(obj, runner)
+        """, svc=c.name, adopter=RUNNER[c.execution])
     return _async_module(
         model, c,
         f"Generated async wrapper for returned type {c.name} "
@@ -560,7 +561,7 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
             f"Hold one when you do not care which implementation answered; "
             f"construct a subclass to get one.",
             init, {"Any"}, set())
-    runner = RUNNER_BY_THREADING[threading]
+    runner = RUNNER[ir.Execution(threading)]
     name = (f", name={f'huggorm-affine-{svc}'!r}"
             if threading is Threading.AFFINE
             else "")

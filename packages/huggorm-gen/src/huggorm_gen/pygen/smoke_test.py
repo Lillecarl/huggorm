@@ -209,7 +209,7 @@ def test_runtime_contract(out: pathlib.Path) -> None:
                 referenced |= {a.name for a in node.names}
     missing = sorted(n for n in referenced if not hasattr(rt, n))
     assert not missing, f"emitted modules import missing _runtime symbols: {missing}"
-    assert {"attach_runner", "unwrap_arg"} <= referenced, (
+    assert {"BaseRunner", "unwrap_arg"} <= referenced, (
         f"emitters stopped importing the core runtime: {sorted(referenced)}"
     )
 

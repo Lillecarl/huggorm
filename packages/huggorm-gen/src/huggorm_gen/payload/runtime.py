@@ -331,6 +331,13 @@ class BaseRunner:
         self.born_thread_name: str | None = None
         self.workers_seen: set[str] = set()
 
+    @classmethod
+    def adopt(cls, obj: Any, parent: BaseRunner) -> BaseRunner:
+        """A runner of this kind over `obj`, which `parent`'s call
+        produced. The build picks the class from the produced type's
+        declared execution."""
+        return cls(None, obj=obj)
+
     def _resolve(self) -> Any:
         # Runs inside a worker thread. First call constructs the object
         # on whichever thread this runner owns (affine) or a pool thread.
@@ -489,6 +496,18 @@ class AffineRunner(BaseRunner):
     def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
         return self._pool
 
+    @classmethod
+    def adopt(cls, obj: Any, parent: BaseRunner) -> BaseRunner:
+        """An affine object stays on the thread that made it, so it
+        runs on its producer's executor."""
+        if isinstance(parent, AffineRunner | AttachedRunner):
+            return AttachedRunner(obj, parent)
+        raise TypeError(
+            "affine return type produced on a pool runner: the object has "
+            "no home thread. Declare it 'pool' or produce it from an "
+            "affine wrapper."
+        )
+
     async def aclose(self) -> None:
         # The dedicated thread is about to die, so it has to leave the
         # collector's list first - on itself, as its last GC action.
@@ -586,19 +605,3 @@ async def call_function(fn: Callable[..., Any], args: list[Any]) -> Any:
     return await _until_done(
         loop.run_in_executor(_shared_pool(), invoke), request)
 
-
-def attach_runner(obj: Any, parent: BaseRunner, policy: str) -> BaseRunner:
-    """Pick a runner for a returned object based on its declared policy."""
-    if policy == "affine":
-        if isinstance(parent, AffineRunner | AttachedRunner):
-            return AttachedRunner(obj, parent)
-        raise TypeError(
-            "affine return type produced on a pool runner: the object has "
-            "no home thread. Declare it 'pool' or produce it from an "
-            "affine wrapper."
-        )
-    if policy == "pool":
-        return PoolRunner(None, obj=obj)
-    if policy == "inline":
-        return InlineRunner(None, obj=obj)
-    raise ValueError(f"unknown threading policy {policy!r}")
