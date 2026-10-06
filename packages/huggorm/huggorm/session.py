@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 
 import anyio
 
-from huggorm_generated import AsyncEvalState, AsyncStore, RPCEvalState, RPCStore
+from huggorm_generated import AsyncEvalState, AsyncStore, RPCEvalState, RPCStore, collect_garbage
 
 from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
 from .remote import NixClient, connect
@@ -380,12 +380,23 @@ class AsyncSession:
             return
         self._closed = True
         errors: list[Exception] = []
+        closed_any = bool(self._evals)
         for state in tuple(self._evals):
             try:
                 await state.aclose()
             except Exception as exc:
                 errors.append(exc)
         self._evals.clear()
+        if closed_any:
+            # A closed evaluator's Store is not free yet. A caught
+            # evaluation error lives in a finalizable Boehm block whose
+            # position holds rootFS, and rootFS mounts the Store, so the
+            # Store and its daemon connections outlive the evaluator
+            # until a collection finalizes that block - in a small
+            # process, possibly never (huggorm#128). nixpkgs raises one
+            # on every `import nixpkgs { }`. Measured: 10 ms after a
+            # nixpkgs evaluation.
+            await collect_garbage()
         for store in tuple(self._stores):
             try:
                 await store.aclose()
