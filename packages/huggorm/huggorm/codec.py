@@ -121,7 +121,9 @@ class Codec:
         if (spelled := SPELLED.get(w.name)) is not None:
             return spelled.out(value)
         if w.kind is WireKind.ENUM:
-            return str(value)
+            # Through the class, so a word outside the vocabulary
+            # raises on the side that typed it.
+            return str(getattr(self.bindings, w.name)(value))
         return _SCALARS[w.name][0](value)
 
     def _scalar_in(self, w: Wire, raw: Any) -> Any:

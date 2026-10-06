@@ -431,19 +431,21 @@ async def test_a_word_outside_the_vocabulary_stops_before_the_wire(
         client: Any, tmp_path: Any) -> None:
     """The codec refuses it here, not on the far side.
 
-    `WireCodec.scalar` answers with the enum CLASS for a vocabulary,
-    so a word that is not a member raises where it was typed. That is
-    what the generated mapping on THIS side buys: the bad value never
-    becomes a request, and the caller gets a Python error with the
-    word in it rather than a decode failure from a server."""
-    from huggorm.wire import WireCodec
+    The codec encodes a vocabulary word through its enum CLASS, so a
+    word that is not a member raises where it was typed. The bad value
+    never becomes a request, and the caller gets a Python error with
+    the word in it rather than a decode failure from a server."""
+    from huggorm.codec import Codec
     from huggorm_generated._callspec import Wire, WireKind
 
-    codec = WireCodec()
+    codec = Codec()
     mode = Wire(WireKind.ENUM, "BuildMode")
-    assert codec.scalar(mode)("repair") is huggorm_bindings.BuildMode.REPAIR
+    assert codec.encode(mode, "repair", lambda _: "") == "repair"
     with pytest.raises(ValueError, match="not a valid"):
-        codec.scalar(mode)("rebuild")
+        codec.encode(mode, "rebuild", lambda _: "")
+    store = await client.acquire("Store", str(tmp_path / "store"))
+    with pytest.raises(ValueError, match="not a valid"):
+        await store.build_paths([], "rebuild")
 
 
 async def test_a_path_is_read_on_the_store_side(
