@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
-from typing import Literal, NamedTuple, assert_never
+from typing import NamedTuple, assert_never
 
 from huggorm_dsl import declare
 from huggorm_dsl.declare import Crossing, Decl, Threading
@@ -121,8 +121,17 @@ DUNDERS: tuple[tuple[str, str], ...] = (
     ("__str__", "text"),
 )
 
-Kind = Literal["scalar", "enum", "union", "error", "value", "proxy",
-               "module", "opaque"]
+class Kind(StrEnum):
+    """What a leaf type is, and so how it crosses."""
+
+    SCALAR = "scalar"
+    ENUM = "enum"
+    UNION = "union"
+    ERROR = "error"
+    VALUE = "value"
+    PROXY = "proxy"
+    MODULE = "module"
+    OPAQUE = "opaque"
 
 
 @dataclass(frozen=True)
@@ -143,21 +152,21 @@ class Resolver:
     def kind(self, name: str) -> Kind:
         """What a builtin or a declared name is."""
         if name in SCALAR_NAMES:
-            return "scalar"
+            return Kind.SCALAR
         if name == "object":
-            return "opaque"
+            return Kind.OPAQUE
         cls = self.known.get(name)
         if cls is None:
             raise TypeError(
                 f"'{name}' names nothing this declaration set declares, "
                 f"and it is not a builtin")
-        if cls.decl.kind == "error":
-            return "error"
+        if cls.decl.kind == Kind.ERROR:
+            return Kind.ERROR
         if cls.is_words:
-            return "enum"
+            return Kind.ENUM
         if cls.is_union:
-            return "union"
-        return "value" if cls.decl.wire is Crossing.VALUE else "proxy"
+            return Kind.UNION
+        return Kind.VALUE if cls.decl.wire is Crossing.VALUE else Kind.PROXY
 
 
 @dataclass(frozen=True)
@@ -193,7 +202,7 @@ class TypeRef:
         crosses as anything else."""
         if self.width:
             return self.width
-        if self.kind == "scalar":
+        if self.kind == Kind.SCALAR:
             return self.name
         spelled = SPELLED.get(self.name)
         return None if spelled is None else spelled.field
@@ -274,21 +283,21 @@ def wire_blocker(t: TypeRef, served: frozenset[str]) -> str | None:
             return (f"{t.spelling}: an element of a map or a repeated field "
                     f"has no presence, so {element.spelling} cannot say "
                     f"None there")
-        if element.kind == "proxy":
+        if element.kind == Kind.PROXY:
             # One lease per element, and nothing grants leases in bulk.
             return (f"{t.spelling}: a container of proxies would grant one "
                     f"lease per element, and nothing grants leases in bulk "
                     f"(huggorm#31)")
         t = element
-    if t.kind == "opaque":
+    if t.kind == Kind.OPAQUE:
         return NOT_DATA
-    if t.kind == "proxy" and t.name not in served:
+    if t.kind == Kind.PROXY and t.name not in served:
         # A handle only some service can answer is worth sending.
         return (f"{t.spelling} is a proxy with no service: it crosses as a "
                 f"handle, and nothing is wrapped to answer a call on that "
                 f"handle. A remote caller would receive an id it cannot "
                 f"use.")
-    if t.kind == "module" and t.name not in SPELLED:
+    if t.kind == Kind.MODULE and t.name not in SPELLED:
         return (f"{t.spelling} has no wire spelling: a type from another "
                 f"module crosses only as the builtin wiretypes.SPELLED "
                 f"names for it, and SPELLED names none for this one")
@@ -306,7 +315,7 @@ def type_ref(t: Type, resolver: Resolver) -> TypeRef:
         args=tuple(type_ref(a, resolver) for a in t.args),
         # `pathlib.Path`, `datetime.timedelta`: a type in a module,
         # imported as itself.
-        kind="module" if t.leaf.module else resolver.kind(name),
+        kind=Kind.MODULE if t.leaf.module else resolver.kind(name),
         name=name,
         width=t.cxx.width if t.cxx is not None and not t.origin else "",
         cxx=spelled, caster=caster,
@@ -1173,7 +1182,7 @@ def _reader(error: str, reader: str, part: FieldModel) -> str:
     that is not a record is refused rather than cross as something it
     is not."""
     record = part.type.required
-    if record.kind != "value":
+    if record.kind != Kind.VALUE:
         raise TypeError(
             f"{error}: part '{part.name}' is a {record.kind}, and "
             f"`{reader}` reads a record - a declared value - off the "
@@ -1342,11 +1351,11 @@ class Model:
         the wrong sort of declaration."""
         if t.origin:
             return None
-        if t.kind in ("value", "proxy"):
+        if t.kind in (Kind.VALUE, Kind.PROXY):
             return self.classes[t.name]
-        if t.kind == "union":
+        if t.kind == Kind.UNION:
             return self.unions[t.name]
-        if t.kind == "enum":
+        if t.kind == Kind.ENUM:
             return self.enums[t.name]
         return None
 
@@ -1409,7 +1418,7 @@ class Model:
                     raise TypeError(
                         f"{c.name}.{m.name}: its async form is named {name}, "
                         f"and a declared free function has that name.")
-                me = TypeRef(c.name, "", (), "value", c.name)
+                me = TypeRef(c.name, "", (), Kind.VALUE, c.name)
                 out.append(FunctionModel(
                     name, c.qualified_module, c.threading,
                     (ParamModel(_snake(c.name), me, None), *m.params),
@@ -1425,7 +1434,7 @@ class Model:
         """The served class a return of `t` is adopted as - `X` or
         `X | None` - or None. Every layer attaches a runner to ONE
         object, so a container of them is never adopted."""
-        if t is None or t.required.origin or t.leaf.kind != "proxy":
+        if t is None or t.required.origin or t.leaf.kind != Kind.PROXY:
             return None
         cls = self.classes.get(t.leaf.name)
         return cls if cls is not None and cls.served else None

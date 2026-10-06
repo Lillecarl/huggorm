@@ -237,6 +237,17 @@ def _table(var: str, ann: str, rows: Sequence[tuple[str, object]]) -> ast.stmt:
         simple=1)
 
 
+# The kinds that cross by name. A scalar crosses by its builtin and a
+# container by its item, so neither is here.
+_CROSSES = {
+    ir.Kind.ENUM: cs.WireKind.ENUM,
+    ir.Kind.VALUE: cs.WireKind.VALUE,
+    ir.Kind.UNION: cs.WireKind.UNION,
+    ir.Kind.ERROR: cs.WireKind.ERROR,
+    ir.Kind.PROXY: cs.WireKind.PROXY,
+}
+
+
 def _wire(t: ir.TypeRef | None) -> cs.Wire | None:
     """A resolved type as the `Wire` the codec dispatches on."""
     if t is None:
@@ -252,8 +263,8 @@ def _wire(t: ir.TypeRef | None) -> cs.Wire | None:
         # converts a `datetime.timedelta` by name.
         return cs.Wire(cs.WireKind.SCALAR, t.width or t.name,
                        optional=optional)
-    if t.kind in ("enum", "value", "union", "error", "proxy"):
-        return cs.Wire(cs.WireKind(t.kind), t.name, optional=optional)
+    if (kind := _CROSSES.get(t.kind)) is not None:
+        return cs.Wire(kind, t.name, optional=optional)
     raise TypeError(f"{t.spelling} is a {t.kind}, which does not cross")
 
 
@@ -354,7 +365,7 @@ def unions_module(unions: Mapping[str, ir.UnionModel]) -> str:
     imports."""
     # A scalar arm is a builtin, and huggorm_bindings has none to import.
     arms = sorted({a.name for u in unions.values() for a in u.arms
-                   if a.kind != "scalar"})
+                   if a.kind != ir.Kind.SCALAR})
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=(
             "The declared SUM types, as the aliases they are.\n\n"
@@ -400,7 +411,7 @@ def _as_async(t: ir.TypeRef) -> tuple[str, Source | None]:
 def _widened(spell: Spelling, model: ir.Model, t: ir.TypeRef) -> str:
     """A constructor's or a free function's parameter: on no protocol,
     so a bare proxy takes the sync object or its async wrapper."""
-    if t.kind == "proxy" and not t.origin and t.name in model.served:
+    if t.kind == ir.Kind.PROXY and not t.origin and t.name in model.served:
         spell.need(t.name, BINDINGS)
         spell.need(f"{ASYNC}{t.name}", sibling(t.name))
         return f"{t.name} | {ASYNC}{t.name}"

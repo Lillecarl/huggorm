@@ -85,7 +85,7 @@ def free_functions(model: ir.Model) -> list[str]:
     for fn in (*(f for f in model.functions.values() if f.wrapped),
                *model.blocking_methods):
         r = fn.returns
-        if r is None or r.leaf.kind != "proxy":
+        if r is None or r.leaf.kind != ir.Kind.PROXY:
             continue
         adopted = model.adopted(r)
         if adopted is None:
@@ -136,7 +136,7 @@ def _field(model: ir.Model, owner: str, f: ir.FieldModel) -> list[str]:
     where = f"{owner}._wire_fields {f.name!r}"
     if (why := ir.wire_blocker(f.type, model.served)) is not None:
         return [f"{where}: {why}"]
-    if f.type.leaf.kind == "proxy":
+    if f.type.leaf.kind == ir.Kind.PROXY:
         # A wire-value is rebuilt on the far side by _from_parts, which
         # needs a local object for every part, and a proxy has none
         # there (huggorm#31).

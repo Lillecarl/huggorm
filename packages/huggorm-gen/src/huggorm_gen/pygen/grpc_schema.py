@@ -60,12 +60,12 @@ HANDLE = "Handle"
 # The hand-written Session messages' field types. `_policy.LOG_RECORDS`
 # is emitted from the last, so the codec reads the stream by the type
 # the schema wrote.
-STR = ir.TypeRef.named("str", "scalar")
-INT = ir.TypeRef.named("int", "scalar")
-FLOAT = ir.TypeRef.named("float", "scalar")
-BOOL = ir.TypeRef.named("bool", "scalar")
-HELD = ir.TypeRef.named(HANDLE, "proxy")
-LOG_RECORDS = ir.TypeRef.list_of(ir.TypeRef.named("LogRecord", "value"))
+STR = ir.TypeRef.named("str", ir.Kind.SCALAR)
+INT = ir.TypeRef.named("int", ir.Kind.SCALAR)
+FLOAT = ir.TypeRef.named("float", ir.Kind.SCALAR)
+BOOL = ir.TypeRef.named("bool", ir.Kind.SCALAR)
+HELD = ir.TypeRef.named(HANDLE, ir.Kind.PROXY)
+LOG_RECORDS = ir.TypeRef.list_of(ir.TypeRef.named("LogRecord", ir.Kind.VALUE))
 
 
 def _field(msg: Any, name: str, number: int, type_name: str | None = None,
@@ -159,20 +159,20 @@ def _leaf(t: ir.TypeRef) -> tuple[int | None, str | None]:
         # `datetime.timedelta` is an int of microseconds: a fact about
         # the WIRE, which `wiretypes.SPELLED` states.
         return _scalar_const(SCALARS[builtin]), None
-    if t.kind == "union":
+    if t.kind == ir.Kind.UNION:
         # A SUM, as protobuf's own tagged union: one message per alias,
         # holding one `oneof`, called after the alias.
         return None, union_msg_name(t.name)
-    if t.kind == "enum":
+    if t.kind == ir.Kind.ENUM:
         # A StrEnum member IS a str. The type is for the caller.
         return _scalar_const(SCALARS["str"]), None
-    if t.kind == "error":
+    if t.kind == ir.Kind.ERROR:
         # The message the status details carry: one shape for one
         # error class, raised or held in a value.
         return None, fault_msg_name(t.name)
-    if t.kind == "value":
+    if t.kind == ir.Kind.VALUE:
         return None, value_msg_name(t.name)
-    if t.kind == "proxy":
+    if t.kind == ir.Kind.PROXY:
         return None, HANDLE
     raise TypeError(f"cannot put {t.spelling!r} on the wire: it is a "
                     f"{t.kind}, which has no field type")

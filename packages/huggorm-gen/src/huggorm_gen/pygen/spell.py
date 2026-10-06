@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterable, Mapping
 
-from huggorm_gen.ir import ParamModel, TypeRef
+from huggorm_gen.ir import Kind, ParamModel, TypeRef
 from huggorm_gen.payload.wiretypes import python_spelling
 
 # Names Python already has.
@@ -77,15 +77,15 @@ class Spelling:
         return self._leaf(t, proxy or self._proxy)
 
     def _leaf(self, t: TypeRef, proxy: Rename | None) -> str:
-        if t.kind == "proxy":
+        if t.kind == Kind.PROXY:
             if proxy is None:
                 raise TypeError(f"no spelling for the proxy {t.name}")
             name, source = proxy(t)
             self.need(name, source)
             return name
-        if t.kind == "module":
+        if t.kind == Kind.MODULE:
             self.module(t.name)
-        elif t.kind == "union":
+        elif t.kind == Kind.UNION:
             if self._expand is not None:
                 return self._arms(t.name)
             self.need(t.name, UNIONS)
@@ -97,7 +97,7 @@ class Spelling:
         assert self._expand is not None
         out = []
         for arm in self._expand[union]:
-            if arm.kind == "union":
+            if arm.kind == Kind.UNION:
                 out.append(self._arms(arm.name))
                 continue
             name = python_spelling(arm.name)

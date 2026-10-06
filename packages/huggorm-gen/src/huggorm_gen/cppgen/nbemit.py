@@ -642,7 +642,8 @@ inline std::vector<std::string> from_bytes(const std::vector<nb::bytes> & items)
 
 # What a declared class leaf is, as opposed to a builtin, an opaque
 # object or a module type.
-DECLARED = ("enum", "union", "error", "value", "proxy")
+DECLARED = frozenset({ir.Kind.ENUM, ir.Kind.UNION, ir.Kind.ERROR,
+                      ir.Kind.VALUE, ir.Kind.PROXY})
 
 
 def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:
@@ -732,7 +733,7 @@ class Emitter:
                 note(arg)
             # ...and a UNION's arms, for the same reason: the variant
             # caster casts each arm with that arm's own.
-            if not t.origin and t.kind == "union":
+            if not t.origin and t.kind == ir.Kind.UNION:
                 for arm in self.model.unions[t.name].arms:
                     note(arm)
 
@@ -1888,7 +1889,7 @@ class Emitter:
         it, and the declaration's body reads it by name."""
         for _, t in _sites(classes, functions):
             if (t is not None and not t.required.origin
-                    and t.required.kind == "error"):
+                    and t.required.kind == ir.Kind.ERROR):
                 return True
         return False
 

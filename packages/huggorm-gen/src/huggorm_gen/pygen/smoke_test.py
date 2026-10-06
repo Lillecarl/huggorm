@@ -62,11 +62,11 @@ def test_a_container_of_wrapped_types_is_refused() -> None:
     elements."""
     from huggorm_gen import contracts, ir
 
-    v = ir.TypeRef.named("V", "proxy")
+    v = ir.TypeRef.named("V", ir.Kind.PROXY)
     model = _model(_cls("V", returns=(
         ("attrs", ir.TypeRef.dict_of(v)), ("items", ir.TypeRef.list_of(v)),
         ("one", v), ("maybe", ir.TypeRef.optional_of(v)),
-        ("n", ir.TypeRef.named("int", "scalar")))))
+        ("n", ir.TypeRef.named("int", ir.Kind.SCALAR)))))
     bad = contracts.collection(model)
     assert len(bad) == 2, bad
     assert all("attrs" in b or "items" in b for b in bad), bad
@@ -78,7 +78,7 @@ def test_an_unwrapped_class_hands_back_nothing_wrapped() -> None:
     runner."""
     from huggorm_gen import contracts, ir
 
-    w = ir.TypeRef.named("W", "proxy")
+    w = ir.TypeRef.named("W", ir.Kind.PROXY)
     bare = _cls("Bare", blocking=False, returns=(("make", w),))
     assert contracts.wrap(_model(_cls("W"), bare))
     assert contracts.wrap(_model(_cls("W"))) == []
@@ -93,7 +93,7 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
     the half the generator decides."""
     from huggorm_gen import contracts, ir
 
-    word = ir.TypeRef.named("Word", "enum")
+    word = ir.TypeRef.named("Word", ir.Kind.ENUM)
     for t in (word, ir.TypeRef.list_of(word), ir.TypeRef.dict_of(word)):
         assert ir.wire_blocker(t, frozenset()) is None, t.spelling
 
@@ -106,7 +106,7 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
         assert contracts.wire(probe(t)) == [], t.spelling
     # ...and a field that cannot cross still fails, so the set widened
     # rather than the check weakening.
-    complaints = contracts.wire(probe(ir.TypeRef.named("object", "opaque")))
+    complaints = contracts.wire(probe(ir.TypeRef.named("object", ir.Kind.OPAQUE)))
     assert len(complaints) == 1 and "not data" in complaints[0]
 
 
@@ -131,10 +131,10 @@ def test_an_optional_return_names_a_value_or_nothing(
     from huggorm_gen import ir
 
     T = ir.TypeRef
-    path = T.named("StorePath", "value")
+    path = T.named("StorePath", ir.Kind.VALUE)
     served = frozenset({"Store"})
-    for good in (path, T.named("str", "scalar"), T.named("int", "scalar"),
-                 T.named("Word", "enum"), T.named("Store", "proxy")):
+    for good in (path, T.named("str", ir.Kind.SCALAR), T.named("int", ir.Kind.SCALAR),
+                 T.named("Word", ir.Kind.ENUM), T.named("Store", ir.Kind.PROXY)):
         assert ir.wire_blocker(T.optional_of(good), served) is None, good
     blocker = ir.wire_blocker(T.optional_of(T.list_of(path)), served)
     assert blocker is not None and "IS an empty one" in blocker, blocker
@@ -144,7 +144,7 @@ def test_an_optional_return_names_a_value_or_nothing(
         blocker = ir.wire_blocker(shape, served)
         assert blocker is not None and "has no presence" in blocker, blocker
     # An unserved proxy is refused whether or not it may be None.
-    lost = T.named("Lost", "proxy")
+    lost = T.named("Lost", ir.Kind.PROXY)
     for shape in (lost, T.optional_of(lost)):
         blocker = ir.wire_blocker(shape, served)
         assert blocker is not None and "no service" in blocker, shape
@@ -159,7 +159,7 @@ def test_an_optional_return_names_a_value_or_nothing(
     # class may (huggorm#8).
     from huggorm_gen import contracts
 
-    made = ir.TypeRef.named("State", "proxy")
+    made = ir.TypeRef.named("State", ir.Kind.PROXY)
     state = _cls("State", threading=Threading.AFFINE, returns=(("make", made),))
     for rt in (made, ir.TypeRef.optional_of(made)):
         pool = _cls("Pool", returns=(("make", rt),))
@@ -179,8 +179,8 @@ def test_a_free_function_adopts_one_pool_object() -> None:
         return ir.FunctionModel(name, "pkg.mod", Threading.POOL, (), returns,
                                "")
 
-    pool = ir.TypeRef.named("Pool", "proxy")
-    state = ir.TypeRef.named("State", "proxy")
+    pool = ir.TypeRef.named("Pool", ir.Kind.PROXY)
+    state = ir.TypeRef.named("State", ir.Kind.PROXY)
     model = _model(_cls("Pool"), _cls("State", threading=Threading.AFFINE))
     for good in (pool, ir.TypeRef.optional_of(pool)):
         functions = {"make": fn("make", good)}
@@ -333,17 +333,17 @@ def test_the_wire_refuses_what_it_cannot_carry() -> None:
     assert gc_return is not None and gc_return.spelling == "dict[str, int]"
 
     T = ir.TypeRef
-    i, s = T.named("int", "scalar"), T.named("str", "scalar")
-    value, path = T.named("Value", "proxy"), T.named("StorePath", "value")
+    i, s = T.named("int", ir.Kind.SCALAR), T.named("str", ir.Kind.SCALAR)
+    value, path = T.named("Value", ir.Kind.PROXY), T.named("StorePath", ir.Kind.VALUE)
     served = frozenset({"Value"})
     for t in (T.dict_of(T.dict_of(i)), T.dict_of(T.list_of(i)),
               T.dict_of(value), T.list_of(value), T.list_of(T.list_of(i)),
-              T.list_of(T.dict_of(i)), T.named("object", "opaque"),
-              T.named("pathlib.Path", "module")):
+              T.list_of(T.dict_of(i)), T.named("object", ir.Kind.OPAQUE),
+              T.named("pathlib.Path", ir.Kind.MODULE)):
         assert ir.wire_blocker(t, served), f"{t.spelling} should be blocked"
     for t in (s, i, value, path, T.dict_of(i), T.dict_of(path),
               T.list_of(i), T.list_of(path),
-              T.named("datetime.timedelta", "module")):
+              T.named("datetime.timedelta", ir.Kind.MODULE)):
         assert not ir.wire_blocker(t, served), (t.spelling,
                                                 ir.wire_blocker(t, served))
 
@@ -659,6 +659,7 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
     function. A coroutine annotated with the sync proxy hands a sync
     object to an async caller, and the server leases that object as a
     handle whose methods it then awaits."""
+    from huggorm_gen import ir
     from huggorm_gen.cppgen.generate import declared_model
 
     model = declared_model()
@@ -675,7 +676,7 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
         rt = fn.returns
         expected = rt.spelling if rt is not None else "None"
         if rt is not None and rt.origin in ("", "optional") \
-                and rt.kind == "proxy":
+                and rt.kind == ir.Kind.PROXY:
             adopted += 1
             expected = expected.replace(rt.name, f"Async{rt.name}")
         if _expr(emitted[name]) != _expr(expected):
