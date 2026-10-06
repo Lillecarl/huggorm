@@ -1138,11 +1138,6 @@ def _body(node: ast.FunctionDef) -> str:
     return seen
 
 
-# The descriptors a declaration may not write. `property` is not
-# here: it IS read, into `Method.prop`, and refused by the emitter
-# that would have to honour it (huggorm#75). These two carry no word
-# at all.
-DESCRIPTORS = ("staticmethod", "classmethod")
 
 
 def _method(node: ast.FunctionDef, vocab: dict[str, str],
@@ -1161,51 +1156,45 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
     A class member with no self says so with `@staticmethod`, and
     must: without it a type checker reads the first parameter as
     self, which is the same mistake from the other side."""
+    # What the import holds at this line: the function, or the
+    # descriptor wrapping it. The descriptor is the fact a decorator
+    # spelling only names.
+    held = fns.get(_first_line(node))
+    fn = getattr(held, "fget", None) or getattr(held, "__func__", held)
+    if not isinstance(fn, types.FunctionType):
+        raise DeclarationError(
+            node, f"{node.name}: the import has no function at this line, "
+                  f"so its annotations cannot be resolved.")
     static = not bound and bound_kind
-    marked = any(isinstance(d, ast.Name) and d.id == "staticmethod"
-                 for d in node.decorator_list)
-    if static and not marked:
+    if static and not isinstance(held, staticmethod):
         raise DeclarationError(
             node, f"{node.name}: a class member with no self is a "
                   f"@staticmethod. Say so, or a type checker reads its "
                   f"first parameter as self.")
-    for d in node.decorator_list:
-        if static and isinstance(d, ast.Name) and d.id == "staticmethod":
-            continue
-        if isinstance(d, ast.Name) and d.id in DESCRIPTORS:
-            # `@staticmethod` and `@classmethod` say the first
-            # parameter is not `self`, and this reads a bound method
-            # by SKIPPING the first parameter. So the one below would
-            # be dropped, and every emitter would then write a
-            # signature short of an argument - which is the shape of
-            # the `open_store(uri)` bug this function's own docstring
-            # records.
-            #
-            # Refused rather than honoured, because no emitter has a
-            # word for either: nanobind spells them `def_static` and
-            # a classmethod not at all, the stub would need the same
-            # decorator, and `_parts` fetches an accessor off an
-            # INSTANCE. That is four outputs for a shape no
-            # declaration wants yet (huggorm#76).
-            #
-            # Reachable only since `_live` learnt to look through a
-            # descriptor: before that a `@staticmethod` named no live
-            # line and was dropped whole, in silence (huggorm#75).
-            raise DeclarationError(
-                node, f"{node.name}: @{d.id} has no meaning in a "
-                      f"declaration yet, and this reads a method as one "
-                      f"that takes self - so its first parameter would "
-                      f"be dropped. See huggorm#76.")
+    if isinstance(held, staticmethod | classmethod) and not static:
+        # `@staticmethod` and `@classmethod` say the first parameter
+        # is not `self`, and this reads a bound method by SKIPPING the
+        # first parameter. So the one below would be dropped, and every
+        # emitter would then write a signature short of an argument -
+        # the shape of the `open_store(uri)` bug this function's own
+        # docstring records.
+        #
+        # Refused rather than honoured, because no emitter has a word
+        # for either: nanobind spells them `def_static` and a
+        # classmethod not at all, the stub would need the same
+        # decorator, and `_parts` fetches an accessor off an INSTANCE.
+        # That is four outputs for a shape no declaration wants yet
+        # (huggorm#76).
+        raise DeclarationError(
+            node, f"{node.name}: @{type(held).__name__} has no meaning in "
+                  f"a declaration yet, and this reads a method as one "
+                  f"that takes self - so its first parameter would be "
+                  f"dropped. See huggorm#76.")
     args = node.args
     if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
         raise DeclarationError(
             node, f"{node.name}: a bound method takes plain positional "
                   f"parameters. C++ has no *args.")
-    fn = fns.get(_first_line(node))
-    if fn is None:
-        raise DeclarationError(
-            node, f"{node.name}: the import has no function at this line, "
-                  f"so its annotations cannot be resolved.")
     anns = annotationlib.get_annotations(
         fn, format=annotationlib.Format.FORWARDREF)
     signature = inspect.signature(
@@ -1259,11 +1248,9 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         fills=getattr(marked, "_fills", None),
         blocks=bool(getattr(marked, "_blocks", False)),
         instant=bool(getattr(marked, "_instant", False)),
-        prop=any(isinstance(d, ast.Name) and d.id == "property"
-                 for d in node.decorator_list),
+        prop=isinstance(held, property),
         binds=getattr(marked, "_binds", ""),
-        overload=any(isinstance(d, ast.Name) and d.id == "overload"
-                     for d in node.decorator_list),
+        overload=fn in get_overloads(fn),
         reads=getattr(marked, "_reads", ""),
         member_collection=getattr(marked, "_member_collection", ""),
         cxx_body=_body(node),
@@ -1755,7 +1742,8 @@ def _definitions(path: str) -> dict[int, Any]:
         # `__annotate__` function at line 1. No one wrote it.
         if fn.__code__.co_filename != here or fn.__name__ == "__annotate__":
             return
-        for one in (fn, *get_overloads(fn)):
+        out[fn.__code__.co_firstlineno] = obj
+        for one in get_overloads(fn):
             if isinstance(one, types.FunctionType):
                 out[one.__code__.co_firstlineno] = one
 
