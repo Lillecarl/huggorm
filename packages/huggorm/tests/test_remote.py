@@ -74,7 +74,7 @@ async def test_a_proxy_stays_remote(client: Any) -> None:
     state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
     v = await state.make_int(7)
     assert isinstance(v, RPCValue)
-    assert v._wire == "proxy"
+    assert v._copied is False
     # The generated class carries real methods, so a missing one is a
     # plain AttributeError from Python - not a lookup by name that
     # produces a coroutine either way.

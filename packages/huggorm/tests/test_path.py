@@ -154,7 +154,7 @@ def test_a_value_compares_hashes_and_prints() -> None:
 def test_every_value_type_has_value_semantics(model: ir.Model) -> None:
     """The rule, held against the model rather than a list.
 
-    A `_wire = "value"` class that did not compare would be a value in
+    A `_copied = True` class that did not compare would be a value in
     name only. The build refuses one now, so this asserts the RESULT
     on every declared value at once - and it grows on its own when a
     new one lands."""

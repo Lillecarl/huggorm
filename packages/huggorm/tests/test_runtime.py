@@ -54,7 +54,7 @@ async def _all_errors(*aws: Any) -> list[Any]:
 
 def _shell(runner: Any) -> Any:
     """The two attributes `unwrap_arg` reads off a wrapper."""
-    return types.SimpleNamespace(_runner=runner, _wire="proxy")
+    return types.SimpleNamespace(_runner=runner, _copied=False)
 
 
 async def collect() -> None:
@@ -81,7 +81,7 @@ async def test_a_pool_store_hands_back_a_store_path_itself(
     assert type(p1) is StorePath
     assert p1.to_string() != p2.to_string()
     assert await local.is_valid_path(p1) is True
-    assert local._wire == "proxy" and p1._wire == "value"
+    assert local._copied is False and p1._copied is True
     await local.aclose()
 
 

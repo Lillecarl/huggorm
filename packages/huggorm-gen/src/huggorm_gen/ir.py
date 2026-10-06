@@ -870,6 +870,12 @@ class ClassModel:
         return self.threading is Threading.AFFINE or self.blocking
 
     @property
+    def copied(self) -> bool:
+        """An argument of this class crosses as a copy, not a handle.
+        The one fact about `wire` the runtime reads."""
+        return self.wire is Crossing.VALUE
+
+    @property
     def execution(self) -> Execution:
         """Where a call runs. Served is addressability and WRAPPED is
         execution: an unwrapped class cannot wait, so its calls run

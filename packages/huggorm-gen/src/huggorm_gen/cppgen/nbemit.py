@@ -525,15 +525,16 @@ def _round_trip(cls: ir.ClassModel) -> list[str]:
 def markers(cls: ir.ClassModel) -> list[str]:
     """The class attributes the runtime reads off a compiled object.
 
-    `_wire`, which `unwrap_arg` reads to copy a value rather than hand
+    `_copied`, which `unwrap_arg` reads to copy a value rather than hand
     over a handle, and `_from_parts` for a constructed value. Every
     other fact about a class reaches the layers above through the
     model, not through the compiled class."""
-    # The EFFECTIVE value, not the declared one. "proxy" is the safe
-    # default on both sides - stateful until a declaration proves
+    # Written for every class, False included. False (a proxy) is the
+    # safe default on both sides - stateful until a declaration proves
     # otherwise - and writing it out means a reader of the compiled
     # class is told rather than left to know the default.
-    out = [f'{INDENT}cls.attr("_wire") = "{cls.wire}";']
+    out = [f'{INDENT}cls.attr("_copied") = '
+           f'{"true" if cls.copied else "false"};']
     fields = wire_fields(cls)
     if ((fields or cls.semantics.unit) and not cls.is_value
             and cls.init is not None):

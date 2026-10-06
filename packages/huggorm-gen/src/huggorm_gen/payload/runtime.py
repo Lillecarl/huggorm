@@ -248,9 +248,9 @@ def unwrap_arg(x: Any) -> Any:
     if r is None:
         return x
     obj = r.ensure()
-    # Every wrapper the build emits states `_wire`, so a missing one is
-    # an AttributeError rather than a proxy by default.
-    if x._wire == "value":
+    # Every wrapper the build emits states `_copied`, so a missing one
+    # is an AttributeError rather than a proxy by default.
+    if x._copied:
         return copy.copy(obj)
     return obj
 
@@ -284,7 +284,7 @@ def _check_isolation(callee: Any, args: Iterable[Any]) -> None:
                     f"{type(x).__name__} is a handle on a server, and an "
                     f"in-process call needs the object itself")
             continue
-        if x._wire == "value":
+        if x._copied:
             # A wire value crosses as a COPY, so it carries no tie to
             # whatever made it. That is the one crossing the rule
             # allows - forced into data and copied.

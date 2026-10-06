@@ -473,7 +473,7 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
     spell.need(c.name, BINDINGS)
     cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], decorator_list=[], body=[
         ast.Expr(value=ast.Constant(value=class_doc)),
-        _code("_wire = $wire", wire=repr(str(c.wire))),
+        _code("_copied = $copied", copied=repr(c.copied)),
         _code("_runner: BaseRunner"),
         init,
         _code("""
@@ -814,14 +814,14 @@ def rpc_module(model: ir.Model) -> ast.Module:
         cls = _code("""
             class $rpc:
                 $doc
-                _wire = $wire
+                _copied = $copied
                 _client: $client
                 handle_id: str | None
 
                 def __init__(self, client: $client, handle_id: str) -> None:
                     self._client = client
                     self.handle_id = handle_id
-            """, rpc=served_cls.rpc_name, wire=repr(str(served_cls.wire)),
+            """, rpc=served_cls.rpc_name, copied=repr(served_cls.copied),
             client=CLIENT_PROTOCOL, doc=repr(
                 f"A {name} living behind a handle on a server. Same surface "
                 f"as {served_cls.async_name}, different location."))
@@ -976,7 +976,7 @@ def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
         c.doc or f"Binding for the C++ {c.binds}. Threading "
                  f"'{c.threading}', wire '{c.wire}'."))))
     # The one class attribute the runtime reads off a binding.
-    cls.body.append(_code("_wire: str"))
+    cls.body.append(_code("_copied: bool"))
     if produced:
         cls.body.append(_def(
             "def __init__(self) -> NoReturn",

@@ -3,7 +3,7 @@ grpclib server: a spec-driven adapter onto huggorm_generated.
 
 The async wrappers already own threading policy and thread hopping, so
 the server does none of that. It resolves handles to wrapper objects,
-decodes wire-values into sync bindings (copies - matching _wire
+decodes wire-values into sync bindings (copies - matching _copied
 semantics), awaits the method on the wrapper's runner, encodes the
 result. Handlers are built in a loop from the emitted specs; nothing is
 hand-written per method.
