@@ -1,0 +1,47 @@
+Drop ExprParseFile's counted reference to its source accessor.
+
+The second half of huggorm#128, beside nix-expr-path-holds-no-accessor.
+EvalState::evalFile allocates one ExprParseFile per `import` with `new`,
+and the class derives from `gc`, so Boehm frees it without running its
+destructor. Its `SourcePath path` held `ref<SourceAccessor>`, usually
+rootFS, so the reference was never dropped. rootFS mounts the store
+accessor, which holds the Store: once an evaluator imported a file, its
+Store and daemon connections outlived it for the life of the process.
+Measured on the ExprPath-patched libnixexpr: one leaked daemon socket per
+closed evaluator that ran `(import (toFile "a.nix" "{ x = 1; }")).x`;
+gdb shows ~EvalState and never ~LocalStore. `scopedImport`, which does
+not go through evalFile, does not leak.
+
+The accessor is now a raw pointer and the counted reference is rebuilt
+from `shared_from_this()` when the thunk is forced, which happens only
+while the EvalState that owns the accessor lives. An accessor nothing
+else owned would throw bad_weak_ptr there, not dangle.
+
+--- a/src/libexpr/eval.cc	2026-10-06 15:54:15.274027300 +0200
++++ b/src/libexpr/eval.cc	2026-10-06 15:54:22.893097854 +0200
+@@ -1080,17 +1080,23 @@
+ struct ExprParseFile : Expr, gc
+ {
+     // FIXME: make this a reference (see below).
+-    SourcePath path;
++    // Not a SourcePath: a `gc` object runs no destructor, so a counted
++    // accessor here would never be released. The EvalState owns it.
++    SourceAccessor * accessor;
++    CanonPath canonPath;
+     bool mustBeTrivial;
+ 
+     ExprParseFile(SourcePath & path, bool mustBeTrivial)
+-        : path(path)
++        : accessor(&*path.accessor)
++        , canonPath(path.path)
+         , mustBeTrivial(mustBeTrivial)
+     {
+     }
+ 
+     void eval(EvalState & state, Env & env, Value & v) override
+     {
++        SourcePath path{ref<SourceAccessor>(accessor->shared_from_this()), canonPath};
++
+         printTalkative("evaluating file '%s'", path);
+ 
+         auto e = state.parseExprFromFile(path);

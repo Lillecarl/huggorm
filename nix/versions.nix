@@ -36,6 +36,8 @@ let
   # A parsed path literal held its accessor, so the Store, for the life of
   # the process (huggorm#128).
   exprPath = patch "nix-expr-path-holds-no-accessor";
+  # The same, for the `ExprParseFile` every `import` allocates (huggorm#128).
+  parseFile = patch "nix-parse-file-holds-no-accessor";
   # The `open_tree` polyfill defines `AT_RECURSIVE`, which glibc 2.28
   # lacks: the manylinux build needs it. 2.34 does not call `open_tree`.
   atRecursive = patch "nix-open-tree-at-recursive";
@@ -52,6 +54,7 @@ in
       remoteVerbosity
       countCalls234
       exprPath
+      parseFile
     ];
   };
   nix_2_35 = {
@@ -65,6 +68,7 @@ in
       countCalls235
       atRecursive
       exprPath
+      parseFile
     ];
   };
   # Unpinned on purpose: it follows nixpkgs' `nixComponents_git`, so a
@@ -79,6 +83,7 @@ in
       countCalls236
       atRecursive
       exprPath
+      parseFile
     ];
     # Nix master uses `#embed`, which needs GCC 15. Every PyPA image
     # ships gcc-toolset-14 (huggorm#109).
