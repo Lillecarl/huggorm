@@ -216,6 +216,10 @@ rec {
           };
         });
         huggorm-generated = self.callPackage ./packages/huggorm-generated { };
+        nix-tcp-store = self.callPackage ./packages/nix-tcp-store {
+          inherit (self.nixComponents) nix-util nix-store;
+        };
+        nix-tcp-store-check = self.callPackage ./packages/nix-tcp-store/check.nix { };
         # HUGGORM_SKIP_SUITE=1 drops the in-build suite. `test` and
         # `check` need this package for the front door only, so a red
         # suite would otherwise block the loop that debugs it.
@@ -284,6 +288,8 @@ rec {
     huggorm
     huggorm-generated
     manylinux
+    nix-tcp-store
+    nix-tcp-store-check
     ;
 
   # nix run --file . python -- $args
@@ -382,6 +388,7 @@ rec {
         "${huggorm-generated}/lib/python3.14/site-packages/huggorm_generated"
       # Built before this script runs, so a clang warning fails `check`.
       echo "--- clang -Werror: ${huggorm-bindings-clang} ---"
+      echo "--- tcp:// over loopback: ${nix-tcp-store-check} ---"
       echo "all checks passed"
     '';
   };
