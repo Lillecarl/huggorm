@@ -21,7 +21,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import weakref
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_checkable
 
@@ -289,6 +289,56 @@ class AsyncSession:
             # thread's verbosity (huggorm#95).
             with anyio.CancelScope(shield=True):
                 await reader.leave()
+
+    @contextlib.asynccontextmanager
+    async def forward(
+        self,
+        state: AsyncEvalState,
+        callback: Callable[[LogRecord], None],
+        capacity: int = LOG_CAPACITY,
+        level: int = LOG_LEVEL,
+        poll: float = 0.05,
+    ) -> AsyncIterator[None]:
+        """Hand each record this state raises to `callback`, while the
+        block runs.
+
+        Live, as `logs` is, and complete, as `capture` is: when the
+        block ends, one last drain hands over what is still queued. A
+        consumer of `logs` cannot have that tail, because a cancelled
+        generator yields nothing more, and the record lost is the one
+        raised last - often the warning a caller most needs.
+
+        `callback` runs on the event loop, between polls, and must not
+        block. An error in the block reaches the caller as itself, not
+        wrapped in the task group's `ExceptionGroup`.
+        """
+        reader = await _tap(state).join(capacity, level)
+
+        async def pump() -> None:
+            while True:
+                for record in await reader.drain():
+                    callback(record)
+                await anyio.sleep(poll)
+
+        failure: Exception | None = None
+        try:
+            async with anyio.create_task_group() as group:
+                group.start_soon(pump)
+                try:
+                    yield
+                except Exception as e:
+                    failure = e
+                finally:
+                    group.cancel_scope.cancel()
+        finally:
+            # Shielded, as in `logs`: a cancelled block still hands
+            # over its tail and still unsubscribes.
+            with anyio.CancelScope(shield=True):
+                for record in await reader.drain():
+                    callback(record)
+                await reader.leave()
+        if failure is not None:
+            raise failure
 
     @contextlib.asynccontextmanager
     async def capture(

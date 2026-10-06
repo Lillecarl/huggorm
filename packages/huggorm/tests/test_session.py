@@ -253,6 +253,31 @@ async def test_local_capture_collects_evaluation_logs() -> None:
     assert caught.dropped == 0
 
 
+async def test_forward_hands_over_the_tail() -> None:
+    """The record raised last still reaches the callback.
+
+    The poll is an hour, so no drain runs while the block does: the
+    only way the trace arrives is the drain on the way out, which a
+    `logs()` consumer cannot have once it stops iterating."""
+    async with AsyncSession("dummy://") as session:
+        state = session.eval(session.store())
+        seen: list[str] = []
+        async with session.forward(state, lambda r: seen.append(r.text()), poll=3600):
+            await state.eval_expr(TRACE % "the-tail")
+    assert any("trace: the-tail" in s for s in seen), seen
+
+
+async def test_forward_raises_the_block_error_as_itself() -> None:
+    """Not wrapped in the pump's task group."""
+    from huggorm.errors import NixError
+
+    async with AsyncSession("dummy://") as session:
+        state = session.eval(session.store())
+        with pytest.raises(NixError, match="no such thing"):
+            async with session.forward(state, lambda _r: None):
+                await state.eval_expr('throw "no such thing"')
+
+
 async def test_local_logs_streams_while_work_runs() -> None:
     """The live stream, locally.
 
