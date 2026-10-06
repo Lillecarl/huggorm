@@ -274,15 +274,37 @@ class Digest:
 '''
 
 
-def test_every_overload_is_read(tmp_path: pathlib.Path) -> None:
-    """`@overload` leaves only the last definition under the name, so a
-    reader driven by `vars` reads the earlier ones through
-    `typing.get_overloads` or drops them in silence (huggorm#123)."""
-    from huggorm_dsl.read import read
+OVERLOADED_FREE = '''"""One free function, overloaded through the module."""
 
-    [cls] = read(_declaration(tmp_path, OVERLOADED)).classes
-    assert [(m.name, m.overload) for m in cls.methods] == [
-        ("part", True), ("part", True), ("part", False)]
+import typing
+
+from huggorm_dsl.declare import I64, Str, binds
+
+
+@typing.overload
+@binds("huggorm::part")
+def part(at: I64) -> Str:
+    """By position."""
+
+
+@binds("huggorm::part")
+def part(at: Str) -> Str:
+    """Either."""
+'''
+
+
+@pytest.mark.parametrize(("source", "line"), [
+    (OVERLOADED, 14), (OVERLOADED_FREE, 10)])
+def test_an_overload_is_refused(
+        tmp_path: pathlib.Path, source: str, line: int) -> None:
+    """Every surface binds one definition per name, so the stub would
+    hold duplicate `def`s and the RPC layer one route twice. The
+    import answers, so the module spelling is refused as well."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    with pytest.raises(DeclarationError, match="part is overloaded") as caught:
+        read(_declaration(tmp_path, source))
+    assert f":{line}:" in str(caught.value)
 
 
 def test_the_reader_sees_an_accessor_the_import_kept_as_a_descriptor(

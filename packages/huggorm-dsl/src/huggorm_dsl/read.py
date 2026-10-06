@@ -470,10 +470,6 @@ class Method:
     prop: bool = False
     # The C++ function a FREE function binds, from @binds.
     binds: str = ""
-    # One of several registrations under one Python name, from
-    # typing.@overload. nanobind resolves them by argument type at
-    # call time, so the declaration lists each arity it accepts.
-    overload: bool = False
     # The C++ data member behind this name, from @reads. Empty when
     # the accessor is a call rather than a field.
     reads: str = ""
@@ -1253,7 +1249,6 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         instant=bool(getattr(marked, "_instant", False)),
         prop=isinstance(held, property),
         binds=getattr(marked, "_binds", ""),
-        overload=fn in get_overloads(fn),
         reads=getattr(marked, "_reads", ""),
         member_collection=getattr(marked, "_member_collection", ""),
         cxx_body=_body(node),
@@ -1389,9 +1384,8 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                     f"constructor, {FROM_PARTS} and what its decorators "
                     f"wrote."), unsound=f"{node.name}.{name}")
             continue
-        # `@overload` keeps only the last definition under the name.
-        items += [nodes[one.__code__.co_firstlineno]
-                  for one in (*get_overloads(fn), fn)]
+        _one_definition(fn, nodes)
+        items.append(nodes[fn.__code__.co_firstlineno])
     for item in items:
         if isinstance(item, ast.AsyncFunctionDef):
             # A declaration says what the BINDING is, and a binding is
@@ -1718,6 +1712,19 @@ def _live(path: str) -> set[int]:
     return set(_definitions(path))
 
 
+def _one_definition(fn: Any, nodes: dict[int, Any]) -> None:
+    """Refuse a name that `typing.@overload` gives several definitions.
+
+    Every surface binds one definition per name: the stub, the async
+    layer and the RPC route. Asked by the import, not by the decorator
+    spelling, so `@typing.overload` is refused too."""
+    if earlier := get_overloads(fn):
+        raise DeclarationError(
+            nodes[earlier[0].__code__.co_firstlineno],
+            f"{fn.__name__} is overloaded. A binding holds one definition "
+            f"per name; give each signature its own name.")
+
+
 def _definitions(path: str) -> dict[int, Any]:
     """Every class and function the import kept, by its first line.
 
@@ -1936,9 +1943,9 @@ def _read(path: str) -> Module:
                 else:
                     errors.append(_error(node, value, glb, stem))
             elif fn is not None:
-                functions.extend(_free(nodes[one.__code__.co_firstlineno],
-                                       vocab, fns)
-                                 for one in (*get_overloads(fn), fn))
+                _one_definition(fn, nodes)
+                functions.append(_free(nodes[fn.__code__.co_firstlineno],
+                                       vocab, fns))
             elif _union(value) is not None and name in assigned:
                 unions.append(_union_class(name, value, stem,
                                            *assigned[name]))
