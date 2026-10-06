@@ -485,8 +485,9 @@ class Method:
     # Empty for a plain vector, and for every accessor whose element
     # class already states it. See `reads` in declare.py.
     member_collection: str = ""
-    # Verbatim C++ for an accessor nothing can derive, from @cxx_body.
-    cxx_body: str = ""
+    # Verbatim C++ for an accessor nothing can derive, from its body's
+    # `Cxx(...)`.
+    cxx_body: Body | None = None
     # The arm NAME this accessor needs, from @guard. Resolved to an
     # enumerator through the class's @arms table, so the C++ fact
     # lives in one place. The emitter writes the check.
@@ -1045,7 +1046,28 @@ def _version_holds(node: ast.FunctionDef, test: ast.expr) -> bool:
                      {name: getattr(declare, name) for name in _VERSION_NAMES}))
 
 
-def _cxx_call(node: ast.FunctionDef, stmt: ast.stmt) -> str | None:
+@dataclass(frozen=True)
+class Body:
+    """C++ a declaration carries, and where its first line is written.
+
+    The emitter writes `#line` from `path` and `line`, so the compiler
+    reports an error in a body at the declaration, not in the emitted
+    `.cpp`."""
+
+    text: str
+    # Relative to the package root when the file is in one, so the
+    # emitted text holds no store path.
+    path: str
+    line: int
+
+
+def _source(path: str) -> str:
+    marker = "/huggorm_decl/"
+    at = path.rfind(marker)
+    return path[at + 1:] if at >= 0 else path
+
+
+def _cxx_call(node: ast.FunctionDef, stmt: ast.stmt) -> Body | None:
     """The C++ of one `Cxx("...")` statement, or None for another kind."""
     if not isinstance(stmt, ast.Expr):
         return None
@@ -1058,10 +1080,16 @@ def _cxx_call(node: ast.FunctionDef, stmt: ast.stmt) -> str | None:
         raise DeclarationError(
             stmt, f"{node.name}: Cxx() takes one string "
                   f"literal. The C++ is carried, not built.")
-    return str(value.args[0].value)
+    literal = value.args[0]
+    text = str(literal.value)
+    # The literal starts on its own line; the C++ starts after the
+    # newlines that `.strip()` drops.
+    skipped = text[:len(text) - len(text.lstrip())].count("\n")
+    return Body(text, _source(_READING[-1]) if _READING else "<declaration>",
+                literal.lineno + skipped)
 
 
-def _arm(node: ast.FunctionDef, stmts: list[ast.stmt]) -> str:
+def _arm(node: ast.FunctionDef, stmts: list[ast.stmt]) -> Body:
     """The C++ of one arm of a body's `if`: one `Cxx(...)`, or a
     further `if`."""
     if len(stmts) == 1:
@@ -1074,7 +1102,7 @@ def _arm(node: ast.FunctionDef, stmts: list[ast.stmt]) -> str:
                   f"Cxx(...), or another `if`.")
 
 
-def _versioned(node: ast.FunctionDef, stmt: ast.If) -> str:
+def _versioned(node: ast.FunctionDef, stmt: ast.If) -> Body:
     """The C++ of the arm this build's Nix takes."""
     if not stmt.orelse:
         raise DeclarationError(
@@ -1086,7 +1114,7 @@ def _versioned(node: ast.FunctionDef, stmt: ast.If) -> str:
     return _arm(node, stmt.orelse)
 
 
-def _body(node: ast.FunctionDef) -> str:
+def _body(node: ast.FunctionDef) -> Body | None:
     """The C++ this method carries, read from its BODY.
 
     A declaration is Python, so C++ that a person writes goes where a
@@ -1116,7 +1144,7 @@ def _body(node: ast.FunctionDef) -> str:
     whole distinction, and unlike a decorator it cannot be
     half-stated - there is no way to write the marker and forget the
     body, or the body and forget the marker."""
-    seen = ""
+    seen: Body | None = None
     for i, stmt in enumerate(node.body):
         if (i == 0 and isinstance(stmt, ast.Expr)
                 and isinstance(stmt.value, ast.Constant)
@@ -1530,8 +1558,9 @@ def _mentions(cls: Class, node: ast.AST) -> None:
 
     A false positive costs one comment naming the field."""
     assert cls.from_parts is not None
+    body = cls.from_parts.cxx_body
     seen = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*",
-                          cls.from_parts.cxx_body))
+                          body.text if body is not None else ""))
     for f, _ in cls.parts:
         if f.name not in seen:
             raise DeclarationError(

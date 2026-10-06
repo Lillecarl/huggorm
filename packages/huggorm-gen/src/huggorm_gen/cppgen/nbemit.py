@@ -54,6 +54,7 @@ becomes the place the real code lives.
 from collections.abc import Iterator, Sequence
 
 from huggorm_dsl.declare import Crossing
+from huggorm_dsl.read import Body
 from huggorm_gen import ir
 from huggorm_gen.cxx import NAMESPACE
 
@@ -182,6 +183,33 @@ BODY_HEADERS = {
 }
 
 
+# Where a carried body ends. `placed_lines` replaces each with a
+# `#line` back to the emitted file, which only the finished text can
+# number.
+_LINE_RESET = "#line HUGGORM_RESET"
+
+
+def _carried(body: Body, depth: int) -> list[str]:
+    """A declaration's C++ body, indented, between `#line` directives.
+
+    The compiler then reports an error in a body at the declaration's
+    own file and line."""
+    return [f'#line {body.line} "{body.path}"',
+            *(f"{INDENT * depth}{ln}".rstrip()
+              for ln in body.text.strip().splitlines()),
+            _LINE_RESET]
+
+
+def placed_lines(text: str, name: str) -> str:
+    """`text` with each body's end marker numbered as line of `name`."""
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if ln == _LINE_RESET:
+            # `#line N` names the line AFTER it, and lines count from 1.
+            lines[i] = f'#line {i + 2} "{name}"'
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
 def _bodies(classes: Sequence[ir.ClassModel],
             functions: Sequence[ir.FunctionModel] = ()) -> Iterator[str]:
     """Every piece of hand-written C++ this translation unit carries.
@@ -189,16 +217,13 @@ def _bodies(classes: Sequence[ir.ClassModel],
     One walk, like `_sites`, and for the same reason. A body reaches
     the emitted file from five places and a header it needs is a
     header it needs from any of them."""
+    carried = [*(m.cxx_body for cls in classes for m in cls.bound),
+               *(c.cxx_body for cls in classes
+                 for c in (cls.init, cls.from_parts) if c is not None),
+               *(fn.cxx_body for fn in functions)]
+    yield from (b.text for b in carried if b is not None)
     for cls in classes:
-        for m in cls.bound:
-            yield m.cxx_body
-        if cls.init is not None:
-            yield cls.init.cxx_body
-        if cls.from_parts is not None:
-            yield cls.from_parts.cxx_body
         yield from cls.custom
-    for fn in functions:
-        yield fn.cxx_body
 
 
 def waits(cls: ir.ClassModel,
@@ -1041,14 +1066,13 @@ class Emitter:
         # branches that SPELL the return type need one.
         doc = _doc(m.doc)
         tail = f', "{doc}"' if doc else ""
-        if m.cxx_body:
+        if m.cxx_body is not None:
             # A method the declaration could not derive, carried verbatim.
             obj = SELF
             args, opening = self._signature(m.params)
             head = (f'{INDENT * 2}.def("{m.name}", '
                     f"[]({cls.held} &{obj}{args}){self._returns(m)} {{")
-            body = [f"{INDENT * 4}{ln}".rstrip()
-                    for ln in m.cxx_body.strip().splitlines()]
+            body = _carried(m.cxx_body, 4)
             # The tag check goes in FRONT of a declared body. A body says
             # what to do once the arm is known; @guard says the arm is
             # known, and the two are separate decisions.
@@ -1190,7 +1214,7 @@ class Emitter:
             f', "{pr.name}"_a'
             + (f" = {pr.cxx_default}" if pr.cxx_default else "")
             for pr in init.params)
-        if init.cxx_body:
+        if init.cxx_body is not None:
             # Placement new, because `__init__` is handed storage rather
             # than asked for an object. One Python signature over several
             # C++ constructors needs this: nb::init picks by C++ type at
@@ -1199,8 +1223,7 @@ class Emitter:
             # so and a named set when it carries names.
             obj = SELF
             args, opening = self._signature(init.params)
-            body = [f"{INDENT * 4}{ln}".rstrip()
-                    for ln in init.cxx_body.strip().splitlines()]
+            body = _carried(init.cxx_body, 4)
             head = (f'{INDENT * 2}.def("__init__", '
                     f"[]({cls.held} *{obj}{args}) {{")
             tail = f"{INDENT * 2}}}{names}"
@@ -1569,7 +1592,7 @@ class Emitter:
         # not write it (huggorm#63).
         extras = self._extras(waits(cls, made), made.params)
         doc = _doc(cls.init.doc) if cls.init.doc else ""
-        if not made.cxx_body:
+        if made.cxx_body is None:
             line = f"{INDENT * 2}.def(nb::new_(&{made.cxx_name}){extras}"
             if not doc:
                 return [line + ")"]
@@ -1577,8 +1600,7 @@ class Emitter:
             # literal has no continuation and gluing two is noise.
             return [line + ",", f'{INDENT * 3}     "{doc}")']
         lines = [f"{INDENT * 2}.def(nb::new_({self._lambda_head(made)}",
-                 *(f"{INDENT * 3}{ln}".rstrip()
-                   for ln in made.cxx_body.strip().splitlines())]
+                 *_carried(made.cxx_body, 3)]
         close = f"{INDENT * 2}}}){extras}"
         if not doc:
             return [*lines, close + ")"]
@@ -1696,9 +1718,8 @@ class Emitter:
         keywords = "".join(f', "{n}"_a' + (".none()" if t == "nb::object" else "")
                            for (n, _, _), t in zip(fields, types, strict=True))
         written = cls.from_parts
-        if written is not None and written.cxx_body:
-            body = [f"{INDENT * 3}{ln}".rstrip()
-                    for ln in written.cxx_body.strip().splitlines()]
+        if written is not None and written.cxx_body is not None:
+            body = _carried(written.cxx_body, 3)
         else:
             names = ", ".join(
                 f"from_bytes({n})" if t in BYTES_SPELLINGS
@@ -1852,10 +1873,10 @@ class Emitter:
 
         `blocking` has no class to come from here, so a free function says
         `@blocks` for itself."""
-        if not (fn.cxx_name or fn.cxx_body):
+        if not fn.cxx_name and fn.cxx_body is None:
             raise TypeError(
                 f"{fn.name}: a free function names the C++ it binds, or "
-                f'carries it. Use @binds("cxx_name") or @cxx_body(...).')
+                f'carries it. Use @binds("cxx_name") or a Cxx(...) body.')
         extras = []
         if fn.blocks and not fn.instant:
             extras.append("nb::call_guard<nb::gil_scoped_release>()")
@@ -1865,7 +1886,7 @@ class Emitter:
                 arg += f" = {pr.cxx_default}"
             extras.append(arg)
         tail = "".join(f", {x}" for x in extras)
-        if not fn.cxx_body:
+        if fn.cxx_body is None:
             return [f'{INDENT}m.def("{fn.name}", &{fn.cxx_name}{tail});']
         # A body, for a function whose C++ is assembled rather than named.
         # `gc_stats` reads five counters out of gc.h and hands back one
@@ -1873,8 +1894,7 @@ class Emitter:
         #
         # The opening spells the return type, as `_lambda_head` does for
         # a factory body: one rule for both kinds of body.
-        body = [f"{INDENT * 2}{ln}".rstrip()
-                for ln in fn.cxx_body.strip().splitlines()]
+        body = _carried(fn.cxx_body, 2)
         return [f'{INDENT}m.def("{fn.name}", {self._lambda_head(fn)}', *body,
                 f"{INDENT}}}{tail});"]
 
@@ -2104,9 +2124,9 @@ def census(cls: ir.ClassModel) -> dict[str, int]:
     # most worth counting: it is the half of the wire that stopped
     # being true by construction when the value bound a real type.
     for m in (*cls.bound, *filter(None, (cls.from_parts,))):
-        if m.cxx_body:
+        if m.cxx_body is not None:
             hatched += 1
-            hatch_lines += len(m.cxx_body.strip().splitlines())
+            hatch_lines += len(m.cxx_body.text.strip().splitlines())
         else:
             derived += 1
     if cls.init is not None:

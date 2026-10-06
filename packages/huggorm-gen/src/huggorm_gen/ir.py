@@ -24,6 +24,7 @@ from huggorm_dsl import declare
 from huggorm_dsl.declare import Crossing, Decl, DeclKind, Threading
 from huggorm_dsl.read import (
     MESSAGE_PARTS,
+    Body,
     Class,
     Method,
     Module,
@@ -572,8 +573,8 @@ class MethodModel:
     instant: bool = False
     # The C++ member function it binds, when it is not `name`.
     cxx_name: str = ""
-    # The C++ it carries, verbatim, or "".
-    cxx_body: str = ""
+    # The C++ it carries, verbatim, or None.
+    cxx_body: Body | None = None
     # The data member it reads (`@reads`), or "".
     reads: str = ""
     # The arm it needs (`@guard`).
@@ -657,7 +658,7 @@ class FunctionModel:
     calls: MethodRef | None = None
     # The C++ it binds by name (`@binds`), or the body it carries.
     cxx_name: str = ""
-    cxx_body: str = ""
+    cxx_body: Body | None = None
     blocks: bool = False
     instant: bool = False
     headers: tuple[str, ...] = ()

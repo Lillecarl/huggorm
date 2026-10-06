@@ -245,7 +245,8 @@ def emit_module(mod: Module, dotted: str, out: str,
                         errors=errors_module(),
                         error_headers=headers or ())
     census_written(mod, bound, written)
-    pathlib.Path(out).write_text(written)
+    pathlib.Path(out).write_text(
+        nbemit.placed_lines(written, pathlib.Path(out).name))
     header = nbemit.records_header(unit, PACKAGE, declared_model())
     if header is not None:
         target = pathlib.Path(out).with_name(f"{mod.name}_records.hpp")
@@ -290,9 +291,10 @@ def emit_module(mod: Module, dotted: str, out: str,
     # of the declaration sees the decision - but it is still C++ a
     # person wrote, and counting only the first would let the second
     # absorb it silently.
-    bodies = sum(_code_lines(m.cxx_body) for c in mod.classes
-                 for m in c.methods) + sum(
-                     _code_lines(f.cxx_body) for f in mod.functions)
+    bodies = sum(_code_lines(m.cxx_body.text)
+                 for m in (*(m for c in mod.classes for m in c.methods),
+                           *mod.functions)
+                 if m.cxx_body is not None)
     if hand or bodies:
         print(f"  hand-written C++: {hand} in cpp/{helper.name}, "
               f"{bodies} in Cxx bodies")

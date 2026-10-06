@@ -1522,7 +1522,8 @@ else:
     Cxx("return self.past();")
 '''))
     [method] = have.module("digest.py").classes[0].methods
-    assert method.cxx_body.strip() == "return self.now();"
+    assert method.cxx_body is not None
+    assert method.cxx_body.text.strip() == "return self.now();"
 
 
 @pytest.mark.parametrize(("body", "refusal"), [
