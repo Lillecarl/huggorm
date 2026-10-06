@@ -388,14 +388,16 @@ def records_header(unit: ir.ModuleModel, package: str,
     ])
 
 
-def _lists(cls: ir.ClassModel) -> list[str]:
-    """The wire parts of this value that cross as lists.
+def _unhashable(t: ir.TypeRef) -> bool:
+    """Whether this part holds a list or a dict at any depth.
 
-    The PARTS, not the accessors. A value's hash is over what it sends,
-    and a list is hashed as a tuple because a list is unhashable -
-    which is the one thing `as_tuple` exists for."""
-    return [f.name for f in cls.wire_fields
-            if f.type.required.origin is ir.Origin.LIST]
+    Python hashes neither, so the value's hash reads such a part
+    through `hashable`."""
+    return any(n.origin in (ir.Origin.LIST, ir.Origin.DICT) for n in _nodes(t))
+
+
+def _hashes_containers(cls: ir.ClassModel) -> bool:
+    return any(_unhashable(f.type) for f in cls.wire_fields)
 
 
 def _nodes(t: ir.TypeRef | None) -> Iterator[ir.TypeRef]:
@@ -458,17 +460,34 @@ def _arms_type(cls: ir.UnionModel) -> str:
 
 
 
-# A list field, as something a hash can hold.
+# A part that holds a list or a dict, as something a hash can hold.
 #
-# One function rather than a cast at each call site, because
+# A function rather than a cast at each call site, because
 # `nb::tuple(h.attr("x"))` does not resolve: `attr` hands back an
 # accessor, and the constructor that CONVERTS takes a handle. Passing
 # it as an argument does the conversion the constructor would not.
+#
+# A dict's items are SORTED, because two equal dicts can iterate in
+# different orders and must hash equal. Its keys are strings, so they
+# sort and never tie.
 HASHABLE = """
-/** A list field as the tuple a hash can hold. Order is the list's. */
-inline nb::tuple as_tuple(nb::handle items)
+/** A list as a tuple and a dict as its sorted items, at any depth. */
+inline nb::object hashable(nb::handle h)
 {
-    return nb::tuple(items);
+    if (nb::isinstance<nb::list>(h)) {
+        nb::list out;
+        for (nb::handle item : h)
+            out.append(hashable(item));
+        return nb::tuple(out);
+    }
+    if (nb::isinstance<nb::dict>(h)) {
+        nb::list out;
+        for (auto [key, value] : nb::borrow<nb::dict>(h))
+            out.append(nb::make_tuple(key, hashable(value)));
+        out.attr("sort")();
+        return nb::tuple(out);
+    }
+    return nb::borrow(h);
 }
 """
 
@@ -1125,8 +1144,7 @@ class Emitter:
         spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
         reads = ", ".join(read for _, _, read in fields)
         hashed = ", ".join(
-            f"{NAMESPACE}::as_tuple({read})" if t.required.origin is ir.Origin.LIST
-            else read
+            f"{NAMESPACE}::hashable({read})" if _unhashable(t) else read
             for _, t, read in fields)
         out = []
         if equality and not cls.semantics.cxx_equal:
@@ -1922,15 +1940,16 @@ class Emitter:
             head += [*CONTAINERS.strip().splitlines(), ""]
         if self._converts_bytes(classes):
             head += [*BYTES.strip().splitlines(), ""]
-        # `as_tuple`, for a value whose hash covers a list part. In the
-        # unit, not in `records_header`, because a class that binds a real
-        # Nix type needs the helper just the same: `pathinfo.cpp` has no
-        # record.
+        # `hashable`, for a value whose hash covers a list or dict part.
+        # In the unit, not in `records_header`, because a class that
+        # binds a real Nix type needs the helper just the same:
+        # `pathinfo.cpp` has no record.
         unions = self._unions_used(classes, functions)
         vocabularies = self._vocabularies_used(classes, functions)
-        if any(_lists(cls) for cls in classes) or unions or vocabularies:
+        hashes_containers = any(_hashes_containers(cls) for cls in classes)
+        if hashes_containers or unions or vocabularies:
             head += [f"namespace {NAMESPACE} {{", ""]
-            if any(_lists(cls) for cls in classes):
+            if hashes_containers:
                 head += [*HASHABLE.strip().splitlines(), ""]
             for v in vocabularies:
                 head += words_conversion(v)

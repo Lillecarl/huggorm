@@ -2033,6 +2033,10 @@ def test_every_wire_value_survives_its_own_round_trip(
         # not would pass the line above and fail a caller.
         assert type(built)._from_parts(*cases[0]) == built, (
             f"{name} rebuilt unequal to the original")
+        # Equal values hash equal, and a list or dict part must not make
+        # the hash raise (huggorm#138: `Input` and `InputDrvNode` did).
+        assert hash(type(built)._from_parts(*cases[0])) == hash(built), (
+            f"{name} rebuilt with a different hash")
 
         # No part may hold one value across every case. A part that
         # does is a part this test cannot see, however many times it

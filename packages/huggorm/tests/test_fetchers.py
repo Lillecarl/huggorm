@@ -26,6 +26,16 @@ def test_attributes_and_a_url_name_one_input() -> None:
     assert input_from_attrs(parsed.to_attrs()) == parsed
 
 
+def test_equal_inputs_hash_equal_whatever_the_attribute_order() -> None:
+    from huggorm_bindings import input_from_attrs
+
+    one = input_from_attrs({"type": "github", "owner": "NixOS", "repo": "nixpkgs"})
+    two = input_from_attrs({"repo": "nixpkgs", "owner": "NixOS", "type": "github"})
+    assert one == two
+    assert hash(one) == hash(two)
+    assert len({one, two}) == 1
+
+
 def test_a_scheme_refuses_an_attribute_it_does_not_take() -> None:
     from huggorm_bindings import input_from_attrs
     from huggorm_bindings.errors import NixError
