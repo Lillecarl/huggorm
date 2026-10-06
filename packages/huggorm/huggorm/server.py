@@ -805,6 +805,90 @@ class Dispatcher:
 
         return self._wrap(handler, h.label)
 
+    # -- session operations ---------------------------------------------
+    def bind(self, claim: str | None) -> tuple[str, float]:
+        """A connection token, and the lease TTL it must ping within.
+        `claim` takes back the escrow a detached connection left."""
+        return self.table.bind(claim), self.table.ttl or 0.0
+
+    def ping(self, token: str) -> bool:
+        """False, not an error, for a swept connection: being swept is
+        a fact about the connection, not a failure of this call."""
+        return self.table.alive(token)
+
+    def share(self, token: str, to_token: str, hid: str,
+              mode: ShareMode) -> None:
+        self.table.share(token, to_token, hid, mode=mode)
+
+    def detach(self, token: str, hid: str | None, all: bool) -> bool:
+        if hid is None and not all:
+            raise ValueError("detach needs a target handle or all=true")
+        return self.table.detach(token, hid) > 0
+
+    def release(self, token: str, hid: str) -> None:
+        self.table.release(token, hid)
+
+    def release_many(self, token: str, hids: Iterable[str]) -> tuple[int, int]:
+        """Best-effort batch release for handles the client dropped.
+
+        Per-handle tolerance is the point. The client queues an id
+        when its last local reference goes away, and by flush time
+        that lease may already be gone - closed explicitly,
+        transferred, or swept with an earlier connection. One stale
+        id must not cost the caller the rest of the batch, so this
+        counts (released, unknown) instead of raising."""
+        released = unknown = 0
+        for hid in hids:
+            try:
+                self.table.release(token, hid)
+                released += 1
+            except (KeyError, ValueError):
+                unknown += 1
+        return released, unknown
+
+    async def realize(self, token: str, hid: str, depth: int,
+                      budget: int) -> tuple[Any, Any, TreeWalk]:
+        """One round trip for a whole value tree: the target, the tree,
+        and the walk that built it.
+
+        Walking a value from the client is a call per node, and
+        every one of them is a network round trip plus a thread
+        handover. This walks it once, on the value's own thread.
+
+        It forces nothing. What is already forced serializes; a
+        thunk crosses as a handle, and the caller forces it with
+        the call that already exists. So the answer is bounded, it
+        cannot raise halfway down a half-built message, and it
+        composes with force rather than duplicating it."""
+        target = self.resolve(hid, token)
+        spec = TREES.get(DECLARED.get(type(target).__name__, ""))
+        if spec is None:
+            raise TypeError(
+                f"{hid[:8]} is not a value tree: its type declares no walk")
+        walk = TreeWalk(spec, depth if depth > 0 else DEFAULT_DEPTH,
+                        budget if budget > 0 else DEFAULT_BUDGET)
+        # ONE hop for the whole tree, on the value's own thread.
+        tree = await target._runner.run(lambda obj: walk.node(obj, 0))
+        return target, tree, walk
+
+    async def logs_barrier(self, token: str, hid: str) -> int:
+        """The request id whose "finalized" ends the records so far.
+
+        One call on the state's own thread. `end_request` pushes
+        its marker into that thread's queue after every record the
+        thread raised before, so a `Logs` reader that sees it has
+        all of them. The process stream has no such order: its
+        records come from threads no call owns."""
+        from huggorm_bindings import current_request
+
+        target = self.resolve(hid, token)
+        request: int = await target._runner.run(lambda _: current_request())
+        if not request:
+            raise TypeError(
+                f"{hid[:8]} runs no call of its own, so no marker can end "
+                f"its records")
+        return request
+
     def _session(self) -> None:
         from huggorm_generated._runtime import InternalError
 
@@ -831,31 +915,16 @@ class Dispatcher:
             return self.rpcs[schema.session(rpc)].resp
 
         async def release_many(stream: Any) -> None:
-            """Best-effort batch release for handles the client dropped.
-
-            Per-handle tolerance is the point. The client queues an id
-            when its last local reference goes away, and by flush time
-            that lease may already be gone - closed explicitly,
-            transferred, or swept with an earlier connection. One stale
-            id must not cost the caller the rest of the batch, so the
-            reply counts instead of raising."""
             req = await stream.recv_message()
-            token = _tok(stream)
-            released = unknown = 0
-            for h in req.handles:
-                try:
-                    self.table.release(token, h.id)
-                    released += 1
-                except (KeyError, ValueError):
-                    unknown += 1
             resp = reply("ReleaseMany")()
-            resp.released, resp.unknown = released, unknown
+            resp.released, resp.unknown = self.release_many(
+                _tok(stream), (h.id for h in req.handles))
             await stream.send_message(resp)
 
         async def release(stream: Any) -> None:
             req = await stream.recv_message()
-            self.table.release(_tok(stream),
-                               req.self.id if hasattr(req, "self") else req.id)
+            self.release(_tok(stream),
+                         req.self.id if hasattr(req, "self") else req.id)
             await stream.send_message(reply("Release")())
 
         digest = schema.schema_digest()
@@ -871,75 +940,37 @@ class Dispatcher:
                     f"client schema {req.schema_digest[:12] or 'none'} is "
                     f"not this server's {digest[:12]}: rebuild the client "
                     f"from the server's huggorm")
-            claim = req.claim_token or None
             resp = reply("Bind")()
-            resp.token = self.table.bind(claim)
-            resp.lease_ttl = self.table.ttl or 0.0
+            resp.token, resp.lease_ttl = self.bind(req.claim_token or None)
             await stream.send_message(resp)
 
         async def ping(stream: Any) -> None:
             await stream.recv_message()
             ack = reply("Ping")()
-            # `ok` finally means something. It was always True, which
-            # is why nobody noticed that the lookup behind it CREATED
-            # the connection it was meant to be checking.
-            #
-            # False rather than an error: being swept is a fact about
-            # the connection, not a failure of this call, and a
-            # liveness probe answering a boolean is the honest shape.
-            #
-            # The token comes from the metadata, like every other rpc.
-            # It used to ride in the request body, which was a second
-            # channel for the one thing lifecycle documents a
-            # convention for.
-            ack.ok = self.table.alive(_tok(stream))
+            ack.ok = self.ping(_tok(stream))
             await stream.send_message(ack)
 
         async def share(stream: Any) -> None:
             req = await stream.recv_message()
-            self.table.share(_tok(stream), req.to_token, req.handle.id,
-                             mode=ShareMode(req.mode or ShareMode.COPY))
+            self.share(_tok(stream), req.to_token, req.handle.id,
+                       ShareMode(req.mode or ShareMode.COPY))
             ack = reply("Share")()
             ack.ok = True
             await stream.send_message(ack)
 
         async def detach(stream: Any) -> None:
             req = await stream.recv_message()
-            token = _tok(stream)
-            hid = req.target.id if req.HasField("target") else None
-            if hid is None and not req.all:
-                raise ValueError("detach needs a target handle or all=true")
-            moved = self.table.detach(token, hid)
             ack = reply("Detach")()
-            ack.ok = moved > 0
+            ack.ok = self.detach(
+                _tok(stream),
+                req.target.id if req.HasField("target") else None, req.all)
             await stream.send_message(ack)
 
         async def realize(stream: Any) -> None:
-            """One round trip for a whole value tree.
-
-            Walking a value from the client is a call per node, and
-            every one of them is a network round trip plus a thread
-            handover. This walks it once, on the value's own thread,
-            and answers with the tree.
-
-            It forces nothing. What is already forced serializes; a
-            thunk crosses as a handle, and the caller forces it with
-            the call that already exists. So the answer is bounded, it
-            cannot raise halfway down a half-built message, and it
-            composes with force rather than duplicating it."""
             req = await stream.recv_message()
             token = _tok(stream)
-            target = self.resolve(req.handle.id, token)
-            spec = TREES.get(DECLARED.get(type(target).__name__, ""))
-            if spec is None:
-                raise TypeError(
-                    f"{req.handle.id[:8]} is not a value tree: its type "
-                    f"declares no walk")
-            walk = TreeWalk(spec,
-                            req.depth if req.depth > 0 else DEFAULT_DEPTH,
-                            req.budget if req.budget > 0 else DEFAULT_BUDGET)
-            # ONE hop for the whole tree, on the value's own thread.
-            tree = await target._runner.run(lambda obj: walk.node(obj, 0))
+            target, tree, walk = await self.realize(token, req.handle.id,
+                                                    req.depth, req.budget)
             resp = reply("Realize")()
             # Every node the walk stopped at leases to the caller and
             # pins the root, exactly as a proxy return does.
@@ -1060,24 +1091,9 @@ class Dispatcher:
                 await self._process_fanout.leave(reader)
 
         async def logs_barrier(stream: Any) -> None:
-            """The request id whose "finalized" ends the records so far.
-
-            One call on the state's own thread. `end_request` pushes
-            its marker into that thread's queue after every record the
-            thread raised before, so a `Logs` reader that sees it has
-            all of them. The process stream has no such order: its
-            records come from threads no call owns."""
-            from huggorm_bindings import current_request
-
             req = await stream.recv_message()
-            target = self.resolve(req.state.id, _tok(stream))
-            request = await target._runner.run(lambda _: current_request())
-            if not request:
-                raise TypeError(
-                    f"{req.state.id[:8]} runs no call of its own, so no "
-                    f"marker can end its records")
             resp = reply("LogsBarrier")()
-            resp.request = request
+            resp.request = await self.logs_barrier(_tok(stream), req.state.id)
             await stream.send_message(resp)
 
         handlers: dict[str, Handler] = {
