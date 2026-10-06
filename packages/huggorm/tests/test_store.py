@@ -1132,7 +1132,7 @@ async def test_the_async_wrapper_hands_back_an_anyio_path(
     name the same place.
 
     Declared by `Async(...)` on the `Path` alias. Nothing about the
-    wire changes: pathlib.Path has no protobuf field either way, so
+    wire changes: pathlib.Path has no wire form either way, so
     this is one annotation and one constructor call in the in-process
     wrapper."""
     import anyio
@@ -1272,8 +1272,8 @@ def test_an_outputs_spec_refuses_the_two_states_that_blur_its_arms(
     """`all` is a TAG, not "no names", and the pair is checked.
 
     Upstream is a `variant<All, Names>`, so the two are exclusive by
-    construction. Here they are two fields, because one arm carries
-    nothing and protobuf spells that `bool` - which makes the invalid
+    construction. Here they are two fields, and the arm that carries
+    nothing is a `bool` - which makes the invalid
     pairs representable and puts the burden on the constructor.
 
     Both are refused, in libstore's own error type. Upstream deletes

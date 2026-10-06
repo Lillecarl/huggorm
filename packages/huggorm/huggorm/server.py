@@ -152,9 +152,7 @@ class TreeWalk:
     def node(self, obj: Any, depth: int) -> tree.Node:
         key = self._key(obj)
         # `depth` counts levels EXPANDED, so 1 is the root alone. Zero
-        # would be the natural spelling for that, and proto3 cannot
-        # tell a zero from an unset field - the same limitation
-        # _wire_fields marks with a trailing "?".
+        # asks for the server's default.
         if self.left <= 0 or depth >= self.depth or key in self.seen:
             self.truncated = True
             return tree.Stays(type(obj).__name__, obj)

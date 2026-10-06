@@ -9,8 +9,7 @@ because a derivation's path may itself be another derivation's output.
 The first SUM types this repo carries. huggorm#59 has the reasoning;
 the short of it is that upstream's own two encodings both tag a union
 by shape - a JSON string means opaque, `["*"]` means all outputs - and
-protobuf has a real tagged union, so the wire here is better than
-either.
+the wire here names the arm by its index, so it is better than either.
 
 There is no `DerivedPathOpaque` on this surface. Upstream's is a
 struct holding one `StorePath` and nothing else, so the opaque arm IS
@@ -54,8 +53,8 @@ from huggorm_dsl.declare import (
 class OutputsSpec:
     """Which outputs of a derivation are wanted: all, or these.
 
-    A sum type upstream - `variant<All, Names>` - and two fields here,
-    because one arm carries nothing and protobuf spells that `bool`.
+    A sum type upstream - `variant<All, Names>` - and two fields here:
+    one arm carries nothing, so it is a `bool`.
     The pair is checked at construction rather than trusted: `all` with
     names, and neither, are both refused.
 

@@ -1,5 +1,5 @@
 """
-The remote layer over a real gRPC socket: the proxy/value matrix.
+The remote layer over a real Unix socket: the proxy/value matrix.
 
 A wire-value crosses as a copy and arrives as a real local object; a
 proxy stays remote behind a handle. Both directions, as arguments and
@@ -117,8 +117,8 @@ async def test_thunks_force_remotely(client: Any) -> None:
     await state.force(thunk)
     assert await thunk.integer() == 42, "force mutates in place remotely"
 
-    v = await state.eval_expr('"hello over grpc"')
-    assert await v.string_value() == "hello over grpc"
+    v = await state.eval_expr('"hello over a socket"')
+    assert await v.string_value() == "hello over a socket"
     # bint-returning methods cross as real booleans. 'bint' used to leak
     # into the schema and map to an opaque Handle, killing the rpc.
     with anyio.fail_after(10):
@@ -239,11 +239,9 @@ async def test_a_produced_class_refuses_remote_construction(
     the class name alone passed for a message that said nothing else.
 
     huggorm#12 lists "unknown CLASS on Acquire" as a blind spot and
-    describes a check that is no longer there: `Session/Acquire` took
-    a class NAME and the server looked it up. Construction moved onto
-    each class's own service, so an unknown class is now an unknown
-    gRPC PATH and grpclib answers it before a handler runs. What is
-    left is the CLIENT's check, and this is it."""
+    describes a server-side check by class NAME. A call crosses by its
+    number in the call table, so an unknown class has no number to
+    send. What is left is the CLIENT's check, and this is it."""
     for name in ("PathInfo", "Nonexistent"):
         with pytest.raises(ValueError) as refused:
             await client.acquire(name)
@@ -312,9 +310,9 @@ async def test_a_dict_return_crosses_as_a_map(client: Any) -> None:
 
 async def test_a_list_return_crosses_as_a_repeated_field(
         client: Any, tmp_path: Any) -> None:
-    """A repeated field, which is the other container proto3 gives.
+    """A list, the other container besides a map.
 
-    Every element is a wire VALUE and crosses as its own message: a
+    Every element is a wire VALUE and crosses as its own parts: a
     list of proxies is refused, because one lease per element is not
     something anything grants in bulk.
 
@@ -355,7 +353,7 @@ async def test_bytes_cross_as_bytes(client: Any, tmp_path: Any) -> None:
 
     A str field would round-trip a NAR into mojibake, and the hash
     that names the store path would be a hash of the wrong thing. So
-    the schema gives `data` a protobuf `bytes` field, and the proof is
+    `data` crosses as msgpack bin, and the proof is
     a payload that is not valid utf-8 arriving byte for byte - which
     it does only if nothing tried to decode it on the way."""
     store = await client.acquire("Store", str(tmp_path))
@@ -486,8 +484,8 @@ async def test_a_path_info_crosses_as_a_value(
     value policy, and it is why this type has no async form on either
     side.
 
-    `deriver` is the sharp part. It is an optional nested VALUE, and a
-    protobuf message field has real presence - so an absent one must
+    `deriver` is the sharp part. It is an optional nested VALUE, so an
+    absent one must
     read back as None rather than as a StorePath rebuilt from an empty
     base name, which raises."""
     src = tmp_path / "src"
@@ -502,14 +500,9 @@ async def test_a_path_info_crosses_as_a_value(
     assert info.path().to_string() == path.to_string()
     assert info.deriver() is None
 
-    # A container field comes back as a LIST, not as the protobuf
-    # container it travelled in. A repeated field cannot be assigned
-    # either, so both directions go through the list helpers the rpc
-    # layer already had - and an empty one proves the encoding half on
-    # its own, because assigning even [] to a repeated field raises.
+    # A container field comes back as a LIST.
     # An optional SCALAR field, across the wire, on the arm that has
-    # a value. proto3 gives it presence through a synthetic oneof, so
-    # this is exact rather than a guess from truthiness (huggorm#48).
+    # a value: exact rather than a guess from truthiness (huggorm#48).
     # ...and it is a MESSAGE with a message inside it, so this is
     # also the first nested wire-value to cross: a ContentAddress
     # holding a Hash holding an algorithm and raw digest bytes.
@@ -554,9 +547,8 @@ async def test_a_store_location_crosses_as_a_value(
     assert where.path().to_string() == path.to_string()
     assert where.sub_path() == "/a.txt"
 
-    # Empty is a real answer and proto3 cannot tell it from absent.
-    # The field carries no "?", so it reads back as "" rather than as
-    # None.
+    # Empty is a real answer. The field carries no "?", so it reads
+    # back as "" rather than as None.
     assert (await store.to_store_path(printed)).sub_path() == ""
     await store.aclose()
 
@@ -624,11 +616,10 @@ async def test_absence_crosses_as_absence(
         client: Any, tmp_path: Any) -> None:
     """A `T | None` return, both arms, over the wire.
 
-    Absence needs no new machinery and no new field: a protobuf
-    message field HAS presence, so an unset one IS the None. That is
-    the same bit `_wire_fields` reads with a trailing "?" one level
-    down, said in the annotation instead - where a typechecker reads
-    it too.
+    Absence needs no new machinery: it crosses as nil. That is the
+    same bit `_wire_fields` reads with a trailing "?" one level down,
+    said in the annotation instead - where a typechecker reads it
+    too.
 
     Both arms are asserted here because only one of them is
     interesting: a missing None looks exactly like a default-built
@@ -691,13 +682,11 @@ async def test_a_reference_list_crosses_both_ways(
     """A container of wire values, in a parameter and in a return.
 
     This is the round trip an empty list cannot prove. Going out, a
-    list of StorePath fills a repeated field of messages; coming back,
-    the same field rebuilds real StorePath objects rather than the
-    protobuf container they arrived in.
+    list of StorePath crosses as a list of parts; coming back, it
+    rebuilds real StorePath objects.
 
     The default proves the other half: `references` may be omitted,
-    and absence crosses as a repeated field with nothing in it because
-    that is the only thing it can be."""
+    and an absent list is an empty one."""
     store = await client.acquire("Store", str(tmp_path / "store"))
     target = await store.add_to_store("target", b"pointed at\n")
     holder = await store.add_to_store(

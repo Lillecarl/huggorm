@@ -777,10 +777,8 @@ async def test_the_level_narrows_over_the_wire_too(client: Any) -> None:
     """Level 0 is a subscription, not an absence.
 
     lvlError is 0, so "errors only" and "no level given" are different
-    requests that a plain proto3 sint64 cannot tell apart. The field
-    has real presence for exactly this, and this is the gate on it: a
-    zero that arrived as unset would take the default of 3 and let the
-    warning through."""
+    requests. This is the gate on that: a zero that arrived as unset
+    would take the default of 3 and let the warning through."""
     state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
     stream = await opened(client, state, level=0)
     try:

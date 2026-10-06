@@ -49,9 +49,8 @@ SCALAR_NAMES = ("str", "int", "uint", "float", "bool", "bytes")
 # coarser wire would lose a build's CPU time on the way through and
 # the round-trip gate would say so.
 #
-# Not a protobuf well-known `Duration`. That message is seconds plus
-# nanos, which is a second representation to convert through and a
-# precision neither end has.
+# Not seconds plus nanos: that is a second representation to convert
+# through, and a precision neither end has.
 _MICROSECOND = datetime.timedelta(microseconds=1)
 
 

@@ -133,9 +133,8 @@ def test_a_derivation_value_names_its_outputs(
 
 async def test_output_paths_cross_the_socket(
         client: Any, tmp_path: pathlib.Path) -> None:
-    """`dict[str, StorePath | None]`: an element that may be None,
-    which a proto3 map could not carry, so the call had no remote form
-    until the socket protocol (huggorm#142)."""
+    """`dict[str, StorePath | None]`: an element that may be None
+    crosses as nil (huggorm#142)."""
     from huggorm_bindings import EvalState, Store
 
     store = await client.acquire("Store", str(tmp_path))

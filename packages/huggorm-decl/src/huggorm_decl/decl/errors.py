@@ -58,8 +58,8 @@ class NixError(Exception):
     # because every error here IS a nix::Error and carries the same two
     # strings. The same word as a wire value's declaration, meaning the
     # same thing - the parts this object can be rebuilt from - though
-    # an error travels in the gRPC status details rather than as a
-    # response message of its own (huggorm#36).
+    # an error travels in a FAULT frame rather than as a result
+    # (huggorm#36).
     _wire_fields: tuple[tuple[str, object], ...] = (
         ("message", str), ("colored", str), ("info", ErrorInfo | None))
 

@@ -1,7 +1,7 @@
 """
 HandleTable unit tests (huggorm#2, huggorm#31).
 
-The lifecycle suite drives the table through a real gRPC server, which
+The lifecycle suite drives the table through a real server, which
 is what proves the transport. It cannot reach the cases that only the
 table can produce: the same object handed out twice, a producer handle
 that does not exist, an object index that must not outlive its entry.

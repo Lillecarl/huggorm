@@ -92,9 +92,8 @@ async def test_realize_forces_nothing(state: Any) -> None:
 
 
 async def test_depth_bounds_the_walk(state: Any) -> None:
-    """depth counts levels EXPANDED, so 1 is the root alone. Zero would
-    be the natural spelling for that and proto3 cannot tell a zero from
-    an unset field."""
+    """depth counts levels EXPANDED, so 1 is the root alone. Zero asks
+    for the server's default."""
     client = state._client
     attrs = await bag(state)
 

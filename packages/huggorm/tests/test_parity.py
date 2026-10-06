@@ -13,7 +13,7 @@ So this runs the SAME body against all three and compares answers:
 
 - **sync** - `huggorm_bindings.Store`, the compiled binding itself
 - **async** - `huggorm_generated.AsyncStore`, the in-process wrapper
-- **rpc** - `huggorm_generated.RPCStore`, over a real gRPC connection
+- **rpc** - `huggorm_generated.RPCStore`, over a real socket
 
 Every test here is written once and parameterised, because a parity
 test written three times is three tests that can drift.

@@ -1,5 +1,5 @@
 """
-Handle lifetime over real gRPC (huggorm#2, 028, 031, 016).
+Handle lifetime over the real socket (huggorm#2, 028, 031, 016).
 
 Every path a handle can take between processes: bind and claim, leases
 and capability, producer pinning with cascading reaps, share as copy
@@ -29,8 +29,8 @@ from huggorm.lifecycle import ShareMode
 
 async def wrapper_error(coro: Any) -> dict[str, str]:
     """Run something expected to fail, and return the typed error it
-    crossed the wire as. Errors travel as JSON in the gRPC status, so
-    the cause type survives the hop and can be asserted on."""
+    crossed the wire as. A FAULT frame carries the cause type, so it
+    survives the hop and can be asserted on."""
     from huggorm_generated._runtime import InternalError
 
     try:

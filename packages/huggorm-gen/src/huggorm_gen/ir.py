@@ -1189,8 +1189,8 @@ class ModuleModel:
 class Model:
     """The whole declaration set, resolved: what every stage reads.
 
-    Declared order throughout, because a later pass numbers protobuf
-    fields from it and a reorder is a wire change."""
+    Declared order throughout, because the call table and every value's
+    parts are numbered from it and a reorder is a wire change."""
 
     classes: Mapping[str, ClassModel]
     functions: Mapping[str, FunctionModel]

@@ -815,7 +815,7 @@ def rpc_module(model: ir.Model) -> ast.Module:
     #
     # handle_id is Optional because release() blanks it. Passing a
     # blanked one is a real mistake, and the client answers it with a
-    # message instead of a protobuf failure.
+    # message that says so.
     mod.body.append(_code("""
         class $client(Protocol):
             $doc

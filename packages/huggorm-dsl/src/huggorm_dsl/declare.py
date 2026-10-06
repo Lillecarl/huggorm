@@ -100,8 +100,8 @@ class Async:
     "anyio.Path"}` in the bindings package, keyed by a type spelling
     - which put a fact about `Path` in a file that never names it.
 
-    It never reaches the wire. A word with a twin has no protobuf
-    field either way, so this decides one annotation and one
+    It never reaches the wire. A word with a twin has no wire form
+    either way, so this decides one annotation and one
     constructor call in the async wrapper, and nothing else. The
     reader puts it on the leaf `Type`, so it holds through `| None`
     and a list."""

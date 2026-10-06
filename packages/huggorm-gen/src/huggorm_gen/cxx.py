@@ -188,9 +188,8 @@ def value(t: Type, known: Mapping[str, Class]) -> tuple[str, str | None]:
         # in - `OutputPathMap` and `SingleDrvOutputs` are both one -
         # and what nanobind's <nanobind/stl/map.h> casts.
         #
-        # str keys only, and that is the wire rather than a shortcut:
-        # a protobuf map key is an integral or a string, so a map
-        # keyed by anything else has no field to be. The declaration
+        # str keys only: every map this API returns is keyed by a name,
+        # and the codec unpacks with `strict_map_key`. The declaration
         # spells `dict[str, V]` and nothing else parses.
         #
         # This replaced a hard-coded `"dict[str, int]": nb::dict`
