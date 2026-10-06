@@ -18,7 +18,6 @@ RemoteObj and reads ids back off one.
 
 from __future__ import annotations
 
-import datetime
 import importlib
 from collections.abc import Callable
 from types import ModuleType
@@ -31,7 +30,12 @@ from huggorm_generated._policy import (
     UNION_ARMS,
     WIRE_FIELDS,
 )
-from huggorm_generated._wiretypes import MAX_UNION_DEPTH, TREE_ARMS, arm_field
+from huggorm_generated._wiretypes import (
+    MAX_UNION_DEPTH,
+    SPELLED,
+    TREE_ARMS,
+    arm_field,
+)
 
 # The scalars as a lookup. Annotated because the inferred value type is
 # the join of unrelated classes, which is `type[object]` - and object
@@ -46,38 +50,6 @@ from huggorm_generated._wiretypes import MAX_UNION_DEPTH, TREE_ARMS, arm_field
 _SCALARS: dict[str, Callable[[Any], Any]] = {
     "str": str, "int": int, "uint": int, "float": float, "bool": bool,
     "bytes": bytes}
-
-# The unit a duration crosses in, as the timedelta that is one of it.
-# Microseconds, which is both Carl's decision and the only lossless
-# answer: a timedelta's finest unit IS the microsecond, and upstream
-# keeps a build's CPU time as std::chrono::microseconds.
-_MICROSECOND = datetime.timedelta(microseconds=1)
-
-
-def _duration_out(value: datetime.timedelta) -> int:
-    """A duration as the whole microseconds a field carries.
-
-    Floor division by one microsecond, which is exact: a timedelta
-    holds days, seconds and microseconds as integers, so there is no
-    remainder to lose."""
-    return value // _MICROSECOND
-
-
-def _duration_in(raw: int) -> datetime.timedelta:
-    """The microseconds a field carried, as a duration again."""
-    return datetime.timedelta(microseconds=raw)
-
-
-# What a SPELLED scalar becomes at each end. `_wiretypes.SPELLED` says
-# which builtin field one goes in; this says what to put there and what
-# to make of it coming back, which is the half only the codec needs.
-#
-# Two entries per type rather than one, unlike a vocabulary: a StrEnum
-# member IS a str, so one constructor serves both directions. A
-# timedelta is not an int, so the two directions differ.
-_SPELLED: dict[str, tuple[Callable[[Any], Any], Callable[[Any], Any]]] = {
-    "datetime.timedelta": (_duration_out, _duration_in),
-}
 
 # The kinds that go in a field as one scalar. A StrEnum member is a
 # str, so a vocabulary is one.
@@ -134,8 +106,8 @@ class WireCodec:
         if w.kind == "enum":
             kls: Callable[[Any], Any] = getattr(self.bindings, w.name)
             return kls
-        if (spelled := _SPELLED.get(w.name)) is not None:
-            return spelled[1]
+        if (spelled := SPELLED.get(w.name)) is not None:
+            return spelled.back
         return _SCALARS[w.name]
 
     def to_wire(self, w: Wire) -> Callable[[Any], Any]:
@@ -146,8 +118,8 @@ class WireCodec:
         and an int is an int. A SPELLED scalar is where the two part -
         a datetime.timedelta goes in an int field, and an int does not
         come back as a timedelta by itself."""
-        if (spelled := _SPELLED.get(w.name)) is not None:
-            return spelled[0]
+        if (spelled := SPELLED.get(w.name)) is not None:
+            return spelled.out
         return self.scalar(w)
 
     # -- wire-values ------------------------------------------------------

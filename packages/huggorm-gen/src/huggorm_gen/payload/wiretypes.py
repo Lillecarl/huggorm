@@ -11,6 +11,11 @@ way `_runtime.py` is, so the two sides read one definition instead of
 two that drift.
 """
 
+import datetime
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
 # The types that go in a field as themselves. The schema maps them to
 # proto types and the codec maps them to constructors; both start here.
 #
@@ -47,7 +52,38 @@ SCALAR_NAMES = ("str", "int", "uint", "float", "bool", "bytes")
 # Not a protobuf well-known `Duration`. That message is seconds plus
 # nanos, which is a second representation to convert through and a
 # precision neither end has.
-SPELLED = {"datetime.timedelta": "int"}
+_MICROSECOND = datetime.timedelta(microseconds=1)
+
+
+def _duration_out(value: datetime.timedelta) -> int:
+    """A duration as the whole microseconds a field carries.
+
+    Floor division by one microsecond, which is exact: a timedelta
+    holds days, seconds and microseconds as integers, so there is no
+    remainder to lose."""
+    return value // _MICROSECOND
+
+
+def _duration_in(raw: int) -> datetime.timedelta:
+    """The microseconds a field carried, as a duration again."""
+    return datetime.timedelta(microseconds=raw)
+
+
+@dataclass(frozen=True, slots=True)
+class Spelled:
+    """How one declared type goes in a builtin field.
+
+    `field` is the builtin, which the schema reads. `out` and `back`
+    convert at each end, which the codec reads. Two converters, unlike
+    a vocabulary: a StrEnum member IS a str, so its one constructor
+    serves both directions, and a timedelta is not an int."""
+
+    field: str
+    out: Callable[[Any], Any]
+    back: Callable[[Any], Any]
+
+
+SPELLED = {"datetime.timedelta": Spelled("int", _duration_out, _duration_in)}
 
 # The scalar arms of the recursive value message, by declared type,
 # with the oneof field each one goes in. In field-number order: the

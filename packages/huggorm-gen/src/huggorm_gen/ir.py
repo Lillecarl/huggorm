@@ -193,7 +193,8 @@ class TypeRef:
             return self.width
         if self.kind == "scalar":
             return self.name
-        return SPELLED.get(self.name)
+        spelled = SPELLED.get(self.name)
+        return None if spelled is None else spelled.field
 
     @property
     def required(self) -> TypeRef:
