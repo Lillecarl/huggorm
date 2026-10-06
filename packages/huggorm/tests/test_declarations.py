@@ -406,8 +406,15 @@ def test_a_produced_class_nothing_returns_fails_the_build(
         ir.Model({c.name: c for c in unit.classes}, {}, {},
                  {}, ir.Errors("", {}), (unit,))
 
-    assert declared_model().producers["PathInfo"] == (
-        "Store.query_path_info",)
+    model = declared_model()
+    assert model.producers["PathInfo"] == ("Store.query_path_info",)
+    # A dict's value is made too: on 2.35 this is the only call that
+    # makes an UnkeyedRealisation (huggorm#129).
+    built = next(m for m in model.classes["BuildSuccess"].bound
+                 if m.name == "built_outputs")
+    returns = built.returns
+    assert returns is not None and returns.origin is ir.Origin.DICT
+    assert "BuildSuccess.built_outputs" in model.producers[returns.leaf.name]
 
 
 # One bound class that declares a dunder the emitters carry and one

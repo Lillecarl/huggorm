@@ -1366,15 +1366,12 @@ class Model:
         sorted. A set's question: `Store.query_path_info` makes a
         `PathInfo`, and `pathinfo.py` does not import `Store`.
 
-        A call that returns `X`, `X | None` or `list[X]` makes an `X`,
-        read off the return types so no declaration names it twice."""
+        A call makes the class at the leaf of its return type, inside
+        any container: `X | None`, `list[X]` and `dict[str, X]` all
+        make an `X`. Read off the return types so no declaration names
+        it twice."""
         def made(t: TypeRef | None) -> str | None:
-            if t is None:
-                return None
-            t = t.required
-            if t.origin is Origin.LIST:
-                t = t.args[0]
-            return None if t.origin else t.name
+            return None if t is None else t.leaf.name
 
         out: dict[str, list[str]] = {}
         for unit in self.modules:
