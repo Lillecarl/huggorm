@@ -12,9 +12,11 @@ hand-written per method.
 from __future__ import annotations
 
 import contextlib
+import enum
 import logging
 import weakref
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
 import anyio
@@ -28,6 +30,7 @@ from huggorm_generated._callspec import Acquire, Call, Entries, Items, Leaf, Tre
 from huggorm_generated._policy import (
     ACQUIRE,
     ASYNC_CLASS,
+    CALLS,
     FREE,
     LOG_RECORDS,
     METHODS,
@@ -40,10 +43,35 @@ from .lifecycle import TOKEN_HEADER, HandleTable, ShareMode
 from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
 from .wire import WireCodec
 
-# One grpclib handler: it reads the stream and answers on it.
 logger = logging.getLogger(__name__)
 
+# One grpclib handler: it reads the stream and answers on it.
 Handler = Callable[[Any], Awaitable[None]]
+
+
+class Target(enum.Enum):
+    """What a call runs on, which decides how its answer is leased."""
+
+    # The handle the request names. A proxy it answers pins that handle.
+    HANDLE = enum.auto()
+    # Nothing. The answer is a new handle, leased to the caller.
+    NEW = enum.auto()
+    # Nothing. A proxy it answers pins nothing.
+    NONE = enum.auto()
+
+
+@dataclass(frozen=True, slots=True)
+class CallHandler:
+    """One call, with no transport in it.
+
+    `run` takes the caller's token, then the resolved target when
+    `target` is HANDLE, then the decoded arguments. It answers the
+    plain result and raises plain exceptions. The transport decodes,
+    leases and encodes around it."""
+
+    target: Target
+    run: Callable[..., Awaitable[Any]]
+    label: str
 
 
 def _tok(stream: Any) -> str:
@@ -444,6 +472,24 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
         await stream.send_message(resp)
 
 
+def _method(name: str) -> Callable[..., Awaitable[Any]]:
+    async def run(token: str, target: Any, *args: Any) -> Any:
+        return await getattr(target, name)(*args)
+    return run
+
+
+def _construct(wrapper_cls: Any) -> Callable[..., Awaitable[Any]]:
+    async def run(token: str, *args: Any) -> Any:
+        return wrapper_cls(*args)
+    return run
+
+
+def _function(fn: Any) -> Callable[..., Awaitable[Any]]:
+    async def run(token: str, *args: Any) -> Any:
+        return await fn(*args)
+    return run
+
+
 class Dispatcher:
     def __init__(self, pool: Any, tasks: Any, loops: Any,
                  lease_ttl: float = 120.0,
@@ -516,12 +562,9 @@ class Dispatcher:
         self.faults = FaultCodec(schema.load_pool())
         self.mapping: dict[str, grpclib.const.Handler] = {}
         self._session()
-        # A class with no methods on the wire has no service: it
-        # crosses as a value, so the caller already holds the object
-        # and calls it locally. METHODS says so by leaving it out.
-        for cls_name in METHODS:
-            self._service(cls_name)
-        self._free_service()
+        self.handlers = self._handlers()
+        for spec in CALLS:
+            self._route(spec.path, self._serve_call(spec, self.handlers[spec.index]))
 
     def _fanout(self, target: Any) -> _Fanout:
         """This state's fan-out, made on first use.
@@ -549,12 +592,12 @@ class Dispatcher:
         for reader in list(self._handle_readers.pop(key, ())):
             await reader.close()
 
-    async def _subscribe_logs(self, target: Any, token: str,
+    async def _subscribe_logs(self, token: str, target: Any,
                               capacity: int, level: int) -> _Reader:
         return await self._join(self._fanout(target), (token, id(target)),
                                 capacity, level)
 
-    async def _unsubscribe_logs(self, target: Any, token: str) -> None:
+    async def _unsubscribe_logs(self, token: str, target: Any) -> None:
         await self._leave_all((token, id(target)))
 
     async def _subscribe_process_logs(self, token: str,
@@ -683,117 +726,84 @@ class Dispatcher:
                 f"as a handle")
         return getattr(flg, cls)._adopt(obj, parent._runner)
 
-    def _service(self, cls_name: str) -> None:
-        """One handler per declared method, from the emitted specs.
+    def _handlers(self) -> dict[int, CallHandler]:
+        """Every call's handler, by its index in CALLS.
 
-        A method the wire cannot carry is simply absent from METHODS.
-        The generator names it and why at build time, the same as for
-        a free function, and the in-process wrapper still has it.
+        Built from the three by-name tables, because only the table
+        says whether a `Call` is a method or a free function. CALLS is
+        the fourth table, so a call it lists and nothing serves stops
+        the server here, before it listens.
 
-        The handler is ONE function, not one per method. Its body is a
-        RULE - decode the arguments, call the method, encode the
-        result - and it reads the same for all sixty of them. Emitting
-        sixty copies would restate that rule sixty times, which is the
-        thing this repo generates code to avoid. What IS per-method is
-        the spec, and that is emitted.
-        """
-        if cls_name in ACQUIRE:
-            self._acquire(cls_name)
+        A class with no methods on the wire is absent from METHODS: it
+        crosses as a value, so the caller already holds the object and
+        calls it locally. The generator names every withheld method
+        and function, and why, at build time.
 
-        for m in METHODS.get(cls_name, ()):
-            resp_cls = self.rpcs[m.path].resp
-            override = self._method_overrides.get(m.name)
-
-            async def handler(stream: Any, m: Call = m,
-                              resp_cls: Any = resp_cls,
-                              override: Any = override) -> None:
-                req = await stream.recv_message()
-                token = _tok(stream)
-                target = self.resolve(req.self.id, token)
-                args = [
-                    self.codec.decode(req, a.name, a.type,
-                                      lambda hid: self.resolve(hid, token))
-                    for a in m.args]
-                if override is not None:
-                    result = await override(target, token, *args)
-                else:
-                    result = await getattr(target, m.name)(*args)
-                resp = resp_cls()
-                # Proxy returns pin their producer (parents=[self]) and
-                # lease to the CALLER's connection; everything else the
-                # codec serializes by declared type.
-                self.codec.encode(
-                    resp, "result", m.returns, result,
-                    lambda obj: self.put(obj, token, parents=[req.self.id]))
-                await stream.send_message(resp)
-
-            self._route(m.path, self._wrap(handler, f"{cls_name}.{m.name}"))
-
-    def _acquire(self, cls_name: str) -> None:
-        """Construct one instance, from typed constructor arguments.
-
-        The old Session/Acquire took a class NAME and nothing else, so
-        it could only build things whose constructor needs no arguments
-        - and it decided which those were by inspecting __init__,
-        which reports (self, /, *args, **kwargs) for every bound class
-        alike. The check was a constant True. Construction now lives on the
-        class's own service with its declared parameters."""
+        The handler is ONE rule, not one per method: call the method
+        the spec names. Emitting sixty copies would restate that rule
+        sixty times, which is the thing this repo generates code to
+        avoid. What IS per-method is the spec, and that is emitted."""
         import huggorm_generated as flg
 
-        spec = ACQUIRE[cls_name]
-        wrapper_cls = getattr(flg, "Async" + cls_name)
-        handle_cls = self.rpcs[spec.path].resp
+        handlers: dict[int, CallHandler] = {}
+        for cls_name, methods in METHODS.items():
+            for m in methods:
+                handlers[m.index] = CallHandler(
+                    Target.HANDLE,
+                    self._method_overrides.get(m.name) or _method(m.name),
+                    f"{cls_name}.{m.name}")
+        for cls_name, acquire in ACQUIRE.items():
+            handlers[acquire.index] = CallHandler(
+                Target.NEW, _construct(getattr(flg, "Async" + cls_name)),
+                f"{cls_name}.Acquire")
+        for fname, call in FREE.items():
+            handlers[call.index] = CallHandler(
+                Target.NONE,
+                self._free_overrides.get(fname) or _function(getattr(flg, fname)),
+                f"Functions.{fname}")
+        listed = {c.index for c in CALLS}
+        if handlers.keys() != listed:
+            raise RuntimeError(
+                f"calls {sorted(listed - handlers.keys())} have no handler, "
+                f"and handlers {sorted(handlers.keys() - listed)} answer no "
+                f"listed call")
+        return handlers
 
-        async def handler(stream: Any, wrapper_cls: Any = wrapper_cls,
-                          spec: Acquire = spec,
-                          handle_cls: Any = handle_cls) -> None:
+    def _serve_call(self, spec: Call | Acquire, h: CallHandler) -> Handler:
+        """One call, over gRPC.
+
+        A proxy answer leases to the CALLER's connection. A method's
+        answer also pins the handle it ran on (parents=[self]), so a
+        value read out of a state keeps that state alive."""
+        resp_cls = self.rpcs[spec.path].resp
+        optional = spec.optional if isinstance(spec, Acquire) else ()
+        returns = spec.returns if isinstance(spec, Call) else None
+
+        async def handler(stream: Any) -> None:
             req = await stream.recv_message()
             token = _tok(stream)
+            target = (self.resolve(req.self.id, token)
+                      if h.target is Target.HANDLE else None)
             args = [self.codec.decode(req, a.name, a.type,
                                       lambda hid: self.resolve(hid, token),
-                                      optional=a.name in spec.optional)
+                                      optional=a.name in optional)
                     for a in spec.args]
-            resp = handle_cls()
-            resp.id = self.put(wrapper_cls(*args), token)
+            resp = resp_cls()
+            match h.target:
+                case Target.HANDLE:
+                    result = await h.run(token, target, *args)
+                    self.codec.encode(
+                        resp, "result", returns, result,
+                        lambda obj: self.put(obj, token, parents=[req.self.id]))
+                case Target.NEW:
+                    resp.id = self.put(await h.run(token, *args), token)
+                case Target.NONE:
+                    result = await h.run(token, *args)
+                    self.codec.encode(resp, "result", returns, result,
+                                      lambda obj: self.put(obj, token))
             await stream.send_message(resp)
 
-        self._route(spec.path, self._wrap(handler, f"{cls_name}.Acquire"))
-
-    def _free_service(self) -> None:
-        """Module-level functions, on one shared service.
-
-        They have no instance, so their requests carry no `self` handle
-        - the only structural difference from a method. Functions whose
-        parameters or return type the wire cannot represent are absent
-        from the schema; the generator names them and why at build
-        time."""
-        import huggorm_generated as flg
-
-        for fname, spec in FREE.items():
-            fn = getattr(flg, fname)
-            resp_cls = self.rpcs[spec.path].resp
-            override = self._free_overrides.get(fname)
-
-            async def handler(stream: Any, fn: Any = fn,
-                              spec: Call = spec,
-                              resp_cls: Any = resp_cls,
-                              override: Any = override) -> None:
-                req = await stream.recv_message()
-                token = _tok(stream)
-                args = [
-                    self.codec.decode(req, a.name, a.type,
-                                      lambda hid: self.resolve(hid, token))
-                    for a in spec.args]
-                if override is not None:
-                    result = await override(token, *args)
-                else:
-                    result = await fn(*args)
-                resp = resp_cls()
-                self.codec.encode(resp, "result", spec.returns, result,
-                                  lambda obj: self.put(obj, token))
-                await stream.send_message(resp)
-
-            self._route(spec.path, self._wrap(handler, f"Functions.{fname}"))
+        return self._wrap(handler, h.label)
 
     def _session(self) -> None:
         from huggorm_generated._runtime import InternalError
