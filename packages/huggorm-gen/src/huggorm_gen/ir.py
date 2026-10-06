@@ -31,6 +31,7 @@ from huggorm_dsl.read import (
     Type,
     is_surface,
 )
+from huggorm_dsl.read import Origin as Origin
 from huggorm_gen import cxx
 from huggorm_gen.payload import callspec
 from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED, TREE_ARMS
@@ -174,11 +175,11 @@ class TypeRef:
     """One declared type, resolved.
 
     `spelling` is the annotation a caller sees. `origin` and `args`
-    are the structure ("optional", "list", "dict", or "" for a leaf),
-    and `kind` and `name` say what the leaf is."""
+    are the structure (None for a leaf), and `kind` and `name` say
+    what the leaf is."""
 
     spelling: str
-    origin: str
+    origin: Origin | None
     args: tuple[TypeRef, ...]
     kind: Kind
     name: str
@@ -194,7 +195,7 @@ class TypeRef:
 
     @property
     def optional(self) -> bool:
-        return self.origin == "optional"
+        return self.origin is Origin.OPTIONAL
 
     @property
     def scalar(self) -> str | None:
@@ -221,25 +222,25 @@ class TypeRef:
 
     @property
     def container(self) -> bool:
-        return self.origin in ("list", "dict")
+        return self.origin in (Origin.LIST, Origin.DICT)
 
     # Composing constructors, spelled the way the reader spells: a test
     # builds a shape the corpus does not declare without parsing text.
     @classmethod
     def named(cls, name: str, kind: Kind) -> TypeRef:
-        return cls(name, "", (), kind, name)
+        return cls(name, None, (), kind, name)
 
     @classmethod
     def list_of(cls, t: TypeRef) -> TypeRef:
-        return cls(f"list[{t.spelling}]", "list", (t,), t.kind, t.name)
+        return cls(f"list[{t.spelling}]", Origin.LIST, (t,), t.kind, t.name)
 
     @classmethod
     def dict_of(cls, t: TypeRef) -> TypeRef:
-        return cls(f"dict[str, {t.spelling}]", "dict", (t,), t.kind, t.name)
+        return cls(f"dict[str, {t.spelling}]", Origin.DICT, (t,), t.kind, t.name)
 
     @classmethod
     def optional_of(cls, t: TypeRef) -> TypeRef:
-        return cls(f"{t.spelling} | None", "optional", (t,), t.kind, t.name)
+        return cls(f"{t.spelling} | None", Origin.OPTIONAL, (t,), t.kind, t.name)
 
 
 # Why an opaque Python object never crosses. A DECISION, unlike every
@@ -275,7 +276,7 @@ def wire_blocker(t: TypeRef, served: frozenset[str]) -> str | None:
             return (f"{t.spelling}: proto3 cannot put a {element.origin} "
                     f"inside a map. A nested attribute set needs the "
                     f"recursive value message (huggorm#30)"
-                    if t.origin == "dict" else
+                    if t.origin is Origin.DICT else
                     f"{t.spelling}: proto3 cannot repeat a {element.origin}. "
                     f"A list of them needs the recursive value message "
                     f"(huggorm#30)")
@@ -412,7 +413,7 @@ class ParamModel:
         # otherwise. Carried as `list[X] | None`, the schema refuses it
         # and the method loses its rpc in silence (huggorm#104).
         if (p.has_default and p.default is None
-                and declared.required.origin == "list"):
+                and declared.required.origin is Origin.LIST):
             declared = declared.required
         if not p.has_default:
             default = None
@@ -1371,7 +1372,7 @@ class Model:
             if t is None:
                 return None
             t = t.required
-            if t.origin == "list":
+            if t.origin is Origin.LIST:
                 t = t.args[0]
             return None if t.origin else t.name
 
@@ -1418,7 +1419,7 @@ class Model:
                     raise TypeError(
                         f"{c.name}.{m.name}: its async form is named {name}, "
                         f"and a declared free function has that name.")
-                me = TypeRef(c.name, "", (), Kind.VALUE, c.name)
+                me = TypeRef(c.name, None, (), Kind.VALUE, c.name)
                 out.append(FunctionModel(
                     name, c.qualified_module, c.threading,
                     (ParamModel(_snake(c.name), me, None), *m.params),

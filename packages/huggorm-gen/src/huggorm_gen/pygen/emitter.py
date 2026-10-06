@@ -101,7 +101,7 @@ def _twinned(call: str, t: ir.TypeRef) -> str:
     if t.optional:
         return (f"result = await {call}\n"
                 f"return None if result is None else {twin}(result)")
-    if t.origin == "list":
+    if t.origin is ir.Origin.LIST:
         return f"return [{twin}(item) for item in await {call}]"
     raise TypeError(f"{t.spelling}: an async twin has no spelling inside "
                     f"a {t.origin}")
@@ -255,7 +255,7 @@ def _wire(t: ir.TypeRef | None) -> cs.Wire | None:
     optional = t.optional
     t = t.required
     if t.container:
-        return cs.Wire(cs.WireKind.LIST if t.origin == "list"
+        return cs.Wire(cs.WireKind.LIST if t.origin is ir.Origin.LIST
                        else cs.WireKind.MAP,
                        item=_wire(t.args[0]), optional=optional)
     if t.scalar is not None:

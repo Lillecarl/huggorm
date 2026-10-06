@@ -1838,12 +1838,12 @@ def test_an_alias_is_resolved_at_any_depth(tmp_path: pathlib.Path) -> None:
     The reader used to peel ONE container off a spelling with
     `removeprefix`, so `dict[str, list[Str]]` reached the emitter with
     a bare `Str` it could not resolve."""
-    from huggorm_dsl.read import read
+    from huggorm_dsl.read import Origin, read
 
     t = read(_declaration(tmp_path, NESTED)).classes[0].methods[0].ret
     assert t is not None
     assert (t.origin, t.required.origin, t.required.element.origin) == \
-        ("optional", "dict", "list")
+        (Origin.OPTIONAL, Origin.DICT, Origin.LIST)
     leaf = t.leaf
     assert leaf.python == "str"
     assert leaf.cxx is not None and leaf.cxx.spelling == "string"

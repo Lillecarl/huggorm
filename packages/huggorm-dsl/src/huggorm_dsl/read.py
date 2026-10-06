@@ -316,6 +316,14 @@ class DeclarationError(Exception):
         return err
 
 
+class Origin(enum.StrEnum):
+    """What a type node wraps. A leaf has no origin."""
+
+    OPTIONAL = "optional"
+    LIST = "list"
+    DICT = "dict"
+
+
 @dataclass(frozen=True)
 class Type:
     """A declared type, from both sides of the boundary.
@@ -331,11 +339,11 @@ class Type:
     # The emitter resolves the C++ spelling through the other
     # declaration, so neither file repeats it.
     bound: bool = False
-    # The STRUCTURE, which `python` only renders. "" for a leaf;
-    # "list", "dict" or "optional" for a node whose one argument is
-    # the element, the map's value, or the type that may be absent. An
+    # The STRUCTURE, which `python` only renders. None for a leaf; a
+    # list, a dict or an optional is a node whose one argument is the
+    # element, the map's value, or the type that may be absent. An
     # emitter walks these and never reads `python` to find them.
-    origin: str = ""
+    origin: Origin | None = None
     args: tuple[Type, ...] = ()
     # The module an undeclared class comes from: "pathlib" for
     # `pathlib.Path`. Empty for a builtin and for a declared class.
@@ -349,7 +357,7 @@ class Type:
     @property
     def optional(self) -> bool:
         """Whether None is a legal value."""
-        return self.origin == "optional"
+        return self.origin is Origin.OPTIONAL
 
     @property
     def required(self) -> Type:
@@ -359,7 +367,7 @@ class Type:
     @property
     def element(self) -> Type:
         """What a list holds, or a map's value."""
-        if self.origin not in ("list", "dict"):
+        if self.origin not in (Origin.LIST, Origin.DICT):
             raise TypeError(f"'{self.python}' is not a container")
         return self.args[0]
 
@@ -855,12 +863,12 @@ def type_of(ann: object, node: ast.AST, home: Mapping[str, Any]) -> Type:
                 node, f"'{ann}': an annotation holds `T | None` and no other "
                       f"union. A sum type is a named alias with Variant(...).")
         inner = type_of(present[0], node, home)
-        return Type(python=f"{inner.python} | None", origin="optional",
+        return Type(python=f"{inner.python} | None", origin=Origin.OPTIONAL,
                     args=(inner,))
     if origin is list:
         (item,) = get_args(ann)
         inner = type_of(item, node, home)
-        return Type(python=f"list[{inner.python}]", origin="list",
+        return Type(python=f"list[{inner.python}]", origin=Origin.LIST,
                     args=(inner,))
     if origin is dict:
         key, value = get_args(ann)
@@ -869,7 +877,7 @@ def type_of(ann: object, node: ast.AST, home: Mapping[str, Any]) -> Type:
                 node, f"'{ann}': a map is keyed by str. The wire has no "
                       f"other key, and a Nix attribute name is one.")
         inner = type_of(value, node, home)
-        return Type(python=f"dict[str, {inner.python}]", origin="dict",
+        return Type(python=f"dict[str, {inner.python}]", origin=Origin.DICT,
                     args=(inner,))
     if origin is not None:
         raise DeclarationError(

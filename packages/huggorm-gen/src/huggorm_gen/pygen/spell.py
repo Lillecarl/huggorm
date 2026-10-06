@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterable, Mapping
 
-from huggorm_gen.ir import Kind, ParamModel, TypeRef
+from huggorm_gen.ir import Kind, Origin, ParamModel, TypeRef
 from huggorm_gen.payload.wiretypes import python_spelling
 
 # Names Python already has.
@@ -67,9 +67,9 @@ class Spelling:
                  twin: bool = False) -> str:
         if t.optional:
             return f"{self(t.args[0], proxy, twin)} | None"
-        if t.origin == "list":
+        if t.origin is Origin.LIST:
             return f"list[{self(t.args[0], proxy, twin)}]"
-        if t.origin == "dict":
+        if t.origin is Origin.DICT:
             return f"dict[str, {self(t.args[0], proxy, twin)}]"
         if twin and t.twin:
             self.module(t.twin)

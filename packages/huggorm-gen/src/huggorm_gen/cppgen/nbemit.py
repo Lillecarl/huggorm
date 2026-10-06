@@ -395,7 +395,7 @@ def _lists(cls: ir.ClassModel) -> list[str]:
     and a list is hashed as a tuple because a list is unhashable -
     which is the one thing `as_tuple` exists for."""
     return [f.name for f in cls.wire_fields
-            if f.type.required.origin == "list"]
+            if f.type.required.origin is ir.Origin.LIST]
 
 
 def _nodes(t: ir.TypeRef | None) -> Iterator[ir.TypeRef]:
@@ -655,12 +655,12 @@ def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:
                 declared.append(m.returns)
             for one in declared:
                 for node in _nodes(one):
-                    if (node.origin == "list"
+                    if (node.origin is ir.Origin.LIST
                             and node.args[0].kind in DECLARED
                             and not node.args[0].origin):
                         return True
                     # Every `dict` return goes through `as_map`.
-                    if node.origin == "dict":
+                    if node.origin is ir.Origin.DICT:
                         return True
     return False
 
@@ -849,7 +849,7 @@ class Emitter:
         # what makes a C++ set answer the list the declaration promised,
         # and a pointer binding has nowhere to put it.
         wants_list = (m.returns is not None
-                      and m.returns.origin in ("list", "dict"))
+                      and m.returns.origin in (ir.Origin.LIST, ir.Origin.DICT))
         if not (cls.via or m.returns_handle or m.reads or m.guard
                 or m.names or m.produces or wants_list
                 or any(pr.via for pr in m.params)):
@@ -923,11 +923,11 @@ class Emitter:
         # declaration already said `list` - so nothing needs to say it
         # twice. `as_list` is a template over any range, so wrapping is
         # right whether the call answered a set or a vector.
-        if m.returns.origin == "list":
+        if m.returns.origin is ir.Origin.LIST:
             return [*head, f"{INDENT * 4}return as_list({call});"]
         # The same for a `dict[str, V]`: libstore keys many maps with a
         # transparent `std::less<>`, and nanobind casts only the plain one.
-        if m.returns.origin == "dict":
+        if m.returns.origin is ir.Origin.DICT:
             return [*head, f"{INDENT * 4}return as_map({call});"]
         # A declared VOCABULARY return. The enumerator libstore answers
         # with is not the word Python has, and `as_word` is the switch
@@ -1125,7 +1125,7 @@ class Emitter:
         spec = ", ".join(f"{name}={{!r}}" for name, _, _ in fields)
         reads = ", ".join(read for _, _, read in fields)
         hashed = ", ".join(
-            f"{NAMESPACE}::as_tuple({read})" if t.required.origin == "list"
+            f"{NAMESPACE}::as_tuple({read})" if t.required.origin is ir.Origin.LIST
             else read
             for _, t, read in fields)
         out = []

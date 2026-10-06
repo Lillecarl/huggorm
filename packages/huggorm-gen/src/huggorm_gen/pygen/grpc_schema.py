@@ -134,9 +134,9 @@ def _add_typed_field(msg: Any, name: str, number: int, t: ir.TypeRef,
     the containing type carries, so this builds that message too."""
     if t.optional:
         t, optional = t.required, True
-    if t.origin == "dict":
+    if t.origin is ir.Origin.DICT:
         return _add_map_field(msg, name, number, _leaf(t.args[0]))
-    if t.origin == "list":
+    if t.origin is ir.Origin.LIST:
         pt, message = _leaf(t.args[0])
         f = _field(msg, name, number, proto_type=pt, type_name=message)
         f.label = f.LABEL_REPEATED

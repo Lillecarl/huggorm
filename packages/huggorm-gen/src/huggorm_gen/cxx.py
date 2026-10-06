@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Protocol
 
 from huggorm_dsl.declare import Crossing, Decl
-from huggorm_dsl.read import Class, Param, Type
+from huggorm_dsl.read import Class, Origin, Param, Type
 
 # How a declared type is spelled in a C++ signature, and which caster
 # has to be included for it to cross. Nothing here is guessed from a
@@ -175,14 +175,14 @@ def value(t: Type, known: Mapping[str, Class]) -> tuple[str, str | None]:
     if t.optional:
         held, _ = value(t.required, known)
         return f"std::optional<{held}>", "optional"
-    if t.origin == "list":
+    if t.origin is Origin.LIST:
         held, _ = value(t.element, known)
         # A vector, not the std::set libstore keeps them in. A set
         # casts to a Python set, which has no order - and every one
         # of these answers is sorted, which is information a caller
         # can use.
         return f"std::vector<{held}>", "vector"
-    if t.origin == "dict":
+    if t.origin is Origin.DICT:
         held, _ = value(t.element, known)
         # `std::map`, which is what libstore keeps every one of these
         # in - `OutputPathMap` and `SingleDrvOutputs` are both one -
@@ -301,7 +301,7 @@ def absent(pr: Param) -> bool:
     None has to say so in its own type."""
     if not pr.has_default or pr.default is not None:
         return False
-    return pr.type.required.origin == "list"
+    return pr.type.required.origin is Origin.LIST
 
 
 def default(pr: Param) -> str:
@@ -379,7 +379,7 @@ def collection(t: Type | None, known: Mapping[str, Class]) -> str:
 
     Empty for everything else, which is every list whose element type
     is a primitive or whose class is happy with a vector."""
-    if t is None or t.origin != "list":
+    if t is None or t.origin is not Origin.LIST:
         return ""
     element = known.get(t.element.python)
     return element.decl.collection if element else ""

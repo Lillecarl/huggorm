@@ -675,7 +675,7 @@ def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:
             continue
         rt = fn.returns
         expected = rt.spelling if rt is not None else "None"
-        if rt is not None and rt.origin in ("", "optional") \
+        if rt is not None and rt.origin in (None, ir.Origin.OPTIONAL) \
                 and rt.kind == ir.Kind.PROXY:
             adopted += 1
             expected = expected.replace(rt.name, f"Async{rt.name}")
