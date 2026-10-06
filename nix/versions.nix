@@ -33,6 +33,9 @@ let
   countCalls234 = patch "nix-2.34-count-calls";
   countCalls235 = patch "nix-2.35-count-calls";
   countCalls236 = patch "nix-2.36-count-calls";
+  # A parsed path literal held its accessor, so the Store, for the life of
+  # the process (huggorm#128).
+  exprPath = patch "nix-expr-path-holds-no-accessor";
   # The `open_tree` polyfill defines `AT_RECURSIVE`, which glibc 2.28
   # lacks: the manylinux build needs it. 2.34 does not call `open_tree`.
   atRecursive = patch "nix-open-tree-at-recursive";
@@ -48,6 +51,7 @@ in
       tempRoots
       remoteVerbosity
       countCalls234
+      exprPath
     ];
   };
   nix_2_35 = {
@@ -60,6 +64,7 @@ in
       remoteVerbosity
       countCalls235
       atRecursive
+      exprPath
     ];
   };
   # Unpinned on purpose: it follows nixpkgs' `nixComponents_git`, so a
@@ -73,6 +78,7 @@ in
       remoteVerbosity236
       countCalls236
       atRecursive
+      exprPath
     ];
     # Nix master uses `#embed`, which needs GCC 15. Every PyPA image
     # ships gcc-toolset-14 (huggorm#109).

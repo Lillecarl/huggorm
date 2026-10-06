@@ -1,0 +1,33 @@
+Drop ExprPath's counted reference to its source accessor.
+
+A parsed path literal is an ExprPath, which held `ref<SourceAccessor>
+accessor` - usually `state->rootFS`. Exprs::add places expressions in a
+std::pmr::monotonic_buffer_resource, which frees memory without running
+destructors, so that reference is never dropped. rootFS mounts storeFS,
+which mounts `store->getFSAccessor()`, which holds
+`ref<Store>(shared_from_this())`. So once an evaluator has parsed one path
+literal, its Store and the Store's daemon connections outlive it for the
+life of the process. The Nix CLI exits after one evaluation and never sees
+this; an embedder that opens many evaluators runs the daemon out of file
+descriptors (huggorm#128). Measured: one leaked daemon socket per closed
+evaluator that ran `builtins.path { path = /abs; }`; gdb shows ~EvalState
+and never ~Store.
+
+Nothing reads the member. `v` already holds the accessor as a raw pointer,
+as every path Value does, and every accessor a parsed path names is owned
+by the EvalState that owns the parsed expressions.
+
+--- a/src/libexpr/include/nix/expr/nixexpr.hh	2026-10-06 11:12:15.421117989 +0200
++++ b/src/libexpr/include/nix/expr/nixexpr.hh	2026-10-06 11:12:38.550276866 +0200
+@@ -208,11 +208,9 @@
+ 
+ struct ExprPath : Expr
+ {
+-    ref<SourceAccessor> accessor;
+     Value v;
+ 
+     ExprPath(std::pmr::polymorphic_allocator<char> & alloc, ref<SourceAccessor> accessor, std::string_view sv)
+-        : accessor(accessor)
+     {
+         v.mkPath(&*accessor, StringData::make(*alloc.resource(), sv));
+     }
