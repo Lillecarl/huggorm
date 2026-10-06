@@ -26,6 +26,7 @@ from typing import Any
 
 from google.protobuf import descriptor_pb2
 
+from huggorm_dsl.declare import Crossing
 from huggorm_gen import ir
 from huggorm_gen.ir import (
     ACQUIRE,
@@ -248,7 +249,7 @@ def _add_common(file_dp: Any, model: ir.Model) -> None:
 
     # Wire-value messages, built from the contract each binding declares.
     for c in (*model.constructed, *model.handed_back):
-        if c.wire != "value":
+        if c.wire is not Crossing.VALUE:
             continue
         m = file_dp.message_type.add()
         m.name = value_msg_name(c.name)

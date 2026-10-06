@@ -7,7 +7,7 @@ other than `T | None`, an unknown name - is not checked again here.
 
 from __future__ import annotations
 
-from huggorm_dsl.declare import Threading
+from huggorm_dsl.declare import Crossing, Threading
 from huggorm_gen import ir
 
 
@@ -111,7 +111,7 @@ def wire(model: ir.Model) -> list[str]:
     surface as a KeyError deep in the server at the first call."""
     bad = []
     for c in model.classes.values():
-        if c.wire == "proxy":
+        if c.wire is Crossing.PROXY:
             if c.wire_fields:
                 bad.append(f"{c.name}: proxy types travel as handles, drop "
                            f"_wire_fields")

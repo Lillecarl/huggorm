@@ -71,7 +71,7 @@ from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
 
 from huggorm_dsl import declare
-from huggorm_dsl.declare import Cxx, Decl, Field, Threading
+from huggorm_dsl.declare import Crossing, Cxx, Decl, Field, Threading
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
@@ -696,7 +696,7 @@ class Class:
                         f"that answers anything.")
                 out.append((f, m))
             return out
-        if self.decl.wire != "value":
+        if self.decl.wire is not Crossing.VALUE:
             return []
         out = []
         for m in self.methods:
@@ -2088,7 +2088,7 @@ def _union_class(name: str, alias: object, where: str,
     variant = _variant(name, tuple(meta), arms, item)
     return Class(
         name=name, doc=doc, ctor=None, module=where,
-        decl=Decl(name=name, kind="union", arms=arms, wire="value",
+        decl=Decl(name=name, kind="union", arms=arms, wire=Crossing.VALUE,
                   variant=variant, scalars=scalars),
     )
 
@@ -2190,9 +2190,9 @@ def _check_arms(cls: Class, known: dict[str, Class], node: ast.AST) -> None:
                 node, f"{cls.name}: '{arm}' is itself a union. Flatten it: "
                       f"a oneof of a oneof is one oneof, and nesting them "
                       f"hides which arms exist.")
-        if other.decl.wire != "value":
+        if other.decl.wire is not Crossing.VALUE:
             raise DeclarationError(
-                node, f"{cls.name}: '{arm}' crosses as a {other.decl.wire or 'proxy'}, "
+                node, f"{cls.name}: '{arm}' crosses as a {other.decl.wire}, "
                       f"not as a value. An arm that granted a lease would "
                       f"make every union a bulk-lease problem (huggorm#31).")
 

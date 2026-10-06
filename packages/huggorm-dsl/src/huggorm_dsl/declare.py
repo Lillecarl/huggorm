@@ -43,6 +43,15 @@ class Threading(StrEnum):
     AFFINE = "affine"
 
 
+class Crossing(StrEnum):
+    """How a bound object crosses a boundary."""
+
+    # Behind a handle: the object stays where it lives.
+    PROXY = "proxy"
+    # Whole, as a copy rebuilt from its parts: `@wire_value`.
+    VALUE = "value"
+
+
 @dataclass(frozen=True)
 class Cxx:
     """How a Python type is spelled in C++.
@@ -331,7 +340,7 @@ class Decl:
     factory: str = ""
     threading: Threading = Threading.POOL
     blocking: bool = True
-    wire: str = ""
+    wire: Crossing = Crossing.PROXY
     # Each part either a `Field` or the NAME of the accessor that
     # answers it. See `wire_value`.
     fields: tuple[Field | str, ...] = ()
@@ -750,7 +759,7 @@ def wire_value(fields: tuple[Field | str, ...] = (), compare: str = "parts",
     otherwise."""
     def apply(cls: type) -> type:
         d = _decl(cls)
-        d.wire, d.fields, d.compare = "value", fields, compare
+        d.wire, d.fields, d.compare = Crossing.VALUE, fields, compare
         d.text, d.order = text, order
         d.shown = shown or text
         d.unit = unit

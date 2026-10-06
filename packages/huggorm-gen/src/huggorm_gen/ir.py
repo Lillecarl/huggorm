@@ -20,7 +20,7 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Literal
 
-from huggorm_dsl.declare import Decl, Threading
+from huggorm_dsl.declare import Crossing, Decl, Threading
 from huggorm_dsl.read import (
     MESSAGE_PARTS,
     Class,
@@ -156,7 +156,7 @@ class Resolver:
             return "enum"
         if cls.is_union:
             return "union"
-        return "value" if cls.decl.wire == "value" else "proxy"
+        return "value" if cls.decl.wire is Crossing.VALUE else "proxy"
 
 
 @dataclass(frozen=True)
@@ -746,7 +746,7 @@ class ClassModel:
     semantics: Semantics = Semantics()
     # "proxy" unless the declaration proves the class is a value:
     # stateful is the safe default on both sides.
-    wire: str = "proxy"
+    wire: Crossing = Crossing.PROXY
     threading: Threading = Threading.POOL
     blocking: bool = True
     # `@produced`: a call that returns one makes it. `produced` adds
@@ -777,7 +777,7 @@ class ClassModel:
     def _of(cls, c: Class, package: str, module: str, resolver: Resolver,
             functions: Sequence[Method]) -> ClassModel:
         decl = c.decl
-        if (decl.wire or "proxy") == "proxy":
+        if decl.wire is Crossing.PROXY:
             # A proxy is reached through a service, so its methods ARE
             # messages. A value crosses whole, as its fields.
             for pr in _ctor_params(c, functions):
@@ -807,7 +807,7 @@ class ClassModel:
                         if c.from_parts is not None else None),
             header=decl.header,
             semantics=Semantics.of(decl),
-            wire=decl.wire or "proxy",
+            wire=decl.wire,
             threading=decl.threading,
             blocking=decl.blocking,
             made_elsewhere=decl.produced,
@@ -832,7 +832,7 @@ class ClassModel:
     @property
     def dunders(self) -> list[str]:
         """The value dunders this class implies, sorted."""
-        facts = {"value": self.wire == "value",
+        facts = {"value": self.wire is Crossing.VALUE,
                  "order": self.semantics.ordered,
                  "text": bool(self.semantics.text)}
         return sorted(name for name, fact in DUNDERS if facts[fact])
@@ -853,7 +853,7 @@ class ClassModel:
 
     @property
     def served(self) -> bool:
-        return self.wire == "proxy"
+        return self.wire is Crossing.PROXY
 
     @property
     def wrapped(self) -> bool:
@@ -937,7 +937,7 @@ def _shaped(cls: ClassModel) -> ClassModel:
         raise TypeError(
             f"{cls.name}: \"{text}\" names no accessor on this class.")
     fields = [f.name for f in cls.wire_fields]
-    if (cls.wire == "value" and (fields or cls.semantics.unit)
+    if (cls.wire is Crossing.VALUE and (fields or cls.semantics.unit)
             and not cls.is_value
             and cls.init is not None and len(cls.init.params) != len(fields)):
         # `_from_parts` IS the constructor here. A forgotten `@local`

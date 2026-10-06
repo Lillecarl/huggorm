@@ -9,7 +9,7 @@ import json
 from collections.abc import Mapping
 from typing import Protocol
 
-from huggorm_dsl.declare import Decl
+from huggorm_dsl.declare import Crossing, Decl
 from huggorm_dsl.read import Class, Param, Type
 
 # How a declared type is spelled in a C++ signature, and which caster
@@ -278,7 +278,7 @@ def param(t: Type, known: Mapping[str, Class]) -> tuple[str, str | None]:
         # A wire value is a copy the call reads, so const. A proxy is an
         # object the call may act on: `nix::copyClosure` writes into the
         # destination `Store &`, and a const reference cannot reach it.
-        if other.decl.wire:
+        if other.decl.wire is Crossing.VALUE:
             return f"const {bare(other, known)} &", None
         return f"{bare(other, known)} &", None
     if t.cxx is None or t.cxx.spelling not in CXX_PARAM:

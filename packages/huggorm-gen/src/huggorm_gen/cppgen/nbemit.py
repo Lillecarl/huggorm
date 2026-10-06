@@ -53,6 +53,7 @@ becomes the place the real code lives.
 
 from collections.abc import Iterator, Sequence
 
+from huggorm_dsl.declare import Crossing
 from huggorm_gen import ir
 from huggorm_gen.cxx import NAMESPACE
 
@@ -315,7 +316,7 @@ def _value_semantics(cls: ir.ClassModel) -> list[str]:
         # A CONVERSION, and only for a value that IS a string.
         out.append(f'{INDENT * 2}.def("__str__", [](nb::handle h) '
                    f"{{ return {_render(cls, cls.semantics.text)}; }})")
-    if cls.wire == "value":
+    if cls.wire is Crossing.VALUE:
         # A value COPIES. Without these, copy.copy falls through to
         # pickle, which a bound C++ type cannot do - so a caller gets
         # TypeError rather than a copy.
@@ -756,7 +757,7 @@ class Emitter:
 
         out = ["#include <nanobind/nanobind.h>"]
         out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
-        if any(cls.wire == "value" and cls.semantics.text
+        if any(cls.wire is Crossing.VALUE and cls.semantics.text
                for cls in classes):
             # std::hash lives in <functional>, and the value hash uses it.
             out.append("#include <functional>")
@@ -1717,7 +1718,7 @@ class Emitter:
         #
         # A PROXY is not final: a caller may subclass one to add
         # behaviour, and nothing about a handle breaks when they do.
-        final = ", nb::is_final()" if cls.wire == "value" else ""
+        final = ", nb::is_final()" if cls.wire is Crossing.VALUE else ""
         # The class's own prose, which a declaration always writes and a
         # caller could not read: `help(StorePath)` answered with nothing
         # but the signature until this line existed.
@@ -1806,7 +1807,7 @@ class Emitter:
             body = self._ctor(cls)
         for m in cls.bound:
             body += self._method(cls, m)
-        if cls.wire == "value":
+        if cls.wire is Crossing.VALUE:
             body += self._identity_semantics(cls)
             body += _round_trip(cls)
             if cls.init is None:

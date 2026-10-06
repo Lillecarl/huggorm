@@ -783,13 +783,14 @@ def test_a_service_parameter_says_which_64_bit_integer_it_is(
     the Python surface still says `int`."""
     from google.protobuf import descriptor_pb2
 
+    from huggorm_dsl.declare import Crossing
     from huggorm_dsl.read import read
     from huggorm_gen import ir
     from huggorm_gen.pygen.grpc_schema import build_fdset
 
     module = read(_declaration(tmp_path, TAKES))
     cls = module.classes[0]
-    assert not cls.decl.wire, "a plain @binding is a proxy"
+    assert cls.decl.wire is Crossing.PROXY, "a plain @binding is a proxy"
     typed = ir.ClassModel.of(cls, "pkg", "mod", ir.Resolver.of(module))
     limit = typed.method("fits").params[0].type
     assert (limit.spelling, limit.scalar) == ("int", "uint")

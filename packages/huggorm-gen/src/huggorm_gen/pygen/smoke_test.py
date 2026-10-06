@@ -22,7 +22,7 @@ import re
 import sys
 from typing import Any
 
-from huggorm_dsl.declare import Threading
+from huggorm_dsl.declare import Crossing, Threading
 from huggorm_dsl.read import is_surface
 
 
@@ -33,7 +33,7 @@ def test_parse(out: pathlib.Path) -> None:
 
 def _cls(name: str, *, threading: Threading = Threading.POOL,
          blocking: bool = True,
-         wire: str = "", fields: tuple[Any, ...] = (),
+         wire: Crossing = Crossing.PROXY, fields: tuple[Any, ...] = (),
          returns: tuple[tuple[str, Any], ...] = ()) -> Any:
     """One class model, built by hand for a contract the corpus does
     not break."""
@@ -41,8 +41,8 @@ def _cls(name: str, *, threading: Threading = Threading.POOL,
 
     return ir.ClassModel(
         name=name, package="pkg", module="mod", doc="",
-        wire=wire or "proxy", threading=threading, blocking=blocking,
-        is_value=wire == "value", produced=False, constructs=True,
+        wire=wire, threading=threading, blocking=blocking,
+        is_value=wire is Crossing.VALUE, produced=False, constructs=True,
         wire_fields=fields, ctor=(),
         bound=tuple(ir.MethodModel(m, (), t, "") for m, t in returns))
 
@@ -98,7 +98,7 @@ def test_an_enum_is_a_scalar_everywhere() -> None:
         assert ir.wire_blocker(t, frozenset()) is None, t.spelling
 
     def probe(t: ir.TypeRef) -> Any:
-        return _model(_cls("Probe", wire="value",
+        return _model(_cls("Probe", wire=Crossing.VALUE,
                            fields=(ir.FieldModel("kind", t),)),
                       enums=("Word",))
 
@@ -233,7 +233,7 @@ def test_each_wrapper_constructor_is_the_declared_one() -> None:
     for c in model.constructed:
         cls_name = c.name
         py = pkg_dir / f"async_{cls_name.lower()}.py"
-        if c.wire != "proxy":
+        if c.wire is not Crossing.PROXY:
             # No handle was emitted, so there is no emitted __init__
             # to check. What must hold instead is that nothing was
             # emitted at all.

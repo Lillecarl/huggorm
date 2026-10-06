@@ -11,7 +11,7 @@ import textwrap
 from collections.abc import Mapping, Sequence
 from string import Template
 
-from huggorm_dsl.declare import Threading
+from huggorm_dsl.declare import Crossing, Threading
 from huggorm_gen import ir
 from huggorm_gen.payload import callspec as cs
 from huggorm_gen.payload.wiretypes import (
@@ -298,7 +298,7 @@ def policy_module(model: ir.Model) -> str:
         value=ast.Constant(value=ir.PROTO_PACKAGE), simple=1))
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
                        [(c.name, _args([(f.name, f.type) for f in c.wire_fields]))
-                        for c in classes if c.wire == "value"]))
+                        for c in classes if c.wire is Crossing.VALUE]))
     # The exception surface. ERROR_MODULE is where the emitted module
     # lands, which the fault codec imports to construct one; the
     # fields are what it is rebuilt FROM.
@@ -473,7 +473,7 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
     spell.need(c.name, BINDINGS)
     cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], decorator_list=[], body=[
         ast.Expr(value=ast.Constant(value=class_doc)),
-        _code("_wire = $wire", wire=repr(c.wire)),
+        _code("_wire = $wire", wire=repr(str(c.wire))),
         _code("_runner: BaseRunner"),
         init,
         _code("""
@@ -821,7 +821,7 @@ def rpc_module(model: ir.Model) -> ast.Module:
                 def __init__(self, client: $client, handle_id: str) -> None:
                     self._client = client
                     self.handle_id = handle_id
-            """, rpc=served_cls.rpc_name, wire=repr(served_cls.wire),
+            """, rpc=served_cls.rpc_name, wire=repr(str(served_cls.wire)),
             client=CLIENT_PROTOCOL, doc=repr(
                 f"A {name} living behind a handle on a server. Same surface "
                 f"as {served_cls.async_name}, different location."))
