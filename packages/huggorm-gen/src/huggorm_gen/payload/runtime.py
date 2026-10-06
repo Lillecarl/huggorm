@@ -541,11 +541,17 @@ class AffineRunner(BaseRunner):
         # collection aborted the whole process (the server's reaper
         # closes affine wrappers, so this reached production paths).
         # Submitted BEFORE shutdown, so it is the last work this
-        # single-worker executor accepts and runs.
-        self._pool.submit(_release_gc_thread)
-        # Blocking shutdown is acceptable here: the queue is empty once
-        # pending awaits finish. Move to a thread if this ever matters.
-        self._pool.shutdown(wait=True)
+        # single-worker executor accepts and runs. It drops the object
+        # first, so a C++ destructor runs on its own thread too.
+        self._pool.submit(self._retire)
+        # The wait lasts as long as the work still queued, which is an
+        # evaluation when a server closes a dropped state. On the loop
+        # it stalled every other client (huggorm#143).
+        await anyio.to_thread.run_sync(lambda: self._pool.shutdown(wait=True))
+
+    def _retire(self) -> None:
+        self._obj = None
+        _release_gc_thread()
 
 
 class PoolRunner(BaseRunner):

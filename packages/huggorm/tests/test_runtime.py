@@ -316,6 +316,39 @@ async def test_closing_an_affine_wrapper_leaves_its_thread_unregistered(
     assert huggorm_bindings.gc_stats()["heap_size"] > 0
 
 
+async def test_closing_a_busy_affine_wrapper_leaves_the_loop_free() -> None:
+    """`aclose` waits for the thread's queue to drain, and that wait
+    must not hold the event loop: a server closes a dropped state while
+    its thread still evaluates, and every other client waits on the
+    same loop (huggorm#143). A timer, not the loop, ends the work."""
+    import threading
+    import time
+
+    from huggorm_generated import _runtime
+
+    release = threading.Event()
+
+    class Busy:
+        def work(self) -> None:
+            release.wait()
+
+    runner = _runtime.AffineRunner(Busy)
+    timer = threading.Timer(2.0, release.set)
+    timer.start()
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(runner.call, "work", [])
+            await anyio.sleep(0.1)
+            tg.start_soon(runner.aclose)
+            started = time.monotonic()
+            await anyio.sleep(0.05)
+            waited = time.monotonic() - started
+    finally:
+        release.set()
+        timer.cancel()
+    assert waited < 1.0, f"the loop stalled {waited:.2f}s behind aclose"
+
+
 @needs_collector
 async def test_a_value_lives_in_the_collector_and_survives_it() -> None:
     """The counters bound from gc.h prove the collector is ACTIVE and
