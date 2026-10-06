@@ -18,8 +18,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, assert_never
 
+from huggorm_dsl import declare
 from huggorm_dsl.declare import Crossing, Decl, Threading
 from huggorm_dsl.read import (
     MESSAGE_PARTS,
@@ -32,7 +33,7 @@ from huggorm_dsl.read import (
 )
 from huggorm_gen import cxx
 from huggorm_gen.payload import callspec
-from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED
+from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED, TREE_ARMS
 
 # The words a proxy's RPC surface is spelled with. Every name below is
 # the class name plus one of these.
@@ -917,20 +918,46 @@ class ClassModel:
         return f"{self.name}Msg"
 
 def _tree(decl: Decl) -> callspec.Tree | None:
-    """`@tree(...)`, resolved. A list has `item` and an attribute set
-    has `name` and `value`; `value` reads the child in both, so the
-    walker has one shape."""
+    """`@tree(...)`, as the record the server reads."""
     spec = decl.tree
-    if not spec:
+    if spec is None:
         return None
+    kinds: dict[str, callspec.Leaf | callspec.Items | callspec.Entries] = {}
+    for answer, how in spec.kinds.items():
+        match how:
+            case declare.Leaf():
+                kinds[answer] = callspec.Leaf(how.wire, how.read)
+            case declare.Items():
+                kinds[answer] = callspec.Items(how.size, how.item)
+            case declare.Entries():
+                kinds[answer] = callspec.Entries(how.size, how.name, how.value)
+            case _:
+                assert_never(how)
+    return callspec.Tree(spec.kind, kinds, spec.identity)
 
-    def walk(how: Mapping[str, str]) -> callspec.Walk:
-        return callspec.Walk(how["size"], how.get("value") or how["item"],
-                             how.get("name", ""))
 
-    return callspec.Tree(spec["kind"], spec.get("identity", ""),
-                         {k: tuple(v) for k, v in spec["scalars"].items()},
-                         walk(spec["list"]), walk(spec["attrs"]))
+def _walkable(cls: ClassModel, spec: callspec.Tree) -> None:
+    """Refuse a tree that names an accessor the class does not bind,
+    or a leaf type the value message has no arm for."""
+    names = [spec.kind, *([spec.identity] if spec.identity else [])]
+    for how in spec.kinds.values():
+        match how:
+            case callspec.Leaf():
+                if how.wire not in TREE_ARMS:
+                    raise TypeError(
+                        f"{cls.name}: a tree leaf is a {how.wire}, which has "
+                        f"no arm in the value message. The arms are "
+                        f"{sorted(TREE_ARMS)}.")
+                names.append(how.read)
+            case callspec.Items():
+                names += [how.size, how.item]
+            case callspec.Entries():
+                names += [how.size, how.name, how.value]
+    bound = {m.name for m in cls.bound}
+    if missing := [n for n in names if n not in bound]:
+        raise TypeError(
+            f"{cls.name}: its @tree names {missing}, which this class does "
+            f"not bind.")
 
 
 def _shaped(cls: ClassModel) -> ClassModel:
@@ -943,6 +970,8 @@ def _shaped(cls: ClassModel) -> ClassModel:
     if text and not any(m.name == text for m in cls.bound):
         raise TypeError(
             f"{cls.name}: \"{text}\" names no accessor on this class.")
+    if cls.tree is not None:
+        _walkable(cls, cls.tree)
     fields = [f.name for f in cls.wire_fields]
     if (cls.wire is Crossing.VALUE and (fields or cls.semantics.unit)
             and not cls.is_value

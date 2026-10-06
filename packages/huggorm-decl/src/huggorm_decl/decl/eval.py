@@ -36,6 +36,9 @@ from huggorm_dsl.declare import (
     Bint,
     Bytes,
     Cxx,
+    Entries,
+    Items,
+    Leaf,
     PyFunc,
     Str,
     StrView,
@@ -113,15 +116,15 @@ from huggorm_dsl.declare import (
     # one value differ, and a wrapper that dies hands its id() to the
     # next one. The underlying value's address is the identity.
     identity="_identity",
-    # kind reported by `kind` -> [wire type, accessor]. The wire type
-    # is what picks the arm, so the layer above reads a declared type
-    # name rather than a label this file invented.
-    scalars={"int": ["int", "integer"],
-             "float": ["float", "floating"],
-             "string": ["str", "string_value"],
-             "bool": ["bool", "boolean"]},
-    list={"size": "size", "item": "at"},
-    attrs={"size": "size", "name": "name_at", "value": "value_at"},
+    # A Leaf's wire type is what picks the arm, so the layer above
+    # reads a declared type name rather than a label this file
+    # invented.
+    kinds={"int": Leaf("int", "integer"),
+           "float": Leaf("float", "floating"),
+           "string": Leaf("str", "string_value"),
+           "bool": Leaf("bool", "boolean"),
+           "list": Items(size="size", item="at"),
+           "attrs": Entries(size="size", name="name_at", value="value_at")},
 )
 class Value:
     """One GC-resident nix::Value, rooted for as long as Python holds

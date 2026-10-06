@@ -148,21 +148,33 @@ class Acquire:
     optional: tuple[str, ...]
 
 
+# How one node of a value tree is read. Accessor NAMES, not bound
+# methods: the walker is handed a fresh object per node, so it looks
+# each one up on the node it is walking.
 @dataclass(frozen=True, slots=True)
-class Walk:
-    """How to read one CONTAINER of a value tree.
+class Leaf:
+    """A node that crosses as one scalar. `wire` is its declared type,
+    which picks the arm; `read` answers it."""
 
-    A size accessor and the accessors that read a position. A list
-    answers one value per index; an attribute set answers a name and a
-    value, so `name` is empty for a list.
+    wire: str
+    read: str
 
-    Accessor NAMES, not bound methods. The walker holds the spec and
-    the object separately - it is handed a fresh object per node -
-    so it looks each one up on the node it is walking."""
+
+@dataclass(frozen=True, slots=True)
+class Items:
+    """A node that holds values by position."""
 
     size: str
+    item: str
+
+
+@dataclass(frozen=True, slots=True)
+class Entries:
+    """A node that holds values by name."""
+
+    size: str
+    name: str
     value: str
-    name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,17 +186,15 @@ class Tree:
     child. The server walks a whole tree in one hop, so it needs all
     of this before it starts.
 
+    `kinds` maps each answer of the `kind` accessor to how that node
+    is read. An answer it does not hold is a thunk or something else
+    the declaration does not name, and it crosses as a proxy.
+
     `identity` is what makes two nodes the same node, and it is
     declared rather than assumed: Python identity is not it wherever a
     binding builds a fresh wrapper per access. Empty falls back to
-    `id()`.
-
-    `scalars` maps a declared kind name to the pair (declared type,
-    accessor). A kind absent from it is a thunk or something else the
-    declaration does not name, and it crosses as a proxy."""
+    `id()`."""
 
     kind: str
-    identity: str
-    scalars: dict[str, tuple[str, str]]
-    list: Walk
-    attrs: Walk
+    kinds: dict[str, Leaf | Items | Entries]
+    identity: str = ""

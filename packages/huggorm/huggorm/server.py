@@ -24,7 +24,7 @@ import grpclib.exceptions
 import grpclib.server
 from grpclib.reflection.service import ServerReflection
 
-from huggorm_generated._callspec import Acquire, Call, Tree
+from huggorm_generated._callspec import Acquire, Call, Entries, Items, Leaf, Tree
 from huggorm_generated._policy import (
     ACQUIRE,
     ASYNC_CLASS,
@@ -128,25 +128,21 @@ class TreeWalk:
             return ("proxy", type(obj).__name__, obj)
         self.left -= 1
         self.seen.add(key)
-        kind = getattr(obj, self.spec.kind)()
-        scalar = self.spec.scalars.get(kind)
-        if scalar is not None:
-            type_str, reader = scalar
-            return ("scalar", type_str, getattr(obj, reader)())
-        if kind == "list":
-            how = self.spec.list
-            size = getattr(obj, how.size)()
-            item = getattr(obj, how.value)
-            return ("list", [self.node(item(i), depth + 1) for i in range(size)])
-        if kind == "attrs":
-            how = self.spec.attrs
-            size = getattr(obj, how.size)()
-            name, value = getattr(obj, how.name), getattr(obj, how.value)
-            return ("attrs", {name(i): self.node(value(i), depth + 1)
-                              for i in range(size)})
-        # A kind nothing describes: it stays where it is.
-        self.truncated = True
-        return ("proxy", type(obj).__name__, obj)
+        match self.spec.kinds.get(getattr(obj, self.spec.kind)()):
+            case Leaf(wire=wire, read=read):
+                return ("scalar", wire, getattr(obj, read)())
+            case Items(size=size, item=item):
+                at = getattr(obj, item)
+                return ("list", [self.node(at(i), depth + 1)
+                                 for i in range(getattr(obj, size)())])
+            case Entries(size=size, name=name, value=value):
+                key, at = getattr(obj, name), getattr(obj, value)
+                return ("attrs", {key(i): self.node(at(i), depth + 1)
+                                  for i in range(getattr(obj, size)())})
+            case None:
+                # A kind nothing describes: it stays where it is.
+                self.truncated = True
+                return ("proxy", type(obj).__name__, obj)
 
 
 def _never_a_proxy(obj: Any) -> str:

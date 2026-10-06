@@ -289,8 +289,8 @@ def policy_module(model: ir.Model) -> str:
     classes = [*model.constructed, *model.handed_back]
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
-        import_from("_callspec", "Acquire", "Arg", "Call", "Tree", "Walk", "Wire",
-                    "WireKind", level=1),
+        import_from("_callspec", "Acquire", "Arg", "Call", "Entries", "Items",
+                    "Leaf", "Tree", "Wire", "WireKind", level=1),
     ]
     # The protobuf package every message and service sits in.
     body.append(ast.AnnAssign(

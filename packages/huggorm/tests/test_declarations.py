@@ -1858,3 +1858,46 @@ def test_an_annotation_the_import_cannot_resolve_is_refused(
 
     with pytest.raises(DeclarationError, match=said):
         read(_declaration(tmp_path, source))
+
+
+# A tree whose walk names what the class binds, or not. `{kinds}` is
+# filled per case.
+WALKED = '''"""One proxy that holds others."""
+
+from huggorm_dsl.declare import I64, Cxx, Items, Leaf, Str, binding, header, tree
+
+
+@header("nix/expr/value.hh")
+@tree(kind="type_name", kinds={kinds})
+@binding(cxx="nix::Value", threading="pool", blocking=True)
+class Node:
+    """A node of a tree."""
+
+    def type_name(self) -> Str:
+        """What this node is."""
+        Cxx("return self.type_name();")
+
+    def size(self) -> I64:
+        """How many it holds."""
+        Cxx("return self.size();")
+'''
+
+
+@pytest.mark.parametrize(("kinds", "refusal"), [
+    ('{"list": Items(size="size", item="at")}', "names ['at']"),
+    ('{"bytes": Leaf("bytes", "size")}', "a tree leaf is a bytes"),
+])
+def test_a_tree_that_names_what_the_class_lacks_is_refused(
+        tmp_path: pathlib.Path, kinds: str, refusal: str) -> None:
+    """The server walks a tree by the names `@tree` gives. A name the
+    class does not bind would fail on the first walk, as an
+    AttributeError a remote caller sees as an internal error; a leaf
+    type with no arm would fail the same way in the codec. The build
+    refuses both."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    module = read(_declaration(tmp_path, WALKED.replace("{kinds}", kinds)))
+    with pytest.raises(TypeError, match=re.escape(refusal)):
+        ir.ClassModel.of(module.classes[0], "pkg", "mod",
+                         ir.Resolver.of(module))

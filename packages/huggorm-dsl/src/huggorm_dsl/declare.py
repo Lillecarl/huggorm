@@ -392,7 +392,7 @@ class Decl:
     # How a value TREE is walked, for a type that holds others. Read
     # by the RPC layer, so no layer above the declaration knows what
     # the type is or which of its methods do what.
-    tree: dict[str, Any] = field(default_factory=dict)
+    tree: Tree | None = None
     # What Python holds one of these THROUGH. Empty for the usual
     # case, where Python owns the object outright. "shared_ptr" for a
     # class whose factory hands back a reference-counted handle -
@@ -527,19 +527,61 @@ def abstract(cls: type) -> type:
     return cls
 
 
-def tree(**shape: object) -> Callable[[type], type]:
+@dataclass(frozen=True)
+class Leaf:
+    """A node that crosses as one scalar. `wire` is its declared type,
+    which picks the arm of the value message; `read` is the accessor
+    that answers it."""
+
+    wire: str
+    read: str
+
+
+@dataclass(frozen=True)
+class Items:
+    """A node that holds values by position: `size` counts them and
+    `item(i)` reads one."""
+
+    size: str
+    item: str
+
+
+@dataclass(frozen=True)
+class Entries:
+    """A node that holds values by name: `size` counts them, and
+    `name(i)` and `value(i)` read one."""
+
+    size: str
+    name: str
+    value: str
+
+
+@dataclass(frozen=True)
+class Tree:
+    """How a value tree is walked. `kind` names the accessor that says
+    what a node is, and `kinds` maps each answer to how that node is
+    read. An answer `kinds` does not hold crosses as a proxy.
+
+    `identity` names the accessor that makes two nodes the same node.
+    Empty means Python identity."""
+
+    kind: str
+    kinds: dict[str, Leaf | Items | Entries]
+    identity: str = ""
+
+
+def tree(kind: str, kinds: dict[str, Leaf | Items | Entries],
+         identity: str = "") -> Callable[[type], type]:
     """How a value TREE is walked, for a type that holds others.
 
-    A map the RPC layer reads so that no layer above this declaration
-    knows what the type is or which of its methods do what: `kind`
-    names the accessor that says what a node is, and its answer picks
-    one of the branches beside it.
+    The RPC layer reads it, so no layer above this declaration knows
+    what the type is or which of its methods do what. The build checks
+    every accessor it names against the class, and the emitter writes
+    it into `_policy.TREES`, which the server reads."""
+    spec = Tree(kind, kinds, identity)
 
-    Carried as the SOURCE of the literal, because it is data rather
-    than a shape this vocabulary should learn to describe. The
-    emitter writes it into `_policy.TREES`, which the server reads."""
     def apply(cls: type) -> type:
-        _decl(cls).tree = shape
+        _decl(cls).tree = spec
         return cls
     return apply
 
