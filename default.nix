@@ -292,6 +292,19 @@ rec {
     nix-tcp-store-check
     ;
 
+  # nix build --file . every-nix-src
+  #
+  # The emitted C++ for every Nix version, about 4 s each with no
+  # compile. Each version picks its own declaration branches, so a
+  # refusal that only one version reaches fails here (huggorm#129 sat
+  # on main because nothing built the 2.35 one).
+  every-nix-src = pkgs.linkFarm "huggorm-every-nix-src" (
+    lib.mapAttrsToList (name: _: {
+      inherit name;
+      path = lanes.${name}.bindings-src;
+    }) (lib.filterAttrs (_: v: v ? components) versions)
+  );
+
   # nix run --file . python -- $args
   # to be able to run Python commands
   python = pkgs.python3;
@@ -389,6 +402,7 @@ rec {
       # Built before this script runs, so a clang warning fails `check`.
       echo "--- clang -Werror: ${huggorm-bindings-clang} ---"
       echo "--- tcp:// over loopback: ${nix-tcp-store-check} ---"
+      echo "--- emitted C++ for every Nix: ${every-nix-src} ---"
       echo "all checks passed"
     '';
   };
