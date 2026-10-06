@@ -16,9 +16,11 @@ Model (huggorm#2):
   through the producer graph: a Value pins its producing EvalState,
   a Derivation pins its producing Store.
 - Detach ends ownership without ending existence: leases move into
-  escrow keyed by the connection token, immune to sweeping. A later
-  Bind presenting that token claims everything escrowed under it -
-  creators can exit entirely and their successors adopt the objects.
+  escrow keyed by the connection token. A later Bind presenting that
+  token claims everything escrowed under it - creators can exit
+  entirely and their successors adopt the objects. Escrow is for a
+  successor that comes SOON, such as a forked worker: a bucket nobody
+  claims within the escrow TTL is released.
 - Share duplicates (copy) or moves (transfer) one lease onto another
   LIVE connection - the fork-handover primitive.
 - Naming a handle makes you a holder. A handle id is the access
@@ -78,11 +80,15 @@ class Connection:
 class HandleTable:
     """Owns entries, connections and escrow; knows nothing about gRPC."""
 
-    def __init__(self, ttl: float | None = 120.0):
+    def __init__(self, ttl: float | None = 120.0,
+                 escrow_ttl: float | None = 300.0):
         self.ttl = ttl
+        self.escrow_ttl = escrow_ttl
         self.entries: dict[str, Entry] = {}
         self.connections: dict[str, Connection] = {}
         self.escrow: dict[str, dict[str, int]] = {}
+        # token -> when its escrow bucket last received a lease.
+        self._escrowed_at: dict[str, float] = {}
         # token -> id(obj) -> handle. The entry holds a strong
         # reference to obj, so id() stays valid while the handle lives.
         self._by_obj: dict[str, dict[int, str]] = {}
@@ -106,6 +112,7 @@ class HandleTable:
         # Incrementing here inflated entry.leases permanently: the
         # claimer's later Release could never reach zero and the handle
         # leaked for the life of the process.
+        self._escrowed_at.pop(token, None)
         for hid, n in self.escrow.pop(token, {}).items():
             conn.leases[hid] = conn.leases.get(hid, 0) + n
             if hid in self.entries:
@@ -269,16 +276,20 @@ class HandleTable:
     def detach(self, token: str, hid: str | None = None) -> int:
         """Move this connection's lease(s) into escrow. Returns the
         number of leases detached. Escrow keeps objects alive with no
-        owner until someone Binds with our token."""
+        owner until someone Binds with our token, or the escrow TTL
+        passes from the last detach into the bucket."""
         conn = self._require_conn(token)
         targets = [hid] if hid is not None else list(conn.leases)
         moved = 0
+        key = token or ANON
         for t in targets:
             n = conn.leases.pop(t, 0)
             if n:
-                bucket = self.escrow.setdefault(token or ANON, {})
+                bucket = self.escrow.setdefault(key, {})
                 bucket[t] = bucket.get(t, 0) + n
                 moved += n
+        if moved:
+            self._escrowed_at[key] = time.monotonic()
         return moved
 
     # -- invariants -------------------------------------------------------
@@ -309,13 +320,17 @@ class HandleTable:
     # -- reaping ----------------------------------------------------------
     def sweep(self, now: float | None = None) -> list[str]:
         """Release every lease held by connections silent past the TTL,
-        then cascade-drop. Returns dropped handle IDs.
-
-        Escrow is deliberately UNTOUCHED: detached leases are unowned
-        and never auto-reaped - that is what lets a creator exit
-        entirely while its objects wait for a claim."""
+        and every escrow bucket unclaimed past the escrow TTL, then
+        cascade-drop. Returns dropped handle IDs."""
+        now = now if now is not None else time.monotonic()
+        if self.escrow_ttl:
+            stale = [t for t, at in self._escrowed_at.items()
+                     if now - at > self.escrow_ttl]
+            for t in stale:
+                del self._escrowed_at[t]
+                for hid, n in self.escrow.pop(t, {}).items():
+                    self.entries[hid].leases -= n
         if self.ttl:
-            now = now if now is not None else time.monotonic()
             dead = [t for t, c in self.connections.items() if now - c.last_seen > self.ttl]
             for t in dead:
                 conn = self.connections.pop(t)

@@ -162,6 +162,26 @@ def test_escrow_survives_and_re_indexes() -> None:
     assert same == ha, f"a claimed handle is indexed again :: {(same[:8], ha[:8])}"
 
 
+def test_unclaimed_escrow_is_released_after_its_ttl() -> None:
+    """Escrow waits for a successor that comes soon, such as a forked
+    worker, not for one that comes tomorrow (huggorm#143). A bucket
+    claimed in time keeps its objects; one left past the TTL drops."""
+    t = HandleTable(ttl=None, escrow_ttl=300.0)
+    a, b = t.bind(), t.bind()
+    left, kept = Obj("left"), Obj("kept")
+    hl, hk = t.put(left, a), t.put(kept, b)
+    t.detach(a)
+    t.detach(b)
+    now = t._escrowed_at[a]
+
+    assert t.sweep(now + 299.0) == [], "nothing drops inside the TTL"
+    t.bind(b)
+    assert t.sweep(now + 301.0) == [hl], "only the unclaimed bucket drops"
+    t.audit()
+    assert hk in t.entries and hl not in t.entries
+    assert not t.escrow
+
+
 def test_bad_producer_leaves_no_trace() -> None:
     """A put naming a producer that does not exist must change
     nothing. It used to link the parents it had already resolved to a

@@ -446,7 +446,8 @@ async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
 
 class Dispatcher:
     def __init__(self, pool: Any, tasks: Any, loops: Any,
-                 lease_ttl: float = 120.0) -> None:
+                 lease_ttl: float = 120.0,
+                 escrow_ttl: float | None = 300.0) -> None:
         """Every table it reads is emitted, in
         `huggorm_generated._policy`, so this reads them by name.
 
@@ -467,7 +468,7 @@ class Dispatcher:
         self.tasks = tasks
         # `loops` is cancelled: a log drain never returns on its own.
         self.loops = loops
-        self.table = HandleTable(ttl=lease_ttl)
+        self.table = HandleTable(ttl=lease_ttl, escrow_ttl=escrow_ttl)
         self.table.on_drop = self._on_drop
         self.codec = WireCodec()
         # One fan-out per state, so many readers share one
@@ -1087,7 +1088,8 @@ class Dispatcher:
             self._route(schema.session(name), guard_untyped(fn))
 
 async def serve(host: str = "127.0.0.1", port: int = 50051,
-                lease_ttl: float = 120.0) -> None:
+                lease_ttl: float = 120.0, *,
+                escrow_ttl: float | None = 300.0) -> None:
     """The server, and the two scopes every background task lives in.
 
     TWO task groups, nested, because the tasks divide into two kinds
@@ -1114,13 +1116,17 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     # for the combined form and it says the same thing.
     async with (anyio.create_task_group() as work,
                 anyio.create_task_group() as loops):
-        dispatcher = Dispatcher(pool, work, loops, lease_ttl=lease_ttl)
+        dispatcher = Dispatcher(pool, work, loops, lease_ttl=lease_ttl,
+                                escrow_ttl=escrow_ttl)
 
         # Connection liveness: transports never report death; the
         # sweeper notices silence past the TTL and releases what
-        # the dead connection held (huggorm#2).
+        # the dead connection held (huggorm#2). It also releases
+        # escrow nobody claimed in time (huggorm#143).
+        ttls = [t for t in (lease_ttl, escrow_ttl) if t]
+
         async def sweeper() -> None:
-            interval = max(0.5, min(lease_ttl / 4 if lease_ttl else 5, 5))
+            interval = max(0.5, min(min(ttls) / 4, 5))
             while True:
                 await anyio.sleep(interval)
                 dropped = dispatcher.table.sweep()
@@ -1134,7 +1140,7 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
                                 ", ".join(hid[:8]
                                           for hid in sorted(dropped)))
 
-        if lease_ttl:
+        if ttls:
             loops.start_soon(sweeper)
 
         # Reflection serves descriptors out of the same pool the
