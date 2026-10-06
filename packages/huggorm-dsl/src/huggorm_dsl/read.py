@@ -71,7 +71,7 @@ from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
 
 from huggorm_dsl import declare
-from huggorm_dsl.declare import Cxx, Decl, Field
+from huggorm_dsl.declare import Cxx, Decl, Field, Threading
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
@@ -515,9 +515,9 @@ class Method:
     # Register as the module's exception translator, from @translator.
     translator: bool = False
     # The threading policy a FREE function opts into, from @threading.
-    # Empty means it declared none, which is what keeps a runtime
+    # None means it declared none, which is what keeps a runtime
     # helper out of every generated form.
-    policy: str = ""
+    policy: Threading | None = None
 
 
 @dataclass(frozen=True)
@@ -1263,7 +1263,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         spells=tuple(getattr(marked, "_spells", ())),
         startup=bool(getattr(marked, "_startup", False)),
         translator=bool(getattr(marked, "_translator", False)),
-        policy=getattr(marked, "_policy", ""),
+        policy=getattr(marked, "_policy", None),
     )
 
 

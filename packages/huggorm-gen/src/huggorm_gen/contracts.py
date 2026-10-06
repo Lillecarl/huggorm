@@ -7,6 +7,7 @@ other than `T | None`, an unknown name - is not checked again here.
 
 from __future__ import annotations
 
+from huggorm_dsl.declare import Threading
 from huggorm_gen import ir
 
 
@@ -21,9 +22,9 @@ def wrap(model: ir.Model) -> list[str]:
     for c in model.classes.values():
         if c.wrapped:
             continue
-        if c.threading != "pool":
+        if c.threading is not Threading.POOL:
             bad.append(f"{c.name}: an unwrapped class must be threading "
-                       f"'pool', not {c.threading!r}")
+                       f"'pool', not '{c.threading}'")
         for m in c.methods:
             if (a := model.adopted(m.returns)) is not None and a.wrapped:
                 bad.append(
@@ -66,10 +67,10 @@ def affine_from_pool(model: ir.Model) -> list[str]:
         f"{c.name}.{m.name} returns {m.return_spelling}, which is affine, "
         f"from a pool class: it would live on a thread nothing owns. "
         f"Return it from an affine class instead."
-        for c in model.classes.values() if c.threading == "pool"
+        for c in model.classes.values() if c.threading is Threading.POOL
         for m in c.methods
         if (a := model.adopted(m.returns)) is not None
-        and a.wrapped and a.threading == "affine"
+        and a.wrapped and a.threading is Threading.AFFINE
     ]
 
 
@@ -93,7 +94,7 @@ def free_functions(model: ir.Model) -> list[str]:
                 f"{r.leaf.name} cannot be adopted into an async form "
                 f"from a free function. Return a served class on its "
                 f"own or as `X | None`.")
-        elif adopted.threading != "pool":
+        elif adopted.threading is not Threading.POOL:
             bad.append(
                 f"free function {fn.name} returns {adopted.name}, which is "
                 f"{adopted.threading}: it needs a home thread and a free "
@@ -121,11 +122,11 @@ def wire(model: ir.Model) -> list[str]:
                        f"none")
         if c.wire_fields and c.semantics.unit:
             bad.append(f"{c.name}: a unit value has no parts, drop unit=True")
-        if c.threading != "pool":
+        if c.threading is not Threading.POOL:
             # A value that may not leave its thread cannot be
             # serialised off it.
             bad.append(f"{c.name}: wire-value must be threading 'pool', "
-                       f"not {c.threading!r}")
+                       f"not '{c.threading}'")
         for f in c.wire_fields:
             bad += _field(model, c.name, f)
     return bad

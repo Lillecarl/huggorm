@@ -11,6 +11,7 @@ import textwrap
 from collections.abc import Mapping, Sequence
 from string import Template
 
+from huggorm_dsl.declare import Threading
 from huggorm_gen import ir
 from huggorm_gen.payload import callspec as cs
 from huggorm_gen.payload.wiretypes import (
@@ -107,8 +108,8 @@ def _twinned(call: str, t: ir.TypeRef) -> str:
 
 
 RUNNER_BY_THREADING = {
-    "affine": "AffineRunner",
-    "pool": "PoolRunner",
+    Threading.AFFINE: "AffineRunner",
+    Threading.POOL: "PoolRunner",
 }
 
 def _arguments(leading: list[ast.arg], params: Sequence[ir.ParamModel],
@@ -454,9 +455,9 @@ def _hop_method(cls: ast.ClassDef, model: ir.Model,
 
 
 _POLICY_DOC = {
-    "affine": "operations run on the producer's thread.",
-    "pool": "operations may run on any pool thread.",
-    "inline": "operations run on the calling thread, because none of "
+    ir.Execution.AFFINE: "operations run on the producer's thread.",
+    ir.Execution.POOL: "operations may run on any pool thread.",
+    ir.Execution.INLINE: "operations run on the calling thread, because none of "
               "them can wait.",
 }
 
@@ -480,7 +481,7 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
                 adopted = cls.__new__(cls)
                 adopted._runner = attach_runner(obj, runner, $execution)
                 return adopted
-            """, svc=c.name, execution=repr(c.execution)),
+            """, svc=c.name, execution=repr(str(c.execution))),
     ])
     for m in c.methods:
         _hop_method(cls, model, m, c.name, methods[m.name])
@@ -522,7 +523,7 @@ def returned_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     init = _code("""
         def __init__(self, obj: $svc, runner: BaseRunner) -> None:
             self._runner = attach_runner(obj, runner, $execution)
-        """, svc=c.name, execution=repr(c.execution))
+        """, svc=c.name, execution=repr(str(c.execution)))
     return _async_module(
         model, c,
         f"Generated async wrapper for returned type {c.name} "
@@ -560,7 +561,8 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
             f"construct a subclass to get one.",
             init, {"Any"}, set())
     runner = RUNNER_BY_THREADING[threading]
-    name = (f", name={f'huggorm-affine-{svc}'!r}" if threading == "affine"
+    name = (f", name={f'huggorm-affine-{svc}'!r}"
+            if threading is Threading.AFFINE
             else "")
     _, ctor, _ = _async_spelling(model, c)
     # A zero-argument lambda over __init__'s parameters, so the object

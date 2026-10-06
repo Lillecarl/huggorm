@@ -16,10 +16,11 @@ import inspect
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from functools import cached_property
 from typing import Literal
 
-from huggorm_dsl.declare import Decl
+from huggorm_dsl.declare import Decl, Threading
 from huggorm_dsl.read import (
     MESSAGE_PARTS,
     Class,
@@ -613,6 +614,15 @@ class MethodModel:
     def return_spelling(self) -> str:
         return self.returns.spelling if self.returns is not None else "None"
 
+class Execution(StrEnum):
+    """Where a wrapped call runs: a `Threading`, or on the calling
+    thread for a class that cannot wait."""
+
+    POOL = "pool"
+    AFFINE = "affine"
+    INLINE = "inline"
+
+
 @dataclass(frozen=True)
 class FunctionModel:
     """One free function. No policy means it opted into nothing: it
@@ -620,7 +630,7 @@ class FunctionModel:
 
     name: str
     module: str
-    threading: str | None
+    threading: Threading | None
     params: tuple[ParamModel, ...]
     returns: TypeRef | None
     doc: str
@@ -642,7 +652,7 @@ class FunctionModel:
     @classmethod
     def of(cls, fn: Method, package: str, module: str,
            resolver: Resolver) -> FunctionModel:
-        policy = fn.policy or None
+        policy = fn.policy
         if policy is not None:
             for pr in fn.params:
                 crossable(pr.type, f"{fn.name}({pr.name})")
@@ -737,7 +747,7 @@ class ClassModel:
     # "proxy" unless the declaration proves the class is a value:
     # stateful is the safe default on both sides.
     wire: str = "proxy"
-    threading: str = "pool"
+    threading: Threading = Threading.POOL
     blocking: bool = True
     # `@produced`: a call that returns one makes it. `produced` adds
     # that the declaration offers no way in besides.
@@ -849,16 +859,17 @@ class ClassModel:
     def wrapped(self) -> bool:
         """A hop onto a home thread, or a released GIL around a call
         that waits. A pool class that cannot block needs neither."""
-        return self.threading == "affine" or self.blocking
+        return self.threading is Threading.AFFINE or self.blocking
 
     @property
-    def execution(self) -> str:
+    def execution(self) -> Execution:
         """Where a call runs. Served is addressability and WRAPPED is
         execution: an unwrapped class cannot wait, so its calls run
         inline - a hop buys nothing, and a request would push a
         "finalized" marker from a pool thread into the process queue
         for a call no reader made."""
-        return self.threading if self.wrapped else "inline"
+        return (Execution(self.threading) if self.wrapped
+                else Execution.INLINE)
 
     @property
     def qualified_module(self) -> str:

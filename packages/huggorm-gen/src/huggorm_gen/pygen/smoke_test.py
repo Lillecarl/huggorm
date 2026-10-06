@@ -22,6 +22,7 @@ import re
 import sys
 from typing import Any
 
+from huggorm_dsl.declare import Threading
 from huggorm_dsl.read import is_surface
 
 
@@ -30,7 +31,8 @@ def test_parse(out: pathlib.Path) -> None:
         ast.parse(py.read_text(), filename=str(py))
 
 
-def _cls(name: str, *, threading: str = "pool", blocking: bool = True,
+def _cls(name: str, *, threading: Threading = Threading.POOL,
+         blocking: bool = True,
          wire: str = "", fields: tuple[Any, ...] = (),
          returns: tuple[tuple[str, Any], ...] = ()) -> Any:
     """One class model, built by hand for a contract the corpus does
@@ -158,7 +160,7 @@ def test_an_optional_return_names_a_value_or_nothing(
     from huggorm_gen import contracts
 
     made = ir.TypeRef.named("State", "proxy")
-    state = _cls("State", threading="affine", returns=(("make", made),))
+    state = _cls("State", threading=Threading.AFFINE, returns=(("make", made),))
     for rt in (made, ir.TypeRef.optional_of(made)):
         pool = _cls("Pool", returns=(("make", rt),))
         assert contracts.affine_from_pool(_model(state, pool)), rt.spelling
@@ -174,11 +176,12 @@ def test_a_free_function_adopts_one_pool_object() -> None:
     from huggorm_gen import contracts, ir
 
     def fn(name: str, returns: Any) -> Any:
-        return ir.FunctionModel(name, "pkg.mod", "pool", (), returns, "")
+        return ir.FunctionModel(name, "pkg.mod", Threading.POOL, (), returns,
+                               "")
 
     pool = ir.TypeRef.named("Pool", "proxy")
     state = ir.TypeRef.named("State", "proxy")
-    model = _model(_cls("Pool"), _cls("State", threading="affine"))
+    model = _model(_cls("Pool"), _cls("State", threading=Threading.AFFINE))
     for good in (pool, ir.TypeRef.optional_of(pool)):
         functions = {"make": fn("make", good)}
         assert contracts.free_functions(

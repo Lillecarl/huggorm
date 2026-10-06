@@ -28,9 +28,19 @@ import pathlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Annotated, Any, TypeVar
+from enum import StrEnum
+from typing import Annotated, Any, Literal, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+class Threading(StrEnum):
+    """Which thread a bound object's calls run on."""
+
+    # Any pool thread.
+    POOL = "pool"
+    # The thread that made the object, and no other.
+    AFFINE = "affine"
 
 
 @dataclass(frozen=True)
@@ -319,7 +329,7 @@ class Decl:
     produced: bool = False
     # The free function bound as the constructor: `@constructs(cls)`.
     factory: str = ""
-    threading: str = "pool"
+    threading: Threading = Threading.POOL
     blocking: bool = True
     wire: str = ""
     # Each part either a `Field` or the NAME of the accessor that
@@ -659,7 +669,8 @@ def gc_slots(table: str) -> Callable[[type], type]:
     return apply
 
 
-def binding(cxx: str = "", threading: str = "pool", holder: str = "",
+def binding(cxx: str = "",
+            threading: Literal["pool", "affine"] = "pool", holder: str = "",
             blocking: bool = True, via: str = "",
             collection: str = "") -> Callable[[type], type]:
     """The C++ class this binds, and how it may be called.
@@ -685,7 +696,8 @@ def binding(cxx: str = "", threading: str = "pool", holder: str = "",
     are the only lines that are about the handle at all."""
     def apply(cls: type) -> type:
         d = _decl(cls)
-        d.cxx, d.threading, d.blocking = cxx, threading, blocking
+        d.cxx, d.blocking = cxx, blocking
+        d.threading = Threading(threading)
         d.holder, d.via, d.collection = holder, via, collection
         return cls
     return apply
@@ -1003,7 +1015,7 @@ def instant[F: Callable[..., Any]](fn: F) -> F:
     return fn
 
 
-def threading(policy: str) -> Callable[[F], F]:
+def threading(policy: Literal["pool"]) -> Callable[[F], F]:
     """Opt one FREE function into the generated surface, under `policy`.
 
     The marker is what opts a function in. An undeclared function is
@@ -1023,7 +1035,7 @@ def threading(policy: str) -> Callable[[F], F]:
             f"it to be affine to.")
 
     def apply(fn: F) -> F:
-        fn._policy = policy  # type: ignore[attr-defined]
+        fn._policy = Threading(policy)  # type: ignore[attr-defined]
         return fn
     return apply
 
