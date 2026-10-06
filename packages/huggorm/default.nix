@@ -7,6 +7,7 @@
   huggorm-decl,
   huggorm-dsl,
   gitMinimal,
+  nix-tcp-store,
   grpcurl,
   ruff,
   zuban,
@@ -61,6 +62,9 @@ python3Packages.buildPythonPackage {
   # bindings link (huggorm#55).
   env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
   env.HUGGORM_NIX_GC = if huggorm-bindings.hasCollector then "1" else "0";
+  # The plugin `test_plugins.py` loads: built against this lane's Nix,
+  # as a plugin must be.
+  env.HUGGORM_TCP_STORE_PLUGINS = "${nix-tcp-store}/lib/nix/plugins";
 
   propagatedBuildInputs = [
     huggorm-bindings

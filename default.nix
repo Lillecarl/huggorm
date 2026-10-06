@@ -444,6 +444,7 @@ rec {
       # bindings link, and a `bash` for its derivation's builder.
       export HUGGORM_ORACLE_NIX="${nix}/bin/nix"
       export HUGGORM_ORACLE_BASH="${pkgs.bash}"
+      export HUGGORM_TCP_STORE_PLUGINS="${nix-tcp-store}/lib/nix/plugins"
       export PYTEST_DEBUG_TEMPROOT="''${PYTEST_DEBUG_TEMPROOT:-/tmp/huggorm}"
       mkdir -p "$PYTEST_DEBUG_TEMPROOT"
       # SAID OUT LOUD, because no gate can hold this. The suite runs

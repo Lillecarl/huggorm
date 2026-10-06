@@ -2444,6 +2444,27 @@ nix::loadConfFile(nix::globalConfig);
     """)
 
 
+@needs("nix/main/plugin.hh", "atomic")
+def init_plugins() -> None:
+    """Load the plugins that `plugin-files` names, as `nix` does at startup.
+
+    Call it after `load_config` and before the first store opens: a
+    plugin registers its store types and settings as it loads. Once per
+    process, because `initPlugins` asserts that, and a second call
+    raises `UsageError` instead of aborting. A failed load counts, as
+    its plugins may already have registered what they carry.
+
+    A plugin must link the same Nix libraries as these bindings, as
+    huggorm's `nix-tcp-store` does. Another build of Nix loads a second
+    copy of each library into the process."""
+    Cxx("""
+static std::atomic<bool> loaded{false};
+if (loaded.exchange(true))
+    throw nix::UsageError("plugins are already loaded: Nix loads plugin-files once per process");
+nix::initPlugins();
+    """)
+
+
 @needs("huggorm_decl/cpp/settings.hpp")
 def set_setting(name: Str, value: Str) -> None:
     """Set one setting for the process, as a line of nix.conf would.
