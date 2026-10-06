@@ -37,7 +37,6 @@ nanopynix stays until this file says otherwise. No shortcut.
 | Warm eval + watch + notify | done | huggorm-only; `Watcher`, `Warmer`, `Notifier` |
 | Session scope (local async) | done | `AsyncSession` + `AsyncSessionLike`, held to the generated ctors |
 | Session scope (remote) | done | `AsyncRemoteSession`: typed acquires, token detach/claim, `share`, `attach`, sweep-aware close |
-| Sync session scope | gap | No sync remote exists; sync local need unproven; huggorm#113 |
 | Log bus + capture + verbosity | done | Sessions stream (`logs`, `process_logs`) and collect (`capture`) over per-state taps. Thread and default levels are settable; `nix::verbosity` is pinned at import from `HUGGORM_LOG_CEILING`, because every thread reads it. Legitimate difference |
 | Dev-shell derivation rewrite | done | `huggorm.devshell` over generated ops, local sync+async; `read_derivation` and `to_json` cross RPC, the build stays where the environment is sourced |
 | One consumer over sync, async and RPC | done | Every proxy has a service, and a proxy parameter is protocol-typed on every surface. `test_parity` runs eval, force, drv_path and the dev-shell rewrite as one body on all three, and `awrite_dev_shell_derivation` takes any `StoreLike` |
