@@ -312,6 +312,21 @@ def test_wrapping_and_wire_policy_are_separate_axes() -> None:
     assert cls["Store"].wrapped is True
 
 
+def test_every_call_is_numbered_once() -> None:
+    """A call crosses as its index into CALLS. The by-name tables must
+    hold the same objects, or a client numbers a call the server reads
+    as another."""
+    from huggorm_generated._callspec import Acquire, Call
+    from huggorm_generated._policy import ACQUIRE, CALLS, FREE, METHODS
+
+    assert [c.index for c in CALLS] == list(range(len(CALLS)))
+    named: list[Call | Acquire] = [*ACQUIRE.values(), *FREE.values(),
+             *(m for ms in METHODS.values() for m in ms)]
+    assert sorted(c.index for c in named) == list(range(len(CALLS)))
+    for c in named:
+        assert CALLS[c.index] is c, (c.index, c)
+
+
 def test_the_wire_refuses_what_it_cannot_carry() -> None:
     """Every declared function is representable, so the corpus no longer
     exercises the blocker path. Exercised directly, or the mechanism

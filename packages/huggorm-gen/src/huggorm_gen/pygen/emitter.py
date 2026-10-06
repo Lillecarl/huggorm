@@ -278,6 +278,27 @@ def _args(pairs: Sequence[tuple[str, ir.TypeRef]]) -> tuple[cs.Arg, ...]:
     return tuple(out)
 
 
+class _Specs:
+    """The call spec constants, numbered as they are written.
+
+    `CALLS` lists them in that order, so `CALLS[n].index == n`."""
+
+    def __init__(self, body: list[ast.stmt]) -> None:
+        self._body = body
+        self.names: list[ast.Name] = []
+
+    @property
+    def next(self) -> int:
+        return len(self.names)
+
+    def add(self, var: str, spec: cs.Call | cs.Acquire) -> ast.Name:
+        assert spec.index == self.next, (var, spec.index, self.next)
+        self._body.append(ast.Assign(targets=[ast.Name(id=var)],
+                                     value=_literal(spec)))
+        self.names.append(ast.Name(id=var))
+        return ast.Name(id=var)
+
+
 def policy_module(model: ir.Model) -> str:
     """`_policy.py`: the wire policy of every declared type.
 
@@ -325,22 +346,16 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("UNION_ARMS", "dict[str, tuple[Wire, ...]]", [
         (n, tuple(_wire(a) for a in u.arms))
         for n, u in model.unions.items()]))
-    # Every method's call spec, ONCE. The client reads these through
-    # `rpc.py` and the server reads them through METHODS below, so the
-    # two ends of a call cannot disagree about its shape.
+    # Every call's spec, ONCE. The client reads these through `rpc.py`
+    # and the server through the tables, so the two ends of a call
+    # cannot disagree about its shape.
+    specs = _Specs(body)
     methods = []
     for c in model.ordered_served:
-        names = []
-        for m in c.methods:
-            if not model.offered(m):
-                continue
-            var = _spec_name(c.name, m.name)
-            body.append(ast.Assign(
-                targets=[ast.Name(id=var)],
-                value=_literal(_spec(m.name, c.rpc(m), m.params, m.returns))))
-            names.append(var)
-        methods.append((c.name, ast.Tuple(
-            elts=[ast.Name(id=n) for n in names])))
+        methods.append((c.name, ast.Tuple(elts=[
+            specs.add(_spec_name(c.name, m.name),
+                      _spec(specs.next, m.name, c.rpc(m), m.params, m.returns))
+            for m in c.methods if model.offered(m)])))
     body.append(_table("METHODS", "dict[str, tuple[Call, ...]]", methods))
     # The value TREES, and the async class each served class is adopted
     # into. SERVED, not merely wrapped: an unserved class has no async
@@ -351,7 +366,11 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("ASYNC_CLASS", "dict[str, str]", [
         (c.name, c.async_name)
         for c in classes if c.served]))
-    body.extend(_directory(model))
+    body.extend(_directory(model, specs))
+    body.append(ast.AnnAssign(
+        target=ast.Name(id="CALLS"),
+        annotation=_ann("tuple[Call | Acquire, ...]", "CALLS"),
+        value=ast.Tuple(elts=list(specs.names)), simple=1))
     return ast.unparse(ast.fix_missing_locations(
         ast.Module(body=body, type_ignores=[]))) + "\n"
 
@@ -679,7 +698,8 @@ def protocol_module(model: ir.Model) -> ast.Module:
     return mod
 
 
-def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
+def _spec(index: int, name: str, rpc: ir.RpcNames,
+          params: Sequence[ir.ParamModel],
           returns: ir.TypeRef | None) -> cs.Call:
     """One call's spec.
 
@@ -692,11 +712,11 @@ def _spec(name: str, rpc: ir.RpcNames, params: Sequence[ir.ParamModel],
     call reached the runtime, so every argument a spec describes is
     present, and carrying a default here would suggest the runtime
     fills one in."""
-    return cs.Call(name, rpc.path, _args([(p.name, p.type) for p in params]),
-                   _wire(returns))
+    return cs.Call(index, name, rpc.path,
+                   _args([(p.name, p.type) for p in params]), _wire(returns))
 
 
-def _directory(model: ir.Model) -> list[ast.stmt]:
+def _directory(model: ir.Model, specs: _Specs) -> list[ast.stmt]:
     """The three tables a caller reaches BY NAME.
 
     `NixClient.acquire("Store", "auto")` and
@@ -708,16 +728,16 @@ def _directory(model: ir.Model) -> list[ast.stmt]:
     to construct into - a caller builds it locally and passes it as an
     argument - and a class only a call hands back is never built
     remotely."""
-    acquires = []
-    for c in model.acquirable:
-        acquires.append((c.name, cs.Acquire(
-            c.name, c.acquire.path,
-            _args([(p.name, p.type) for p in c.ctor]),
-            sum(1 for p in c.ctor if p.default is None),
-            tuple(p.name for p in c.ctor if p.defaults_to_none))))
+    acquires = [(c.name, specs.add(f"_acquire_{c.name}", cs.Acquire(
+        specs.next, c.name, c.acquire.path,
+        _args([(p.name, p.type) for p in c.ctor]),
+        sum(1 for p in c.ctor if p.default is None),
+        tuple(p.name for p in c.ctor if p.defaults_to_none))))
+        for c in model.acquirable]
     functions = [model.functions[n] for n in sorted(model.functions)]
-    free = [(fn.name, _spec(fn.name, fn.rpc, fn.params, fn.returns))
-            for fn in functions if not model.function_blockers(fn)]
+    free = [(fn.name, specs.add(f"_fn_{fn.name}", _spec(
+        specs.next, fn.name, fn.rpc, fn.params, fn.returns)))
+        for fn in functions if not model.function_blockers(fn)]
     # ...and the ones the wire cannot carry, with the reason.
     #
     # A separate table rather than absence, because the two answers

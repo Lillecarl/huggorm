@@ -101,8 +101,13 @@ class Call:
 
     One dataclass for both sides, not two that agree. The two ends of
     one call cannot disagree about its shape if there is only one
-    statement of it, and the build emits that statement once."""
+    statement of it, and the build emits that statement once.
 
+    `index` is the call's position in `CALLS`, and its number on the
+    wire. Both ends run the same build, so a number need not survive
+    a rebuild."""
+
+    index: int
     name: str
     path: str
     args: tuple[Arg, ...]
@@ -122,6 +127,7 @@ class Acquire:
     VALUE has no handle to construct into: a caller builds it locally
     and passes it as an argument."""
 
+    index: int
     cls: str
     path: str
     args: tuple[Arg, ...]
