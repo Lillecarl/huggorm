@@ -1190,23 +1190,26 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
                   f"a declaration yet, and this reads a method as one "
                   f"that takes self - so its first parameter would be "
                   f"dropped. See huggorm#76.")
-    args = node.args
-    if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
+    signature = inspect.signature(
+        fn, annotation_format=annotationlib.Format.FORWARDREF)
+    every = list(signature.parameters.values())
+    if any(p.kind is not inspect.Parameter.POSITIONAL_OR_KEYWORD
+           for p in every):
         raise DeclarationError(
             node, f"{node.name}: a bound method takes plain positional "
                   f"parameters. C++ has no *args.")
     anns = annotationlib.get_annotations(
         fn, format=annotationlib.Format.FORWARDREF)
-    signature = inspect.signature(
-        fn, annotation_format=annotationlib.Format.FORWARDREF)
-    positional = args.args[1:] if bound else args.args
+    # The tree only for positions: a refusal points at the parameter.
+    at = {a.arg: a for a in node.args.args}
     params = []
-    for arg in positional:
-        if arg.annotation is None:
+    for p in every[1:] if bound else every:
+        arg = at[p.name]
+        if p.name not in anns:
             raise DeclarationError(
                 arg, f"{node.name}({arg.arg}): every parameter states its "
                      f"type.")
-        default = signature.parameters[arg.arg].default
+        default = p.default
         declared = type_of(anns[arg.arg], arg, fn.__globals__)
         if default is None and not declared.optional:
             # An implicit Optional: every surface but the C++ then says
