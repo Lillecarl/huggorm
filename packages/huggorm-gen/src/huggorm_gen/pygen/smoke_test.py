@@ -297,10 +297,10 @@ def test_wrapping_and_wire_policy_are_separate_axes() -> None:
     from huggorm_gen.cppgen.generate import declared_model
 
     cls = declared_model().classes
-    assert cls["StorePath"].wire == "value"
-    assert cls["Value"].wire == "proxy"
-    assert cls["PathInfo"].wire == "value"
-    assert cls["EvalState"].wire == "proxy"
+    assert cls["StorePath"].wire is Crossing.VALUE
+    assert cls["Value"].wire is Crossing.PROXY
+    assert cls["PathInfo"].wire is Crossing.VALUE
+    assert cls["EvalState"].wire is Crossing.PROXY
     for name in ("StorePath", "PathInfo"):
         assert not cls[name].blocking and not cls[name].wrapped, name
         assert not hasattr(flg, f"Async{name}"), f"Async{name} must not be generated"

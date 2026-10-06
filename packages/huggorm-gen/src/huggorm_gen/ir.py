@@ -21,7 +21,7 @@ from functools import cached_property
 from typing import NamedTuple, assert_never
 
 from huggorm_dsl import declare
-from huggorm_dsl.declare import Crossing, Decl, Threading
+from huggorm_dsl.declare import Crossing, Decl, DeclKind, Threading
 from huggorm_dsl.read import (
     MESSAGE_PARTS,
     Class,
@@ -161,7 +161,7 @@ class Resolver:
             raise TypeError(
                 f"'{name}' names nothing this declaration set declares, "
                 f"and it is not a builtin")
-        if cls.decl.kind == Kind.ERROR:
+        if cls.decl.kind is DeclKind.ERROR:
             return Kind.ERROR
         if cls.is_words:
             return Kind.ENUM

@@ -52,6 +52,21 @@ class Crossing(StrEnum):
     VALUE = "value"
 
 
+class DeclKind(StrEnum):
+    """What sort of declaration a `Decl` is."""
+
+    # Binds a C++ type, or holds a produced value's slots.
+    CLASS = "class"
+    # A vocabulary: a StrEnum whose members ARE the strings a Nix
+    # parser takes, with no C++ object behind it at all.
+    WORDS = "words"
+    # A sum of other declared types, written as an alias and named on
+    # the wire.
+    UNION = "union"
+    # A declared exception.
+    ERROR = "error"
+
+
 @dataclass(frozen=True)
 class Cxx:
     """How a Python type is spelled in C++.
@@ -370,12 +385,7 @@ class Decl:
     # A `PyType_Slot[]` this class's binding installs, by C++ name.
     # Empty for everything that holds no Python object. See `gc_slots`.
     gc_slots: str = ""
-    # What KIND of declaration this is. "class" binds a C++ type or
-    # holds a produced value's slots; "words" is a vocabulary - a
-    # StrEnum whose members ARE the strings a Nix parser takes, with
-    # no C++ object behind it at all; "union" is a sum of other
-    # declared types, written as an alias and named on the wire.
-    kind: str = "class"
+    kind: DeclKind = DeclKind.CLASS
     # Where the words go, for a vocabulary. The emitter writes this
     # call at each site that takes one, so an experimental word is
     # refused by upstream rather than accepted by us.
@@ -687,7 +697,7 @@ def words(parsed_by: str = "", enumerated: Enumerated | None = None,
     switch, it makes the compiler check the list."""
     def apply(cls: type) -> type:
         d = _decl(cls)
-        d.kind, d.parsed_by, d.enumerated = "words", parsed_by, enumerated
+        d.kind, d.parsed_by, d.enumerated = DeclKind.WORDS, parsed_by, enumerated
         return cls
     return apply
 

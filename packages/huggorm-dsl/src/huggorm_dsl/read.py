@@ -71,7 +71,7 @@ from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
 
 from huggorm_dsl import declare
-from huggorm_dsl.declare import Crossing, Cxx, Decl, Field, Threading
+from huggorm_dsl.declare import Crossing, Cxx, Decl, DeclKind, Field, Threading
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
@@ -585,7 +585,7 @@ class Class:
 
         A StrEnum with no C++ object behind it. It crosses as the
         string a member already IS, so nothing about it compiles."""
-        return self.decl.kind == "words"
+        return self.decl.kind is DeclKind.WORDS
 
     @property
     def is_union(self) -> bool:
@@ -596,7 +596,7 @@ class Class:
         class of its own. It is a Class here anyway, because that is
         what makes every emitter able to NAME it through `known`
         without learning a second kind of thing."""
-        return self.decl.kind == "union"
+        return self.decl.kind is DeclKind.UNION
 
     @property
     def is_value(self) -> bool:
@@ -918,7 +918,7 @@ def _member(ann: object, value: object) -> str:
     if not isinstance(ann, type) or not isinstance(value, str):
         return ""
     decl = vars(ann).get(DECL)
-    if decl is None or decl.kind != "words":
+    if decl is None or decl.kind is not DeclKind.WORDS:
         return ""
     return next((k for k, v in vars(ann).items()
                  if not k.startswith("_") and v == value), "")
@@ -1344,7 +1344,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     # module, so a default such as `HashAlgorithm.SHA256` types as the
     # word and not as `str` (huggorm#104). The base is Python's, not a
     # declared class, so it is checked here and never becomes `base`.
-    if decl.kind == "words":
+    if decl.kind is DeclKind.WORDS:
         if holder.__bases__ != (enum.StrEnum,):
             raise DeclarationError(
                 node, f"{node.name}: a vocabulary is a StrEnum. Write "
@@ -1362,7 +1362,7 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     # every other decorator gets.
     decl.headers = tuple(holder.__dict__.get(NEEDS, ()))
 
-    if decl.kind == "words":
+    if decl.kind is DeclKind.WORDS:
         return Class(
             name=node.name,
             doc=ast.get_docstring(node, clean=False) or "",
@@ -2103,7 +2103,7 @@ def _union_class(name: str, alias: object, where: str,
     variant = _variant(name, tuple(meta), arms, item)
     return Class(
         name=name, doc=doc, ctor=None, module=where,
-        decl=Decl(name=name, kind="union", arms=arms, wire=Crossing.VALUE,
+        decl=Decl(name=name, kind=DeclKind.UNION, arms=arms, wire=Crossing.VALUE,
                   variant=variant, scalars=scalars),
     )
 
@@ -2231,7 +2231,7 @@ def _error(node: ast.ClassDef, kls: type, home: dict[str, Any],
                   f"an exception, so it derives from BaseException.")
     decl = Decl()
     decl.name = node.name
-    decl.kind = "error"
+    decl.kind = DeclKind.ERROR
     return Class(
         name=node.name,
         doc=ast.get_docstring(node, clean=False) or "",

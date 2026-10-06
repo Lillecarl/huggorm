@@ -9,7 +9,7 @@ import json
 from collections.abc import Mapping
 from typing import Protocol
 
-from huggorm_dsl.declare import Crossing, Decl
+from huggorm_dsl.declare import Crossing, Decl, DeclKind
 from huggorm_dsl.read import Class, Origin, Param, Type
 
 # How a declared type is spelled in a C++ signature, and which caster
@@ -160,7 +160,7 @@ def value(t: Type, known: Mapping[str, Class]) -> tuple[str, str | None]:
     `param` adds the reference where a parameter wants one."""
     held_type = t.required
     other = None if held_type.origin else known.get(held_type.python)
-    if other is not None and other.decl.kind == "error":
+    if other is not None and other.decl.kind is DeclKind.ERROR:
         # A live Python EXCEPTION, handed over rather than raised. A
         # BuildResult's failure arm is a nix::BuildError, and reading
         # a failed result is not an exception (huggorm#71) - so what
