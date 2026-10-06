@@ -49,6 +49,11 @@ SCALAR_NAMES = ("str", "int", "uint", "float", "bool", "bytes")
 # precision neither end has.
 SPELLED = {"datetime.timedelta": "int"}
 
+# The scalar arms of the recursive value message, by declared type,
+# with the oneof field each one goes in. In field-number order: the
+# schema numbers the arms in this order, so a reorder is a wire change.
+TREE_ARMS = {"str": "s", "int": "i", "bool": "b", "float": "f"}
+
 def python_spelling(type_str: str) -> str:
     """The Python type a wire scalar is above the boundary.
 

@@ -22,7 +22,7 @@ import datetime
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import Any, ClassVar
+from typing import Any
 
 from huggorm_generated._callspec import Arg, Wire
 from huggorm_generated._policy import (
@@ -31,7 +31,7 @@ from huggorm_generated._policy import (
     UNION_ARMS,
     WIRE_FIELDS,
 )
-from huggorm_generated._wiretypes import MAX_UNION_DEPTH, arm_field
+from huggorm_generated._wiretypes import MAX_UNION_DEPTH, TREE_ARMS, arm_field
 
 # The scalars as a lookup. Annotated because the inferred value type is
 # the join of unrelated classes, which is `type[object]` - and object
@@ -300,9 +300,6 @@ class WireCodec:
     #   ("proxy", "Value", obj)  a node that stays remote
     #   ("list", [node, ...])
     #   ("attrs", {name: node})
-    ARMS: ClassVar[dict[str, str]] = {
-        "str": "s", "int": "i", "bool": "b", "float": "f"}
-
     def tree_to_msg(self, node: Any, msg: Any,
                     proxy_id: Callable[[str, Any], str]) -> None:
         """Fill a NixValue message from one walked node."""
@@ -310,12 +307,12 @@ class WireCodec:
         if what == "scalar":
             _, type_str, val = node
             try:
-                arm = self.ARMS[type_str]
+                arm = TREE_ARMS[type_str]
             except KeyError:
                 raise TypeError(
                     f"{type_str!r} has no arm in the value message; it is "
-                    f"not one of {sorted(self.ARMS)}") from None
-            setattr(msg, arm, _SCALARS.get(type_str, float)(val))
+                    f"not one of {sorted(TREE_ARMS)}") from None
+            setattr(msg, arm, _SCALARS[type_str](val))
         elif what == "proxy":
             _, cls, obj = node
             msg.proxy.handle.id = proxy_id(cls, obj)

@@ -36,6 +36,7 @@ from huggorm_gen.ir import (
 from huggorm_gen.payload.wiretypes import (
     MAP_KEY,
     SCALAR_NAMES,
+    TREE_ARMS,
     arm_field,
     entry_name,
 )
@@ -433,10 +434,7 @@ def _add_value_tree(f: Any, sess: Any) -> None:
     arm = value.oneof_decl.add()
     arm.name = "v"
     for n, (fname, ptype, msg) in enumerate([
-        ("s", "string", None),
-        ("i", "sint64", None),
-        ("b", "bool", None),
-        ("f", "double", None),
+        *((arm, SCALARS[name], None) for name, arm in TREE_ARMS.items()),
         ("proxy", None, proxy.name),
         ("list", None, lst.name),
         ("attrs", None, attrs.name),
