@@ -1322,7 +1322,7 @@ def targets_name(item: ast.Assign) -> str:
 
 
 def _class(node: ast.ClassDef, vocab: dict[str, str],
-           where: str, live: set[int],
+           where: str, here: str,
            fns: dict[int, Any]) -> Class:
     # The import already ran this class's decorators, on the class
     # itself, so what they wrote is read off it rather than written
@@ -1381,8 +1381,23 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     ctor: Method | None = None
     from_parts: Method | None = None
     methods: list[Method] = []
-    # ...with any `NIX_VERSION` branch already chosen by the import.
-    for item in _resolve(node.body, live):
+    # The IMPORT says which members exist, in definition order, with
+    # any `NIX_VERSION` branch already chosen; the tree gives each
+    # one's text, found by the line the import names.
+    nodes = {_first_line(n): n for n in ast.walk(node)
+             if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)}
+    for name, value in vars(holder).items():
+        fn = _written(value, here)
+        if fn is None:
+            if not _dunder(name) and name not in (DECL, NEEDS):
+                _survive(DeclarationError(
+                    _binder(node, name),
+                    f"{node.name}.{name} ({type(value).__name__}) reaches "
+                    f"no output. A bound class holds its methods, its "
+                    f"constructor, {FROM_PARTS} and what its decorators "
+                    f"wrote."), unsound=f"{node.name}.{name}")
+            continue
+        item = nodes[fn.__code__.co_firstlineno]
         if isinstance(item, ast.AsyncFunctionDef):
             # A declaration says what the BINDING is, and a binding is
             # C++. Which methods get an async form is decided from
@@ -1924,8 +1939,7 @@ def _read(path: str) -> Module:
                 node = nodes[value.__firstlineno__]
                 assert isinstance(node, ast.ClassDef)
                 if node.decorator_list:
-                    cls = _class(node, vocab, stem, set(fns), fns)
-                    _class_contents(cls, value, here, node)
+                    cls = _class(node, vocab, stem, here, fns)
                     classes.append(cls)
                 else:
                     errors.append(_error(node, value, glb, stem))
@@ -2042,36 +2056,6 @@ def _binder(tree: ast.AST, name: str) -> ast.AST:
                    for t in targets):
                 return node
     return tree
-
-
-def _class_contents(cls: Class, holder: type, here: str,
-                    node: ast.ClassDef) -> None:
-    """Every name a bound class holds, the reader put somewhere.
-
-    Its methods, its constructor, `_from_parts` and what its
-    decorators wrote; a vocabulary holds its words. A method a refusal
-    already marked unsound is skipped, so it is reported once, for its
-    cause."""
-    unsound = _COLLECTING.unsound if _COLLECTING is not None else set()
-    kept = {m.name for m in cls.methods} | {DECL, NEEDS}
-    kept |= {m.name for m in (cls.ctor, cls.from_parts) if m is not None}
-    words = cls.decl.kind == "words"
-    members = {m.name for m in cls.members}
-    for name, value in vars(holder).items():
-        if _dunder(name) and _written(value, here) is None:
-            continue
-        # An enum keeps its machinery under `_sunder_` names.
-        if words and ((isinstance(value, holder) and name in members)
-                      or (name.startswith("_") and name.endswith("_"))):
-            continue
-        if name in kept or f"{cls.name}.{name}" in unsound:
-            continue
-        _survive(DeclarationError(
-            _binder(node, name),
-            f"{cls.name}.{name} ({type(value).__name__}) reaches no "
-            f"output. A bound class holds its methods, its constructor, "
-            f"{FROM_PARTS} and what its decorators wrote."),
-            unsound=f"{cls.name}.{name}")
 
 
 def _union(alias: object) -> tuple[object, list[object]] | None:
