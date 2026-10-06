@@ -37,6 +37,8 @@ from huggorm_generated._wiretypes import (
     arm_field,
 )
 
+from . import tree
+
 # The scalars as a lookup. Annotated because the inferred value type is
 # the join of unrelated classes, which is `type[object]` - and object
 # takes no constructor arguments.
@@ -270,44 +272,37 @@ class WireCodec:
     # What this module does NOT know is how to walk one - that comes
     # from a declaration next to the binding and arrives here already
     # walked (huggorm#30).
-    #
-    # The plain shape both sides speak:
-    #   ("scalar", "int", 5)     a leaf, by declared type
-    #   ("proxy", "Value", obj)  a node that stays remote
-    #   ("list", [node, ...])
-    #   ("attrs", {name: node})
-    def tree_to_msg(self, node: Any, msg: Any,
+    def tree_to_msg(self, node: tree.Node, msg: Any,
                     proxy_id: Callable[[str, Any], str]) -> None:
         """Fill a NixValue message from one walked node."""
-        what = node[0]
-        if what == "scalar":
-            _, type_str, val = node
-            try:
-                arm = TREE_ARMS[type_str]
-            except KeyError:
-                raise TypeError(
-                    f"{type_str!r} has no arm in the value message; it is "
-                    f"not one of {sorted(TREE_ARMS)}") from None
-            setattr(msg, arm, _SCALARS[type_str](val))
-        elif what == "proxy":
-            _, cls, obj = node
-            msg.proxy.handle.id = proxy_id(cls, obj)
-            # A handle does not say what it is, and no layer above the
-            # bindings may name a class. The walk knows, so it says.
-            msg.proxy.cls = cls
-        elif what == "list":
-            # Touch the arm even when empty: proto3 would otherwise
-            # leave the oneof unset and the far side could not tell an
-            # empty list from a missing value.
-            msg.list.SetInParent()
-            for item in node[1]:
-                self.tree_to_msg(item, msg.list.items.add(), proxy_id)
-        elif what == "attrs":
-            msg.attrs.SetInParent()
-            for name, item in node[1].items():
-                self.tree_to_msg(item, msg.attrs.entries[name], proxy_id)
-        else:
-            raise TypeError(f"unknown value-tree node {what!r}")
+        match node:
+            case tree.Leaf(wire=type_str, value=val):
+                try:
+                    arm = TREE_ARMS[type_str]
+                except KeyError:
+                    raise TypeError(
+                        f"{type_str!r} has no arm in the value message; it "
+                        f"is not one of {sorted(TREE_ARMS)}") from None
+                setattr(msg, arm, _SCALARS[type_str](val))
+            case tree.Stays(cls=cls, obj=obj):
+                msg.proxy.handle.id = proxy_id(cls, obj)
+                # A handle does not say what it is, and no layer above
+                # the bindings may name a class. The walk knows, so it
+                # says.
+                msg.proxy.cls = cls
+            case tree.Items(items=items):
+                # Touch the arm even when empty: proto3 would otherwise
+                # leave the oneof unset and the far side could not tell
+                # an empty list from a missing value.
+                msg.list.SetInParent()
+                for item in items:
+                    self.tree_to_msg(item, msg.list.items.add(), proxy_id)
+            case tree.Entries(entries=entries):
+                msg.attrs.SetInParent()
+                for name, item in entries.items():
+                    self.tree_to_msg(item, msg.attrs.entries[name], proxy_id)
+            case _:
+                assert_never(node)
 
     def tree_from_msg(self, msg: Any,
                       proxy_obj: Callable[[str, str], Any]) -> Any:

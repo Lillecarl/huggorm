@@ -38,6 +38,7 @@ from huggorm_generated._policy import (
 )
 
 from . import grpc_pb as schema
+from . import tree
 from .faults import FaultCodec, SchemaStatusDetails
 from .lifecycle import TOKEN_HEADER, HandleTable, ShareMode
 from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
@@ -145,7 +146,7 @@ class TreeWalk:
         how = self.spec.identity
         return getattr(obj, how)() if how else id(obj)
 
-    def node(self, obj: Any, depth: int) -> Any:
+    def node(self, obj: Any, depth: int) -> tree.Node:
         key = self._key(obj)
         # `depth` counts levels EXPANDED, so 1 is the root alone. Zero
         # would be the natural spelling for that, and proto3 cannot
@@ -153,24 +154,24 @@ class TreeWalk:
         # _wire_fields marks with a trailing "?".
         if self.left <= 0 or depth >= self.depth or key in self.seen:
             self.truncated = True
-            return ("proxy", type(obj).__name__, obj)
+            return tree.Stays(type(obj).__name__, obj)
         self.left -= 1
         self.seen.add(key)
         match self.spec.kinds.get(getattr(obj, self.spec.kind)()):
             case Leaf(wire=wire, read=read):
-                return ("scalar", wire, getattr(obj, read)())
+                return tree.Leaf(wire, getattr(obj, read)())
             case Items(size=size, item=item):
                 at = getattr(obj, item)
-                return ("list", [self.node(at(i), depth + 1)
-                                 for i in range(getattr(obj, size)())])
+                return tree.Items([self.node(at(i), depth + 1)
+                                   for i in range(getattr(obj, size)())])
             case Entries(size=size, name=name, value=value):
                 key, at = getattr(obj, name), getattr(obj, value)
-                return ("attrs", {key(i): self.node(at(i), depth + 1)
-                                  for i in range(getattr(obj, size)())})
+                return tree.Entries({key(i): self.node(at(i), depth + 1)
+                                     for i in range(getattr(obj, size)())})
             case None:
                 # A kind nothing describes: it stays where it is.
                 self.truncated = True
-                return ("proxy", type(obj).__name__, obj)
+                return tree.Stays(type(obj).__name__, obj)
 
 
 def _never_a_proxy(obj: Any) -> str:
@@ -847,7 +848,7 @@ class Dispatcher:
         return released, unknown
 
     async def realize(self, token: str, hid: str, depth: int,
-                      budget: int) -> tuple[Any, Any, TreeWalk]:
+                      budget: int) -> tuple[Any, tree.Node, TreeWalk]:
         """One round trip for a whole value tree: the target, the tree,
         and the walk that built it.
 
@@ -868,8 +869,8 @@ class Dispatcher:
         walk = TreeWalk(spec, depth if depth > 0 else DEFAULT_DEPTH,
                         budget if budget > 0 else DEFAULT_BUDGET)
         # ONE hop for the whole tree, on the value's own thread.
-        tree = await target._runner.run(lambda obj: walk.node(obj, 0))
-        return target, tree, walk
+        root = await target._runner.run(lambda obj: walk.node(obj, 0))
+        return target, root, walk
 
     async def logs_barrier(self, token: str, hid: str) -> int:
         """The request id whose "finalized" ends the records so far.
@@ -969,13 +970,13 @@ class Dispatcher:
         async def realize(stream: Any) -> None:
             req = await stream.recv_message()
             token = _tok(stream)
-            target, tree, walk = await self.realize(token, req.handle.id,
+            target, root, walk = await self.realize(token, req.handle.id,
                                                     req.depth, req.budget)
             resp = reply("Realize")()
             # Every node the walk stopped at leases to the caller and
             # pins the root, exactly as a proxy return does.
             self.codec.tree_to_msg(
-                tree, resp.root,
+                root, resp.root,
                 lambda _cls, obj: self.put(self.adopt(obj, target), token,
                                            parents=[req.handle.id]))
             resp.nodes = len(walk.seen)
