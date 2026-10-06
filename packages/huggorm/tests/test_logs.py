@@ -31,7 +31,7 @@ from typing import Any
 
 import anyio
 import pytest
-from conftest import HOST, SHORT_TTL, Server
+from conftest import SHORT_TTL, Server
 
 URI = "dummy://"
 
@@ -1076,84 +1076,24 @@ async def test_a_swept_connection_ends_the_stream(ttl_server: Server) -> None:
     would be indistinguishable from a quiet evaluation - this repo's
     named failure mode, spelled as an absence of messages.
 
-    So the handler ends it with UNAVAILABLE, and the check is a READ:
-    `table.entries`, not `table.alive`. `alive` REFRESHES the
-    connection it is asked about, so a log stream asking it every 50ms
-    would keep its own connection alive forever and quietly disable
-    the sweeper for it. Liveness stays the ping loop's job, which is
-    why this test stops the pinging to get a sweep at all.
+    So the server refuses every call on a swept connection, and the
+    reader's next poll raises. A poll is a call, and a call keeps the
+    connection alive, so the test stops pinging AND stops reading for
+    one sweep: a client that is suspended does both.
 
     It uses the short-TTL server, so it costs one sweep of wall time
     rather than the default lease."""
-    from grpclib.const import Status
-    from grpclib.exceptions import GRPCError
-
     from huggorm import remote
 
-    async with remote.connect(HOST, ttl_server.port) as c:
+    async with remote.connect(ttl_server.path) as c:
         state = await c.acquire("EvalState", await c.acquire("Store", "dummy://"))
         stream = await opened(c, state)
         # Nothing keeps the connection alive now, so the next sweep takes
         # it - and the handle with it.
         c.stop_pinging()
-        with pytest.raises(GRPCError) as caught:
-            await batch(stream, timeout=SHORT_TTL * 4 + 10)
-        assert caught.value.status is Status.UNAVAILABLE
-        assert "swept" in (caught.value.message or "")
-
-
-async def test_the_descriptor_says_it_streams() -> None:
-    """The schema has to SAY server-streaming, not just behave it.
-
-    Reflection and grpcurl read this flag, so a descriptor that calls
-    Logs unary while dispatch streams is a schema that lies - and a
-    client built from it would wait for one message and stop.
-
-    No other Session method carries it, which is asserted rather than
-    assumed: this was the first use of the flag in this schema, so
-    there was no example to copy and nothing to notice a stray one.
-
-    TWO of them now, and this gate is what noticed the second - it
-    failed with `{'Logs', 'ProcessLogs'}` the moment the schema
-    gained one, which is the exact-set assertion earning its keep."""
-    from huggorm.grpc_pb import PKG, load_pool
-
-    session = load_pool().FindServiceByName(  # type: ignore[no-untyped-call]
-        f"{PKG}.Session")
-    streaming = {m.name for m in session.methods if m.server_streaming}
-    assert streaming == {"Logs", "ProcessLogs"}, streaming
-    for name in sorted(streaming):
-        rpc = session.FindMethodByName(  # type: ignore[no-untyped-call]
-            name)
-        assert not rpc.client_streaming, f"{name}: the request is one message"
-
-
-async def test_the_process_stream_names_no_state() -> None:
-    """The one structural difference between the two requests.
-
-    `LogsReq` carries a handle because the tap routes by thread and an
-    EvalState owns one. A process-wide subscription has no thread to
-    name, so there is nothing to address - and a request that took a
-    handle it ignored would be inviting a caller to believe the scope
-    was that state's.
-
-    They share `LogsResp`, which is asserted here rather than left to
-    read like an accident: a batch and a drop count is the whole
-    answer either way."""
-    from huggorm.grpc_pb import PKG, load_pool
-
-    pool = load_pool()
-    session = pool.FindServiceByName(  # type: ignore[no-untyped-call]
-        f"{PKG}.Session")
-    plain = session.FindMethodByName("Logs")  # type: ignore[no-untyped-call]
-    process = session.FindMethodByName(  # type: ignore[no-untyped-call]
-        "ProcessLogs")
-
-    assert [f.name for f in plain.input_type.fields] \
-        == ["state", "capacity", "level"]
-    assert [f.name for f in process.input_type.fields] \
-        == ["capacity", "level"]
-    assert process.output_type is plain.output_type, "one response message"
+        await anyio.sleep(SHORT_TTL * 1.5 + 1.0)
+        with pytest.raises(remote.ConnectionExpired, match="swept"):
+            await batch(stream)
 
 
 # ---- the tap replaced the logger, and did not tee it ---------------

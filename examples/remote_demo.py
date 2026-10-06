@@ -1,6 +1,6 @@
 """
 Remote demo: same async surface as async_demo, but every operation
-crosses a gRPC socket. Wire-values come back as real local copies;
+crosses a Unix socket. Wire-values come back as real local copies;
 proxies stay remote behind handles.
 
 Every object the client hands back is a generated class with real
@@ -8,15 +8,17 @@ methods, so the same function can be typed against a protocol and take
 either an in-process wrapper or one of these.
 """
 
+import sys
 import tempfile
+from pathlib import Path
 
 import anyio
 
 from huggorm import remote
 
 
-async def main() -> None:
-    async with remote.connect() as client:
+async def main(path: str | Path) -> None:
+    async with remote.connect(path) as client:
 
         root = tempfile.mkdtemp(prefix="huggorm-demo-")
         store = await client.acquire("Store", root)
@@ -72,4 +74,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    anyio.run(main)
+    anyio.run(main, sys.argv[1])

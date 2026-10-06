@@ -15,17 +15,22 @@ carries the build identity, and a server refuses any other
     CANCEL    [Op, call_id]
     DROP      [Op, [handle, ...]]                     one way
     RESULT    [Op, call_id, value]
-    FAULT     [Op, call_id, fault]
+    FAULT     [Op, call_id | None, fault]
 
 `call_id` is the client's, and a RESULT or FAULT carries it back, so
 calls on one connection may finish in any order. A CALL names its call
-by its index in the emitted `CALLS`.
+by its index in the emitted `CALLS`. A FAULT with no `call_id` answers
+the HELLO, and the server closes the connection after it.
+
+A CANCEL gets no answer. A late RESULT for a cancelled call can still
+arrive, and the client drops it.
 """
 
 from __future__ import annotations
 
 import builtins
 import enum
+import functools
 import hashlib
 import importlib
 import importlib.util
@@ -70,15 +75,37 @@ class Control(enum.IntEnum):
     RELEASE = 3
     REALIZE = 4
     LOGS_BARRIER = 5
-    NEXT_LOGS = 6
-    NEXT_PROCESS_LOGS = 7
-    CLOSE_LOGS = 8
+    LOGS = 6
 
 
 class ProtocolError(Exception):
     """The peer sent something this build never writes."""
 
 
+class Refusal(enum.StrEnum):
+    """Why a server will not serve a connection. A fault's `code`."""
+
+    # The HELLO named another build.
+    IDENTITY = "refused_identity"
+    # The sweeper took this connection's token and every lease under it.
+    SWEPT = "refused_swept"
+
+
+# By value, because `in` on an enum class takes a value only from 3.12.
+_REFUSALS = {r.value: r for r in Refusal}
+
+
+class Refused(Exception):
+    """The server will not serve this connection, and says why."""
+
+    def __init__(self, reason: Refusal, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.code = str(reason)
+        self.message = message
+
+
+@functools.cache
 def build_identity() -> str:
     """A digest of every Python source both ends run.
 
@@ -124,17 +151,31 @@ class Channel:
         if len(body) > MAX_FRAME:
             raise ProtocolError(f"a {len(body)} byte frame is over the "
                                 f"{MAX_FRAME} byte limit")
-        async with self._send_lock:
-            await self.stream.send(_LENGTH.pack(len(body)) + body)
+        # Shielded: a cancel in the middle of a write leaves the peer
+        # reading a body that never ends.
+        with anyio.CancelScope(shield=True):
+            async with self._send_lock:
+                await self.stream.send(_LENGTH.pack(len(body)) + body)
 
     async def receive(self) -> list[Any]:
         """The next frame, as `[Op, ...]`. Raises EndOfStream when the
         peer closed between frames."""
-        (length,) = _LENGTH.unpack(await self._reader.receive_exactly(4))
+        # `receive_exactly` reports a close as IncompleteRead, even
+        # one that lands between frames.
+        try:
+            head = await self._reader.receive_exactly(4)
+        except anyio.IncompleteRead:
+            raise anyio.EndOfStream from None
+        (length,) = _LENGTH.unpack(head)
         if length > MAX_FRAME:
             raise ProtocolError(f"a {length} byte frame is over the "
                                 f"{MAX_FRAME} byte limit")
-        frame = unpack(await self._reader.receive_exactly(length))
+        try:
+            body = await self._reader.receive_exactly(length)
+        except anyio.IncompleteRead:
+            raise ProtocolError(
+                f"the peer closed inside a {length} byte frame") from None
+        frame = unpack(body)
         if type(frame) is not list or not frame or type(frame[0]) is not int:
             raise ProtocolError(f"a frame arrived as {frame!r:.80}")
         try:
@@ -190,7 +231,9 @@ class Faults:
                                  _no_proxy)
 
     def encode(self, wrapper: Any) -> list[Any]:
-        """`wrapper` is a declared error or a WrapperError."""
+        """`wrapper` is a declared error, a WrapperError or a Refused."""
+        if isinstance(wrapper, Refused):
+            return [wrapper.code, wrapper.message, "", "", None, None]
         itself = self._declared(wrapper)
         if itself is not None:
             return [wrapper.code, wrapper.message, "", "", itself,
@@ -208,7 +251,10 @@ class Faults:
 
         if type(raw) is not list or len(raw) != 6:
             raise ProtocolError(f"a fault arrived as {raw!r:.80}")
-        _code, message, cause_type, cause_message, error, parts = raw
+        code, message, cause_type, cause_message, error, parts = raw
+        reason = _REFUSALS.get(code)
+        if reason is not None and error is None and not cause_type:
+            return Refused(reason, message)
         rebuilt = None
         if error is not None:
             if type(error) is not int or not 0 <= error < len(_ERRORS):

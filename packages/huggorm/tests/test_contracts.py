@@ -30,7 +30,7 @@ def test_no_hardcoded_domain_types(model: ir.Model) -> None:
     here = pathlib.Path(__file__).resolve().parent.parent / "huggorm"
     offenders = []
     for mod in ("server.py", "remote.py", "wire.py", "faults.py",
-                "lifecycle.py", "grpc_pb.py"):
+                "lifecycle.py", "grpc_pb.py", "codec.py", "protocol.py"):
         tree = ast.parse((here / mod).read_text(), filename=mod)
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and node.value in domain:

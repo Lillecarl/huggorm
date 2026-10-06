@@ -10,7 +10,7 @@ thread, and answers with the shape (huggorm#30).
 from typing import Any
 
 import pytest
-from conftest import HOST, Server
+from conftest import Server
 
 from huggorm import remote
 from huggorm_generated import RPCValue
@@ -20,7 +20,7 @@ from huggorm_generated import RPCValue
 async def state(server: Server) -> Any:
     """A fresh evaluator per test, on its own connection, so one test's
     handles never outlive it into another's assertions."""
-    async with remote.connect(HOST, server.port) as c:
+    async with remote.connect(server.path) as c:
         s = await c.acquire("EvalState", await c.acquire("Store", "dummy://"))
         yield s
         await s.aclose()

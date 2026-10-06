@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import importlib
 import pathlib
-import socket
 import sys
+import tempfile
 
 import anyio
 
@@ -24,7 +24,6 @@ from huggorm import remote
 from huggorm_bindings import EvalState, Store
 from huggorm_bindings.errors import MissingAttribute
 
-HOST = "127.0.0.1"
 URI = "dummy://?read-only=false"
 
 
@@ -65,17 +64,11 @@ async def check_async() -> None:
         raise RuntimeError(f"AsyncStore.add_to_store gave {printed}")
 
 
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind((HOST, 0))
-        return int(s.getsockname()[1])
-
-
-async def wait_port(port: int) -> None:
+async def wait_socket(path: pathlib.Path) -> None:
     with anyio.fail_after(20):
         while True:
             try:
-                stream = await anyio.connect_tcp(HOST, port)
+                stream = await anyio.connect_unix(path)
             except OSError:
                 await anyio.sleep(0.05)
             else:
@@ -84,15 +77,15 @@ async def wait_port(port: int) -> None:
 
 
 async def check_rpc() -> None:
-    port = free_port()
-    argv = [sys.executable, "-m", "huggorm.server", HOST, str(port)]
+    path = pathlib.Path(tempfile.mkdtemp()) / "s"
+    argv = [sys.executable, "-m", "huggorm.server", str(path)]
     async with await anyio.open_process(argv, stdout=None, stderr=None) as server:
         try:
-            await wait_port(port)
-            async with remote.connect(HOST, port) as client:
+            await wait_socket(path)
+            async with remote.connect(path) as client:
                 store = await client.acquire("Store", URI)
-                path = await store.add_to_store("hello", b"hello\n")
-                printed = await store.print_store_path(path)
+                added = await store.add_to_store("hello", b"hello\n")
+                printed = await store.print_store_path(added)
         finally:
             server.terminate()
     if not printed.endswith("-hello"):

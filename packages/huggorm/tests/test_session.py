@@ -28,7 +28,7 @@ from huggorm_generated._runtime import InternalError
 
 def _connect(server: Any, claim: str | None = None) -> Any:
     """One remote session on this test's server, over `dummy://`."""
-    return AsyncRemoteSession.connect("127.0.0.1", server.port, claim=claim, store_uri="dummy://")
+    return AsyncRemoteSession.connect(server.path, claim=claim, store_uri="dummy://")
 
 
 # builtins.trace goes through printError, which is lvlError - 0, and

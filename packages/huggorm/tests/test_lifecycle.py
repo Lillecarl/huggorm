@@ -14,12 +14,13 @@ minute of sleeping.
 
 import contextlib
 import gc
+import pathlib
 from dataclasses import dataclass
 from typing import Any
 
 import anyio
 import pytest
-from conftest import HOST, SHORT_TTL, Server
+from conftest import SHORT_TTL, Server
 from nixversion import MISSING_FILE, MissingFileError
 
 from huggorm import remote
@@ -61,15 +62,15 @@ async def wrapper_error(coro: Any) -> dict[str, str]:
 # anything, not after.
 
 async def test_distinct_clients_get_distinct_tokens(ttl_server: Server) -> None:
-    async with (remote.connect(HOST, ttl_server.port) as a,
-                remote.connect(HOST, ttl_server.port) as b):
+    async with (remote.connect(ttl_server.path) as a,
+                remote.connect(ttl_server.path) as b):
         assert a.token != b.token
 
 
 async def test_a_handle_is_a_capability(ttl_server: Server) -> None:
     """Anyone holding the id may call. Lifetime is what tokens govern."""
-    async with (remote.connect(HOST, ttl_server.port) as a,
-                remote.connect(HOST, ttl_server.port) as b):
+    async with (remote.connect(ttl_server.path) as a,
+                remote.connect(ttl_server.path) as b):
         store = await a.acquire("Store", "dummy://")
         cross = b.proxy("Store", store.handle_id)
         assert await cross.get_uri() == "dummy://"
@@ -79,8 +80,8 @@ async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     """Two processes share one object by passing its id between them
     however they like: the second calls, and the object stays alive for
     it without the first arranging anything (huggorm#31)."""
-    async with (remote.connect(HOST, ttl_server.port) as a,
-                remote.connect(HOST, ttl_server.port) as b):
+    async with (remote.connect(ttl_server.path) as a,
+                remote.connect(ttl_server.path) as b):
         shared = await a.acquire("Store", "dummy://")
         hid = shared.handle_id
         borrowed = b.proxy("Store", hid)
@@ -103,7 +104,7 @@ async def test_double_release_fails_typed(ttl_server: Server) -> None:
     """Releasing the same handle twice, through a FRESH object each
     time. Reusing the spent one sent an empty id, so the old test
     asserted that releasing handle "" fails - which proves nothing."""
-    async with remote.connect(HOST, ttl_server.port) as a:
+    async with remote.connect(ttl_server.path) as a:
         store = await a.acquire("Store", "dummy://")
         hid = store.handle_id
         await a.release(store)
@@ -119,8 +120,8 @@ async def test_double_release_fails_typed(ttl_server: Server) -> None:
 # -- share -----------------------------------------------------------------
 
 async def test_share_copy_survives_the_granter(ttl_server: Server) -> None:
-    async with (remote.connect(HOST, ttl_server.port) as a,
-                remote.connect(HOST, ttl_server.port) as b):
+    async with (remote.connect(ttl_server.path) as a,
+                remote.connect(ttl_server.path) as b):
         assert b.token is not None  # connect() binds
         store = await a.acquire("Store", "dummy://")
         hid = store.handle_id
@@ -130,8 +131,8 @@ async def test_share_copy_survives_the_granter(ttl_server: Server) -> None:
 
 
 async def test_share_transfer_moves_ownership(ttl_server: Server) -> None:
-    async with (remote.connect(HOST, ttl_server.port) as a,
-                remote.connect(HOST, ttl_server.port) as b):
+    async with (remote.connect(ttl_server.path) as a,
+                remote.connect(ttl_server.path) as b):
         assert b.token is not None
         store = await a.acquire("Store", "dummy://")
         hid = store.handle_id
@@ -153,7 +154,7 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
     producer in this repo hands back a wire VALUE, which needs no
     pinning at all - so this test is the only exercise the pinning,
     the cascade and the adopt path get."""
-    async with remote.connect(HOST, ttl_server.port) as a:
+    async with remote.connect(ttl_server.path) as a:
         state = await a.acquire("EvalState", await a.acquire("Store", "dummy://"))
         hid_state = state.handle_id
         v = await state.make_int(42)
@@ -177,7 +178,7 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
 class Swept:
     """What was set up before the sweep, and survived it (or did not)."""
 
-    port: int
+    path: pathlib.Path
     escrow_token: str
     thunk_id: str
     maker_token: str
@@ -215,7 +216,7 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
     async with contextlib.AsyncExitStack() as stack:
         async def client() -> Any:
             return await stack.enter_async_context(
-                remote.connect(HOST, ttl_server.port))
+                remote.connect(ttl_server.path))
 
         # 1. detached leases, whose owner then dies.
         a = await client()
@@ -263,7 +264,7 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
         assert a.token is not None and maker.token is not None
 
         await anyio.sleep(SHORT_TTL * 1.5 + 1.0)
-        yield Swept(ttl_server.port, a.token, thunk_id, maker.token,
+        yield Swept(ttl_server.path, a.token, thunk_id, maker.token,
                     state_id, bag_id, lazy_id, str(warm_file), doomed_id,
                     d, alive)
 
@@ -284,15 +285,13 @@ async def test_ping_reports_a_swept_connection(swept: Swept) -> None:
 
     A fresh connection still works, which is what says the server
     refused this token rather than the service."""
-    from huggorm.grpc_pb import PKG
+    from huggorm.protocol import Control, Op
 
     c = swept.doomed_client
-    ack = await c._rpc(f"/{PKG}.Session/Ping")
-    assert ack.ok is False
+    assert await c._ask(Op.CONTROL, Control.PING, []) is False
 
-    async with remote.connect(HOST, swept.port) as fresh:
-        ok = await fresh._rpc(f"/{PKG}.Session/Ping")
-        assert ok.ok is True
+    async with remote.connect(swept.path) as fresh:
+        assert await fresh._ask(Op.CONTROL, Control.PING, []) is True
 
 
 async def test_binding_outside_the_context_refuses(ttl_server: Server) -> None:
@@ -307,7 +306,7 @@ async def test_binding_outside_the_context_refuses(ttl_server: Server) -> None:
     Refused rather than tolerated, and the message names the fix.
     Drop the check and this passes while leaking a loop that pings a
     server for a connection nobody holds."""
-    client = remote.NixClient(HOST, ttl_server.port)
+    client = remote.NixClient(ttl_server.path)
     with pytest.raises(RuntimeError, match="not open"):
         await client.bind()
 
@@ -327,7 +326,7 @@ async def test_the_context_stops_the_ping_loop(ttl_server: Server) -> None:
     test's own guard so much as the difference between a report and a
     three-minute wait."""
     with anyio.fail_after(20):
-        async with remote.connect(HOST, ttl_server.port) as c:
+        async with remote.connect(ttl_server.path) as c:
             assert c._pinger is not None, "bind started it"
         assert c._pinger is None, "and leaving stopped it"
 
@@ -359,7 +358,7 @@ async def test_a_swept_client_stops_rather_than_rebinding(
 
 
 async def test_abandoned_handles_are_reaped(swept: Swept) -> None:
-    async with remote.connect(HOST, swept.port) as c:
+    async with remote.connect(swept.path) as c:
         gone = await wrapper_error(c.proxy("Store", swept.doomed_id).get_uri())
         assert gone["cause_type"] == "KeyError", gone
 
@@ -368,7 +367,7 @@ async def test_escrow_survives_connection_death(swept: Swept) -> None:
     """Escrow is deliberately untouched by the sweep: detached leases
     are unowned and never auto-reaped, which is what lets a creator
     exit entirely while its objects wait for a claim."""
-    async with remote.connect(HOST, swept.port, claim=swept.escrow_token) as c:
+    async with remote.connect(swept.path, claim=swept.escrow_token) as c:
         assert c.token == swept.escrow_token, "claim adopts the detached token"
         assert await c.proxy("Value", swept.thunk_id).integer() == 42
 
@@ -378,7 +377,7 @@ async def test_a_claimed_lease_is_a_normal_lease(swept: Swept) -> None:
     lease instead of moving the escrowed one back - so no number of
     releases ever reached zero and every detach/claim round trip leaked
     its handle for good."""
-    async with remote.connect(HOST, swept.port, claim=swept.escrow_token) as c:
+    async with remote.connect(swept.path, claim=swept.escrow_token) as c:
         claimed = c.proxy("Value", swept.thunk_id)
         await c.release(claimed)
         gone = await wrapper_error(c.proxy("Value", swept.thunk_id).integer())
@@ -388,7 +387,7 @@ async def test_a_claimed_lease_is_a_normal_lease(swept: Swept) -> None:
 async def test_the_evaluator_outlives_its_creator(swept: Swept) -> None:
     """The vision the whole lifecycle exists for (huggorm#16): one
     EvalState serving many connections over time."""
-    async with remote.connect(HOST, swept.port, claim=swept.maker_token) as heir:
+    async with remote.connect(swept.path, claim=swept.maker_token) as heir:
         assert heir.token == swept.maker_token, "the successor adopts the identity"
         same = heir.proxy("EvalState", swept.state_id)
         assert await same.get_store_uri() == "dummy://"
@@ -418,7 +417,7 @@ async def test_a_claimed_state_answers_for_a_file_it_can_no_longer_read(
     The control is in the same test, on the same server, in the same
     moment. A FRESH EvalState asked for the same path goes to disk and
     says so."""
-    async with remote.connect(HOST, swept.port, claim=swept.maker_token) as heir:
+    async with remote.connect(swept.path, claim=swept.maker_token) as heir:
         same = heir.proxy("EvalState", swept.state_id)
 
         warm = await same.eval_file(swept.warm_file)

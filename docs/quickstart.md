@@ -116,13 +116,14 @@ more, say so before the first call:
 
 ## Remote
 
-The same protocol, on someone else's store.
+The same protocol, in another process on this machine. The server
+listens on a Unix socket, and only its own uid may connect.
 
-    server:  await huggorm.serve(host="127.0.0.1", port=50051)
+    server:  await huggorm.serve("/run/user/1000/huggorm.sock")
 
-    client:  client = await huggorm.connect("127.0.0.1", 50051)
-             store = await client.acquire("Store", "auto")
-             path = await store.add_to_store("hello", b"hello\n")
+    client:  async with huggorm.connect("/run/user/1000/huggorm.sock") as client:
+                 store = await client.acquire("Store", "auto")
+                 path = await store.add_to_store("hello", b"hello\n")
 
 `store` here is an `RPCStore`, and the in-process one is an
 `AsyncStore`. Both satisfy `huggorm.StoreLike`, so code written

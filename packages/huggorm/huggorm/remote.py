@@ -1,7 +1,7 @@
 """
 Client side of the remote layer.
 
-The client owns the connection, the codec and the lifecycle rpcs.
+The client owns the connection, the codec and the lifecycle calls.
 Every object it hands back is a GENERATED class from
 huggorm_generated.rpc: real methods, real signatures, one per
 declared class, satisfying the same protocol the in-process
@@ -19,57 +19,71 @@ Wire-values still come back as REAL local objects (copies,
 deserialized through the private binding helpers); proxies stay remote
 behind handles. Identical semantics to the in-process layer, different
 location.
+
+`protocol` holds the frames. One connection is one token, so `bind`
+opens the connection.
 """
 
 from __future__ import annotations
 
 import contextlib
+import itertools
 import logging
+import os
 import threading
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 import anyio
-import grpclib
-import grpclib.client
-import grpclib.const
-import grpclib.exceptions
 
-from huggorm_generated._callspec import Call
-from huggorm_generated._policy import ACQUIRE, FREE, LOG_RECORDS, NO_RPC
+from huggorm_generated._callspec import Acquire, Call
+from huggorm_generated._policy import ACQUIRE, FREE, NO_RPC
 
-from . import grpc_pb as schema
-from .faults import FaultCodec, SchemaStatusDetails
-from .lifecycle import TOKEN_HEADER, ShareMode
-from .wire import WireCodec
+from .codec import Codec
+from .lifecycle import ShareMode
+from .logbus import LOG_CAPACITY, LOG_LEVEL
+from .protocol import (
+    Channel,
+    Control,
+    Faults,
+    Op,
+    ProtocolError,
+    Refusal,
+    Refused,
+    build_identity,
+)
 
 logger = logging.getLogger(__name__)
+
+# How often a log reader asks for records when the last ask answered
+# none. After a non-empty batch it asks again at once.
+LOG_POLL = 0.05
+
+# A log reader's class, read off the call that answers one: no layer
+# above the bindings names a domain type.
+_READER = FREE["subscribe_process_logs"].returns
 
 
 class ConnectionExpired(RuntimeError):
     """The server no longer knows this connection.
 
-    Raised once the ping loop learns the connection was swept. Every
-    handle the client held is gone with it - the leases were released
-    when the sweeper ran - so the client stops rather than re-binding:
-    a fresh bind would hand back a live-looking client whose every
-    handle fails, which is the late, confusing failure this replaces
-    (huggorm#49).
+    Raised once the ping loop learns the connection was swept, or a
+    call is refused for it. Every handle the client held is gone with
+    it - the leases were released when the sweeper ran - so the client
+    stops rather than re-binding: a fresh bind would hand back a
+    live-looking client whose every handle fails, which is the late,
+    confusing failure this replaces (huggorm#49).
 
     Recovery is `bind()` plus re-acquiring, and that is the caller's
     decision because only the caller knows what it was holding."""
 
 
-def _no_proxy(handle_id: str) -> Any:
-    """The proxy arm of a decode that has none.
-
-    Every record on the log stream is a wire VALUE, so `decode` never
-    reaches this. Raising says so; a `lambda hid: None` would have
-    turned a schema that drifted into a batch of Nones."""
-    raise TypeError(
-        f"handle {handle_id[:8]} arrived where only wire values were "
-        f"expected")
+class ConnectionLost(ConnectionError):
+    """The socket closed under a call. The server's leases are not
+    released by that: a new connection that claims the token can
+    take them back while they last."""
 
 
 def _handle_of(obj: Any) -> str:
@@ -87,37 +101,43 @@ def _handle_of(obj: Any) -> str:
     return str(obj.handle_id)
 
 
+@dataclass
+class _Pending:
+    """One call waiting for its answer. `frame` stays None when the
+    connection closed first."""
+
+    done: anyio.Event = field(default_factory=anyio.Event)
+    frame: list[Any] | None = None
+
+
 class NixClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 50051) -> None:
-        self.pool = schema.load_pool()
-        self.codec = WireCodec()
-        # Rebuilds a declared error from the status details, so a
-        # remote failure has the same shape as an in-process one: an
-        # InternalError whose __cause__ is the real error (huggorm#36).
-        self.faults = FaultCodec(self.pool)
-        self.channel = grpclib.client.Channel(
-            host, port, status_details_codec=SchemaStatusDetails(self.pool))
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = os.fspath(path)
+        self.codec = Codec()
+        # Rebuilds a declared error from its parts, so a remote failure
+        # has the same shape as an in-process one: an InternalError
+        # whose __cause__ is the real error (huggorm#36).
+        self.faults = Faults(self.codec)
+        self.channel: Channel | None = None
         self.token: str | None = None
-        # The task group this client's background work runs in, and
-        # the ping loop's own cancel scope inside it. Both are None
-        # until `__aenter__`, which is why `bind` outside the context
-        # refuses rather than starting a task nothing owns.
+        # The task group this client's background work runs in: the
+        # reader and the ping loop, each with its own cancel scope.
+        # None until `__aenter__`, which is why `bind` outside the
+        # context refuses rather than starting a task nothing owns.
         self._tasks: Any = None
+        self._reader: Any = None
         self._pinger: Any = None
         self._expired = False
+        self._ids = itertools.count(1)
+        self._pending: dict[int, _Pending] = {}
         # How many live client objects point at each handle, and which
         # handles have lost their last one. A finalizer runs on
         # whichever thread dropped the reference - possibly during
         # interpreter shutdown - and cannot await, so it only takes the
-        # lock and appends; the flush does the rpc (huggorm#28).
+        # lock and appends; the flush sends the frame (huggorm#28).
         self._refs: dict[str, int] = {}
         self._dropped: list[str] = []
         self._ref_lock = threading.Lock()
-        self.rpcs = schema.Rpcs(self.pool)
-
-    def request(self, path: str, /, **fields: Any) -> Any:
-        """A request for the rpc at `path`, as the schema types it."""
-        return self.rpcs[path].req(**fields)
 
     def proxy(self, cls_name: str, handle_id: str) -> Any:
         """A client-side object for one remote handle.
@@ -152,7 +172,7 @@ class NixClient:
 
     def _forget(self, handle_id: str) -> None:
         """One client object for this handle is gone. Runs from a
-        finalizer: no awaiting, no rpc, no assumptions about the
+        finalizer: no awaiting, no I/O, no assumptions about the
         thread. Queue it and return."""
         with self._ref_lock:
             n = self._refs.get(handle_id)
@@ -175,109 +195,185 @@ class NixClient:
             self._dropped[:] = [h for h in self._dropped if h != handle_id]
 
     async def flush_dropped(self) -> int:
-        """Release every handle whose last client object went away.
+        """Release every handle whose last client object went away, in
+        one DROP frame, and answer how many it named.
 
         A handle re-acquired between the drop and this flush is skipped:
         _refs having an entry again means something is using it, and
         releasing it here would pull the lease out from under a live
-        object."""
+        object.
+
+        DROP has no answer. The server releases what it still knows
+        and ignores the rest: by flush time a lease may already be
+        gone - closed explicitly, transferred, or swept."""
         with self._ref_lock:
             queued = [h for h in self._dropped if h not in self._refs]
             self._dropped.clear()
         if not queued:
             return 0
-        resp = await self._rpc(
-            schema.session("ReleaseMany"), handles=[{"id": h} for h in queued])
-        # protobuf fields are Any; the schema says what this one is.
-        return int(resp.released)
+        await self._live().send([Op.DROP, queued])
+        return len(queued)
 
-    async def _rpc(self, path: str, req: Any = None, /, **fields: Any) -> Any:
-        """One unary call. `req`, or a request built from `fields`."""
-        if req is None:
-            req = self.request(path, **fields)
+    # -- frames ---------------------------------------------------------
+    def _live(self) -> Channel:
         if self._expired:
             raise ConnectionExpired(
                 f"connection {self.token!r} was swept by the server; its "
                 f"handles are gone. Call bind() and re-acquire.")
-        metadata = {TOKEN_HEADER: self.token} if self.token else None
-        stream = self.channel.request(
-            path, grpclib.const.Cardinality.UNARY_UNARY, type(req),
-            self.rpcs[path].resp, metadata=metadata)
+        if self.channel is None:
+            raise ConnectionLost(f"no connection to {self.path}")
+        return self.channel
+
+    async def _ask(self, op: Op, *body: Any) -> Any:
+        """Send one CALL or CONTROL and wait for its answer.
+
+        A caller cancelled while it waits sends CANCEL, so the server
+        stops the work nobody will read. The answer may still arrive,
+        and the reader drops it."""
+        channel = self._live()
+        cid = next(self._ids)
+        pending = self._pending[cid] = _Pending()
         try:
-            async with stream as s:
-                await s.send_message(req)
-                await s.end()
-                return await s.recv_message()
-        except grpclib.exceptions.GRPCError as e:
-            # A typed failure crosses in the status DETAILS. Decoding
-            # lives HERE so every rpc - Session lifecycle included -
-            # rebuilds real errors instead of leaking transport
-            # exceptions. No `from` clause: the rebuilt error keeps the
-            # decoded cause as __cause__; the GRPCError stays visible
-            # as __context__.
-            rebuilt = self.faults.rebuild(e.details)
-            if rebuilt is not None:
-                # No `from`: the rebuilt error already carries the
-                # decoded cause as __cause__, and Python sets the
-                # GRPCError as __context__, so both stay visible.
-                raise rebuilt  # noqa: B904
+            try:
+                await channel.send([op, cid, *body])
+            except (anyio.BrokenResourceError,
+                    anyio.ClosedResourceError) as e:
+                raise ConnectionLost(
+                    f"the connection to {self.path} is closed") from e
+            await pending.done.wait()
+        except anyio.get_cancelled_exc_class():
+            if not pending.done.is_set():
+                with contextlib.suppress(anyio.BrokenResourceError,
+                                         anyio.ClosedResourceError):
+                    await channel.send([Op.CANCEL, cid])
             raise
+        finally:
+            self._pending.pop(cid, None)
+        match pending.frame:
+            case [Op.RESULT, _, value]:
+                return value
+            case [Op.FAULT, _, fault]:
+                raise self._fault(fault)
+            case None:
+                raise ConnectionLost(
+                    f"the connection to {self.path} closed during the call")
+        raise ProtocolError(f"an answer arrived as {pending.frame!r:.80}")
+
+    def _fault(self, raw: Any) -> BaseException:
+        error = self.faults.decode(raw)
+        if isinstance(error, Refused) and error.reason is Refusal.SWEPT:
+            self._expired = True
+            return ConnectionExpired(
+                f"connection {self.token!r} was swept by the server; its "
+                f"handles are gone. Call bind() and re-acquire.")
+        return error
+
+    async def _read(self, channel: Channel, *,
+                    task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
+        """Hand each answer to the call waiting for it, until the
+        connection closes. Then wake every call still waiting."""
+        with anyio.CancelScope() as scope:
+            task_status.started(scope)
+            try:
+                while True:
+                    frame = await channel.receive()
+                    match frame:
+                        case [Op.RESULT | Op.FAULT, int(cid), _]:
+                            pending = self._pending.get(cid)
+                            if pending is not None:
+                                pending.frame = frame
+                                pending.done.set()
+                        case _:
+                            raise ProtocolError(
+                                f"a frame arrived as {frame!r:.80}")
+            except (anyio.EndOfStream, anyio.BrokenResourceError,
+                    anyio.ClosedResourceError):
+                pass
+            except ProtocolError:
+                logger.warning("closing the connection to %s", self.path,
+                               exc_info=True)
+            finally:
+                if self.channel is channel:
+                    self.channel = None
+                for pending in self._pending.values():
+                    pending.done.set()
+                with anyio.CancelScope(shield=True):
+                    await channel.aclose()
 
     # -- connection lifecycle -----------------------------------------
     async def __aenter__(self) -> NixClient:
         """Open the scope this client's background work lives in.
 
-        A client PINGS, and a ping loop is a task, and anyio starts a
-        task only inside a task group - so the client has to own one.
-        That is what makes `async with` mandatory rather than
+        A client reads answers and PINGS, each in a task, and anyio
+        starts a task only inside a task group - so the client has to
+        own one. That is what makes `async with` mandatory rather than
         decorative (huggorm#35).
 
         The group is entered here and exited in `__aexit__`, which
-        anyio requires to be the SAME task. That rules out the shape
-        this was first written as - a client handed to an
-        `AsyncExitStack` in a pytest fixture - because the fixture and
-        the test do not share a task. Measured, not assumed: the probe
-        failed at teardown with an exception group."""
+        anyio requires to be the SAME task. That rules out a client
+        handed to an `AsyncExitStack` in a pytest fixture, because
+        the fixture and the test do not share a task. Measured, not
+        assumed: the probe failed at teardown with an exception
+        group."""
         self._tasks = anyio.create_task_group()
         await self._tasks.__aenter__()
         return self
 
     async def __aexit__(self, *exc: Any) -> bool | None:
-        """Stop the ping loop and close the scope.
+        """Stop the ping loop and the reader, and close the scope.
 
-        The pinger is cancelled BEFORE the group is exited, because a
-        task group waits for its children and this one never
-        returns."""
+        Both are cancelled BEFORE the group is exited, because a task
+        group waits for its children and neither returns on its own."""
         self.stop_pinging()
+        self._close()
         tasks, self._tasks = self._tasks, None
         return await tasks.__aexit__(*exc)  # type: ignore[no-any-return]
 
+    def _close(self) -> None:
+        if self._reader is not None:
+            self._reader.cancel()
+            self._reader = None
+
     async def bind(self, claim_token: str | None = None) -> str:
-        """Adopt or create a connection identity; claims escrowed
-        handles when presenting a detached session's token. The server
-        reports its lease TTL so pings can keep pace with it."""
-        resp = await self._rpc(schema.session("Bind"),
-                               schema_digest=schema.schema_digest(),
-                               claim_token=claim_token or "")
-        was_new = self.token is None or self._pinger is None
-        self.token = resp.token
-        ttl = getattr(resp, "lease_ttl", 0) or 0
+        """Connect and take a connection identity. A detached session's
+        token as `claim_token` claims its escrowed handles. The server
+        reports its lease TTL so pings can keep pace with it.
+
+        A second bind opens a new connection, with a new token unless
+        it claims one."""
+        if self._tasks is None:
+            raise RuntimeError(
+                "this client is not open. A ping loop is a task and a "
+                "task needs a scope, so a NixClient owns a task group "
+                "and `bind` starts the loop inside it. Use "
+                "`async with remote.connect(path) as client:` - or "
+                "`async with NixClient(path)` if you are binding by hand.")
+        self.stop_pinging()
+        self._close()
+        stream = await anyio.connect_unix(self.path)
+        channel = Channel(stream)
+        try:
+            await channel.send([Op.HELLO, build_identity(), claim_token])
+            match await channel.receive():
+                case [Op.WELCOME, str(token), int() | float() as ttl]:
+                    pass
+                case [Op.FAULT, None, fault]:
+                    raise self.faults.decode(fault)
+                case frame:
+                    raise ProtocolError(
+                        f"the server answered HELLO with {frame!r:.80}")
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await channel.aclose()
+            raise
+        self.channel, self.token, self._expired = channel, token, False
+        self._reader = await self._tasks.start(self._read, channel)
         interval = max(0.5, min(ttl / 4, 15)) if ttl > 0 else 10.0
-        if was_new:
-            if self._tasks is None:
-                raise RuntimeError(
-                    "this client is not open. A ping loop is a task and a "
-                    "task needs a scope, so a NixClient owns a task group "
-                    "and `bind` starts the loop inside it. Use "
-                    "`async with remote.connect(host, port) as client:` - "
-                    "or `async with NixClient(host, port)` if you are "
-                    "binding by hand.")
-            self.stop_pinging()
-            # `start`, not `start_soon`: it waits for the loop to
-            # report its own cancel scope, so `stop_pinging` can never
-            # find nothing to cancel.
-            self._pinger = await self._tasks.start(self._ping_loop, interval)
-        return str(resp.token)
+        # `start`, not `start_soon`: it waits for the loop to report
+        # its own cancel scope, so `stop_pinging` can never find
+        # nothing to cancel.
+        self._pinger = await self._tasks.start(self._ping_loop, interval)
+        return token
 
     async def _ping_loop(
             self, interval: float = 10.0, *,
@@ -303,8 +399,8 @@ class NixClient:
             await anyio.sleep(interval)
             try:
                 with anyio.fail_after(5):
-                    ack = await self._rpc(schema.session("Ping"))
-                if not ack.ok:
+                    ok = await self._ask(Op.CONTROL, Control.PING, [])
+                if not ok:
                     # Swept. Say so once, loudly, and stop - the next
                     # call raises ConnectionExpired rather than
                     # failing later as "unknown handle" on something
@@ -319,6 +415,9 @@ class NixClient:
                 # finalizer cannot do.
                 with anyio.fail_after(5):
                     await self.flush_dropped()
+            except ConnectionLost:
+                # Nothing left to keep alive. The next call says so.
+                return
             except Exception:
                 # A blip is not a death: the server sweeps a client
                 # that stays silent, and this loop is what keeps it
@@ -353,28 +452,25 @@ class NixClient:
         """
         try:
             with anyio.fail_after(5):
-                ack = await self._rpc(schema.session("Ping"))
-            return bool(ack.ok)
-        except (ConnectionExpired, TimeoutError, OSError,
-                grpclib.exceptions.GRPCError,
-                grpclib.exceptions.ProtocolError,
-                grpclib.exceptions.StreamTerminatedError):
+                return bool(await self._ask(Op.CONTROL, Control.PING, []))
+        except (ConnectionExpired, TimeoutError, OSError):
             return False
 
     async def share(self, obj: Any, to_token: str,
                     mode: ShareMode = ShareMode.COPY) -> None:
-        await self._rpc(schema.session("Share"), handle={"id": obj.handle_id},
-                        to_token=to_token, mode=mode)
+        await self._ask(Op.CONTROL, Control.SHARE,
+                        [to_token, _handle_of(obj), mode.value])
 
     async def detach(self, obj: Any = None, all: bool = False) -> bool:
         """Hand our claim back as escrow under our own token. With no
         target and all=True, detaches every lease we hold."""
-        path = schema.session("Detach")
-        req = self.request(path, all=all)
-        if obj is not None:
-            req.target.id = obj.handle_id
-        resp = await self._rpc(path, req)
-        return bool(resp.ok)
+        hid = None if obj is None else _handle_of(obj)
+        return bool(await self._ask(Op.CONTROL, Control.DETACH, [hid, all]))
+
+    def _encode_args(self, spec: Call | Acquire, args: tuple[Any, ...] | list[Any]
+                     ) -> list[Any]:
+        return [self.codec.encode(a.type, v, _handle_of)
+                for a, v in zip(spec.args, args, strict=False)]
 
     async def acquire(self, cls_name: str, *args: Any) -> Any:
         """Construct one instance remotely, from typed constructor
@@ -394,24 +490,14 @@ class NixClient:
                 f"{cls_name} takes {spec.required}..{len(spec.args)} "
                 f"argument(s) ({', '.join(a.name for a in spec.args)}), "
                 f"got {len(args)}")
-
-        req = self.request(spec.path)
-        for a, val in zip(spec.args, args, strict=False):
-            if val is None:
-                continue  # optional, left at the proto3 default
-            self.codec.encode(req, a.name, a.type, val,
-                              _handle_of)
-        resp = await self._rpc(spec.path, req)
-        return self.proxy(cls_name, resp.id)
+        hid = await self._ask(Op.CALL, spec.index, None,
+                              self._encode_args(spec, args))
+        return self.proxy(cls_name, hid)
 
     async def release(self, obj: Any) -> None:
         if obj.handle_id is None:
-            # Releasing twice through the same object used to send an
-            # empty id: protobuf drops a None string, so the server
-            # answered "no lease on ''" and the caller saw a plausible
-            # error about the wrong handle.
             raise ValueError("handle already released through this object")
-        await self._rpc(schema.session("Release"), id=obj.handle_id)
+        await self._ask(Op.CONTROL, Control.RELEASE, [obj.handle_id])
         self._untrack(obj.handle_id)
         obj.handle_id = None
 
@@ -437,151 +523,108 @@ class NixClient:
         server's default."""
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
-        resp = await self._rpc(schema.session("Realize"),
-                               handle={"id": obj.handle_id},
-                               depth=depth, budget=budget)
-        return self.codec.tree_from_msg(resp.root, self.proxy)
+        raw = await self._ask(Op.CONTROL, Control.REALIZE,
+                              [obj.handle_id, depth, budget])
+        return self.codec.decode_tree(raw, self.proxy)
 
     async def logs(self, obj: Any, capacity: int = 0,
-                   level: int | None = None) -> Any:
+                   level: int | None = None) -> AsyncGenerator[
+                       tuple[list[Any], int]]:
         """Records Nix raises while this state works, as they arrive.
 
-        The only rpc that is not a question. It opens a subscription
-        on the state's own thread and then yields whatever the queue
-        answers until the caller stops iterating - which is what closes
-        the stream, and what ends the subscription with it.
+        A reader is a handle the server opens on the state's own
+        thread, and this asks it for records until the caller stops
+        iterating. Stopping releases the reader, which leaves the
+        subscription. A remote `unsubscribe_logs` leaves only what
+        `subscribe_logs` opened, so it does not end this.
 
         It yields a BATCH, `(records, dropped)`, because the queue
-        answers a batch: one drain is one message, and fanning a drain
-        of forty into forty messages would restate the shape rather
-        than carry it.
+        answers a batch. `dropped` is why it is a pair: the queue is
+        bounded, and a client that cannot see a refusal cannot tell a
+        quiet evaluation from a lost one. The count is cumulative, so
+        it survives a batch the caller skipped.
 
-        `dropped` is why it is a pair. The queue is bounded, so a full
-        one refuses a message - and a client that cannot see that
-        cannot tell a quiet evaluation from a lost one. The count is
-        cumulative, so it survives a batch the caller skipped.
-
-        `capacity` and `level` mean what `_log_options` says.
+        `capacity` 0 and `level` None take the defaults. None rather
+        than 0, because level 0 is lvlError - a subscription somebody
+        means, not an absent one.
 
         What it does NOT see is what `process_logs` does: a record
         raised on a fetcher thread, a file-transfer thread or a build
-        belongs to no state's thread, so it reaches this stream
-        never. The two do not overlap - a thread that subscribed
-        claims its records - so a caller wanting everything reads
-        both.
+        belongs to no state's thread. The two do not overlap - a
+        thread that subscribed claims its records - so a caller
+        wanting everything reads both.
 
         MANY readers per state. A second subscription would replace
         the first on that state's thread, so the server opens ONE and
-        fans it out - each stream gets its own view, its own capacity
-        and its own level (huggorm#85). This was a refusal until
-        2026-09-04.
+        fans it out - each reader gets its own view, its own capacity
+        and its own level (huggorm#85).
 
         The FIRST batch is always empty, and it means the subscription
         is installed. A caller opens this to watch work it is about to
         start, so it needs a point where starting is safe; without the
-        empty batch the first message would be the first record, which
+        empty batch the first batch would be the first record, which
         arrives only after the work it was meant to report."""
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
-        req = self.request(schema.session("Logs"), state={"id": obj.handle_id})
-        self._log_options(req, capacity, level)
-        async for batch in self._log_stream("Logs", req):
+        async for batch in self._log_batches(obj.handle_id, capacity, level):
             yield batch
+
+    async def process_logs(self, capacity: int = 0,
+                           level: int | None = None) -> AsyncGenerator[
+                               tuple[list[Any], int]]:
+        """Records no subscribed thread claimed, as they arrive.
+
+        The same reader with nothing to name. `logs` takes a state
+        because the tap routes by THREAD and an EvalState owns one;
+        this takes what a fetcher thread, a file-transfer thread or a
+        build raised, and none of those belongs to a state
+        (huggorm#85). A build's log is the one this exists for.
+
+        MANY readers over ONE sink: every connection that asks reads
+        the same subscription through its own view.
+
+        Batches, `dropped` and the empty first batch all mean what
+        they mean in `logs`."""
+        async for batch in self._log_batches(None, capacity, level):
+            yield batch
+
+    async def _log_batches(self, hid: str | None, capacity: int,
+                           level: int | None) -> AsyncGenerator[
+                               tuple[list[Any], int]]:
+        """Open a reader, poll it until the caller stops, then release
+        it.
+
+        Shielded on the way out, because a caller that stops by
+        cancellation still owes the server the release."""
+        assert _READER is not None
+        reader = self.proxy(_READER.name, await self._ask(
+            Op.CONTROL, Control.LOGS,
+            [hid, capacity or LOG_CAPACITY,
+             LOG_LEVEL if level is None else level]))
+        try:
+            yield [], 0
+            while True:
+                records = await reader.drain()
+                if not records:
+                    await anyio.sleep(LOG_POLL)
+                    continue
+                yield records, await reader.dropped()
+        finally:
+            with anyio.CancelScope(shield=True), contextlib.suppress(
+                    ConnectionExpired, ConnectionLost):
+                await reader.aclose()
 
     async def logs_barrier(self, obj: Any) -> int:
         """The request id whose "finalized" record ends `obj`'s records
-        so far, on every `logs` stream of it.
+        so far, on every `logs` reader of it.
 
         The server runs one call on the state's own thread, so its
         marker is queued after everything that thread raised before.
         A reader that sees the marker holds all of it."""
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
-        resp = await self._rpc(schema.session("LogsBarrier"),
-                               state={"id": obj.handle_id})
-        return int(resp.request)
-
-    async def process_logs(self, capacity: int = 0,
-                           level: int | None = None) -> Any:
-        """Records no subscribed thread claimed, as they arrive.
-
-        The same stream with nothing to name. `logs` takes a state
-        because the tap routes by THREAD and an EvalState owns one;
-        this takes what a fetcher thread, a file-transfer thread or a
-        build raised, and none of those belongs to a state
-        (huggorm#85). A build's log is the one this exists for.
-
-        NO handle, so a connection with no state at all can open it -
-        which is right, because the records it carries are the ones no
-        handle could have reached.
-
-        NOT everything in the process. A thread that subscribed claims
-        its records, so a state with its own `logs` stream does not
-        appear here. Reading both is how a caller sees all of it, and
-        neither repeats the other.
-
-        MANY readers over ONE sink. There is a single process-wide
-        sink, so every connection that asks reads the same
-        subscription through its own view - the fan-out `logs` uses,
-        for the same reason. This was a refusal until 2026-09-04, and
-        the reader it refused was a CLI printing everything as it
-        happens.
-
-        Batches, `dropped` and the empty first message all mean what
-        they mean in `logs`."""
-        req = self.request(schema.session("ProcessLogs"))
-        self._log_options(req, capacity, level)
-        async for batch in self._log_stream("ProcessLogs", req):
-            yield batch
-
-    @staticmethod
-    def _log_options(req: Any, capacity: int, level: int | None) -> None:
-        """The two options, set the same way on either request.
-
-        `capacity` 0 takes the binding's default. `level` None does
-        too, and None rather than 0 because level 0 is lvlError - a
-        subscription somebody means, not an absent one."""
-        req.capacity = capacity
-        if level is not None:
-            req.level = level
-
-    async def _log_stream(self, rpc: str, req: Any) -> Any:
-        """One log rpc, opened and drained until the caller stops.
-
-        Both log streams run this. What they do differently is the
-        request they build; everything after that - the token, the
-        decode, the typed-failure contract - is one shape, and a
-        second copy would be a second place for one of them to
-        drift."""
-        if self._expired:
-            raise ConnectionExpired(
-                f"connection {self.token!r} was swept by the server; its "
-                f"handles are gone. Call bind() and re-acquire.")
-        metadata = {TOKEN_HEADER: self.token} if self.token else None
-        path = schema.session(rpc)
-        stream = self.channel.request(
-            path, grpclib.const.Cardinality.UNARY_STREAM,
-            type(req), self.rpcs[path].resp, metadata=metadata)
-        try:
-            async with stream as s:
-                await s.send_message(req)
-                await s.end()
-                async for resp in s:
-                    # Through `decode`, so the client reads the field
-                    # by the same declared type the server wrote it
-                    # by. A LogRecord is a wire value, so the proxy
-                    # arm is unreachable and says so.
-                    yield (self.codec.decode(
-                        resp, "records", LOG_RECORDS, _no_proxy),
-                        int(resp.dropped))
-        except grpclib.exceptions.GRPCError as e:
-            # Same contract as _rpc: a typed failure rebuilds into the
-            # error it was. A refusal carries no details and stays a
-            # GRPCError, which is the honest shape for one.
-            rebuilt = self.faults.rebuild(e.details)
-            if rebuilt is not None:
-                raise rebuilt  # noqa: B904
-            raise
+        return int(await self._ask(Op.CONTROL, Control.LOGS_BARRIER,
+                                   [obj.handle_id]))
 
     async def call_function(self, name: str, *args: Any) -> Any:
         """Call one of the bindings' module-level functions remotely.
@@ -599,16 +642,11 @@ class NixClient:
             raise ValueError(
                 f"{name!r} is not a binding function; the bindings offer "
                 f"{sorted(FREE)}")
-
-        req = self.request(spec.path)
-        for a, val in zip(spec.args, args, strict=True):
-            self.codec.encode(req, a.name, a.type, val,
-                              _handle_of)
-        resp = await self._rpc(spec.path, req)
-        returned = spec.returns
-        return self.codec.decode(
-            resp, "result", returned,
-            lambda hid: self.proxy(returned.name if returned else "", hid))
+        if len(args) != len(spec.args):
+            raise TypeError(f"{name} takes {len(spec.args)} argument(s), "
+                            f"got {len(args)}")
+        return self._result(spec, await self._ask(
+            Op.CALL, spec.index, None, self._encode_args(spec, args)))
 
     async def invoke(self, m: Call, handle_id: str | None,
                      args: list[Any]) -> Any:
@@ -623,55 +661,34 @@ class NixClient:
         caller's type comes from and where a typechecker checks it."""
         if handle_id is None:
             # release() blanks the id, so a call through a spent proxy
-            # arrives here as None. Protobuf would refuse it with a
-            # message about a str field; this says what happened.
-            raise ValueError(
-                f"{m.path}: this handle was already released")
-        req = self.request(m.path, self={"id": handle_id})
+            # arrives here as None.
+            raise ValueError(f"{m.name}: this handle was already released")
+        if len(args) != len(m.args):
+            raise TypeError(f"{m.name} takes {len(m.args)} argument(s), "
+                            f"got {len(args)}")
+        return self._result(m, await self._ask(
+            Op.CALL, m.index, handle_id, self._encode_args(m, args)))
 
-        # Wire names and wire policies both come out of `_policy`, so
-        # this method mentions no concrete type: a proxy arg contributes
-        # its handle id, a wire-value serializes through its declared
-        # parts, a scalar goes in as itself.
-        for p, val in zip(m.args, args, strict=True):
-            self.codec.encode(req, p.name, p.type, val,
-                              _handle_of)
-
-        resp = await self._rpc(m.path, req)
-
-        # Proxies stay remote behind a handle; values come back as real
-        # local objects.
-        returned = m.returns
+    def _result(self, spec: Call, raw: Any) -> Any:
+        """Proxies stay remote behind a handle; values come back as
+        real local objects."""
+        returned = spec.returns
         return self.codec.decode(
-            resp, "result", returned,
+            returned, raw,
             lambda hid: self.proxy(returned.name if returned else "", hid))
 
 
 @contextlib.asynccontextmanager
-async def connect(host: str = "127.0.0.1", port: int = 50051,
+async def connect(path: str | os.PathLike[str],
                   claim: str | None = None) -> AsyncIterator[NixClient]:
-    """Connect and bind a connection identity (claiming escrow when a
-    detached session's token is presented).
+    """Connect to the server at `path` and bind a connection identity,
+    claiming escrow when a detached session's token is presented.
 
-    A CONTEXT MANAGER, and it used to be a plain coroutine:
-
-        client = await remote.connect(host, port)   # before
-        ...
-        client.stop_pinging()
-
-        async with remote.connect(host, port) as client:   # now
-            ...
-
-    Breaking, deliberately. A client runs a ping loop, a loop is a
-    task, and anyio starts a task only inside a task group - so
+    A context manager, because a client runs a reader and a ping loop,
+    each a task, and anyio starts a task only inside a task group - so
     something has to hold the scope open, and the client is the only
-    thing with the right lifetime. `CLAUDE.md` says to take the break
-    when the shape is better (huggorm#35).
-
-    What it buys beyond spelling: the loop cannot outlive the client
-    and cannot be forgotten. `stop_pinging()` was a call a caller had
-    to remember, and a caller that forgot left a task pinging a server
-    for a connection nobody was using."""
-    async with NixClient(host, port) as client:
+    thing with the right lifetime (huggorm#35). The loops cannot
+    outlive the client and cannot be forgotten."""
+    async with NixClient(path) as client:
         await client.bind(claim)
         yield client

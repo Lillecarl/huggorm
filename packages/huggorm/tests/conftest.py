@@ -2,30 +2,23 @@
 Fixtures for the huggorm suites.
 
 anyio, not asyncio: anyio's pytest plugin is the runner, and the
-harness here uses anyio primitives throughout. The library below it is
-still on asyncio - grpclib is - and that is a separate migration
-(huggorm#35).
+harness here uses anyio primitives throughout (huggorm#35).
 
-Three fixtures matter, and each exists because something here is
+Two fixtures matter, and each exists because something here is
 expensive or slow to set up:
 
-- a gRPC server is a SUBPROCESS, so its failures are visible instead of
+- a server is a SUBPROCESS, so its failures are visible instead of
   swallowed by a task, and so a native crash from the binding layer
   kills the server rather than the test run. That matters more against
   real Nix than it did against the mock.
 - a SHORT-TTL server is separate from the normal one. Lifetime tests
   have to wait out a sweep, and making every other test wait with them
   would be minutes of sleeping for no reason.
-- grpcurl is the external-tool arm: it holds only the descriptor this
-  build emitted, so it catches a schema that is wrong in a way Python
-  round-trips happily past.
 """
 
-import glob
-import os
-import shutil
-import socket
+import pathlib
 import sys
+import tempfile
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -36,9 +29,6 @@ from anyio.streams.text import TextReceiveStream
 
 if TYPE_CHECKING:
     from huggorm_gen import ir
-
-HOST = "127.0.0.1"
-
 
 @pytest.fixture
 def flakes() -> Iterator[None]:
@@ -85,19 +75,17 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def free_port() -> int:
-    s = socket.socket()
-    s.bind((HOST, 0))
-    port = int(s.getsockname()[1])
-    s.close()
-    return port
+def socket_path() -> pathlib.Path:
+    """A fresh socket path. Short, because `sun_path` holds 108 bytes,
+    and under TMPDIR, because the build sandbox has no /tmp."""
+    return pathlib.Path(tempfile.mkdtemp(prefix="hg")) / "s"
 
 
-async def wait_port(port: int, timeout: float = 20) -> None:
+async def wait_socket(path: pathlib.Path, timeout: float = 20) -> None:
     with anyio.fail_after(timeout):
         while True:
             try:
-                stream = await anyio.connect_tcp(HOST, port)
+                stream = await anyio.connect_unix(path)
             except OSError:
                 await anyio.sleep(0.05)
             else:
@@ -108,8 +96,9 @@ async def wait_port(port: int, timeout: float = 20) -> None:
 class Server:
     """One running server, and the log it produced."""
 
-    def __init__(self, port: int, process: Any, logs: list[str]) -> None:
-        self.port = port
+    def __init__(self, path: pathlib.Path, process: Any,
+                 logs: list[str]) -> None:
+        self.path = path
         self.process = process
         self.logs = logs
 
@@ -125,8 +114,8 @@ async def _serve(ttl: float | None) -> AsyncIterator[Server]:
     the reader cannot outlive the fixture - which is the whole point of
     structured concurrency and the reason a bare fire-and-forget task
     is not used here."""
-    port = free_port()
-    argv = [sys.executable, "-m", "huggorm.server", HOST, str(port)]
+    path = socket_path()
+    argv = [sys.executable, "-m", "huggorm.server", str(path)]
     if ttl is not None:
         argv.append(str(ttl))
     logs: list[str] = []
@@ -143,9 +132,9 @@ async def _serve(ttl: float | None) -> AsyncIterator[Server]:
             tg.start_soon(drain, process.stdout)
         if process.stderr is not None:
             tg.start_soon(drain, process.stderr)
-        await wait_port(port)
+        await wait_socket(path)
         try:
-            yield Server(port, process, logs)
+            yield Server(path, process, logs)
         finally:
             process.terminate()
             with anyio.move_on_after(5):
@@ -197,7 +186,7 @@ async def client(server: Server) -> AsyncIterator[Any]:
     # A guard on the connect would have to close after the client
     # does, which is the opposite of what it is for. The suite's own
     # timeouts cover a server that never answers.
-    opening = remote.connect(HOST, server.port)
+    opening = remote.connect(server.path)
     # `opening` and not the client is what gets closed: `connect` is a
     # generator, and exiting the client behind its back would leave
     # the generator suspended forever.
@@ -206,19 +195,6 @@ async def client(server: Server) -> AsyncIterator[Any]:
         yield client
     finally:
         await opening.__aexit__(None, None, None)
-
-
-@pytest.fixture
-def grpcurl() -> str:
-    """The external tool, or a skip. It reads the descriptor this build
-    emitted and nothing else, which is what keeps the schema honest."""
-    found = os.environ.get("GRPCURL") or shutil.which("grpcurl")
-    if not found:
-        cands = sorted(glob.glob("/nix/store/*-grpcurl-*/bin/grpcurl"))
-        found = cands[-1] if cands else None
-    if not found:
-        pytest.skip("grpcurl not on PATH")
-    return found
 
 
 def load_model() -> ir.Model:
@@ -234,18 +210,3 @@ def load_model() -> ir.Model:
 @pytest.fixture
 def model() -> ir.Model:
     return load_model()
-
-
-async def run_tool(binpath: str, port: int, symbol: str | None = None,
-                   payload: str | None = None,
-                   timeout: float = 20) -> tuple[int | None, str, str]:
-    """grpcurl [-d payload] host:port [symbol]"""
-    argv = [binpath, "-plaintext"]
-    if payload is not None:
-        argv += ["-d", payload]
-    argv.append(f"{HOST}:{port}")
-    if symbol:
-        argv.append(symbol)
-    with anyio.fail_after(timeout):
-        done = await anyio.run_process(argv, check=False)
-    return done.returncode, done.stdout.decode(), done.stderr.decode()

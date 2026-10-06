@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass
@@ -501,8 +502,7 @@ class AsyncRemoteSession:
     @contextlib.asynccontextmanager
     async def connect(
         cls,
-        host: str = "127.0.0.1",
-        port: int = 50051,
+        path: str | os.PathLike[str],
         claim: str | None = None,
         store_uri: str = "auto",
     ) -> AsyncIterator[AsyncRemoteSession]:
@@ -511,7 +511,7 @@ class AsyncRemoteSession:
         `claim` is a token a previous session detached under: the
         server adopts its escrowed leases onto this connection.
         """
-        async with connect(host, port, claim=claim) as client:
+        async with connect(path, claim=claim) as client:
             session = cls(client, store_uri)
             try:
                 yield session

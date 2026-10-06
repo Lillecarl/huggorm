@@ -797,41 +797,29 @@ async def test_concurrent_first_calls_build_one_object(client: Any) -> None:
         assert await store.is_valid_path(p), p
 
 
-def test_a_session_rpc_nothing_serves_stops_the_server() -> None:
-    """The server reads each Session rpc's messages from the schema, so
-    an rpc the schema declares and no handler serves would answer
-    UNIMPLEMENTED at its first call. It refuses to start instead."""
-    from google.protobuf import descriptor_pb2, descriptor_pool
+def test_a_call_nothing_serves_stops_the_server(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every numbered call needs a handler. One with none would fail at
+    its first call, so the server refuses to start instead."""
+    from huggorm import server
 
-    from huggorm import grpc_pb
-    from huggorm.server import Dispatcher
-
-    fds = descriptor_pb2.FileDescriptorSet.FromString(  # type: ignore[attr-defined]
-        (grpc_pb._pkg_dir() / "grpc_schema.pb").read_bytes())
-    session = next(s for s in fds.file[0].service if s.name == "Session")
-    extra = session.method.add()
-    extra.name = "Unserved"
-    extra.input_type = extra.output_type = f".{grpc_pb.PKG}.PingReq"
-    pool = descriptor_pool.DescriptorPool()
-    for file_dp in fds.file:
-        pool.Add(file_dp)  # type: ignore[no-untyped-call]
-
-    with pytest.raises(RuntimeError, match="Unserved"):
-        Dispatcher(pool, None, None)
+    monkeypatch.setattr(server, "FREE", {})
+    with pytest.raises(RuntimeError, match="have no handler"):
+        server.Dispatcher(None, None)
 
 
-async def test_bind_refuses_a_client_of_another_schema(client: Any) -> None:
-    """Field numbers are positional, so a client from another build
-    would decode every answer wrongly and without an error. Bind
-    compares schema digests first, and a missing one is refused too
-    (huggorm#22)."""
-    import grpclib.const
-    import grpclib.exceptions
+async def test_a_client_of_another_build_is_refused(
+        server: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Calls cross by number and values by position, so a client from
+    another build would decode every answer wrongly and without an
+    error. HELLO carries the build identity, and the server refuses a
+    mismatch before the connection holds anything (huggorm#142)."""
+    from huggorm import remote
+    from huggorm.protocol import Refusal, Refused
 
-    from huggorm.grpc_pb import PKG
-
-    for digest in ("0" * 64, ""):
-        with pytest.raises(grpclib.exceptions.GRPCError) as refused:
-            await client._rpc(f"/{PKG}.Session/Bind", schema_digest=digest)
-        assert refused.value.status is grpclib.const.Status.FAILED_PRECONDITION
-        assert "rebuild the client" in str(refused.value.message)
+    monkeypatch.setattr(remote, "build_identity", lambda: "0" * 64)
+    async with remote.NixClient(server.path) as client:
+        with pytest.raises(Refused) as refused:
+            await client.bind()
+    assert refused.value.reason is Refusal.IDENTITY
+    assert "connect with the server's huggorm" in refused.value.message

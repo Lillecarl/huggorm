@@ -12,11 +12,13 @@ from collections.abc import AsyncIterator
 
 import anyio
 import pytest
-from anyio.abc import UNIXSocketStream
+from anyio.abc import SocketStream, UNIXSocketStream
+from conftest import socket_path
 
 from huggorm.protocol import (
     MAX_FRAME,
     Channel,
+    Control,
     Faults,
     Op,
     ProtocolError,
@@ -78,6 +80,19 @@ async def test_a_bad_frame_is_refused(pair: tuple[Channel, Channel]) -> None:
 
 
 @pytest.mark.anyio
+async def test_a_close_between_frames_is_the_end(
+        pair: tuple[Channel, Channel]) -> None:
+    """Both ends stop reading on EndOfStream, so a clean close must
+    read as one."""
+    left, right = pair
+    await left.send([Op.DROP, []])
+    await left.stream.send_eof()
+    assert await right.receive() == [Op.DROP, []]
+    with pytest.raises(anyio.EndOfStream):
+        await right.receive()
+
+
+@pytest.mark.anyio
 async def test_an_unknown_op_is_refused(pair: tuple[Channel, Channel]) -> None:
     left, right = pair
     await left.send([99, 1])
@@ -89,6 +104,36 @@ async def test_an_unknown_op_is_refused(pair: tuple[Channel, Channel]) -> None:
 async def test_the_peer_is_this_uid(pair: tuple[Channel, Channel]) -> None:
     left, _ = pair
     assert peer_uid(left.stream) == os.geteuid()
+
+
+@pytest.mark.anyio
+async def test_a_late_answer_is_dropped() -> None:
+    """An answer for a call nobody waits on - one the client cancelled -
+    is dropped, and the next answer still reaches its own call.
+
+    A fake server, because a real one only sends a late answer in a
+    race."""
+    from huggorm import remote
+
+    path = socket_path()
+
+    async def fake(stream: SocketStream) -> None:
+        channel = Channel(stream)
+        await channel.receive()
+        await channel.send([Op.WELCOME, "token", 0.0])
+        call = await channel.receive()
+        await channel.send([Op.RESULT, 999, "stray"])
+        await channel.send([Op.RESULT, call[1], True])
+        with pytest.raises(anyio.EndOfStream):
+            await channel.receive()
+
+    listener = await anyio.create_unix_listener(path)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, fake, None)
+        with anyio.fail_after(10):
+            async with remote.connect(path) as client:
+                assert await client._ask(Op.CONTROL, Control.PING, []) is True
+        tg.cancel_scope.cancel()
 
 
 def test_the_identity_is_stable() -> None:

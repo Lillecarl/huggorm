@@ -1,5 +1,6 @@
 """
-grpclib server: a spec-driven adapter onto huggorm_generated.
+The server: a spec-driven adapter onto huggorm_generated, on a Unix
+socket.
 
 The async wrappers already own threading policy and thread hopping, so
 the server does none of that. It resolves handles to wrapper objects,
@@ -7,24 +8,25 @@ decodes wire-values into sync bindings (copies - matching _copied
 semantics), awaits the method on the wrapper's runner, encodes the
 result. Handlers are built in a loop from the emitted specs; nothing is
 hand-written per method.
+
+`protocol` holds the frames. One connection is one token: the HELLO
+binds it, and every call on the connection runs under it.
 """
 
 from __future__ import annotations
 
 import contextlib
 import enum
+import functools
 import logging
+import os
 import weakref
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
 import anyio
-import grpclib
-import grpclib.const
-import grpclib.exceptions
-import grpclib.server
-from grpclib.reflection.service import ServerReflection
+from anyio.abc import SocketStream
 
 from huggorm_generated._callspec import Acquire, Call, Entries, Items, Leaf, Tree
 from huggorm_generated._policy import (
@@ -32,22 +34,30 @@ from huggorm_generated._policy import (
     ASYNC_CLASS,
     CALLS,
     FREE,
-    LOG_RECORDS,
     METHODS,
     TREES,
 )
 
-from . import grpc_pb as schema
 from . import tree
-from .faults import FaultCodec, SchemaStatusDetails
-from .lifecycle import TOKEN_HEADER, HandleTable, ShareMode
-from .logbus import LOG_CAPACITY, LOG_LEVEL, Share, widest
-from .wire import WireCodec
+from .codec import Codec
+from .lifecycle import HandleTable, ShareMode
+from .logbus import Share, widest
+from .protocol import (
+    Channel,
+    Control,
+    Faults,
+    Op,
+    ProtocolError,
+    Refusal,
+    Refused,
+    build_identity,
+    peer_uid,
+)
 
 logger = logging.getLogger(__name__)
 
-# One grpclib handler: it reads the stream and answers on it.
-Handler = Callable[[Any], Awaitable[None]]
+# How long a new connection has to say HELLO.
+HELLO_TIMEOUT = 10.0
 
 
 class Target(enum.Enum):
@@ -73,13 +83,6 @@ class CallHandler:
     target: Target
     run: Callable[..., Awaitable[Any]]
     label: str
-
-
-def _tok(stream: Any) -> str:
-    """The connection token presented with this request ('' if none)."""
-    md: dict[str, Any] = stream.metadata or {}
-    value = md.get(TOKEN_HEADER, "")
-    return value.decode() if isinstance(value, bytes) else value
 
 
 # A realize with no bounds asked for. Small on purpose: every node the
@@ -174,17 +177,6 @@ class TreeWalk:
                 return tree.Stays(type(obj).__name__, obj)
 
 
-def _never_a_proxy(obj: Any) -> str:
-    """A proxy id for something the codec promised not to ask about.
-
-    A `LogRecord` is a wire VALUE, so `encode` never reaches the proxy
-    arm. Raising here says that rather than handing out a handle
-    nothing tracks, which is what a `lambda _: ""` would have done."""
-    raise TypeError(
-        f"{type(obj).__name__} crossed as a proxy where only wire values "
-        f"were expected")
-
-
 async def _drop_subscription(target: Any) -> None:
     """Clear a state's subscription, on the state's own thread.
 
@@ -216,11 +208,9 @@ async def _drop_process_subscription() -> None:
 class _Reader(Share):
     """One client's share of a subscription many clients read.
 
-    Duck-typed as an `AsyncLogStream` on purpose - `drain` and
-    `dropped` are the only two things `_pump` asks of a queue, so a
-    reader drops into the same loop the single-reader path used,
-    unchanged, awaits included. A remote `subscribe_logs` hands one
-    out as a handle for the same reason.
+    Duck-typed as an `AsyncLogStream` on purpose: a remote
+    `subscribe_logs` answers one as a `LogStream` handle, and the
+    client's `drain`, `dropped` and `close` calls reach it unchanged.
     """
 
     def __init__(self, fan: _Fanout, capacity: int, level: int) -> None:
@@ -228,15 +218,9 @@ class _Reader(Share):
         self._fan = fan
 
     async def drain(self) -> list[Any]:
-        # Async to match the `AsyncLogStream` this stands in for:
-        # `_pump` awaits whichever queue it is given, and a reader
-        # that answered synchronously would split that loop in two.
-        # The deque moves nothing that waits, so this awaits nothing.
         # The shared drain raised, so the queue this reads is not
-        # being filled any more. Re-raised HERE rather than logged,
-        # because that is what the single-reader path did: the
-        # handler let the failure end the stream, so the client
-        # learned. A reader that just went quiet would not say so.
+        # being filled any more. Re-raised HERE, so the client
+        # learns. A reader that just went quiet would not say so.
         if self._fan.failure is not None:
             raise self._fan.failure
         return self.take()
@@ -438,41 +422,6 @@ async def _open_process_subscription(level: int) -> Any:
     return await subscribe_process_logs(level=level)
 
 
-async def _pump(stream: Any, sub: Any, resp_cls: Any, codec: Any,
-                alive: Callable[[], None]) -> None:
-    """Drain a queue onto a stream until somebody stops it.
-
-    Both log rpcs run this, and everything they do differently
-    happens before it: which queue to drain, and what `alive` means.
-    Written once for the reason goal 3 gives - the drop reporting and
-    the empty first batch are decisions, and a second copy is a
-    second place for one of them to drift.
-
-    An EMPTY first batch, which is the subscription saying it is
-    installed. A caller opens the stream to watch work it is about to
-    start, and without this it has no way to know when starting is
-    safe: the next message would otherwise be the first record, which
-    arrives only after the work it was meant to report.
-
-    `alive` is a check with NO side effect, which is the part that
-    matters. `table.alive` would refresh the connection, and a log
-    stream that kept a connection alive would disable the sweeper for
-    as long as it was open. Liveness is the ping loop's job
-    (huggorm#49) and stays there.
-    """
-    await stream.send_message(resp_cls())
-    while True:
-        alive()
-        records = await sub.drain()
-        if not records:
-            await anyio.sleep(LOG_POLL)
-            continue
-        resp = resp_cls()
-        codec.encode(resp, "records", LOG_RECORDS, records, _never_a_proxy)
-        resp.dropped = await sub.dropped()
-        await stream.send_message(resp)
-
-
 def _method(name: str) -> Callable[..., Awaitable[Any]]:
     async def run(token: str, target: Any, *args: Any) -> Any:
         return await getattr(target, name)(*args)
@@ -492,7 +441,7 @@ def _function(fn: Any) -> Callable[..., Awaitable[Any]]:
 
 
 class Dispatcher:
-    def __init__(self, pool: Any, tasks: Any, loops: Any,
+    def __init__(self, tasks: Any, loops: Any,
                  lease_ttl: float = 120.0,
                  escrow_ttl: float | None = 300.0) -> None:
         """Every table it reads is emitted, in
@@ -502,8 +451,6 @@ class Dispatcher:
         body of one is a RULE - decode, call, encode - and it reads
         the same for every method. What differs is the spec, and the
         build writes that."""
-        self.pool = pool
-        self.rpcs = schema.Rpcs(pool)
         # Two task groups, and which one a task goes in is decided
         # by whether it ENDS. `serve` explains the split; both OWN
         # their children, so nothing here retains a set of tasks by
@@ -517,7 +464,7 @@ class Dispatcher:
         self.loops = loops
         self.table = HandleTable(ttl=lease_ttl, escrow_ttl=escrow_ttl)
         self.table.on_drop = self._on_drop
-        self.codec = WireCodec()
+        self.codec = Codec()
         # One fan-out per state, so many readers share one
         # subscription. Keyed by the wrapper object, because that is
         # what a subscription belongs to; a shared handle leases the
@@ -557,15 +504,11 @@ class Dispatcher:
             "unsubscribe_process_logs": self._unsubscribe_process_logs,
         }
         self._handle_readers: dict[tuple[str, int], weakref.WeakSet[_Reader]] = {}
-        # A failure crosses the same way a value does: as messages, by
-        # what the bindings declare, never by a type this file names
+        # A failure crosses the same way a value does: by what the
+        # bindings declare, never by a type this file names
         # (huggorm#36).
-        self.faults = FaultCodec(schema.load_pool())
-        self.mapping: dict[str, grpclib.const.Handler] = {}
-        self._session()
+        self.faults = Faults(self.codec)
         self.handlers = self._handlers()
-        for spec in CALLS:
-            self._route(spec.path, self._serve_call(spec, self.handlers[spec.index]))
 
     def _fanout(self, target: Any) -> _Fanout:
         """This state's fan-out, made on first use.
@@ -634,13 +577,6 @@ class Dispatcher:
         self._log_fanouts.pop(id(obj), None)
         self.tasks.start_soon(_close)
 
-    def _route(self, path: str, handler: Handler) -> None:
-        """Dispatch `path` to `handler`, with the message types and the
-        cardinality the schema states for it."""
-        r = self.rpcs[path]
-        self.mapping[path] = grpclib.const.Handler(
-            handler, r.cardinality, r.req, r.resp)
-
     # -- handles ---------------------------------------------------------
     def put(self, obj: Any, token: str,
             parents: Iterable[str] = ()) -> str:
@@ -663,50 +599,26 @@ class Dispatcher:
         self.table.touch(token, hid)
         return self.table.get(hid)
 
-    def _fault(self, wrapper: Any) -> grpclib.exceptions.GRPCError:
-        """One failure, as the status a failed call can carry.
+    @staticmethod
+    def _failure(e: Exception, label: str) -> Exception:
+        """The error a failed call answers.
 
-        The message stays human-readable - it is the field a human
-        reads in a log - and the structure goes where structure goes,
-        in the typed details beside it."""
-        return grpclib.exceptions.GRPCError(
-            grpclib.const.Status.UNKNOWN,
-            wrapper.message,
-            self.faults.details(wrapper))
-
-    # -- handler construction ----------------------------------------------
-    def _wrap(self, handler: Handler, label: str) -> Handler:
-        """Every failure crosses the wire as typed status details:
-        errors that can describe themselves as themselves, everything
-        else wrapped in InternalError - so unknown handles and bugs
-        arrive debuggable, not anonymous.
-
-        An error the bindings DECLARE crosses as its own parts, so the
-        far side rebuilds the class rather than approximating it by
-        name. That is what makes the remote shape the same as the
-        in-process one, for a declared Nix error and for the
-        InternalError that carries a genuine bug alike (huggorm#36,
+        A declared error crosses as itself, so the far side rebuilds
+        the class rather than approximating it by name. Anything else
+        crosses as an InternalError that carries it, so unknown handles
+        and bugs arrive debuggable, not anonymous (huggorm#36,
         huggorm#66).
 
-        The test is `to_dict`, not `isinstance(e, WrapperError)`. It
-        is the same duck-type the runtime applies one layer down, and
-        for the same reason: a declared Nix error cannot subclass
-        WrapperError, because the bindings are imported BY the
-        generated runtime and cannot import it back. Catching the
-        class here made this layer disagree with the runtime, and the
-        answer a caller got then depended on which of the two saw the
-        error first."""
+        The test is `to_dict`, not `isinstance(e, WrapperError)`. A
+        declared Nix error cannot subclass WrapperError, because the
+        bindings are imported BY the generated runtime and cannot
+        import it back. The runtime applies the same duck-type one
+        layer down."""
         from huggorm_generated._runtime import InternalError
 
-        async def guard(stream: Any) -> None:
-            try:
-                await handler(stream)
-            except Exception as e:
-                if hasattr(e, "to_dict"):
-                    raise self._fault(e) from e
-                raise self._fault(
-                    InternalError(f"{label} failed", cause=e)) from e
-        return guard
+        if hasattr(e, "to_dict") or isinstance(e, Refused):
+            return e
+        return InternalError(f"{label} failed", cause=e)
 
     def adopt(self, obj: Any, parent: Any) -> Any:
         """The async wrapper for a bare binding object.
@@ -770,41 +682,51 @@ class Dispatcher:
                 f"listed call")
         return handlers
 
-    def _serve_call(self, spec: Call | Acquire, h: CallHandler) -> Handler:
-        """One call, over gRPC.
+    def _arguments(self, spec: Call | Acquire, raw: list[Any],
+                   resolve: Callable[[str], Any]) -> list[Any]:
+        """A call's decoded arguments. A constructor may be sent fewer
+        than it declares, and the binding fills in the defaults."""
+        least = spec.required if isinstance(spec, Acquire) else len(spec.args)
+        if not least <= len(raw) <= len(spec.args):
+            raise TypeError(
+                f"{len(raw)} argument(s) for {least}..{len(spec.args)}")
+        return [self.codec.decode(a.type, v, resolve)
+                for a, v in zip(spec.args, raw, strict=False)]
 
-        A proxy answer leases to the CALLER's connection. A method's
-        answer also pins the handle it ran on (parents=[self]), so a
+    async def _run_call(self, token: str, index: int, hid: Any,
+                        raw: list[Any]) -> Any:
+        """One CALL, answered as a codec value.
+
+        A proxy answer leases to the caller's connection. A method's
+        answer also pins the handle it ran on (parents=[hid]), so a
         value read out of a state keeps that state alive."""
-        resp_cls = self.rpcs[spec.path].resp
-        optional = spec.optional if isinstance(spec, Acquire) else ()
+        if not 0 <= index < len(CALLS):
+            raise ProtocolError(f"no call numbered {index}")
+        spec, h = CALLS[index], self.handlers[index]
         returns = spec.returns if isinstance(spec, Call) else None
 
-        async def handler(stream: Any) -> None:
-            req = await stream.recv_message()
-            token = _tok(stream)
-            target = (self.resolve(req.self.id, token)
-                      if h.target is Target.HANDLE else None)
-            args = [self.codec.decode(req, a.name, a.type,
-                                      lambda hid: self.resolve(hid, token),
-                                      optional=a.name in optional)
-                    for a in spec.args]
-            resp = resp_cls()
-            match h.target:
-                case Target.HANDLE:
-                    result = await h.run(token, target, *args)
-                    self.codec.encode(
-                        resp, "result", returns, result,
-                        lambda obj: self.put(obj, token, parents=[req.self.id]))
-                case Target.NEW:
-                    resp.id = self.put(await h.run(token, *args), token)
-                case Target.NONE:
-                    result = await h.run(token, *args)
-                    self.codec.encode(resp, "result", returns, result,
-                                      lambda obj: self.put(obj, token))
-            await stream.send_message(resp)
+        def resolve(handle: str) -> Any:
+            return self.resolve(handle, token)
 
-        return self._wrap(handler, h.label)
+        match h.target:
+            case Target.HANDLE:
+                if type(hid) is not str:
+                    raise ProtocolError(f"{h.label} names no handle")
+                target = resolve(hid)
+                result = await h.run(token, target,
+                                     *self._arguments(spec, raw, resolve))
+                return self.codec.encode(
+                    returns, result,
+                    lambda obj: self.put(obj, token, parents=[hid]))
+            case Target.NEW:
+                return self.put(
+                    await h.run(token, *self._arguments(spec, raw, resolve)),
+                    token)
+            case Target.NONE:
+                result = await h.run(token,
+                                     *self._arguments(spec, raw, resolve))
+                return self.codec.encode(returns, result,
+                                         lambda obj: self.put(obj, token))
 
     # -- session operations ---------------------------------------------
     def bind(self, claim: str | None) -> tuple[str, float]:
@@ -872,6 +794,24 @@ class Dispatcher:
         root = await target._runner.run(lambda obj: walk.node(obj, 0))
         return target, root, walk
 
+    async def logs(self, token: str, hid: str | None, capacity: int,
+                   level: int) -> str:
+        """A log reader's handle: on the state `hid` names, or on the
+        process sink when it names none.
+
+        Not `subscribe_logs`: a reader opened here is outside the set
+        a remote `unsubscribe_logs` leaves, so a caller reading a
+        state's log keeps reading through a subscribe and an
+        unsubscribe on the same state (huggorm#85). Releasing the
+        handle leaves the fan-out. The reader pins the state it
+        reads."""
+        if hid is None:
+            reader = await self._process_fanout.join(capacity, level)
+            return self.put(reader, token)
+        fan = self._fanout(self.resolve(hid, token))
+        return self.put(await fan.join(capacity, level), token,
+                        parents=[hid])
+
     async def logs_barrier(self, token: str, hid: str) -> int:
         """The request id whose "finalized" ends the records so far.
 
@@ -890,234 +830,153 @@ class Dispatcher:
                 f"its records")
         return request
 
-    def _session(self) -> None:
-        from huggorm_generated._runtime import InternalError
+    async def _control(self, token: str, control: Control,
+                       args: list[Any]) -> Any:
+        """One session operation, answered as a codec value."""
+        match control, args:
+            case Control.PING, []:
+                return self.ping(token)
+            case Control.SHARE, [str(to_token), str(hid), str(mode)]:
+                self.share(token, to_token, hid, ShareMode(mode))
+                return None
+            case Control.DETACH, [str() | None as hid, bool(all_)]:
+                return self.detach(token, hid, all_)
+            case Control.RELEASE, [str(hid)]:
+                self.release(token, hid)
+                return None
+            case Control.REALIZE, [str(hid), int(depth), int(budget)]:
+                target, root, _walk = await self.realize(token, hid, depth,
+                                                         budget)
+                # Every node the walk stopped at leases to the caller
+                # and pins the root, exactly as a proxy return does.
+                return self.codec.encode_tree(
+                    root, lambda _cls, obj: self.put(
+                        self.adopt(obj, target), token, parents=[hid]))
+            case Control.LOGS_BARRIER, [str(hid)]:
+                return await self.logs_barrier(token, hid)
+            case Control.LOGS, [str() | None as hid, int(capacity), int(level)]:
+                return await self.logs(token, hid, capacity, level)
+        raise ProtocolError(f"{control.name} with arguments {args!r:.80}")
 
-        def guard_untyped(fn: Handler) -> Handler:
-            """Session rpcs raise plain KeyError/ValueError from the
-            lifecycle core; give them the same typed-JSON contract as
-            the service handlers."""
-            async def guarded(stream: Any) -> None:
-                try:
-                    await fn(stream)
-                except grpclib.exceptions.GRPCError:
-                    # Already the wire shape, and already carrying a
-                    # status somebody chose. Wrapping it would make a
-                    # deliberate refusal - Logs on a state that
-                    # already has a reader - read as an internal bug
-                    # and lose the code that said which it was.
-                    raise
-                except Exception as e:
-                    raise self._fault(InternalError(
-                        f"Session/{fn.__name__} failed", cause=e)) from e
-            return guarded
+    # -- connections -----------------------------------------------------
+    async def connection(self, stream: SocketStream) -> None:
+        """Serve one connection until the peer closes it.
 
-        def reply(rpc: str) -> Any:
-            return self.rpcs[schema.session(rpc)].resp
+        Never raises: one broken peer must not stop the listener. EOF
+        cancels the connection's running calls, because nobody can
+        read their answers. It releases nothing: the leases stay
+        until the sweeper finds the token silent, or until a client
+        that detached claims them back."""
+        try:
+            await self._connection(stream)
+        except Exception:
+            logger.warning("a connection failed", exc_info=True)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await stream.aclose()
 
-        async def release_many(stream: Any) -> None:
-            req = await stream.recv_message()
-            resp = reply("ReleaseMany")()
-            resp.released, resp.unknown = self.release_many(
-                _tok(stream), (h.id for h in req.handles))
-            await stream.send_message(resp)
-
-        async def release(stream: Any) -> None:
-            req = await stream.recv_message()
-            self.release(_tok(stream),
-                         req.self.id if hasattr(req, "self") else req.id)
-            await stream.send_message(reply("Release")())
-
-        digest = schema.schema_digest()
-
-        async def bind(stream: Any) -> None:
-            req = await stream.recv_message()
-            # A client built from another schema numbers fields its own
-            # way, and every later call would decode wrongly without an
-            # error. Refused here, before it holds anything (huggorm#22).
-            if req.schema_digest != digest:
-                raise grpclib.exceptions.GRPCError(
-                    grpclib.const.Status.FAILED_PRECONDITION,
-                    f"client schema {req.schema_digest[:12] or 'none'} is "
-                    f"not this server's {digest[:12]}: rebuild the client "
-                    f"from the server's huggorm")
-            resp = reply("Bind")()
-            resp.token, resp.lease_ttl = self.bind(req.claim_token or None)
-            await stream.send_message(resp)
-
-        async def ping(stream: Any) -> None:
-            await stream.recv_message()
-            ack = reply("Ping")()
-            ack.ok = self.ping(_tok(stream))
-            await stream.send_message(ack)
-
-        async def share(stream: Any) -> None:
-            req = await stream.recv_message()
-            self.share(_tok(stream), req.to_token, req.handle.id,
-                       ShareMode(req.mode or ShareMode.COPY))
-            ack = reply("Share")()
-            ack.ok = True
-            await stream.send_message(ack)
-
-        async def detach(stream: Any) -> None:
-            req = await stream.recv_message()
-            ack = reply("Detach")()
-            ack.ok = self.detach(
-                _tok(stream),
-                req.target.id if req.HasField("target") else None, req.all)
-            await stream.send_message(ack)
-
-        async def realize(stream: Any) -> None:
-            req = await stream.recv_message()
-            token = _tok(stream)
-            target, root, walk = await self.realize(token, req.handle.id,
-                                                    req.depth, req.budget)
-            resp = reply("Realize")()
-            # Every node the walk stopped at leases to the caller and
-            # pins the root, exactly as a proxy return does.
-            self.codec.tree_to_msg(
-                root, resp.root,
-                lambda _cls, obj: self.put(self.adopt(obj, target), token,
-                                           parents=[req.handle.id]))
-            resp.nodes = len(walk.seen)
-            resp.truncated = walk.truncated
-            await stream.send_message(resp)
-
-        async def logs(stream: Any) -> None:
-            """Records Nix raised, streamed as they arrive.
-
-            The one rpc that travels the other way. Everything else
-            here answers a question; this answers records nobody asked
-            for one at a time, so it is server-streaming and it is
-            HAND-WRITTEN. No binding declares it, because there is no
-            method it is the wire form of (huggorm#32).
-
-            The subscription belongs to the state's THREAD, so the
-            request names an EvalState and the subscribe hops onto
-            that state's own thread. Draining does not: `LogStream` is
-            pool-threaded and holds its own mutex, so the loop below
-            reads it from the event loop while the evaluation it is
-            reporting on is still running. That is the whole reason
-            the queue is a class rather than a method on EvalState.
-
-            MANY readers on one state, which is huggorm#85's third
-            gap closed. It used to be one: a second subscribe
-            REPLACES the first in the C++, so a second reader would
-            have left the first connected and empty. The subscription
-            is now opened once per state and `_Fanout` hands each
-            reader its own view, so the refusal is gone and nothing
-            it protected is lost.
-
-            Three things it still refuses to do quietly.
-
-            A DROP is reported. `dropped` rides with every batch and
-            is cumulative, so a client that missed a batch still
-            learns the total. It now covers this reader's own drops
-            as well as the shared queue's.
-
-            A SWEPT connection ends the stream with a status. A stream
-            that just stopped would be indistinguishable from a quiet
-            one.
-
-            CLEANUP is AWAITED, where the single-reader path detached
-            it. That path could afford to: it held the only
-            subscription, so nothing was waiting on the drop. A
-            fan-out has to know the subscription is gone before it
-            opens the next one, and only the await says so."""
-            req = await stream.recv_message()
-            token = _tok(stream)
-            target = self.resolve(req.state.id, token)
-            fan = self._fanout(target)
-            # Capacity 0 is not a queue, so zero means "the default".
-            # Level 0 IS a subscription - lvlError, errors only - so it
-            # needs the presence the schema gives it.
-            capacity = req.capacity or LOG_CAPACITY
-            level = req.level if req.HasField("level") else LOG_LEVEL
-
-            def alive() -> None:
-                if req.state.id not in self.table.entries:
-                    raise grpclib.exceptions.GRPCError(
-                        grpclib.const.Status.UNAVAILABLE,
-                        f"the connection holding {req.state.id[:8]} was "
-                        f"swept, so this stream has nothing to read.")
-
-            reader = await fan.join(capacity, level)
+    async def _connection(self, stream: SocketStream) -> None:
+        uid = peer_uid(stream)
+        if uid != os.geteuid():
+            logger.warning("refused a connection from uid %d", uid)
+            return
+        channel = Channel(stream)
+        with anyio.fail_after(HELLO_TIMEOUT):
+            hello = await channel.receive()
+        match hello:
+            case [Op.HELLO, str(identity), str() | None as claim]:
+                pass
+            case _:
+                raise ProtocolError(f"a connection opened with {hello!r:.80}")
+        if identity != build_identity():
+            await channel.send([Op.FAULT, None, self.faults.encode(Refused(
+                Refusal.IDENTITY,
+                f"the client runs build {identity[:12]} and this server "
+                f"runs {build_identity()[:12]}: connect with the server's "
+                f"huggorm"))])
+            return
+        token, ttl = self.bind(claim)
+        await channel.send([Op.WELCOME, token, ttl])
+        running: dict[int, anyio.CancelScope] = {}
+        async with anyio.create_task_group() as calls:
             try:
-                await _pump(stream, reader, reply("Logs"), self.codec, alive)
-            except grpclib.exceptions.StreamTerminatedError:
-                # The client is gone. There is nobody to tell.
-                return
+                await self._frames(channel, token, calls, running)
             finally:
-                # AWAITED, where the single-reader path detached its
-                # cleanup. The fan-out has to know the subscription is
-                # gone before it opens the next one, and only the
-                # await says so.
-                await fan.leave(reader)
+                calls.cancel_scope.cancel()
 
-        async def process_logs(stream: Any) -> None:
-            """Records no subscribed thread claimed, streamed.
-
-            The same rpc with nothing to name. `Logs` takes a handle
-            because the tap routes by THREAD and an EvalState owns
-            one; this one takes what a fetcher thread, a
-            file-transfer thread or a build raised, and none of those
-            belongs to a state (huggorm#85).
-
-            So it holds NO lease and refreshes nothing. A caller with
-            no handle at all can open it, which is right: the records
-            it carries are the ones no handle could have reached.
-
-            MANY readers over ONE sink, and the fan-out is what makes
-            that true. There is one process-wide queue, so every
-            connection that asks reads the same subscription through
-            its own `_Reader`. This is the reader Carl named - a CLI
-            printing everything as it happens - and it no longer
-            costs the next connection its view.
-
-            Replacing in the C++ still stops an in-process caller
-            wedging the sink by dropping its `LogStream` without
-            unsubscribing. What used to sit beside it here was a
-            refusal; `_Fanout` replaces that with a refcount."""
-            req = await stream.recv_message()
-            capacity = req.capacity or LOG_CAPACITY
-            level = req.level if req.HasField("level") else LOG_LEVEL
-
-            reader = await self._process_fanout.join(capacity, level)
+    async def _frames(self, channel: Channel, token: str, calls: Any,
+                      running: dict[int, anyio.CancelScope]) -> None:
+        """Read frames until EOF. Each CALL and CONTROL runs in its own
+        task, so a slow call does not hold up the next."""
+        while True:
             try:
-                await _pump(stream, reader, reply("ProcessLogs"), self.codec,
-                            lambda: None)
-            except grpclib.exceptions.StreamTerminatedError:
+                frame = await channel.receive()
+            except (anyio.EndOfStream, anyio.BrokenResourceError):
                 return
+            match frame:
+                case [Op.CALL, int(cid), int(index), hid, list(args)]:
+                    label = (self.handlers[index].label
+                             if index in self.handlers else f"call {index}")
+                    calls.start_soon(
+                        self._answer, channel, token, cid, running, label,
+                        functools.partial(self._run_call, token, index, hid,
+                                          args))
+                case [Op.CONTROL, int(cid), int(number), list(args)]:
+                    try:
+                        control = Control(number)
+                    except ValueError:
+                        raise ProtocolError(
+                            f"no control numbered {number}") from None
+                    calls.start_soon(
+                        self._answer, channel, token, cid, running,
+                        f"Session/{control.name.lower()}",
+                        functools.partial(self._control, token, control,
+                                          args),
+                        control is Control.PING)
+                case [Op.CANCEL, int(cid)]:
+                    scope = running.get(cid)
+                    if scope is not None:
+                        scope.cancel()
+                case [Op.DROP, list(hids)] if all(type(h) is str
+                                                  for h in hids):
+                    self.release_many(token, hids)
+                case _:
+                    raise ProtocolError(f"a frame arrived as {frame!r:.80}")
+
+    async def _answer(self, channel: Channel, token: str, cid: int,
+                      running: dict[int, anyio.CancelScope], label: str,
+                      run: Callable[[], Awaitable[Any]],
+                      after_sweep: bool = False) -> None:
+        """Run one call and send its RESULT or FAULT. A CANCEL ends it
+        with no answer.
+
+        A swept connection's token is gone, and every lease with it.
+        Every call but a ping is refused then: a ping answers False,
+        which is how the client learns."""
+        with anyio.CancelScope() as scope:
+            running[cid] = scope
+            try:
+                if not after_sweep and token not in self.table.connections:
+                    raise Refused(
+                        Refusal.SWEPT,
+                        f"connection {token[:8]} was swept, and its handles "
+                        f"with it")
+                frame = [Op.RESULT, cid, await run()]
+            except Exception as e:
+                frame = [Op.FAULT, cid,
+                         self.faults.encode(self._failure(e, label))]
             finally:
-                await self._process_fanout.leave(reader)
+                running.pop(cid, None)
+            with contextlib.suppress(anyio.BrokenResourceError,
+                                     anyio.ClosedResourceError):
+                await channel.send(frame)
 
-        async def logs_barrier(stream: Any) -> None:
-            req = await stream.recv_message()
-            resp = reply("LogsBarrier")()
-            resp.request = await self.logs_barrier(_tok(stream), req.state.id)
-            await stream.send_message(resp)
 
-        handlers: dict[str, Handler] = {
-            "Bind": bind, "Ping": ping, "Share": share, "Detach": detach,
-            "Release": release, "ReleaseMany": release_many,
-            "Realize": realize, "Logs": logs, "ProcessLogs": process_logs,
-            "LogsBarrier": logs_barrier,
-        }
-        # An rpc the schema declares and nothing serves would answer
-        # UNIMPLEMENTED at its first call, so the server refuses to start.
-        declared = {m.name for m in self.pool.FindServiceByName(  # type: ignore[no-untyped-call]
-            f"{schema.PKG}.Session").methods}
-        if declared != handlers.keys():
-            raise RuntimeError(
-                f"Session rpcs {sorted(declared)} and handlers "
-                f"{sorted(handlers)} disagree")
-        for name, fn in handlers.items():
-            self._route(schema.session(name), guard_untyped(fn))
-
-async def serve(host: str = "127.0.0.1", port: int = 50051,
-                lease_ttl: float = 120.0, *,
-                escrow_ttl: float | None = 300.0) -> None:
-    """The server, and the two scopes every background task lives in.
+async def serve(path: str, lease_ttl: float = 120.0, *,
+                escrow_ttl: float | None = 300.0,
+                task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
+    """The server on the Unix socket at `path`, and the two scopes every
+    background task lives in.
 
     TWO task groups, nested, because the tasks divide into two kinds
     and one exit rule does not fit both.
@@ -1135,15 +994,16 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
     is still awaited by `work` afterwards.
 
     That split is the trap huggorm#35 names first: a task group does
-    not cancel its children on exit, it waits for them."""
-    pool = schema.load_pool()
+    not cancel its children on exit, it waits for them.
 
+    The socket is mode 0600, and a connection checks the peer's uid
+    as well: only this uid may connect."""
     # One `with`, two groups, and the ORDER inside it is the whole
     # point: `loops` is entered second, so it exits first. Ruff asks
     # for the combined form and it says the same thing.
     async with (anyio.create_task_group() as work,
                 anyio.create_task_group() as loops):
-        dispatcher = Dispatcher(pool, work, loops, lease_ttl=lease_ttl,
+        dispatcher = Dispatcher(work, loops, lease_ttl=lease_ttl,
                                 escrow_ttl=escrow_ttl)
 
         # Connection liveness: transports never report death; the
@@ -1170,44 +1030,20 @@ async def serve(host: str = "127.0.0.1", port: int = 50051,
         if ttls:
             loops.start_soon(sweeper)
 
-        # Reflection serves descriptors out of the same pool the
-        # handlers use, so external tools see exactly the
-        # generated schema. One servable PER SERVICE: reflection's
-        # list_services reports one name per handler object.
-        services = []
-        grouped: dict[str, dict[str, grpclib.const.Handler]] = {}
-        for path, h in dispatcher.mapping.items():
-            svc_name = path.split("/")[1]
-            grouped.setdefault(svc_name, {})[path] = h
-        for subset in grouped.values():
-            class Servable:
-                def __mapping__(
-                    self,
-                    _subset: dict[str, grpclib.const.Handler] = subset,
-                ) -> dict[str, grpclib.const.Handler]:
-                    return _subset
-            services.append(Servable())
-        # A new name: extend() hands back reflection's own servable
-        # type, not the list that went in.
-        reflected = ServerReflection.extend(services, pool=pool)
-        # Typed failures ride in grpc-status-details-bin, resolved
-        # against this pool rather than protobuf's default symbol
-        # database - these descriptors were built at import from
-        # grpc_schema.pb and are in no global registry (huggorm#36).
-        server = grpclib.server.Server(
-            reflected, status_details_codec=SchemaStatusDetails(pool))
-        await server.start(host, port)
-        logger.info("listening on %s:%d (lease ttl: %s)", host, port,
+        listener = await anyio.create_unix_listener(path, mode=0o600)
+        logger.info("listening on %s (lease ttl: %s)", path,
                     lease_ttl if lease_ttl else "off")
+        task_status.started()
         try:
-            await server.wait_closed()
+            await listener.serve(dispatcher.connection)
         finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
             loops.cancel_scope.cancel()
 
 
 if __name__ == "__main__":
     import sys
-    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 50051
-    ttl = float(sys.argv[3]) if len(sys.argv) > 3 else 120.0
-    anyio.run(serve, host, port, ttl)
+    path = sys.argv[1]
+    ttl = float(sys.argv[2]) if len(sys.argv) > 2 else 120.0
+    anyio.run(serve, path, ttl)

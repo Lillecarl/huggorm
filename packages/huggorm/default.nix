@@ -8,7 +8,6 @@
   huggorm-dsl,
   gitMinimal,
   nix-tcp-store,
-  grpcurl,
   ruff,
   zuban,
   ...
@@ -77,16 +76,13 @@ python3Packages.buildPythonPackage {
     python3Packages.protobuf
   ];
 
-  # The integration suites run here, over a real gRPC socket on
-  # loopback, under pytest. They used to be scripts with a hand-rolled
+  # The integration suites run here, over a real Unix socket, under
+  # pytest. They used to be scripts with a hand-rolled
   # check() and one giant main(), which meant no isolation, no way to
   # run one of them, and a failure that stopped everything after it.
   # That was survivable against a mock; against real Nix, where a
   # failure can be a native crash, it is not.
-  #
-  # grpcurl is the external-tool arm: test_remote drives the same
-  # reflection-served schema from outside Python, which is what keeps
-  # the emitted descriptors honest.
+
   # zuban is a mypy-compatible checker in Rust. Same flags, same
   # diagnostics on this codebase, about thirty times faster - which is
   # what makes it reasonable to run on every build rather than by hand.
@@ -98,7 +94,6 @@ python3Packages.buildPythonPackage {
   nativeCheckInputs = [
     # The suite builds a git work tree for the git fetcher to read.
     gitMinimal
-    grpcurl
     ruff
     zuban
     python3Packages.pytest
