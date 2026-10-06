@@ -1,18 +1,18 @@
 """
 A declaration file, read TWICE: imported, and parsed.
 
-The IMPORT is the authority on WHAT exists. A declaration may branch
-on `NIX_VERSION`, and Python resolves that during the import - so
-nothing here interprets a version condition, because the interpreter
-is already present and is better at it than we would be.
+The IMPORT holds the FACTS and drives the read. `vars` gives every
+name the build has, in definition order, with each `NIX_VERSION`
+branch already chosen - Python resolves the branch, so nothing here
+interprets a version condition. Bases, descriptors, signatures,
+annotations and what each decorator wrote are all read off it, and a
+name the reader can put nowhere is refused.
 
-The TREE is the source for HOW to render it. `ast.parse` keeps what
-the import throws away: the C++ inside a body, the exact text of a
-docstring, the order a class declares its methods in.
-
-`_reconcile` holds the two together. Every definition the import kept
-must exist in the tree, and a definition the tree has that the import
-dropped is an `if` arm this Nix version does not take.
+The TREE supplies TEXT the interpreter drops: the C++ inside a body,
+docstrings (an attribute's included), where an import came from, and
+the position a refusal points at. Each definition's node is found by
+the line the import names, and `_reconcile` refuses a line the tree
+has no node at (huggorm#123).
 
 A body still never runs: `def` defines, it does not call. So `Cxx(...)`
 in one is dead text this module lifts out of the tree, which is why a
@@ -114,7 +114,7 @@ IMPORTABLE = (VOCABULARY, DECLARATIONS, "typing", "enum")
 FROM_PARTS = "_from_parts"
 
 # What a class decorator leaves on the class it marks. The reader
-# reads both off the import, and the contents check accepts both.
+# reads both off the import, and the class read accepts both.
 DECL = "_decl"
 NEEDS = "_needs"
 
@@ -1840,12 +1840,8 @@ def _resolve(body: list[ast.stmt], live: set[int]) -> list[ast.stmt]:
 def read(path: str) -> Module:
     """One declaration file, read twice.
 
-    `ast.parse` gives the tree, which is what every emitter reads and
-    what `pyi.py` transforms. The IMPORT gives one fact the tree
-    cannot: which definitions survive a `NIX_VERSION` branch.
-
-    The import is the authority on WHAT exists. The tree is the source
-    for HOW to render it. No fact is taken from both."""
+    The import holds the facts; the tree supplies the text. No fact
+    is taken from both."""
     with reading(path):
         return _read(path)
 
