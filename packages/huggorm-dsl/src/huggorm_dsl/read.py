@@ -57,6 +57,7 @@ import ast
 import builtins
 import contextlib
 import difflib
+import enum
 import functools
 import inspect
 import os
@@ -1351,11 +1352,11 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
     # word and not as `str` (huggorm#104). The base is Python's, not a
     # declared class, so it is checked here and never becomes `base`.
     if decl.kind == "words":
-        if [ast.unparse(b) for b in node.bases] != ["StrEnum"]:
+        if holder.__bases__ != (enum.StrEnum,):
             raise DeclarationError(
                 node, f"{node.name}: a vocabulary is a StrEnum. Write "
                       f"`class {node.name}(StrEnum)`.")
-    elif node.bases:
+    elif holder.__bases__ != (object,):
         # No emitter carries a class hierarchy (huggorm#60): nanobind
         # downcasts by exact type, so a bound base buys nothing. A base
         # written here would be dropped in silence, so it is refused.
