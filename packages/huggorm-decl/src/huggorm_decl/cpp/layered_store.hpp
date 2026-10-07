@@ -27,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -91,9 +92,35 @@ struct LayeredStoreConfig : std::enable_shared_from_this<LayeredStoreConfig>, vi
      */
     std::map<std::string, std::string> params;
 
+    /**
+     * Nix 2.35 gives `StoreConfig` a `FilePathType` argument and `Store`
+     * a pure `anchor()` together. `anchor` is private and `FilePathType`
+     * protected, so only a subclass can see the change, and this one
+     * marks both. A template, so a Nix without it discards the branch
+     * instead of failing to compile it.
+     */
+    template<typename Config = LayeredStoreConfig>
+    static constexpr bool has_path_type = requires { typename Config::FilePathType; };
+
+    template<typename Config = LayeredStoreConfig>
+    static nix::ref<nix::StoreConfig> make(
+        std::shared_ptr<PyRef> factory, std::string_view scheme, std::string_view authority, const Params & params)
+    {
+        // `Unix`, as the dummy store: the store directory is not a host path.
+        if constexpr (has_path_type<Config>)
+            return nix::make_ref<Config>(std::move(factory), scheme, authority, params, Config::FilePathType::Unix);
+        else
+            return nix::make_ref<Config>(std::move(factory), scheme, authority, params);
+    }
+
+    template<typename... PathType>
     LayeredStoreConfig(
-        std::shared_ptr<PyRef> factory, std::string_view scheme, std::string_view authority, const Params & given)
-        : StoreConfig(given)
+        std::shared_ptr<PyRef> factory,
+        std::string_view scheme,
+        std::string_view authority,
+        const Params & given,
+        PathType... path_type)
+        : StoreConfig(given, path_type...)
         , factory(std::move(factory))
         , scheme(scheme)
         , authority(authority)
@@ -117,11 +144,22 @@ struct LayeredStoreConfig : std::enable_shared_from_this<LayeredStoreConfig>, vi
     }
 };
 
-class LayeredStore : public nix::Store
+template<typename Base>
+struct Anchored : Base
+{
+    using Base::Base;
+
+private:
+    void anchor() override {}
+};
+
+using StoreBase = std::conditional_t<LayeredStoreConfig::has_path_type<>, Anchored<nix::Store>, nix::Store>;
+
+class LayeredStore : public StoreBase
 {
 public:
     LayeredStore(LayeredStoreConfig & config, const std::optional<std::shared_ptr<nix::Store>> & underlying)
-        : Store{config}
+        : StoreBase{config}
         , config_(config.shared_from_this())
         , underlying_(underlying.value_or(nullptr))
     {
@@ -458,9 +496,9 @@ inline void register_layered_store(const std::string & name, const std::vector<s
         .uriSchemes = {schemes.begin(), schemes.end()},
         .experimentalFeature = std::nullopt,
         .parseConfig = [held](std::string_view scheme, std::string_view authority, const nix::StoreConfig::Params & params)
-            -> nix::ref<nix::StoreConfig> { return nix::make_ref<LayeredStoreConfig>(held, scheme, authority, params); },
+            -> nix::ref<nix::StoreConfig> { return LayeredStoreConfig::make(held, scheme, authority, params); },
         .getConfig = [held]() -> nix::ref<nix::StoreConfig> {
-            return nix::make_ref<LayeredStoreConfig>(held, "", "", nix::StoreConfig::Params{});
+            return LayeredStoreConfig::make(held, "", "", nix::StoreConfig::Params{});
         },
     };
     if (!nix::Implementations::registered().emplace(name, std::move(made)).second)

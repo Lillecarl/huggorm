@@ -16,7 +16,9 @@ from huggorm_bindings import (
     LayeredStore,
     LayeredStoreConfig,
     Store,
+    get_setting,
     register_store_implementation,
+    set_setting,
 )
 from huggorm_bindings.errors import InvalidPath, Unsupported
 
@@ -211,7 +213,13 @@ def test_nix_reaches_every_hook(under: Any) -> None:
     assert Store.compute_fs_closure(store, [missing], True) == [held]
     assert Store.query_substitutable_paths(store, [held]) == []
     assert Store.query_missing(store, []).will_build() == []
-    assert Store.query_realisation(store, drv_output(1, "out")) is None
+    # Nix 2.35 answers None before the hook unless the feature is on.
+    before = get_setting("experimental-features") or ""
+    set_setting("extra-experimental-features", "ca-derivations")
+    try:
+        assert Store.query_realisation(store, drv_output(1, "out")) is None
+    finally:
+        set_setting("experimental-features", before)
     with pytest.raises(InvalidPath, match="no derivation here"):
         Store.read_derivation(store, held)
     Store.optimise_store(store)
