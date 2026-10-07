@@ -705,6 +705,8 @@ class ClassModel:
     tree: callspec.Tree | None = None
     # The declared class this one derives from, or "".
     base: str = ""
+    # What C++ holds one through: "shared_ptr", or "".
+    holder: str = ""
     # How Python data becomes a value, or None.
     builds: callspec.Builds | None = None
 
@@ -760,6 +762,7 @@ class ClassModel:
             tree=_tree(decl),
             builds=_builds(decl),
             base=decl.base,
+            holder=decl.holder,
         )
 
     @property

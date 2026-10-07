@@ -1146,6 +1146,19 @@ class Emitter:
             f"{INDENT * 5}{_wrong_arm(obj, arm.hold, arm.tag)}",
         ]
 
+    def _self(self, cls: ir.ClassModel) -> tuple[str, list[str]]:
+        """A method lambda's `self` parameter, and the line that opens it.
+
+        A class held through a `shared_ptr` takes `self` as one. An
+        object Python made has a live owner then, so Nix's own
+        `shared_from_this()` works inside the call, as nanobind documents.
+        By reference, `getBuilder` raised `bad_weak_ptr` on a Python
+        store once `openStore`'s owner was gone."""
+        if cls.holder == "shared_ptr":
+            return (f"const std::shared_ptr<{cls.held}> &nb_self",
+                    [f"{INDENT * 4}[[maybe_unused]] {cls.held} &{SELF} = *nb_self;"])
+        return f"{cls.held} &{SELF}", []
+
     def _returns(self, m: ir.MethodModel) -> str:
         """A lambda's return type, SPELLED, for every body that has one.
 
@@ -1191,29 +1204,38 @@ class Emitter:
         tail = f', "{doc}"' if doc else ""
         if m.cxx_body is not None:
             # A method the declaration could not derive, carried verbatim.
-            obj = SELF
+            me, held = self._self(cls)
             args, opening = self._signature(m.params)
             head = (f'{INDENT * 2}.def("{m.name}", '
-                    f"[]({cls.held} &{obj}{args}){self._returns(m)} {{")
+                    f"[]({me}{args}){self._returns(m)} {{")
             body = _carried(m.cxx_body, 4)
             # The tag check goes in FRONT of a declared body. A body says
             # what to do once the arm is known; @guard says the arm is
             # known, and the two are separate decisions.
             extras = self._extras(waits(cls, m), m.params)
-            return [head, *opening, *self._guard_head(cls, m), *body,
+            return [head, *held, *opening, *self._guard_head(cls, m), *body,
                     f"{INDENT * 2}}}{extras}{tail})"]
         extras = self._extras(waits(cls, m), m.params)
         if m.virtual:
             return self._virtual_def(cls, m, tail)
         derived = self._derived(cls, m)
+        me, held = self._self(cls)
         if derived is not None:
-            obj = SELF
             args, opening = self._signature(m.params)
             return [f'{INDENT * 2}.def("{m.name}", '
-                    f"[]({cls.held} &{obj}{args}){self._returns(m)} {{",
-                    *opening, *derived,
+                    f"[]({me}{args}){self._returns(m)} {{",
+                    *held, *opening, *derived,
                     f"{INDENT * 2}}}{extras}{tail})"]
         spelled = m.cxx_name or m.name
+        if held:
+            # A pointer would take `self` by reference: see `_self`.
+            args, opening = self._signature(m.params)
+            names = ", ".join(pr.name for pr in m.params)
+            return [f'{INDENT * 2}.def("{m.name}", [](const std::shared_ptr<{cls.held}> '
+                    f"&nb_self{args}) {{",
+                    *opening,
+                    f"{INDENT * 4}return nb_self->{spelled}({names});",
+                    f"{INDENT * 2}}}{extras}{tail})"]
         return [f'{INDENT * 2}.def("{m.name}", &{cls.held}::{spelled}'
                 f"{extras}{tail})"]
 
@@ -1227,7 +1249,8 @@ class Emitter:
         It releases the GIL itself, not with a call guard, because bytes
         convert on each side of the call and a conversion needs the GIL."""
         args, _ = self._signature(m.params)
-        body = [f"{INDENT * 4}const std::string {pr.name}_ = "
+        me, held = self._self(cls)
+        body = [*held] + [f"{INDENT * 4}const std::string {pr.name}_ = "
                 f"from_bytes({pr.name});"
                 for pr in m.params if _is_bytes(pr.type)]
         names = ", ".join(f"{pr.name}_" if _is_bytes(pr.type) else pr.name
@@ -1247,7 +1270,7 @@ class Emitter:
                      f"{INDENT * 4}}}"]
         extras = self._extras(False, m.params)
         return [f'{INDENT * 2}.def("{m.name}", '
-                f"[]({cls.held} &{SELF}{args}){self._returns(m)} {{",
+                f"[]({me}{args}){self._returns(m)} {{",
                 *body,
                 f"{INDENT * 2}}}{extras}{tail})"]
 
