@@ -30,6 +30,7 @@ from huggorm_dsl.declare import (
     Bytes,
     Cxx,
     Path,
+    PyFunc,
     Str,
     StrView,
     abstract,
@@ -1236,6 +1237,36 @@ def open_store(uri: Str = "auto") -> Store:
     # call lives beside the declaration that describes it
     # (huggorm#63).
     Cxx("return nix::openStore(uri);")
+
+
+@needs("huggorm_decl/cpp/py_store.hpp")
+def register_store_implementation(name: Str, schemes: list[Str],
+                                  factory: PyFunc) -> None:
+    """Make `schemes` open a store implemented in Python, for the rest
+    of the process (huggorm#149).
+
+    `Store("scheme://authority?params")` then calls
+    `factory(scheme, authority, params)`. `params` holds only the
+    parameters no Nix store setting takes; Nix's own, such as
+    `path-info-cache-size`, configure the store as usual. The factory
+    answers the Python store: any object.
+
+    The Python store layers over its `underlying` attribute, a `Store`
+    or None. An operation runs the store's hook of the same name, when
+    its class defines one. A hook that answers `NotImplemented`, and a
+    hook the class does not define, fall through to the same operation
+    on `underlying`. With no underlying store, that raises
+    `Unsupported`. A hook that raises is an error.
+
+    The hooks, typed as the `Store` methods of the same name are:
+    `is_valid_path`, `query_path_info` (a `PathInfo`, or None when the
+    store does not hold the path), `query_path_from_hash_part`,
+    `query_all_valid_paths`, `query_referrers` and `add_temp_root`.
+    They are the uncached operations: Nix's path-info cache sits above
+    them. Nix may call one from any thread.
+
+    A name registers once; a second registration raises."""
+    Cxx("huggorm::register_python_store(name, schemes, factory);")
 
 # --- what the module does before a caller exists -------------------
 
