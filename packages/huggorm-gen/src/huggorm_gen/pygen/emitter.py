@@ -442,9 +442,12 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
     A constructor takes the sync object or its async wrapper, and only
     a bare proxy is widened so. A method parameter is the protocol. An
     adopted return is the async class, a type with an async twin is the
-    twin, and everything else is itself."""
+    twin, and everything else is itself. An in-process class has no
+    protocol, so a method that takes one takes the binding class: the
+    method has no RPC, and the runner calls it in this process."""
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                PROTOCOLS))
+                                PROTOCOLS) if t.name in model.served
+                     else (t.name, BINDINGS))
     ctor = [_widened(spell, model, p.type) for p in c.ctor]
     methods: dict[str, tuple[list[str], str]] = {}
     for m in c.methods:
