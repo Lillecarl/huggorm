@@ -548,6 +548,36 @@ class NixClient:
                               [obj.handle_id, depth, budget, force])
         return self.codec.decode_tree(raw, self.proxy, self.view)
 
+    async def value(self, state: Any, data: Any) -> Any:
+        """A value `state` makes from Python data, in one round trip
+        (huggorm#147).
+
+        Data is None, bool, int, float, str, a list or tuple, a mapping
+        with str keys, or a value handle - a realized view included - at
+        any depth. Anything else is refused here, before anything is
+        sent.
+
+        Answers as `realize` does: a list or an attribute set is a
+        read-only view with its own handle, and a scalar at the root is
+        a handle. A handle in the data comes back as the object that was
+        passed."""
+        if state.handle_id is None:
+            raise ValueError("this handle was already released")
+        passed: dict[str, Any] = {}
+
+        def handle_id(obj: Any) -> str:
+            hid = _handle_of(obj)
+            passed[hid] = obj
+            return hid
+
+        raw = await self._ask(Op.CONTROL, Control.BUILD, [
+            state.handle_id, self.codec.encode_data(data, handle_id)])
+        return self.codec.decode_tree(
+            # Not `passed.get(hid) or`: an empty view is falsy.
+            raw, lambda cls, hid: (passed[hid] if hid in passed
+                                   else self.proxy(cls, hid)),
+            self.view)
+
     async def logs(self, obj: Any, capacity: int = 0,
                    level: int | None = None) -> AsyncGenerator[
                        tuple[list[Any], int]]:

@@ -29,10 +29,19 @@ import anyio
 from anyio.abc import SocketStream
 
 from huggorm_bindings.errors import NixError
-from huggorm_generated._callspec import Acquire, Call, Entries, Items, Leaf, Tree
+from huggorm_generated._callspec import (
+    Acquire,
+    Builds,
+    Call,
+    Entries,
+    Items,
+    Leaf,
+    Tree,
+)
 from huggorm_generated._policy import (
     ACQUIRE,
     ASYNC_CLASS,
+    BUILDERS,
     CALLS,
     FREE,
     METHODS,
@@ -40,7 +49,7 @@ from huggorm_generated._policy import (
 )
 
 from . import tree
-from .codec import Codec
+from .codec import Codec, Node
 from .lifecycle import HandleTable, ShareMode
 from .logbus import Share, widest
 from .protocol import (
@@ -202,6 +211,76 @@ class TreeWalk:
                 # A kind nothing describes: it stays where it is.
                 self.truncated = True
                 return tree.Stays(type(obj).__name__, obj)
+
+
+class Build:
+    """Python data made into one value, on the state's OWN thread.
+
+    Every method it calls is named by `spec`, which the binding
+    declares and the build emits, so this class names no type.
+
+    Bottom-up: a Nix list or attribute set is sized when it is made, so
+    a child is complete before its parent takes it. `given` holds the
+    objects behind the handles the data named, resolved before the hop.
+
+    It answers the tree it built, so a caller reads it with no further
+    round trip. The root is always a handle: the caller asked for a
+    value, and a bare scalar is not one."""
+
+    def __init__(self, spec: Builds, given: dict[str, Any]) -> None:
+        self.spec = spec
+        self.given = given
+
+    @staticmethod
+    def handles(raw: Any) -> list[str]:
+        """Every handle id the data names."""
+        match raw:
+            case [Node.STAYS, str(hid)]:
+                return [hid]
+            case [Node.ITEMS, list(items)]:
+                return [h for i in items for h in Build.handles(i)]
+            case [Node.ENTRIES, dict(entries)]:
+                return [h for v in entries.values() for h in Build.handles(v)]
+        return []
+
+    def root(self, state: Any, raw: Any) -> tree.Node:
+        node, made = self.node(state, raw)
+        if isinstance(node, tree.Leaf):
+            return tree.Stays(type(made).__name__, made)
+        return node
+
+    def node(self, state: Any, raw: Any) -> tuple[tree.Node, Any]:
+        """One data node, and the value made for it."""
+        match raw:
+            case [Node.LEAF, None]:
+                made = getattr(state, self.spec.null)()
+                return tree.Leaf("null", None), made
+            case [Node.LEAF, bool() | int() | float() | str() as v]:
+                wire = type(v).__name__
+                made = getattr(state, self.spec.leaves[wire])(v)
+                return tree.Leaf(wire, v), made
+            case [Node.STAYS, str(hid)]:
+                obj = self.given[hid]
+                return tree.Stays(type(obj).__name__, obj), obj
+            case [Node.ITEMS, list(items)]:
+                made = getattr(state, self.spec.items)()
+                add = getattr(state, self.spec.add_item)
+                nodes = []
+                for i in items:
+                    n, m = self.node(state, i)
+                    add(made, m)
+                    nodes.append(n)
+                return tree.Items(type(made).__name__, made, nodes), made
+            case [Node.ENTRIES, dict(entries)]:
+                made = getattr(state, self.spec.entries)()
+                add = getattr(state, self.spec.add_entry)
+                named = {}
+                for k, v in entries.items():
+                    n, m = self.node(state, v)
+                    add(made, k, m)
+                    named[k] = n
+                return tree.Entries(type(made).__name__, made, named), made
+        raise ProtocolError(f"a data node arrived as {raw!r:.80}")
 
 
 async def _drop_subscription(target: Any) -> None:
@@ -823,6 +902,31 @@ class Dispatcher:
         root = await target._runner.run(lambda obj: walk.node(obj, 0))
         return target, root, walk
 
+    async def build(self, token: str, hid: str, data: Any) -> list[Any]:
+        """A value made from Python data, in one hop on the state's own
+        thread, answered as the tree it built (huggorm#147).
+
+        A handle inside the data stands for the value it names, and
+        answers under the same id, so the caller keeps its own object
+        there. A value of another state is refused: its attribute names
+        index another symbol table. Every value made leases to the
+        caller and pins the state, as a method's answer does."""
+        from huggorm_generated._runtime import _check_isolation, unwrap_arg
+
+        target = self.resolve(hid, token)
+        spec = BUILDERS.get(DECLARED.get(type(target).__name__, ""))
+        if spec is None:
+            raise TypeError(
+                f"{hid[:8]} makes no values: its type declares no builders")
+        given = {h: self.resolve(h, token) for h in Build.handles(data)}
+        _check_isolation(target._runner, given.values())
+        build = Build(spec, {h: unwrap_arg(w) for h, w in given.items()})
+        root = await target._runner.run(lambda obj: build.root(obj, data))
+        known = {id(obj): h for h, obj in build.given.items()}
+        return self.codec.encode_tree(
+            root, lambda _cls, obj: known.get(id(obj)) or self.put(
+                self.adopt(obj, target), token, parents=[hid]))
+
     async def logs(self, token: str, hid: str | None, capacity: int,
                    level: int) -> str:
         """A log reader's handle: on the state `hid` names, or on the
@@ -882,6 +986,8 @@ class Dispatcher:
                 return self.codec.encode_tree(
                     root, lambda _cls, obj: self.put(
                         self.adopt(obj, target), token, parents=[hid]))
+            case Control.BUILD, [str(hid), list(data)]:
+                return await self.build(token, hid, data)
             case Control.LOGS_BARRIER, [str(hid)]:
                 return await self.logs_barrier(token, hid)
             case Control.LOGS, [str() | None as hid, int(capacity), int(level)]:

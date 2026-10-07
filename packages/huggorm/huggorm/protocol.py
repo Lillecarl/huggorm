@@ -76,6 +76,7 @@ class Control(enum.IntEnum):
     REALIZE = 4
     LOGS_BARRIER = 5
     LOGS = 6
+    BUILD = 7
 
 
 class ProtocolError(Exception):

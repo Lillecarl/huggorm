@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import enum
 import importlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
 from typing import Any, assert_never
 
@@ -51,6 +51,8 @@ from . import tree
 _SCALARS: dict[str, tuple[Callable[[Any], Any], type]] = {
     "str": (str, str), "int": (int, int), "uint": (int, int),
     "float": (float, float), "bool": (bool, bool), "bytes": (bytes, bytes)}
+
+_I64_MIN, _I64_MAX = -(2**63), 2**63 - 1
 
 _FLAT = (WireKind.SCALAR, WireKind.ENUM)
 _CONTAINER = (WireKind.LIST, WireKind.MAP)
@@ -280,9 +282,11 @@ class Codec:
     # -- value trees ------------------------------------------------------
     def encode_tree(self, node: tree.Node,
                     proxy_id: Callable[[str, Any], str]) -> list[Any]:
-        """One walked node. A leaf is msgpack-native already: the walk
-        reads only str, int, bool and float."""
+        """One walked or built node. A leaf is msgpack-native already:
+        str, int, bool, float, or a built null."""
         match node:
+            case tree.Leaf(value=None):
+                return [Node.LEAF, None]
             case tree.Leaf(wire=wire, value=value):
                 return [Node.LEAF, _SCALARS[wire][0](value)]
             case tree.Stays(cls=cls, obj=obj):
@@ -298,6 +302,52 @@ class Codec:
                          for k, v in entries.items()}]
             case _:
                 assert_never(node)
+
+    def encode_data(self, value: Any,
+                    handle_id: Callable[[Any], str]) -> list[Any]:
+        """Python data as tree nodes, for a value the far side builds:
+        `[LEAF, scalar]`, `[STAYS, handle id]`, `[ITEMS, [...]]` and
+        `[ENTRIES, {...}]`. Tagged, because a str and a handle id are
+        both a msgpack str.
+
+        Refuses what Nix has no value for, here and before anything is
+        sent. A scalar matches its EXACT type: `True` is an `int` to
+        isinstance, and an IntEnum is not data."""
+        return self._data(value, handle_id, set())
+
+    def _data(self, value: Any, handle_id: Callable[[Any], str],
+              open_: set[int]) -> list[Any]:
+        if value is None or type(value) in (bool, float, str):
+            return [Node.LEAF, value]
+        if type(value) is int:
+            if not _I64_MIN <= value <= _I64_MAX:
+                raise OverflowError(f"{value} does not fit a Nix integer, "
+                                    f"which is 64 bits and signed")
+            return [Node.LEAF, value]
+        if hasattr(value, "handle_id"):
+            return [Node.STAYS, handle_id(value)]
+        if not isinstance(value, Mapping | list | tuple):
+            raise TypeError(
+                f"{type(value).__name__} has no Nix value. Data is None, "
+                f"bool, int, float, str, a list or tuple, a mapping with "
+                f"str keys, or a value handle"
+                + (". A function cannot cross: make one on the state "
+                   "with make_primop" if callable(value) else ""))
+        if id(value) in open_:
+            raise ValueError("the data holds itself, and a Nix value "
+                             "built from data cannot")
+        open_.add(id(value))
+        try:
+            if not isinstance(value, Mapping):
+                return [Node.ITEMS, [self._data(v, handle_id, open_)
+                                     for v in value]]
+            if bad := [k for k in value if type(k) is not str]:
+                raise TypeError(f"an attribute name is a str, not "
+                                f"{type(bad[0]).__name__}: {bad[0]!r}")
+            return [Node.ENTRIES, {k: self._data(v, handle_id, open_)
+                                   for k, v in value.items()}]
+        finally:
+            open_.discard(id(value))
 
     def decode_tree(self, raw: Any,
                     proxy_obj: Callable[[str, str], Any],

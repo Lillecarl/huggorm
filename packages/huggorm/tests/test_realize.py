@@ -8,6 +8,7 @@ thread, and answers with the shape (huggorm#30).
 """
 
 import gc
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from huggorm import remote
 from huggorm.views import AttrsView, ListView
 from huggorm_bindings.errors import NixError
 from huggorm_generated import RPCValue
+from huggorm_generated._runtime import InternalError
 
 
 def held(value: Any) -> bool:
@@ -256,3 +258,77 @@ async def test_a_list_view(state: Any) -> None:
     assert isinstance(xs, ListView)
     assert xs == [1, 2, 3] and xs[1:] == [2, 3] and len(xs) == 3
     assert await apply_int(state, "builtins.length", xs) == 3
+
+
+# -- data into Nix (huggorm#147) --------------------------------------------
+
+@pytest.mark.parametrize(("data", "kind"), [
+    (None, "null"), (True, "bool"), (1, "int"), (0.5, "float"),
+    ("s", "string")])
+async def test_a_scalar_becomes_a_value(state: Any, data: Any,
+                                        kind: str) -> None:
+    """A scalar at the root answers as a handle: the caller asked for a
+    value. `True` is a bool, never the int it is to isinstance."""
+    made = await state._client.value(state, data)
+    assert held(made)
+    assert await made.type_name() == kind
+
+
+async def test_data_becomes_a_value_in_one_round_trip(state: Any) -> None:
+    client = state._client
+    data = {"a": 1, "xs": [1, 2, 3], "d": {"e": "x"}, "t": (True,)}
+
+    made = await client.value(state, data)
+    assert isinstance(made, AttrsView) and isinstance(made["xs"], ListView)
+    assert made == data | {"t": [True]}
+    assert await apply_int(state, "x: x.a + builtins.length x.xs", made) == 4
+    assert await apply_int(state, "x: builtins.length x.n",
+                           await client.value(state, {"n": [None]})) == 1
+    assert await apply_int(state, "x: builtins.stringLength x.e",
+                           made["d"]) == 1
+    assert await client.realize(made, force=True) == made
+
+
+async def test_a_handle_in_the_data_comes_back_as_itself(state: Any) -> None:
+    """Including an empty view, which is falsy."""
+    client = state._client
+    inner = await client.realize(await state.eval_expr("{ e = 2; }"),
+                                 force=True)
+    empty = await client.value(state, [])
+
+    made = await client.value(state, {"inner": inner, "n": 1, "z": empty})
+    assert made["inner"] is inner and made["z"] is empty
+    assert await apply_int(
+        state, "x: x.inner.e + x.n + builtins.length x.z", made) == 3
+
+
+@pytest.mark.parametrize(("data", "error", "match"), [
+    (Decimal(1), TypeError, "Decimal has no Nix value"),
+    ({1}, TypeError, "set has no Nix value"),
+    ({1: 2}, TypeError, "attribute name is a str"),
+    (lambda x: x, TypeError, "make_primop"),
+    (2**63, OverflowError, "64 bits"),
+])
+async def test_data_nix_has_no_value_for_is_refused(
+        state: Any, data: Any, error: type[Exception], match: str) -> None:
+    with pytest.raises(error, match=match):
+        await state._client.value(state, [data])
+
+
+async def test_data_that_holds_itself_is_refused(state: Any) -> None:
+    loop: list[Any] = []
+    loop.append(loop)
+    with pytest.raises(ValueError, match="holds itself"):
+        await state._client.value(state, loop)
+
+
+async def test_a_value_of_another_state_is_refused(state: Any) -> None:
+    client = state._client
+    other = await client.acquire("EvalState",
+                                 await client.acquire("Store", "dummy://"))
+    foreign = await other.make_int(1)
+    with pytest.raises(InternalError) as refused:
+        await client.value(state, [foreign])
+    assert isinstance(refused.value.__cause__, TypeError)
+    assert "another EvalState" in str(refused.value.__cause__)
+    await other.aclose()
