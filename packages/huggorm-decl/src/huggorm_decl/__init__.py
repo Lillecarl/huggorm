@@ -56,6 +56,7 @@ NANOBIND = (
     "gc.py",
     "store_reference.py",
     "store.py",
+    "layered_store.py",
     "eval.py",
     "registry.py",
     "fetchers.py",

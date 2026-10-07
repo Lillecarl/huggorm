@@ -1,0 +1,331 @@
+#pragma once
+/**
+ * A `nix::Store` that Python implements, layered over another store
+ * (huggorm#149).
+ *
+ * `LayeredStore` is the base a Python subclass extends. Each hook has
+ * the name and the contract of the `Store` method a caller already
+ * knows, so a subclass overrides `Store`'s own methods, and Python and
+ * Nix reach the same override. `decl/layered_store.py` marks each
+ * `@virtual`, and the emitted trampoline calls the override. What a
+ * declaration cannot say lives here: Nix's own virtuals are protected,
+ * `noexcept`, answer through a `Callback` or fill an out-parameter, and
+ * each of those calls the hook.
+ *
+ * A hook's C++ implementation is the layering: the same operation on
+ * the underlying store, or `nix::Unsupported` when there is none, as a
+ * cache store raises for what it cannot do. An override reaches it
+ * with `super()`. The trampoline calls it without the GIL, so a daemon
+ * round trip below blocks no Python thread.
+ *
+ * Registration inserts into Nix's public `Implementations::registered()`
+ * at run time, so a scheme needs no C++ template of its own.
+ */
+
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/shared_ptr.h>
+
+#include "nix/store/path-info.hh"
+#include "nix/store/store-api.hh"
+#include "nix/store/store-registration.hh"
+#include "nix/util/callback.hh"
+
+namespace huggorm {
+
+namespace nb = nanobind;
+
+/**
+ * A strong reference to a Python object that Nix may drop on any
+ * thread. It takes the GIL to release, and leaks instead once the
+ * interpreter is finalizing or gone.
+ */
+class PyRef
+{
+public:
+    explicit PyRef(nb::object obj)
+        : obj_(obj.release().ptr())
+    {
+    }
+
+    PyRef(const PyRef &) = delete;
+    PyRef & operator=(const PyRef &) = delete;
+
+    ~PyRef()
+    {
+        if (obj_ == nullptr || !Py_IsInitialized() || Py_IsFinalizing())
+            return;
+        nb::gil_scoped_acquire gil;
+        Py_DECREF(obj_);
+    }
+
+    nb::handle get() const
+    {
+        return obj_;
+    }
+
+private:
+    PyObject * obj_;
+};
+
+struct LayeredStoreConfig : std::enable_shared_from_this<LayeredStoreConfig>, virtual nix::StoreConfig
+{
+    std::shared_ptr<PyRef> factory;
+    std::string scheme;
+    std::string authority;
+    /**
+     * The URI parameters no Nix store setting claims. They are the
+     * Python store's own, so the subclass reads them, and Nix does not
+     * warn about them.
+     */
+    std::map<std::string, std::string> params;
+
+    LayeredStoreConfig(
+        std::shared_ptr<PyRef> factory, std::string_view scheme, std::string_view authority, const Params & given)
+        : StoreConfig(given)
+        , factory(std::move(factory))
+        , scheme(scheme)
+        , authority(authority)
+    {
+        // Nix's map compares with `std::less<void>`, the caster's with
+        // the default, so the two are different types.
+        auto own = std::exchange(unknownSettings, {});
+        params.insert(own.begin(), own.end());
+    }
+
+    nix::ref<nix::Store> openStore() const override;
+
+    nix::StoreReference getReference() const override
+    {
+        auto all = getQueryParams();
+        all.insert(params.begin(), params.end());
+        return {
+            .variant = nix::StoreReference::Specified{.scheme = scheme, .authority = authority},
+            .params = std::move(all),
+        };
+    }
+};
+
+class LayeredStore : public nix::Store
+{
+public:
+    LayeredStore(LayeredStoreConfig & config, const std::optional<std::shared_ptr<nix::Store>> & underlying)
+        : Store{config}
+        , config_(config.shared_from_this())
+        , underlying_(underlying.value_or(nullptr))
+    {
+    }
+
+    virtual ~LayeredStore() = default;
+
+    // -- the hooks: what a Python subclass overrides ---------------------
+
+    virtual bool is_valid_path(const nix::StorePath & path)
+    {
+        if (underlying_)
+            return underlying_->isValidPath(path);
+        return Store::isValidPathUncached(path);
+    }
+
+    virtual nix::ValidPathInfo query_path_info(const nix::StorePath & path)
+    {
+        return *below("queryPathInfo").queryPathInfo(path);
+    }
+
+    virtual std::optional<nix::StorePath> query_path_from_hash_part(const std::string & hash_part)
+    {
+        return below("queryPathFromHashPart").queryPathFromHashPart(hash_part);
+    }
+
+    virtual std::vector<nix::StorePath> query_all_valid_paths()
+    {
+        auto all = below("queryAllValidPaths").queryAllValidPaths();
+        return {all.begin(), all.end()};
+    }
+
+    virtual std::vector<nix::StorePath> query_referrers(const nix::StorePath & path)
+    {
+        nix::StorePathSet referrers;
+        below("queryReferrers").queryReferrers(path, referrers);
+        return {referrers.begin(), referrers.end()};
+    }
+
+    virtual void add_temp_root(const nix::StorePath & path)
+    {
+        below("addTempRoot").addTempRoot(path);
+    }
+
+    // -- Nix's virtuals: each calls a hook, or forwards ------------------
+
+    bool isValidPathUncached(const nix::StorePath & path) override
+    {
+        return is_valid_path(path);
+    }
+
+    void queryPathInfoUncached(
+        const nix::StorePath & path, nix::Callback<std::shared_ptr<const nix::ValidPathInfo>> callback) noexcept override
+    {
+        try {
+            callback(std::make_shared<const nix::ValidPathInfo>(query_path_info(path)));
+        } catch (nix::InvalidPath &) {
+            // Nix's own answer for "not here", which its cache records.
+            callback(nullptr);
+        } catch (...) {
+            callback.rethrow();
+        }
+    }
+
+    std::optional<nix::StorePath> queryPathFromHashPart(const std::string & hashPart) override
+    {
+        return query_path_from_hash_part(hashPart);
+    }
+
+    nix::StorePathSet queryAllValidPaths() override
+    {
+        auto all = query_all_valid_paths();
+        return {all.begin(), all.end()};
+    }
+
+    void queryReferrers(const nix::StorePath & path, nix::StorePathSet & referrers) override
+    {
+        auto found = query_referrers(path);
+        referrers.insert(found.begin(), found.end());
+    }
+
+    void addTempRoot(const nix::StorePath & path) override
+    {
+        add_temp_root(path);
+    }
+
+    void queryRealisationUncached(
+        const nix::DrvOutput & id, nix::Callback<std::shared_ptr<const nix::UnkeyedRealisation>> callback) noexcept override
+    {
+        try {
+            callback(below("queryRealisation").queryRealisation(id));
+        } catch (...) {
+            callback.rethrow();
+        }
+    }
+
+    void addToStore(
+        const nix::ValidPathInfo & info,
+        nix::Source & narSource,
+        nix::RepairFlag repair,
+        nix::CheckSigsFlag checkSigs) override
+    {
+        below("addToStore").addToStore(info, narSource, repair, checkSigs);
+    }
+
+    nix::StorePath addToStoreFromDump(
+        nix::Source & dump,
+        std::string_view name,
+        nix::FileSerialisationMethod dumpMethod,
+        nix::ContentAddressMethod hashMethod,
+        nix::HashAlgorithm hashAlgo,
+        const nix::StorePathSet & references,
+        nix::RepairFlag repair) override
+    {
+        return below("addToStoreFromDump")
+            .addToStoreFromDump(dump, name, dumpMethod, hashMethod, hashAlgo, references, repair);
+    }
+
+    void registerDrvOutput(const nix::Realisation & output) override
+    {
+        below("registerDrvOutput").registerDrvOutput(output);
+    }
+
+    void narFromPath(const nix::StorePath & path, nix::Sink & sink) override
+    {
+        below("narFromPath").narFromPath(path, sink);
+    }
+
+    nix::ref<nix::SourceAccessor> getFSAccessor(bool requireValidPath) override
+    {
+        return below("getFSAccessor").getFSAccessor(requireValidPath);
+    }
+
+    std::shared_ptr<nix::SourceAccessor> getFSAccessor(const nix::StorePath & path, bool requireValidPath) override
+    {
+        return below("getFSAccessor").getFSAccessor(path, requireValidPath);
+    }
+
+    std::optional<nix::TrustedFlag> isTrustedClient() override
+    {
+        // Unknown, not unsupported: Nix has an answer for "cannot say".
+        return underlying_ ? underlying_->isTrustedClient() : std::nullopt;
+    }
+
+private:
+    // Nix's `Store` keeps only a reference to its config.
+    std::shared_ptr<LayeredStoreConfig> config_;
+    std::shared_ptr<nix::Store> underlying_;
+
+    nix::Store & below(const char * op)
+    {
+        if (!underlying_)
+            unsupported(op);
+        return *underlying_;
+    }
+};
+
+inline nix::ref<nix::Store> LayeredStoreConfig::openStore() const
+{
+    nb::gil_scoped_acquire gil;
+    auto self = std::const_pointer_cast<LayeredStoreConfig>(shared_from_this());
+    nb::object made = factory->get()(self);
+    std::shared_ptr<LayeredStore> store;
+    if (!nb::try_cast(made, store) || !store)
+        throw nix::Error(
+            "the '%s' store factory answered %s, not a LayeredStore", scheme, nb::type_name(made.type()).c_str());
+    // Nix calls `shared_from_this()` on a store, and a `bad_weak_ptr`
+    // from deep inside libstore says nothing. Ask once, here.
+    try {
+        (void) store->shared_from_this();
+    } catch (std::bad_weak_ptr &) {
+        throw nix::Error("the '%s' store cannot be shared: nanobind did not adopt it", scheme);
+    }
+    return nix::ref<nix::Store>(std::move(store));
+}
+
+/**
+ * Make `schemes` open a store that `factory` makes, for the rest of the
+ * process.
+ *
+ * Nix's registry is a static, destroyed after Python. So the entries
+ * leave it at `atexit`, while the interpreter can still release each
+ * factory and what it holds; nanobind reports every instance a factory
+ * closes over as a leak otherwise.
+ */
+inline void register_layered_store(const std::string & name, const std::vector<std::string> & schemes, nb::object factory)
+{
+    static std::vector<std::string> ours = [] {
+        nb::module_::import_("atexit").attr("register")(nb::cpp_function([] {
+            for (auto & n : ours)
+                nix::Implementations::registered().erase(n);
+            ours.clear();
+        }));
+        return std::vector<std::string>{};
+    }();
+    auto held = std::make_shared<PyRef>(std::move(factory));
+    nix::StoreFactory made{
+        .doc = "A store implemented in Python, over another store.",
+        .uriSchemes = {schemes.begin(), schemes.end()},
+        .experimentalFeature = std::nullopt,
+        .parseConfig = [held](std::string_view scheme, std::string_view authority, const nix::StoreConfig::Params & params)
+            -> nix::ref<nix::StoreConfig> { return nix::make_ref<LayeredStoreConfig>(held, scheme, authority, params); },
+        .getConfig = [held]() -> nix::ref<nix::StoreConfig> {
+            return nix::make_ref<LayeredStoreConfig>(held, "", "", nix::StoreConfig::Params{});
+        },
+    };
+    if (!nix::Implementations::registered().emplace(name, std::move(made)).second)
+        throw nix::Error("a store named '%s' is already registered", name);
+    ours.push_back(name);
+}
+
+} // namespace huggorm
