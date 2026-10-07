@@ -35,6 +35,7 @@ from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.store import Store
 from huggorm_dsl.declare import (
     Bint,
+    Cxx,
     PyFunc,
     Str,
     binding,

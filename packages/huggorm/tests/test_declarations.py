@@ -407,7 +407,8 @@ def test_a_produced_class_nothing_returns_fails_the_build(
                  {}, ir.Errors("", {}), (unit,))
 
     model = declared_model()
-    assert model.producers["PathInfo"] == ("Store.query_path_info",)
+    assert model.producers["PathInfo"] == (
+        "LayeredStore.query_path_info", "Store.query_path_info")
     # A dict's value is made too: on 2.35 this is the only call that
     # makes an UnkeyedRealisation (huggorm#129).
     built = next(m for m in model.classes["BuildSuccess"].bound
