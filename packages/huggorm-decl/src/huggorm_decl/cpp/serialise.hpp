@@ -13,6 +13,7 @@
  * Python keeps after that raises instead of reaching a dead one.
  */
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -89,12 +90,15 @@ public:
 
     virtual ~Source() = default;
 
-    /** Up to `n` bytes, and none at the end of the stream. */
+    /**
+     * Up to `n` bytes, and none at the end of the stream. One chunk at
+     * most, so `read(nar_size)` does not allocate the whole NAR.
+     */
     virtual std::string read(std::uint64_t n)
     {
-        std::string out(n, '\0');
+        std::string out(std::min<std::uint64_t>(n, 64 * 1024), '\0');
         try {
-            out.resize(below("Source").read(out.data(), n));
+            out.resize(below("Source").read(out.data(), out.size()));
         } catch (nix::EndOfFile &) {
             out.clear();
         }

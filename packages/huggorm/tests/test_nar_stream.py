@@ -84,6 +84,18 @@ def test_a_source_must_not_answer_more_than_asked() -> None:
                                  check_sigs=False)
 
 
+async def test_the_async_store_streams_through_python() -> None:
+    """The async wrapper runs the call on a pool thread, so the sink's
+    Python `write` runs from there."""
+    from huggorm_generated import AsyncStore
+
+    store = AsyncStore("dummy://?read-only=false")
+    held = await store.add_to_store("held", b"held")
+    out = Collect()
+    await store.nar_from_path(held, out)
+    assert out.nar().startswith(NAR_MAGIC)
+
+
 def test_a_stream_with_no_override_has_nothing_below() -> None:
     with pytest.raises(Exception, match="nothing below it"):
         Sink().write(b"x")

@@ -1924,3 +1924,53 @@ def test_a_tree_that_names_what_the_class_lacks_is_refused(
     with pytest.raises(TypeError, match=re.escape(refusal)):
         ir.ClassModel.of(module.classes[0], "pkg", "mod",
                          ir.Resolver.of(module))
+
+
+STREAMED = '''"""A class whose override takes or answers bytes."""
+
+from huggorm_dsl.declare import Bytes, binding, header, in_process, virtual
+
+
+@in_process
+@header("x.hpp")
+@binding(cxx="x::Stream")
+class Stream:
+    """A stream."""
+
+    @virtual
+    def DECLARED:
+        """."""
+'''
+
+
+def _stream(tmp_path: pathlib.Path, declared: str) -> Any:
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    unit = ir.ModuleModel.of(read(_declaration(
+        tmp_path, STREAMED.replace("DECLARED", declared))), "")
+    return unit.classes[0]
+
+
+def test_a_virtual_crosses_bytes_as_a_string(tmp_path: pathlib.Path) -> None:
+    """The C++ side of a trampoline runs without the GIL, so its bytes
+    are a `std::string`, converted where the GIL is held."""
+    from huggorm_gen.cppgen import nbemit
+
+    text = "\n".join(nbemit.trampoline(
+        _stream(tmp_path, "swap(self, data: Bytes) -> Bytes")))
+    assert "std::string swap(const std::string & data) override" in text
+    assert ".attr(nb_ticket.key)(to_bytes(data))" in text
+    assert "return from_bytes(nb::cast<nb::bytes>(answer));" in text
+
+
+@pytest.mark.parametrize("declared", [
+    "take(self, data: list[Bytes]) -> None",
+    "give(self) -> list[Bytes]",
+])
+def test_a_virtual_refuses_a_list_of_bytes(
+        tmp_path: pathlib.Path, declared: str) -> None:
+    from huggorm_gen.cppgen import nbemit
+
+    with pytest.raises(TypeError, match="Stream"):
+        nbemit.trampoline(_stream(tmp_path, declared))
