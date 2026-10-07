@@ -321,7 +321,8 @@ def policy_module(model: ir.Model) -> str:
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
         import_from("_callspec", "Acquire", "Arg", "Builds", "Call", "Entries",
-                    "Items", "Leaf", "Tree", "Wire", "WireKind", level=1),
+                    "Items", "Leaf", "Null", "Tree", "Wire", "WireKind",
+                    level=1),
     ]
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
                        [(c.name, _args([(f.name, f.type) for f in c.wire_fields]))

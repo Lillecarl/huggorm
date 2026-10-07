@@ -845,7 +845,8 @@ def _tree(decl: Decl) -> callspec.Tree | None:
     spec = decl.tree
     if spec is None:
         return None
-    kinds: dict[str, callspec.Leaf | callspec.Items | callspec.Entries] = {}
+    kinds: dict[str, callspec.Leaf | callspec.Items | callspec.Entries
+                | callspec.Null] = {}
     for answer, how in spec.kinds.items():
         match how:
             case declare.Leaf():
@@ -854,6 +855,8 @@ def _tree(decl: Decl) -> callspec.Tree | None:
                 kinds[answer] = callspec.Items(how.size, how.item)
             case declare.Entries():
                 kinds[answer] = callspec.Entries(how.size, how.name, how.value)
+            case declare.Null():
+                kinds[answer] = callspec.Null()
             case _:
                 assert_never(how)
     return callspec.Tree(spec.kind, kinds, spec.identity, spec.force,
@@ -876,6 +879,8 @@ def _walkable(cls: ClassModel, spec: callspec.Tree) -> None:
                 names += [how.size, how.item]
             case callspec.Entries():
                 names += [how.size, how.name, how.value]
+            case callspec.Null():
+                pass
     bound = {m.name for m in cls.bound}
     if missing := [n for n in names if n not in bound]:
         raise TypeError(

@@ -152,6 +152,11 @@ class Leaf:
 
 
 @dataclass(frozen=True, slots=True)
+class Null:
+    """A node that crosses as None."""
+
+
+@dataclass(frozen=True, slots=True)
 class Items:
     """A node that holds values by position."""
 
@@ -191,7 +196,7 @@ class Tree:
     declares neither."""
 
     kind: str
-    kinds: dict[str, Leaf | Items | Entries]
+    kinds: dict[str, Leaf | Items | Entries | Null]
     identity: str = ""
     force: str = ""
     stop: str = ""

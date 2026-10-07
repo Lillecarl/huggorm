@@ -39,6 +39,7 @@ from huggorm_dsl.declare import (
     Entries,
     Items,
     Leaf,
+    Null,
     PyFunc,
     Str,
     StrView,
@@ -129,6 +130,7 @@ from huggorm_dsl.declare import (
            "float": Leaf("float", "floating"),
            "string": Leaf("str", "string_value"),
            "bool": Leaf("bool", "boolean"),
+           "null": Null(),
            "list": Items(size="size", item="at"),
            "attrs": Entries(size="size", name="name_at", value="value_at")},
 )

@@ -36,6 +36,7 @@ from huggorm_generated._callspec import (
     Entries,
     Items,
     Leaf,
+    Null,
     Tree,
 )
 from huggorm_generated._policy import (
@@ -195,6 +196,8 @@ class TreeWalk:
         match self.spec.kinds.get(getattr(obj, self.spec.kind)()):
             case Leaf(wire=wire, read=read):
                 return tree.Leaf(wire, getattr(obj, read)())
+            case Null():
+                return tree.Leaf("null", None)
             case Items(size=size, item=item):
                 at = getattr(obj, item)
                 return tree.Items(type(obj).__name__, obj,

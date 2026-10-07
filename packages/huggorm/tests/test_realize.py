@@ -90,6 +90,12 @@ async def test_a_float_realizes_as_a_float(state: Any) -> None:
     assert isinstance(tree["x"], float)
 
 
+async def test_a_null_realizes_as_none(state: Any) -> None:
+    client = state._client
+    tree = await client.realize(await state.eval_expr("{ x = null; }"))
+    assert tree == {"x": None}, tree
+
+
 async def test_realize_forces_nothing(state: Any) -> None:
     """A thunk is exactly what cannot be serialized, so it crosses as a
     proxy and the caller forces it with the call that already exists."""
@@ -276,14 +282,12 @@ async def test_a_scalar_becomes_a_value(state: Any, data: Any,
 
 async def test_data_becomes_a_value_in_one_round_trip(state: Any) -> None:
     client = state._client
-    data = {"a": 1, "xs": [1, 2, 3], "d": {"e": "x"}, "t": (True,)}
+    data = {"a": 1, "xs": [1, 2, None], "d": {"e": "x"}, "t": (True,)}
 
     made = await client.value(state, data)
     assert isinstance(made, AttrsView) and isinstance(made["xs"], ListView)
     assert made == data | {"t": [True]}
     assert await apply_int(state, "x: x.a + builtins.length x.xs", made) == 4
-    assert await apply_int(state, "x: builtins.length x.n",
-                           await client.value(state, {"n": [None]})) == 1
     assert await apply_int(state, "x: builtins.stringLength x.e",
                            made["d"]) == 1
     assert await client.realize(made, force=True) == made

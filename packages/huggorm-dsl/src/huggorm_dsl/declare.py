@@ -553,6 +553,11 @@ class Leaf:
 
 
 @dataclass(frozen=True)
+class Null:
+    """A node that crosses as None. It has nothing to read."""
+
+
+@dataclass(frozen=True)
 class Items:
     """A node that holds values by position: `size` counts them and
     `item(i)` reads one."""
@@ -586,13 +591,13 @@ class Tree:
     must not enter."""
 
     kind: str
-    kinds: dict[str, Leaf | Items | Entries]
+    kinds: dict[str, Leaf | Items | Entries | Null]
     identity: str = ""
     force: str = ""
     stop: str = ""
 
 
-def tree(kind: str, kinds: dict[str, Leaf | Items | Entries],
+def tree(kind: str, kinds: dict[str, Leaf | Items | Entries | Null],
          identity: str = "", force: str = "",
          stop: str = "") -> Callable[[type], type]:
     """How a value TREE is walked, for a type that holds others.
