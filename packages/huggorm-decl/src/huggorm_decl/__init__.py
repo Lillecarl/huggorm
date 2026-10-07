@@ -55,6 +55,7 @@ NANOBIND = (
     "derivation.py",
     "gc.py",
     "store_reference.py",
+    "serialise.py",
     "store.py",
     "layered_store.py",
     "eval.py",

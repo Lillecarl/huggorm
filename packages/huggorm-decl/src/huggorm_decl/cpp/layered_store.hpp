@@ -40,6 +40,8 @@
 #include "nix/store/store-registration.hh"
 #include "nix/util/callback.hh"
 
+#include "huggorm_decl/cpp/serialise.hpp"
+
 namespace huggorm {
 
 namespace nb = nanobind;
@@ -224,6 +226,17 @@ public:
         return underlying_ && underlying_->verifyStore(check_contents, repair ? nix::Repair : nix::NoRepair);
     }
 
+    virtual void nar_from_path(const nix::StorePath & path, Sink & sink)
+    {
+        below("narFromPath").narFromPath(path, sink);
+    }
+
+    virtual void add_to_store_nar(const nix::ValidPathInfo & info, Source & source, bool repair, bool check_sigs)
+    {
+        below("addToStore").addToStore(
+            info, source, repair ? nix::Repair : nix::NoRepair, check_sigs ? nix::CheckSigs : nix::NoCheckSigs);
+    }
+
     // -- Nix's virtuals: each calls a hook, or forwards ------------------
 
     bool isValidPathUncached(const nix::StorePath & path) override
@@ -330,13 +343,16 @@ public:
         return verify_store(checkContents, repair == nix::Repair);
     }
 
+    // The stream a hook gets wraps Nix's, and ends with the call.
     void addToStore(
         const nix::ValidPathInfo & info,
         nix::Source & narSource,
         nix::RepairFlag repair,
         nix::CheckSigsFlag checkSigs) override
     {
-        below("addToStore").addToStore(info, narSource, repair, checkSigs);
+        Source source{narSource};
+        Ended ended{source};
+        add_to_store_nar(info, source, repair == nix::Repair, checkSigs == nix::CheckSigs);
     }
 
     nix::StorePath addToStoreFromDump(
@@ -359,7 +375,9 @@ public:
 
     void narFromPath(const nix::StorePath & path, nix::Sink & sink) override
     {
-        below("narFromPath").narFromPath(path, sink);
+        Sink wrapped{sink};
+        Ended ended{wrapped};
+        nar_from_path(path, wrapped);
     }
 
     nix::ref<nix::SourceAccessor> getFSAccessor(bool requireValidPath) override

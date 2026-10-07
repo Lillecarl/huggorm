@@ -17,6 +17,7 @@ from huggorm_decl.decl.gc import GCOptions, GCResults
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
+from huggorm_decl.decl.serialise import Sink, Source
 from huggorm_decl.decl.words import (
     BuildMode,
     ContentAddressMethod,
@@ -592,6 +593,30 @@ return local->config->getBuildDir().string();
         crosses the wire as a copy and a caller reads it without
         another round trip."""
         Cxx("return *self.queryPathInfo(path);")
+
+    def nar_from_path(self, path: StorePath, sink: Sink) -> None:
+        """Write `path` as a NAR into `sink`. `nix-store --dump`.
+
+        Raises InvalidPath when the store does not hold it."""
+        Cxx("self.narFromPath(path, sink);")
+
+    # Named after the daemon's `AddToStoreNar`: `add_to_store` is
+    # `addToStoreFromDump`, which hashes a file and names the path.
+    # Here the caller names it, in `info`, and Nix checks the NAR
+    # against that.
+    def add_to_store_nar(self, info: PathInfo, source: Source,
+                         repair: Bint = False,
+                         check_sigs: Bint = True) -> None:
+        """Add the path `info` describes, read as a NAR from `source`.
+        `nix-store --import`, one path at a time.
+
+        `check_sigs` refuses a path no trusted key signed, as Nix
+        does by default."""
+        Cxx("""
+self.addToStore(
+    info, source, repair ? nix::Repair : nix::NoRepair,
+    check_sigs ? nix::CheckSigs : nix::NoCheckSigs);
+        """)
     # Pure string work: no daemon, no lock, no file. Releasing
     # the GIL around it costs two thread-state transitions to
     # save nothing, and these are the calls a caller makes most.
