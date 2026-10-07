@@ -34,6 +34,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/shared_ptr.h>
 
+#include "nix/store/build-result.hh"
 #include "nix/store/derivations.hh"
 #include "nix/store/path-info.hh"
 #include "nix/store/realisation.hh"
@@ -42,6 +43,12 @@
 #include "nix/util/callback.hh"
 
 #include "huggorm_decl/cpp/serialise.hpp"
+
+// Nix 2.36 moves `ensurePath` and the builds onto a `Builder` that
+// `Store::getBuilder` hands out, in a header earlier Nix does not have.
+#if __has_include("nix/store/build.hh")
+#  include "nix/store/build.hh"
+#endif
 
 namespace huggorm {
 
@@ -303,6 +310,18 @@ public:
         return underlying_ && underlying_->verifyStore(check_contents, repair ? nix::Repair : nix::NoRepair);
     }
 
+    virtual void ensure_path(const nix::StorePath & path)
+    {
+#if __has_include("nix/store/build.hh")
+        (underlying_ ? underlying_->getBuilder() : Store::getBuilder())->ensurePath(path);
+#else
+        if (underlying_)
+            underlying_->ensurePath(path);
+        else
+            Store::ensurePath(path);
+#endif
+    }
+
     virtual void nar_from_path(const nix::StorePath & path, Sink & sink)
     {
         below("narFromPath").narFromPath(path, sink);
@@ -452,6 +471,15 @@ public:
         below("registerDrvOutput").registerDrvOutput(output, checkSigs);
     }
 
+#if __has_include("nix/store/build.hh")
+    nix::ref<nix::Builder> getBuilder(std::shared_ptr<nix::Store> evalStore) override;
+#else
+    void ensurePath(const nix::StorePath & path) override
+    {
+        ensure_path(path);
+    }
+#endif
+
     void narFromPath(const nix::StorePath & path, nix::Sink & sink) override
     {
         Sink wrapped{sink};
@@ -492,6 +520,60 @@ private:
         return *underlying_;
     }
 };
+
+#if __has_include("nix/store/build.hh")
+/**
+ * The builder below, with `ensurePath` handed to the store's hook. The
+ * other operations have no hook yet, so they run below as they are.
+ */
+class LayeredBuilder : public nix::Builder
+{
+public:
+    LayeredBuilder(std::shared_ptr<LayeredStore> store, nix::ref<nix::Builder> below)
+        : store_(std::move(store))
+        , below_(std::move(below))
+    {
+    }
+
+    void buildPaths(const std::vector<nix::DerivedPath> & reqs, nix::BuildMode buildMode) override
+    {
+        below_->buildPaths(reqs, buildMode);
+    }
+
+    std::vector<nix::KeyedBuildResult>
+    buildPathsWithResults(const std::vector<nix::DerivedPath> & reqs, nix::BuildMode buildMode) override
+    {
+        return below_->buildPathsWithResults(reqs, buildMode);
+    }
+
+    nix::BuildResult
+    buildDerivation(const nix::StorePath & drvPath, const nix::BasicDerivation & drv, nix::BuildMode buildMode) override
+    {
+        return below_->buildDerivation(drvPath, drv, buildMode);
+    }
+
+    void ensurePath(const nix::StorePath & path) override
+    {
+        store_->ensure_path(path);
+    }
+
+    void repairPath(const nix::StorePath & path) override
+    {
+        below_->repairPath(path);
+    }
+
+private:
+    std::shared_ptr<LayeredStore> store_;
+    nix::ref<nix::Builder> below_;
+};
+
+inline nix::ref<nix::Builder> LayeredStore::getBuilder(std::shared_ptr<nix::Store> evalStore)
+{
+    auto below = underlying_ ? underlying_->getBuilder(evalStore) : Store::getBuilder(evalStore);
+    return nix::make_ref<LayeredBuilder>(
+        std::static_pointer_cast<LayeredStore>(shared_from_this()), std::move(below));
+}
+#endif
 
 inline nix::ref<nix::Store> LayeredStoreConfig::openStore() const
 {

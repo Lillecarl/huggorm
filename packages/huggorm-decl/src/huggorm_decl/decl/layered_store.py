@@ -162,6 +162,10 @@ class LayeredStore(Store):
         """Check the store, and answer True when errors remain."""
 
     @virtual
+    def ensure_path(self, path: StorePath) -> None:
+        """Make `path` valid, by substituting it if it is not."""
+
+    @virtual
     def nar_from_path(self, path: StorePath, sink: Sink) -> None:
         """Write `path` as a NAR into `sink`."""
 

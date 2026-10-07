@@ -207,6 +207,9 @@ def test_nix_reaches_every_hook(under: Any) -> None:
             called.append(f"verify_store{check_contents, repair}")
             return True
 
+        def ensure_path(self, path: Any) -> None:
+            called.append("ensure_path")
+
     store = opened(Every)
     assert Store.query_valid_derivers(store, held) == [held]
     assert Store.query_valid_paths(store, [held, missing]) == [held]
@@ -224,11 +227,13 @@ def test_nix_reaches_every_hook(under: Any) -> None:
         Store.read_derivation(store, held)
     Store.optimise_store(store)
     assert Store.verify_store(store, False, True)
+    Store.ensure_path(store, missing)
     assert called == [
         "query_valid_derivers", "query_valid_paths",
         "compute_fs_closure(True, False, False)",
         "query_substitutable_paths", "query_missing", "query_realisation",
-        "read_derivation", "optimise_store", "verify_store(False, True)"]
+        "read_derivation", "optimise_store", "verify_store(False, True)",
+        "ensure_path"]
 
 
 def test_a_closure_from_path_info_alone(under: Any) -> None:
@@ -264,6 +269,15 @@ def test_a_copy_asks_the_destination_which_paths_it_holds(
     under.copy_closure(opened(LayeredStore, below), [held],
                        check_sigs=False)
     assert below.is_valid_path(held), "and copies without the claim"
+
+
+def test_ensure_path_runs_below(under: Any) -> None:
+    held = under.add_to_store("held", b"held")
+    missing = under.parse_store_path(MISSING)
+    store = opened(LayeredStore, under)
+    Store.ensure_path(store, held)
+    with pytest.raises(Exception, match="substitute"):
+        Store.ensure_path(store, missing)
 
 
 def test_a_raising_override_is_an_error_not_a_fall_through(
