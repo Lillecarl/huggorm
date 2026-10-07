@@ -50,6 +50,8 @@ class Crossing(StrEnum):
     PROXY = "proxy"
     # Whole, as a copy rebuilt from its parts: `@wire_value`.
     VALUE = "value"
+    # Never: the class has no async or remote surface. `@in_process`.
+    LOCAL = "local"
 
 
 class DeclKind(StrEnum):
@@ -501,6 +503,8 @@ MARKERS: dict[str, Marker] = {
     "custom": Marker(_t("class"), "once"),
     "gc_slots": Marker(_t("class"), "once"),
     "header": Marker(_t("class"), "once"),
+    "in_process": Marker(_t("class"), "flag",
+                         excludes=frozenset({"wire_value"})),
     "produced": Marker(_t("class"), "flag"),
     "tree": Marker(_t("class"), "once"),
     "wire_value": Marker(_t("class"), "once"),
@@ -530,6 +534,16 @@ MARKERS: dict[str, Marker] = {
     "startup": Marker(_t("free"), "flag"),
     "translator": Marker(_t("free"), "flag"),
 }
+
+
+def in_process(cls: type) -> type:
+    """This class never crosses: no async wrapper, no protocol, no RPC.
+
+    For a class whose objects only make sense in this process, such
+    as a base a Python subclass implements for Nix to call. A handle
+    to one would name an object no remote caller can use."""
+    _decl(cls).wire = Crossing.LOCAL
+    return cls
 
 
 def abstract(cls: type) -> type:
