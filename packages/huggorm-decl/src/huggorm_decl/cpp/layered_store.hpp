@@ -13,8 +13,9 @@
  * each of those calls the hook.
  *
  * A hook's C++ implementation is the layering: the same operation on
- * the underlying store, or `nix::Unsupported` when there is none, as a
- * cache store raises for what it cannot do. An override reaches it
+ * the underlying store. When there is none, it is `nix::Store`'s own
+ * default, or `nix::Unsupported` where Nix has no default, as a cache
+ * store raises for what it cannot do. An override reaches it
  * with `super()`. The trampoline calls it without the GIL, so a daemon
  * round trip below blocks no Python thread.
  *
@@ -32,7 +33,9 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/shared_ptr.h>
 
+#include "nix/store/derivations.hh"
 #include "nix/store/path-info.hh"
+#include "nix/store/realisation.hh"
 #include "nix/store/store-api.hh"
 #include "nix/store/store-registration.hh"
 #include "nix/util/callback.hh"
@@ -145,20 +148,80 @@ public:
 
     virtual std::vector<nix::StorePath> query_all_valid_paths()
     {
-        auto all = below("queryAllValidPaths").queryAllValidPaths();
-        return {all.begin(), all.end()};
+        return listed(below("queryAllValidPaths").queryAllValidPaths());
     }
 
     virtual std::vector<nix::StorePath> query_referrers(const nix::StorePath & path)
     {
         nix::StorePathSet referrers;
         below("queryReferrers").queryReferrers(path, referrers);
-        return {referrers.begin(), referrers.end()};
+        return listed(referrers);
     }
 
     virtual void add_temp_root(const nix::StorePath & path)
     {
         below("addTempRoot").addTempRoot(path);
+    }
+
+    // With nothing below, each hook from here down runs `nix::Store`'s
+    // own default, which Nix builds on the hooks above: a store that
+    // answers `query_path_info` answers a closure too.
+
+    virtual std::vector<nix::StorePath> query_valid_derivers(const nix::StorePath & path)
+    {
+        return listed(underlying_ ? underlying_->queryValidDerivers(path) : Store::queryValidDerivers(path));
+    }
+
+    virtual std::vector<nix::StorePath> query_valid_paths(const std::vector<nix::StorePath> & paths)
+    {
+        nix::StorePathSet asked{paths.begin(), paths.end()};
+        return listed(underlying_ ? underlying_->queryValidPaths(asked) : Store::queryValidPaths(asked));
+    }
+
+    virtual std::vector<nix::StorePath> compute_fs_closure(
+        const std::vector<nix::StorePath> & paths, bool flip_direction, bool include_outputs, bool include_derivers)
+    {
+        nix::StorePathSet from{paths.begin(), paths.end()}, out;
+        if (underlying_)
+            underlying_->computeFSClosure(from, out, flip_direction, include_outputs, include_derivers);
+        else
+            Store::computeFSClosure(from, out, flip_direction, include_outputs, include_derivers);
+        return listed(out);
+    }
+
+    virtual std::vector<nix::StorePath> query_substitutable_paths(const std::vector<nix::StorePath> & paths)
+    {
+        nix::StorePathSet asked{paths.begin(), paths.end()};
+        return listed(underlying_ ? underlying_->querySubstitutablePaths(asked) : Store::querySubstitutablePaths(asked));
+    }
+
+    virtual nix::MissingPaths query_missing(const std::vector<nix::DerivedPath> & targets)
+    {
+        return underlying_ ? underlying_->queryMissing(targets) : Store::queryMissing(targets);
+    }
+
+    virtual std::optional<nix::Realisation> query_realisation(const nix::DrvOutput & id)
+    {
+        auto found = below("queryRealisation").queryRealisation(id);
+        if (!found)
+            return std::nullopt;
+        return nix::Realisation{*found, id};
+    }
+
+    virtual nix::Derivation read_derivation(const nix::StorePath & path)
+    {
+        return underlying_ ? underlying_->readDerivation(path) : Store::readDerivation(path);
+    }
+
+    virtual void optimise_store()
+    {
+        if (underlying_)
+            underlying_->optimiseStore();
+    }
+
+    virtual bool verify_store(bool check_contents, bool repair)
+    {
+        return underlying_ && underlying_->verifyStore(check_contents, repair ? nix::Repair : nix::NoRepair);
     }
 
     // -- Nix's virtuals: each calls a hook, or forwards ------------------
@@ -203,14 +266,68 @@ public:
         add_temp_root(path);
     }
 
+    nix::StorePathSet queryValidDerivers(const nix::StorePath & path) override
+    {
+        auto found = query_valid_derivers(path);
+        return {found.begin(), found.end()};
+    }
+
+    /**
+     * The hook does not see `maybeSubstitute`. Nix's own default ignores
+     * it too; only a daemon or an SSH store passes it on.
+     */
+    nix::StorePathSet queryValidPaths(const nix::StorePathSet & paths, nix::SubstituteFlag) override
+    {
+        auto valid = query_valid_paths({paths.begin(), paths.end()});
+        return {valid.begin(), valid.end()};
+    }
+
+    void computeFSClosure(
+        const nix::StorePathSet & paths,
+        nix::StorePathSet & out,
+        bool flipDirection,
+        bool includeOutputs,
+        bool includeDerivers) override
+    {
+        auto found = compute_fs_closure({paths.begin(), paths.end()}, flipDirection, includeOutputs, includeDerivers);
+        out.insert(found.begin(), found.end());
+    }
+
+    nix::StorePathSet querySubstitutablePaths(const nix::StorePathSet & paths) override
+    {
+        auto found = query_substitutable_paths({paths.begin(), paths.end()});
+        return {found.begin(), found.end()};
+    }
+
+    nix::MissingPaths queryMissing(const std::vector<nix::DerivedPath> & targets) override
+    {
+        return query_missing(targets);
+    }
+
     void queryRealisationUncached(
         const nix::DrvOutput & id, nix::Callback<std::shared_ptr<const nix::UnkeyedRealisation>> callback) noexcept override
     {
         try {
-            callback(below("queryRealisation").queryRealisation(id));
+            auto found = query_realisation(id);
+            callback(found ? std::make_shared<const nix::UnkeyedRealisation>(std::move(*found)) : nullptr);
         } catch (...) {
             callback.rethrow();
         }
+    }
+
+    nix::Derivation readDerivation(const nix::StorePath & path) override
+    {
+        return read_derivation(path);
+    }
+
+    void optimiseStore() override
+    {
+        optimise_store();
+    }
+
+    bool verifyStore(bool checkContents, nix::RepairFlag repair) override
+    {
+        return verify_store(checkContents, repair == nix::Repair);
     }
 
     void addToStore(
@@ -265,6 +382,11 @@ private:
     // Nix's `Store` keeps only a reference to its config.
     std::shared_ptr<LayeredStoreConfig> config_;
     std::shared_ptr<nix::Store> underlying_;
+
+    static std::vector<nix::StorePath> listed(const nix::StorePathSet & paths)
+    {
+        return {paths.begin(), paths.end()};
+    }
 
     nix::Store & below(const char * op)
     {

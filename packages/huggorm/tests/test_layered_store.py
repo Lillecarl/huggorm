@@ -10,6 +10,7 @@ import itertools
 from typing import Any
 
 import pytest
+from nixversion import drv_output
 
 from huggorm_bindings import (
     LayeredStore,
@@ -152,6 +153,109 @@ def test_list_hooks_answer(under: Any) -> None:
     store = opened(Lists)
     assert store.query_all_valid_paths() == [held]
     assert store.query_referrers(held) == [held]
+
+
+def test_nix_reaches_every_hook(under: Any) -> None:
+    """`Store.<method>(store, ...)` is `Store`'s own binding, so each
+    call enters Nix and reaches the override through the C++ virtual.
+    Calling the method on the instance would find the override in
+    Python and prove nothing."""
+    held = under.add_to_store("held", b"held")
+    missing = under.parse_store_path(MISSING)
+    called: list[str] = []
+
+    class Every(LayeredStore):
+        def query_valid_derivers(self, path: Any) -> list[Any]:
+            called.append("query_valid_derivers")
+            return [held]
+
+        def query_valid_paths(self, paths: list[Any]) -> list[Any]:
+            called.append("query_valid_paths")
+            return [p for p in paths if p == held]
+
+        def compute_fs_closure(
+                self, paths: list[Any], flip_direction: bool = False,
+                include_outputs: bool = False,
+                include_derivers: bool = False) -> list[Any]:
+            flags = (flip_direction, include_outputs, include_derivers)
+            called.append(f"compute_fs_closure{flags}")
+            return [held]
+
+        def query_substitutable_paths(self, paths: list[Any]) -> list[Any]:
+            called.append("query_substitutable_paths")
+            return []
+
+        def query_missing(self, targets: list[Any]) -> Any:
+            called.append("query_missing")
+            return super().query_missing(targets)
+
+        def query_realisation(self, id: Any) -> Any:
+            called.append("query_realisation")
+            return None
+
+        def read_derivation(self, path: Any) -> Any:
+            called.append("read_derivation")
+            raise InvalidPath(f"{path} is no derivation here")
+
+        def optimise_store(self) -> None:
+            called.append("optimise_store")
+
+        def verify_store(self, check_contents: bool,
+                         repair: bool = False) -> bool:
+            called.append(f"verify_store{check_contents, repair}")
+            return True
+
+    store = opened(Every)
+    assert Store.query_valid_derivers(store, held) == [held]
+    assert Store.query_valid_paths(store, [held, missing]) == [held]
+    assert Store.compute_fs_closure(store, [missing], True) == [held]
+    assert Store.query_substitutable_paths(store, [held]) == []
+    assert Store.query_missing(store, []).will_build() == []
+    assert Store.query_realisation(store, drv_output(1, "out")) is None
+    with pytest.raises(InvalidPath, match="no derivation here"):
+        Store.read_derivation(store, held)
+    Store.optimise_store(store)
+    assert Store.verify_store(store, False, True)
+    assert called == [
+        "query_valid_derivers", "query_valid_paths",
+        "compute_fs_closure(True, False, False)",
+        "query_substitutable_paths", "query_missing", "query_realisation",
+        "read_derivation", "optimise_store", "verify_store(False, True)"]
+
+
+def test_a_closure_from_path_info_alone(under: Any) -> None:
+    """With nothing below, `compute_fs_closure` and `query_valid_paths`
+    run Nix's own defaults, which ask `query_path_info`."""
+    leaf = under.add_to_store("leaf", b"leaf")
+    top = under.add_to_store("top", b"top", references=[leaf])
+
+    class Info(LayeredStore):
+        def query_path_info(self, path: Any) -> Any:
+            if path not in (leaf, top):
+                raise InvalidPath(f"{path} is not here")
+            return under.query_path_info(path)
+
+    store = opened(Info)
+    missing = store.parse_store_path(MISSING)
+    assert store.compute_fs_closure([top]) == sorted([leaf, top])
+    assert store.query_valid_paths([top, missing]) == [top]
+
+
+def test_a_copy_asks_the_destination_which_paths_it_holds(
+        under: Any) -> None:
+    held = under.add_to_store("held", b"held")
+
+    class Claims(LayeredStore):
+        def query_valid_paths(self, paths: list[Any]) -> list[Any]:
+            return list(paths)
+
+    below = Store("dummy://?read-only=false")
+    under.copy_closure(opened(Claims, below), [held],
+                       check_sigs=False)
+    assert not below.is_valid_path(held), "Nix skips what the hook claims"
+    under.copy_closure(opened(LayeredStore, below), [held],
+                       check_sigs=False)
+    assert below.is_valid_path(held), "and copies without the claim"
 
 
 def test_a_raising_override_is_an_error_not_a_fall_through(
