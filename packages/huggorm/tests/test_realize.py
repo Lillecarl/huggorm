@@ -7,14 +7,23 @@ thread handover per node. Realize walks it once, on the value's own
 thread, and answers with the shape (huggorm#30).
 """
 
+import gc
 from typing import Any
 
 import pytest
 from conftest import Server
 
 from huggorm import remote
+from huggorm.views import AttrsView, ListView
 from huggorm_bindings.errors import NixError
 from huggorm_generated import RPCValue
+
+
+def held(value: Any) -> bool:
+    """A node the walk did not expand: a handle, and not a view. A
+    view is a handle too, so `isinstance(v, RPCValue)` cannot tell."""
+    return isinstance(value, RPCValue) and not isinstance(
+        value, AttrsView | ListView)
 
 
 @pytest.fixture
@@ -85,10 +94,10 @@ async def test_realize_forces_nothing(state: Any) -> None:
     client = state._client
     lazy = await state.make_attrs()
     await state.attrs_set(lazy, "later", await state.parse_expr("42"))
-    held = await client.realize(lazy)
-    assert isinstance(held["later"], RPCValue), type(held["later"]).__name__
+    got = await client.realize(lazy)
+    assert held(got["later"]), type(got["later"]).__name__
 
-    await state.force(held["later"])
+    await state.force(got["later"])
     assert await client.realize(lazy) == {"later": 42}
 
 
@@ -100,12 +109,12 @@ async def test_depth_bounds_the_walk(state: Any) -> None:
 
     flat = await client.realize(attrs, depth=1)
     assert set(flat) == {"apple", "xs", "zebra"}, flat
-    assert all(isinstance(v, RPCValue) for v in flat.values()), flat
+    assert all(held(v) for v in flat.values()), flat
 
     shallow = await client.realize(attrs, depth=2)
     assert shallow["zebra"] == 1
     assert shallow["apple"] == "first"
-    assert isinstance(shallow["xs"][0], RPCValue), shallow
+    assert held(shallow["xs"][0]), shallow
 
 
 async def test_budget_bounds_the_walk_sideways(state: Any) -> None:
@@ -119,7 +128,7 @@ async def test_budget_bounds_the_walk_sideways(state: Any) -> None:
 
     # 1 for the root, then 3 children before it runs out.
     capped = await client.realize(wide, budget=4)
-    kept = [k for k, v in capped.items() if not isinstance(v, RPCValue)]
+    kept = [k for k, v in capped.items() if not held(v)]
     assert len(kept) == 3, kept
     assert await capped["k19"].integer() == 19, "the rest is still reachable"
 
@@ -137,7 +146,7 @@ async def test_a_repeated_value_crosses_once(state: Any) -> None:
     await state.attrs_set(twice, "b", shared)
 
     diamond = await client.realize(twice)
-    expanded = [k for k, v in diamond.items() if not isinstance(v, RPCValue)]
+    expanded = [k for k, v in diamond.items() if not held(v)]
     assert expanded == ["a"] and diamond["a"] == [], diamond
 
 
@@ -149,7 +158,7 @@ async def test_a_forcing_walk_forces_what_it_visits(state: Any) -> None:
         '{ a = 1 + 1; b = [ (2 * 3) ]; d = { e = "x"; }; }')
 
     lazy = await client.realize(value)
-    assert isinstance(lazy["a"], RPCValue), "a plain walk forces nothing"
+    assert held(lazy["a"]), "a plain walk forces nothing"
 
     assert await client.realize(value, force=True) == {
         "a": 2, "b": [6], "d": {"e": "x"}}
@@ -163,7 +172,7 @@ async def test_a_throw_stays_a_handle_and_raises_on_read(state: Any) -> None:
 
     tree = await client.realize(value, force=True)
     assert tree["ok"] == 1
-    assert isinstance(tree["bad"], RPCValue)
+    assert held(tree["bad"])
     with pytest.raises(NixError, match="boom"):
         await state.force(tree["bad"])
 
@@ -175,7 +184,7 @@ async def test_a_forcing_walk_does_not_enter_a_derivation(state: Any) -> None:
         '  other = { type = "other"; }; }')
 
     tree = await client.realize(value, force=True)
-    assert isinstance(tree["drv"], RPCValue), tree["drv"]
+    assert held(tree["drv"]), tree["drv"]
     assert tree["other"] == {"type": "other"}
 
 
@@ -190,7 +199,60 @@ async def test_an_endless_value_ends_at_the_budget(state: Any) -> None:
     node, levels = tree, 0
     # The budget can run out inside a level, so the last `n` may be a
     # handle too.
-    while isinstance(node, dict) and not isinstance(node["n"], RPCValue):
+    while isinstance(node, AttrsView) and not held(node["n"]):
         assert node["n"] == levels
         node, levels = node["next"], levels + 1
     assert 5 < levels < 20, levels
+
+
+# -- views (huggorm#147) ---------------------------------------------------
+
+async def apply_int(state: Any, fn: str, arg: Any) -> int:
+    result = await (await state.eval_expr(fn))(arg)
+    await state.force(result)
+    return int(await result.integer())
+
+
+async def test_a_view_reads_locally_and_passes_back(state: Any) -> None:
+    """Reads are local; handing the view to Nix sends its handle."""
+    client = state._client
+    tree = await client.realize(
+        await state.eval_expr("{ a = 1; d = { e = 2; }; }"), force=True)
+
+    assert isinstance(tree, AttrsView) and isinstance(tree["d"], AttrsView)
+    assert tree["d"]["e"] == 2 and len(tree) == 2 and "a" in tree
+    assert await apply_int(state, "x: x.d.e + x.a", tree) == 3
+    assert await apply_int(state, "x: x.e * 10", tree["d"]) == 20
+
+
+async def test_a_child_view_outlives_its_root(state: Any) -> None:
+    """The root's handle goes when its last view does, and the server
+    keeps it while a child lives."""
+    client = state._client
+    tree = await client.realize(
+        await state.eval_expr("{ d = { e = 2; }; }"), force=True)
+    child = tree["d"]
+    del tree
+    gc.collect()
+    assert await client.flush_dropped() >= 1, "the root was released"
+
+    assert await apply_int(state, "x: x.e + 1", child) == 3
+
+
+async def test_a_view_copies_to_a_plain_dict(state: Any) -> None:
+    client = state._client
+    tree = await client.realize(await state.eval_expr("{ a = 1; }"),
+                                force=True)
+
+    merged = tree | {"b": 2}
+    assert type(merged) is dict and merged == {"a": 1, "b": 2}
+    assert type(dict(tree)) is dict and dict(tree) == {"a": 1}
+
+
+async def test_a_list_view(state: Any) -> None:
+    client = state._client
+    xs = await client.realize(await state.eval_expr("[ 1 2 3 ]"), force=True)
+
+    assert isinstance(xs, ListView)
+    assert xs == [1, 2, 3] and xs[1:] == [2, 3] and len(xs) == 3
+    assert await apply_int(state, "builtins.length", xs) == 3

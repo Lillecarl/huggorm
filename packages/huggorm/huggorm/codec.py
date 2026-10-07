@@ -289,30 +289,36 @@ class Codec:
                 # A handle does not say what it is, and no layer above
                 # the bindings may name a class. The walk knows.
                 return [Node.STAYS, cls, proxy_id(cls, obj)]
-            case tree.Items(items=items):
-                return [Node.ITEMS, [self.encode_tree(i, proxy_id)
-                                     for i in items]]
-            case tree.Entries(entries=entries):
-                return [Node.ENTRIES, {k: self.encode_tree(v, proxy_id)
-                                       for k, v in entries.items()}]
+            case tree.Items(cls=cls, obj=obj, items=items):
+                return [Node.ITEMS, cls, proxy_id(cls, obj),
+                        [self.encode_tree(i, proxy_id) for i in items]]
+            case tree.Entries(cls=cls, obj=obj, entries=entries):
+                return [Node.ENTRIES, cls, proxy_id(cls, obj),
+                        {k: self.encode_tree(v, proxy_id)
+                         for k, v in entries.items()}]
             case _:
                 assert_never(node)
 
     def decode_tree(self, raw: Any,
-                    proxy_obj: Callable[[str, str], Any]) -> Any:
-        """A Python value from an encoded tree. An attribute set comes
-        back sorted by name, which is the order Nix lists one in."""
+                    proxy_obj: Callable[[str, str], Any],
+                    holder: Callable[[str, str, Any], Any]) -> Any:
+        """A Python value from an encoded tree. `holder` builds a list
+        or an attribute set around its handle and its decoded
+        contents. An attribute set comes back sorted by name, which is
+        the order Nix lists one in."""
         _expect(raw, list, "a tree node")
         match Node(raw[0]), raw[1:]:
             case Node.LEAF, [value]:
                 return value
             case Node.STAYS, [str(cls), str(hid)]:
                 return proxy_obj(cls, hid)
-            case Node.ITEMS, [list(items)]:
-                return [self.decode_tree(i, proxy_obj) for i in items]
-            case Node.ENTRIES, [dict(entries)]:
-                return {k: self.decode_tree(entries[k], proxy_obj)
-                        for k in sorted(entries)}
+            case Node.ITEMS, [str(cls), str(hid), list(items)]:
+                return holder(cls, hid, [self.decode_tree(i, proxy_obj, holder)
+                                         for i in items])
+            case Node.ENTRIES, [str(cls), str(hid), dict(entries)]:
+                return holder(cls, hid, {
+                    k: self.decode_tree(entries[k], proxy_obj, holder)
+                    for k in sorted(entries)})
         raise TypeError(f"a tree node arrived as {raw!r}")
 
 

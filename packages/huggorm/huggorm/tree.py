@@ -31,11 +31,20 @@ class Stays:
 
 @dataclass(frozen=True, slots=True)
 class Items:
+    """A list. `obj` is the node itself, which crosses as a handle
+    beside its items, so a caller can hand it back (huggorm#147)."""
+
+    cls: str
+    obj: Any
     items: list[Node]
 
 
 @dataclass(frozen=True, slots=True)
 class Entries:
+    """An attribute set, with its own handle as `Items` has."""
+
+    cls: str
+    obj: Any
     entries: dict[str, Node]
 
 

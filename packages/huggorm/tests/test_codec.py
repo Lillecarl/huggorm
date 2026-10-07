@@ -104,19 +104,26 @@ def test_a_proxy_crosses_as_its_handle() -> None:
 
 def test_a_tree_crosses() -> None:
     codec = Codec()
-    held = object()
-    node = tree.Entries({
-        "b": tree.Items([tree.Leaf("int", 1), tree.Leaf("bool", True),
-                         tree.Leaf("float", 0.5)]),
+    held, root, xs = object(), object(), object()
+    names = {id(held): "h1", id(root): "h2", id(xs): "h3"}
+    node = tree.Entries("Value", root, {
+        "b": tree.Items("Value", xs, [tree.Leaf("int", 1),
+                                      tree.Leaf("bool", True),
+                                      tree.Leaf("float", 0.5)]),
         "a": tree.Leaf("str", "x"),
         "c": tree.Stays("Value", held),
     })
-    raw = unpack(pack(codec.encode_tree(node, lambda cls, obj: "h1")))
-    back = codec.decode_tree(raw, lambda cls, hid: (cls, hid))
-    assert back == {"a": "x", "b": [1, True, 0.5], "c": ("Value", "h1")}
-    assert list(back) == ["a", "b", "c"], "attribute names come back sorted"
+    raw = unpack(pack(codec.encode_tree(node, lambda cls, obj: names[id(obj)])))
+    # A container decodes as its handle beside its contents, so a
+    # caller can hand it back (huggorm#147).
+    back = codec.decode_tree(raw, lambda cls, hid: (cls, hid),
+                             lambda cls, hid, contents: (hid, contents))
+    assert back == ("h2", {"a": "x", "b": ("h3", [1, True, 0.5]),
+                           "c": ("Value", "h1")})
+    assert list(back[1]) == ["a", "b", "c"], "attribute names come back sorted"
     with pytest.raises(TypeError, match="tree node"):
-        codec.decode_tree([Node.STAYS, "Value"], lambda cls, hid: None)
+        codec.decode_tree([Node.STAYS, "Value"], lambda cls, hid: None,
+                          lambda cls, hid, contents: None)
 
 
 def test_a_malformed_union_is_refused() -> None:

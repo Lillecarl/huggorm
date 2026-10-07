@@ -188,13 +188,15 @@ class TreeWalk:
                 return tree.Leaf(wire, getattr(obj, read)())
             case Items(size=size, item=item):
                 at = getattr(obj, item)
-                return tree.Items([self.node(at(i), depth + 1)
+                return tree.Items(type(obj).__name__, obj,
+                                  [self.node(at(i), depth + 1)
                                    for i in range(getattr(obj, size)())])
             case Entries(size=size, name=name, value=value):
                 if self.forcing and self._stops(obj):
                     return tree.Stays(type(obj).__name__, obj)
                 key, at = getattr(obj, name), getattr(obj, value)
-                return tree.Entries({key(i): self.node(at(i), depth + 1)
+                return tree.Entries(type(obj).__name__, obj,
+                                    {key(i): self.node(at(i), depth + 1)
                                      for i in range(getattr(obj, size)())})
             case None:
                 # A kind nothing describes: it stays where it is.

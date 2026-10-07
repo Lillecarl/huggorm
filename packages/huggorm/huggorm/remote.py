@@ -41,6 +41,7 @@ import anyio
 from huggorm_generated._callspec import Acquire, Call
 from huggorm_generated._policy import ACQUIRE, FREE, NO_RPC
 
+from . import views
 from .codec import Codec
 from .lifecycle import ShareMode
 from .logbus import LOG_CAPACITY, LOG_LEVEL
@@ -161,6 +162,19 @@ class NixClient:
                 f"{cls_name!r} has no generated client class; the build "
                 f"offers {sorted(RPC_CLASSES)}") from None
         obj = cls(self, handle_id)
+        self._track(obj, handle_id)
+        return obj
+
+    def view(self, cls_name: str, handle_id: str, contents: Any) -> Any:
+        """A realized list or attribute set: the proxy for its handle,
+        with what the walk carried readable locally (huggorm#147).
+        Tracked as `proxy` tracks, so dropping it releases the
+        handle."""
+        from huggorm_generated.rpc import RPC_CLASSES
+
+        mixin = views.AttrsView if isinstance(contents, dict) else views.ListView
+        obj = views.view_class(mixin, RPC_CLASSES[cls_name])(
+            self, handle_id, contents)
         self._track(obj, handle_id)
         return obj
 
@@ -507,8 +521,10 @@ class NixClient:
 
         Walking a value one call at a time costs a round trip and a
         thread handover per node. This asks the server to walk it once
-        and hand back the shape: scalars as themselves, a list as a
-        list, an attribute set as a dict in name order.
+        and hand back the shape: scalars as themselves, and a list or
+        an attribute set as a read-only view (`views`) that is also the
+        proxy for its node, so it can be handed back to Nix. An
+        attribute set iterates in name order.
 
         Nothing is forced. A thunk comes back as a proxy, and so does
         every node the walk stopped at - past `depth`, past `budget`,
@@ -530,7 +546,7 @@ class NixClient:
             raise ValueError("this handle was already released")
         raw = await self._ask(Op.CONTROL, Control.REALIZE,
                               [obj.handle_id, depth, budget, force])
-        return self.codec.decode_tree(raw, self.proxy)
+        return self.codec.decode_tree(raw, self.proxy, self.view)
 
     async def logs(self, obj: Any, capacity: int = 0,
                    level: int | None = None) -> AsyncGenerator[
