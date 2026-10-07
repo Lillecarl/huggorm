@@ -631,9 +631,11 @@ def protocol_module(model: ir.Model) -> ast.Module:
                                 None))
     # Spelled once, before the module is written: the imports come
     # first in the file and only the spelling knows what they are.
+    # The async twin, because every implementation is async: a
+    # returned Path is an anyio.Path in process and remotely alike.
     signatures = {
         (cls.name, m.name): ([spell(p.type) for p in m.params],
-                             spell.returns(m.returns))
+                             spell.returns(m.returns, twin=True))
         for cls in model.ordered_served for m in cls.methods
         if model.offered(m)
     }
@@ -781,7 +783,7 @@ def rpc_module(model: ir.Model) -> ast.Module:
     # method with no rpc does not become an unused import.
     signatures = {
         (cls.name, m.name): ([spell(p.type) for p in m.params],
-                             returned.returns(m.returns))
+                             returned.returns(m.returns, twin=True))
         for cls in ordered for m in cls.methods if model.offered(m)
     }
     for served_cls in ordered:
@@ -855,8 +857,12 @@ def rpc_module(model: ir.Model) -> ast.Module:
             params, returns = signatures[(name, m.name)]
             call = (f"self._client.invoke({_spec_name(name, m.name)}, "
                     f"self.handle_id, [{', '.join(p.name for p in m.params)}])")
+            if m.returns is not None and m.returns.leaf.twin:
+                body = _twinned(call, m.returns)
+            else:
+                body = _forwarded(call, returns)
             cls.body.append(_def(
-                f"async def {m.name}() -> {returns}", _forwarded(call, returns),
+                f"async def {m.name}() -> {returns}", body,
                 m.doc, _arguments([ast.arg(arg="self")], m.params, params,
                                   f"{name}.{m.name}")))
         cls.body.append(_code("""

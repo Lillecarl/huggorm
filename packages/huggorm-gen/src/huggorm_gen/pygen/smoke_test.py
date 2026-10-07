@@ -344,13 +344,14 @@ def test_the_wire_refuses_what_it_cannot_carry() -> None:
     for t in (T.dict_of(value), T.list_of(value),
               T.list_of(T.dict_of(value)), T.dict_of(T.optional_of(value)),
               T.named("object", ir.Kind.OPAQUE),
-              T.named("pathlib.Path", ir.Kind.MODULE)):
+              T.named("decimal.Decimal", ir.Kind.MODULE)):
         assert ir.wire_blocker(t, served), f"{t.spelling} should be blocked"
     for t in (s, i, value, path, T.dict_of(i), T.dict_of(path),
               T.list_of(i), T.list_of(path), T.dict_of(T.dict_of(i)),
               T.dict_of(T.list_of(i)), T.list_of(T.list_of(i)),
               T.list_of(T.dict_of(path)),
-              T.named("datetime.timedelta", ir.Kind.MODULE)):
+              T.named("datetime.timedelta", ir.Kind.MODULE),
+              T.named("pathlib.Path", ir.Kind.MODULE)):
         assert not ir.wire_blocker(t, served), (t.spelling,
                                                 ir.wire_blocker(t, served))
 
@@ -629,19 +630,6 @@ def test_conformance(out: pathlib.Path) -> None:
                     c = served[speaks_for[held]]
                     expected = expected.replace(
                         held, c.async_name if label == "in-process" else c.rpc_name)
-                elif label == "in-process":
-                    # A declared async twin is the same value in the
-                    # other spelling - anyio.Path wraps a pathlib.Path
-                    # to give it awaitable methods - so the in-process
-                    # wrapper hands back the twin and that is not
-                    # drift. The remote client keeps the plain one: it
-                    # has no local file either way.
-                    # A protocol method the declaration does not
-                    # declare, such as `close`, returns no twin.
-                    returned = {x.name: x.returns for x in cls.methods}.get(m)
-                    if returned is not None and returned.leaf.twin:
-                        expected = expected.replace(returned.leaf.name,
-                                                    returned.leaf.twin)
                 if sig["returns"] != expected:
                     failures.append(
                         f"{cls_name}.{m}: {label} returns {sig['returns']}, "

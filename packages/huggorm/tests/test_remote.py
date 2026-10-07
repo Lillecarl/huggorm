@@ -7,6 +7,7 @@ as returns, plus the error fidelity that makes a failure debuggable
 rather than anonymous.
 """
 
+import pathlib
 from typing import Any
 
 import anyio
@@ -14,7 +15,6 @@ import pytest
 from nixversion import drv_output, needs_collector
 
 import huggorm_bindings
-import huggorm_generated.async_store
 from huggorm_bindings import ContentAddressMethod as CA
 from huggorm_bindings import HashAlgorithm
 from huggorm_bindings.errors import BadStorePath, NixError, NixTypeError
@@ -650,10 +650,7 @@ async def test_a_link_is_followed_on_the_store_side(
     is what makes this a remote call worth having: a client asking
     which store object a link points at is asking about the server's
     filesystem. The answer comes back in the store's terms, as a
-    string, so it crosses as a scalar and needs no handle.
-
-    real_path is the contrast: it names a location on the store's
-    machine, which a client cannot reach, so it has no rpc at all."""
+    string, so it crosses as a scalar and needs no handle."""
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.txt").write_text("hello\n")
@@ -668,12 +665,44 @@ async def test_a_link_is_followed_on_the_store_side(
     assert await store.follow_links_to_store(str(link)) == f"{printed}/a.txt"
     assert (await store.follow_links_to_store_path(
         str(link))).to_string() == path.to_string()
+    await store.aclose()
 
-    # real_path is not merely refused here - it is ABSENT. A wire
-    # blocker takes a method off the protocol, so the remote class
-    # never grows it, while the in-process wrapper keeps it.
-    assert not hasattr(store, "real_path")
-    assert hasattr(huggorm_generated.async_store.AsyncStore, "real_path")
+
+async def test_a_filesystem_path_crosses_as_a_path(
+        client: Any, tmp_path: Any) -> None:
+    """A pathlib.Path crosses as its str and arrives as an anyio.Path,
+    as it does from the in-process async wrapper.
+
+    It names a file on the server's machine, which is this one: the
+    client and the server share a same-uid Unix socket. A chroot
+    store proves the answer is the REAL location: its printed path is
+    under /nix/store, and its files are under the root (huggorm#148)."""
+    root = tmp_path / "store"
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello\n")
+
+    store = await client.acquire("Store", str(root))
+    path = await store.add_path_to_store("tree", str(src))
+
+    real = await store.real_path(path)
+    assert isinstance(real, anyio.Path)
+    assert pathlib.Path(real).is_relative_to(root)
+    assert await (real / "a.txt").read_text() == "hello\n"
+
+    root_dir = await store.root_dir()
+    assert isinstance(root_dir, anyio.Path)
+    assert pathlib.Path(root_dir) == root
+    for name in ("state_dir", "log_dir", "real_store_dir"):
+        answer = await getattr(store, name)()
+        assert isinstance(answer, anyio.Path), name
+        assert pathlib.Path(answer).is_relative_to(root), (name, answer)
+
+    link = await store.add_perm_root(path, str(tmp_path / "result"))
+    assert isinstance(link, anyio.Path)
+    assert pathlib.Path(link) == tmp_path / "result"
+    # The link names the path in the store's terms, not the real one.
+    assert str(await link.readlink()) == await store.print_store_path(path)
     await store.aclose()
 
 

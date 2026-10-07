@@ -485,8 +485,9 @@ return self.makeValidityRegistration(as_set<nix::StorePathSet>(paths),
         """)
     # A pathlib.Path, not a str, and the alias says so. The boundary
     # still carries a std::string; what changes above it is that this
-    # answer names a file on THIS machine, so it is a path a caller
-    # can open.
+    # answer names a file on the store's machine, so it is a path a
+    # caller there can open. Over RPC that is the server's machine,
+    # which a same-uid Unix socket makes the caller's (huggorm#148).
     @needs("nix/store/local-fs-store.hh")
     def real_path(self, path: StorePath) -> Path:
         """Where this store object's files really are.

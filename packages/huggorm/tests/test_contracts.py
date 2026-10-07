@@ -276,33 +276,34 @@ def test_a_method_with_no_wire_form_is_absent_everywhere(
         model: ir.Model) -> None:
     """A method the wire cannot carry leaves three places at once.
 
-    Not everything a binding offers is a remote call. Store.real_path
-    answers with a filesystem path on the machine the store runs on,
-    and pathlib.Path is not a wire type - so the schema has no message
-    for it, the server publishes no handler, and the protocol cannot
-    promise it because a protocol is what BOTH implementations satisfy.
+    Not everything a binding offers is a remote call. EvalState's
+    make_primop takes a Python callable, which is not data, and a
+    remote one would make the evaluator call back over the socket
+    (huggorm#33). So the server publishes no handler for it, and the
+    protocol cannot promise it because a protocol is what BOTH
+    implementations satisfy.
 
     What it does NOT lose is the in-process wrapper. That is the whole
     distinction: local and remote are different surfaces, and this is
     the machinery that lets them differ without either one lying."""
-    from huggorm_generated import AsyncStore, rpc
-    from huggorm_generated.protocols import StoreLike
-    from huggorm_generated.rpc import RPCStore
+    from huggorm_generated import AsyncEvalState, rpc
+    from huggorm_generated.protocols import EvalStateLike
+    from huggorm_generated.rpc import RPCEvalState
 
-    store = model.classes["Store"]
-    blocked = {m.name for m in store.methods if not model.offered(m)}
-    assert "real_path" in blocked, sorted(blocked)
+    evaluator = model.classes["EvalState"]
+    blocked = {m.name for m in evaluator.methods if not model.offered(m)}
+    assert "make_primop" in blocked, sorted(blocked)
 
     for name in blocked:
         # The remote surface cannot offer it, so the shared one cannot
         # declare it.
-        assert not hasattr(StoreLike, name), f"{name} is on the protocol"
-        assert hasattr(AsyncStore, name), f"{name} lost its wrapper too"
-        assert not hasattr(RPCStore, name), f"{name} is on the rpc client"
+        assert not hasattr(EvalStateLike, name), f"{name} is on the protocol"
+        assert hasattr(AsyncEvalState, name), f"{name} lost its wrapper too"
+        assert not hasattr(RPCEvalState, name), f"{name} is on the rpc client"
         # ...and no call spec was emitted for it either. The specs are
         # module-level constants now rather than an `_rpc` dict, so
         # this asks the module instead of the class.
-        assert not hasattr(rpc, f"_Store_{name}"), f"{name} has a call spec"
+        assert not hasattr(rpc, f"_EvalState_{name}"), f"{name} has a call spec"
 
 
 def test_an_untyped_cause_rebuilds_from_builtins_only() -> None:

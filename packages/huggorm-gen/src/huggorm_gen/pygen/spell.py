@@ -118,8 +118,9 @@ class Spelling:
         """A type written dotted, `pathlib.Path`: its module is bound."""
         self.modules.add(dotted.split(".", 1)[0])
 
-    def returns(self, t: TypeRef | None, proxy: Rename | None = None) -> str:
-        return self(t, proxy) if t is not None else "None"
+    def returns(self, t: TypeRef | None, proxy: Rename | None = None,
+                twin: bool = False) -> str:
+        return self(t, proxy, twin) if t is not None else "None"
 
     def defaults(self, params: Iterable[ParamModel]) -> None:
         """The vocabulary a member default names is an import too."""

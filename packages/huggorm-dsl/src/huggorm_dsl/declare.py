@@ -100,9 +100,10 @@ class Async:
     "anyio.Path"}` in the bindings package, keyed by a type spelling
     - which put a fact about `Path` in a file that never names it.
 
-    It never reaches the wire. A word with a twin has no wire form
-    either way, so this decides one annotation and one
-    constructor call in the async wrapper, and nothing else. The
+    It never reaches the wire: a word crosses as its
+    `wiretypes.SPELLED` builtin. It decides the annotation on every
+    async surface - the protocol, the in-process wrapper and the RPC
+    client - and the constructor call that wraps the answer. The
     reader puts it on the leaf `Type`, so it holds through `| None`
     and a list."""
 

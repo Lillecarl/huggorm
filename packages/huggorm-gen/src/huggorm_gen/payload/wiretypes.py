@@ -12,6 +12,8 @@ two that drift.
 """
 
 import datetime
+import os
+import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -38,7 +40,7 @@ SCALAR_NAMES = ("str", "int", "uint", "float", "bool", "bytes")
 # A declared type that is not a builtin and still goes in a field as
 # one, with the builtin it goes in as.
 #
-# `datetime.timedelta` is the only one, and it is what a DURATION is
+# `datetime.timedelta` is what a DURATION is
 # above every boundary: nanobind's own chrono caster hands a
 # `std::chrono::microseconds` over as one, so the in-process surface
 # needs nothing of ours (huggorm#71).
@@ -82,7 +84,14 @@ class Spelled:
     back: Callable[[Any], Any]
 
 
-SPELLED = {"datetime.timedelta": Spelled("int", _duration_out, _duration_in)}
+# A filesystem path crosses as the str it is. It names a file on the
+# SERVER's machine, which #142 makes the client's: a same-uid Unix
+# socket. A socket forwarded over ssh or into a container breaks that,
+# and the path then names a file the client cannot open (huggorm#148).
+SPELLED = {
+    "datetime.timedelta": Spelled("int", _duration_out, _duration_in),
+    "pathlib.Path": Spelled("str", os.fspath, pathlib.Path),
+}
 
 # The scalars a value tree's leaf may be.
 TREE_LEAVES = frozenset({"str", "int", "bool", "float"})
