@@ -111,10 +111,10 @@ def wire(model: ir.Model) -> list[str]:
     surface as a KeyError deep in the server at the first call."""
     bad = []
     for c in model.classes.values():
-        if c.wire is Crossing.PROXY:
+        if c.wire is not Crossing.VALUE:
             if c.wire_fields:
-                bad.append(f"{c.name}: proxy types travel as handles, drop "
-                           f"_wire_fields")
+                bad.append(f"{c.name}: only a wire value crosses as its "
+                           f"parts, drop _wire_fields")
             continue
         if not c.wire_fields and not c.semantics.unit:
             bad.append(f"{c.name}: wire-value needs _wire_fields describing "
