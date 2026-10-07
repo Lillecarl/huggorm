@@ -853,13 +853,14 @@ def _tree(decl: Decl) -> callspec.Tree | None:
                 kinds[answer] = callspec.Entries(how.size, how.name, how.value)
             case _:
                 assert_never(how)
-    return callspec.Tree(spec.kind, kinds, spec.identity)
+    return callspec.Tree(spec.kind, kinds, spec.identity, spec.force,
+                         spec.stop)
 
 
 def _walkable(cls: ClassModel, spec: callspec.Tree) -> None:
     """Refuse a tree that names an accessor the class does not bind,
     or a leaf type the value message has no arm for."""
-    names = [spec.kind, *([spec.identity] if spec.identity else [])]
+    names = [spec.kind, *(n for n in (spec.identity, spec.force, spec.stop) if n)]
     for how in spec.kinds.values():
         match how:
             case callspec.Leaf():

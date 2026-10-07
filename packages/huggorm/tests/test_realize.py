@@ -13,6 +13,7 @@ import pytest
 from conftest import Server
 
 from huggorm import remote
+from huggorm_bindings.errors import NixError
 from huggorm_generated import RPCValue
 
 
@@ -138,3 +139,58 @@ async def test_a_repeated_value_crosses_once(state: Any) -> None:
     diamond = await client.realize(twice)
     expanded = [k for k, v in diamond.items() if not isinstance(v, RPCValue)]
     assert expanded == ["a"] and diamond["a"] == [], diamond
+
+
+# -- a forcing walk (huggorm#147) ------------------------------------------
+
+async def test_a_forcing_walk_forces_what_it_visits(state: Any) -> None:
+    client = state._client
+    value = await state.eval_expr(
+        '{ a = 1 + 1; b = [ (2 * 3) ]; d = { e = "x"; }; }')
+
+    lazy = await client.realize(value)
+    assert isinstance(lazy["a"], RPCValue), "a plain walk forces nothing"
+
+    assert await client.realize(value, force=True) == {
+        "a": 2, "b": [6], "d": {"e": "x"}}
+
+
+async def test_a_throw_stays_a_handle_and_raises_on_read(state: Any) -> None:
+    """Nix keeps a thrown force in the value, so the walk goes on and
+    the caller's first read of that node raises the same error."""
+    client = state._client
+    value = await state.eval_expr('{ ok = 1; bad = throw "boom"; }')
+
+    tree = await client.realize(value, force=True)
+    assert tree["ok"] == 1
+    assert isinstance(tree["bad"], RPCValue)
+    with pytest.raises(NixError, match="boom"):
+        await state.force(tree["bad"])
+
+
+async def test_a_forcing_walk_does_not_enter_a_derivation(state: Any) -> None:
+    client = state._client
+    value = await state.eval_expr(
+        '{ drv = { type = "derivation"; name = "x"; };'
+        '  other = { type = "other"; }; }')
+
+    tree = await client.realize(value, force=True)
+    assert isinstance(tree["drv"], RPCValue), tree["drv"]
+    assert tree["other"] == {"type": "other"}
+
+
+async def test_an_endless_value_ends_at_the_budget(state: Any) -> None:
+    """Every level is a fresh value, so the visit set never stops it;
+    the budget does. forceValueDeep would never return."""
+    client = state._client
+    value = await state.eval_expr(
+        "let f = n: { n = n; next = f (n + 1); }; in f 0")
+
+    tree = await client.realize(value, force=True, budget=20)
+    node, levels = tree, 0
+    # The budget can run out inside a level, so the last `n` may be a
+    # handle too.
+    while isinstance(node, dict) and not isinstance(node["n"], RPCValue):
+        assert node["n"] == levels
+        node, levels = node["next"], levels + 1
+    assert 5 < levels < 20, levels

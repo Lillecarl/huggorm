@@ -574,22 +574,30 @@ class Tree:
     read. An answer `kinds` does not hold crosses as a proxy.
 
     `identity` names the accessor that makes two nodes the same node.
-    Empty means Python identity."""
+    Empty means Python identity.
+
+    `force` names the accessor that forces a node in place, for a walk
+    that forces. `stop` names a predicate on an `Entries` node that
+    keeps it a proxy in such a walk: a derivation, which a forcing walk
+    must not enter."""
 
     kind: str
     kinds: dict[str, Leaf | Items | Entries]
     identity: str = ""
+    force: str = ""
+    stop: str = ""
 
 
 def tree(kind: str, kinds: dict[str, Leaf | Items | Entries],
-         identity: str = "") -> Callable[[type], type]:
+         identity: str = "", force: str = "",
+         stop: str = "") -> Callable[[type], type]:
     """How a value TREE is walked, for a type that holds others.
 
     The RPC layer reads it, so no layer above this declaration knows
     what the type is or which of its methods do what. The build checks
     every accessor it names against the class, and the emitter writes
     it into `_policy.TREES`, which the server reads."""
-    spec = Tree(kind, kinds, identity)
+    spec = Tree(kind, kinds, identity, force, stop)
 
     def apply(cls: type) -> type:
         _decl(cls).tree = spec

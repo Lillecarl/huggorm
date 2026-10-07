@@ -116,6 +116,11 @@ from huggorm_dsl.declare import (
     # one value differ, and a wrapper that dies hands its id() to the
     # next one. The underlying value's address is the identity.
     identity="_identity",
+    # A forcing walk (huggorm#147) forces each node it visits, and does
+    # not enter a derivation: forcing one instantiates it, and nixpkgs
+    # is a tree of them. `printValueAsJSON` stops there too.
+    force="_force",
+    stop="_is_derivation",
     # A Leaf's wire type is what picks the arm, so the layer above
     # reads a declared type name rather than a label this file
     # invented.
@@ -153,6 +158,27 @@ class Value:
         every generated form. The tree walk uses it to visit a shared
         value once - values are immutable and shared freely, so
         without it a diamond is copied and a cycle never ends."""
+
+    def _force(self) -> None:
+        """Force this value to weak head normal form, in place.
+
+        Private, for the tree walk. A throw leaves the value failed
+        (`tFailed`), so a later read raises the same error again."""
+        Cxx("""
+huggorm::gc_register_thread();
+self.state().forceValue(*self.get(), nix::noPos);
+        """)
+
+    @guard("attrs")
+    def _is_derivation(self) -> Bint:
+        """Whether this attribute set is a derivation, by libexpr's
+        test. It forces the `type` attribute.
+
+        Private, for the tree walk."""
+        Cxx("""
+huggorm::gc_register_thread();
+return self.state().isDerivation(*self.get());
+        """)
 
     def is_gc_managed(self) -> Bint:
         """True when this value lives inside a GC-allocated block.

@@ -502,7 +502,7 @@ class NixClient:
         obj.handle_id = None
 
     async def realize(self, obj: Any, depth: int = 0,
-                      budget: int = 0) -> Any:
+                      budget: int = 0, force: bool = False) -> Any:
         """A whole value tree in one round trip.
 
         Walking a value one call at a time costs a round trip and a
@@ -520,11 +520,16 @@ class NixClient:
         alone and every child a proxy. budget stops it going wide,
         which is the one that actually bites: an attribute set can hold
         a hundred thousand entries one level down. Zero means the
-        server's default."""
+        server's default.
+
+        `force` forces each node the walk visits, inside the same
+        bounds. It does not enter a derivation, and a node whose force
+        throws comes back as a proxy whose first read raises that
+        error, so the rest of the tree still arrives (huggorm#147)."""
         if obj.handle_id is None:
             raise ValueError("this handle was already released")
         raw = await self._ask(Op.CONTROL, Control.REALIZE,
-                              [obj.handle_id, depth, budget])
+                              [obj.handle_id, depth, budget, force])
         return self.codec.decode_tree(raw, self.proxy)
 
     async def logs(self, obj: Any, capacity: int = 0,

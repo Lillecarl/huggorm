@@ -184,8 +184,14 @@ class Tree:
     `identity` is what makes two nodes the same node, and it is
     declared rather than assumed: Python identity is not it wherever a
     binding builds a fresh wrapper per access. Empty falls back to
-    `id()`."""
+    `id()`.
+
+    `force` forces a node in place and `stop` keeps an `Entries` node a
+    proxy, both only in a walk that forces. Empty means the type
+    declares neither."""
 
     kind: str
     kinds: dict[str, Leaf | Items | Entries]
     identity: str = ""
+    force: str = ""
+    stop: str = ""

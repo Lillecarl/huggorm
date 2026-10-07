@@ -28,6 +28,7 @@ from typing import Any
 import anyio
 from anyio.abc import SocketStream
 
+from huggorm_bindings.errors import NixError
 from huggorm_generated._callspec import Acquire, Call, Entries, Items, Leaf, Tree
 from huggorm_generated._policy import (
     ACQUIRE,
@@ -129,10 +130,19 @@ class TreeWalk:
       mapping means it is the SAME handle - so the sharing survives
       rather than being flattened away;
     - a node past the depth, or one the budget ran out on.
+
+    A FORCING walk forces each node first, with the declared `force`.
+    A throw keeps that node a proxy: Nix keeps the error in the value,
+    so the caller's first read of it raises the same error, and the
+    rest of the tree still arrives. An `Entries` node the declared
+    `stop` answers true for stays a proxy too: a derivation, which
+    forcing would instantiate.
     """
 
-    def __init__(self, spec: Tree, depth: int, budget: int) -> None:
+    def __init__(self, spec: Tree, depth: int, budget: int,
+                 force: bool = False) -> None:
         self.spec = spec
+        self.forcing = force and bool(spec.force)
         self.depth = depth
         self.left = budget
         self.seen: set[Any] = set()
@@ -149,6 +159,16 @@ class TreeWalk:
         how = self.spec.identity
         return getattr(obj, how)() if how else id(obj)
 
+    def _stops(self, obj: Any) -> bool:
+        """Whether a forcing walk keeps this node a proxy. A throw
+        while asking means the same: the read raises it later."""
+        if not self.spec.stop:
+            return False
+        try:
+            return bool(getattr(obj, self.spec.stop)())
+        except NixError:
+            return True
+
     def node(self, obj: Any, depth: int) -> tree.Node:
         key = self._key(obj)
         # `depth` counts levels EXPANDED, so 1 is the root alone. Zero
@@ -158,6 +178,11 @@ class TreeWalk:
             return tree.Stays(type(obj).__name__, obj)
         self.left -= 1
         self.seen.add(key)
+        if self.forcing:
+            try:
+                getattr(obj, self.spec.force)()
+            except NixError:
+                return tree.Stays(type(obj).__name__, obj)
         match self.spec.kinds.get(getattr(obj, self.spec.kind)()):
             case Leaf(wire=wire, read=read):
                 return tree.Leaf(wire, getattr(obj, read)())
@@ -166,6 +191,8 @@ class TreeWalk:
                 return tree.Items([self.node(at(i), depth + 1)
                                    for i in range(getattr(obj, size)())])
             case Entries(size=size, name=name, value=value):
+                if self.forcing and self._stops(obj):
+                    return tree.Stays(type(obj).__name__, obj)
                 key, at = getattr(obj, name), getattr(obj, value)
                 return tree.Entries({key(i): self.node(at(i), depth + 1)
                                      for i in range(getattr(obj, size)())})
@@ -768,7 +795,8 @@ class Dispatcher:
         return released, unknown
 
     async def realize(self, token: str, hid: str, depth: int,
-                      budget: int) -> tuple[Any, tree.Node, TreeWalk]:
+                      budget: int, force: bool = False,
+                      ) -> tuple[Any, tree.Node, TreeWalk]:
         """One round trip for a whole value tree: the target, the tree,
         and the walk that built it.
 
@@ -776,18 +804,19 @@ class Dispatcher:
         every one of them is a network round trip plus a thread
         handover. This walks it once, on the value's own thread.
 
-        It forces nothing. What is already forced serializes; a
-        thunk crosses as a handle, and the caller forces it with
-        the call that already exists. So the answer is bounded, it
-        cannot raise halfway down a half-built message, and it
-        composes with force rather than duplicating it."""
+        It forces nothing unless `force` asks. What is already forced
+        serializes; a thunk crosses as a handle, and the caller forces
+        it with the call that already exists. A forcing walk forces
+        what it visits, inside the same bounds, and a node whose force
+        throws crosses as a handle - so it still cannot raise halfway
+        down a half-built message (huggorm#147)."""
         target = self.resolve(hid, token)
         spec = TREES.get(DECLARED.get(type(target).__name__, ""))
         if spec is None:
             raise TypeError(
                 f"{hid[:8]} is not a value tree: its type declares no walk")
         walk = TreeWalk(spec, depth if depth > 0 else DEFAULT_DEPTH,
-                        budget if budget > 0 else DEFAULT_BUDGET)
+                        budget if budget > 0 else DEFAULT_BUDGET, force)
         # ONE hop for the whole tree, on the value's own thread.
         root = await target._runner.run(lambda obj: walk.node(obj, 0))
         return target, root, walk
@@ -842,9 +871,10 @@ class Dispatcher:
             case Control.RELEASE, [str(hid)]:
                 self.release(token, hid)
                 return None
-            case Control.REALIZE, [str(hid), int(depth), int(budget)]:
+            case Control.REALIZE, [str(hid), int(depth), int(budget),
+                                   bool(force)]:
                 target, root, _walk = await self.realize(token, hid, depth,
-                                                         budget)
+                                                         budget, force)
                 # Every node the walk stopped at leases to the caller
                 # and pins the root, exactly as a proxy return does.
                 return self.codec.encode_tree(
