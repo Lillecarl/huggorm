@@ -719,11 +719,29 @@ def _plain(cls: ir.ClassModel, m: ir.MethodModel) -> None:
     trampoline's signature must match the C++ virtual exactly, and a
     vocabulary or an absent container arrives as another type."""
     for pr in m.params:
-        if pr.parsed_by or pr.absent:
+        if pr.parsed_by or pr.absent or pr.type.cxx == BYTES_SPELLINGS[1]:
             raise TypeError(
                 f"{cls.name}.{m.name}({pr.name}): a @virtual takes each "
                 f"parameter as the C++ virtual does, and this one arrives "
                 f"converted.")
+    if m.returns is not None and m.returns.cxx == BYTES_SPELLINGS[1]:
+        raise TypeError(
+            f"{cls.name}.{m.name}: a @virtual cannot answer a list of bytes.")
+
+
+def _virtual_cxx(spelled: str) -> str:
+    """A @virtual's C++ spelling of a type. Bytes are a `std::string`:
+    the C++ side of the trampoline runs without the GIL, and an
+    `nb::bytes` needs it. The trampoline converts at the boundary."""
+    if spelled == BYTES_SPELLINGS[0]:
+        return "std::string"
+    if spelled == f"const {BYTES_SPELLINGS[0]} &":
+        return "const std::string &"
+    return spelled
+
+
+def _is_bytes(t: ir.TypeRef | None) -> bool:
+    return t is not None and t.cxx == BYTES_SPELLINGS[0]
 
 
 def rethrow_as_nix(errors: ir.Errors) -> list[str]:
@@ -780,11 +798,16 @@ def trampoline(cls: ir.ClassModel) -> list[str]:
            "{",
            f"{INDENT}NB_TRAMPOLINE({cls.held}, {len(methods)});"]
     for m in methods:
-        ret = m.returns.cxx if m.returns is not None else "void"
-        params = ", ".join(f"{pr.cxx} {pr.name}" for pr in m.params)
+        ret = _virtual_cxx(m.returns.cxx) if m.returns is not None else "void"
+        params = ", ".join(f"{_virtual_cxx(pr.cxx)} {pr.name}"
+                           for pr in m.params)
         args = ", ".join(pr.name for pr in m.params)
-        answer = (f"return nb::cast<{ret}>(answer);" if m.returns is not None
-                  else "return;")
+        handed = ", ".join(f"to_bytes({pr.name})" if _is_bytes(pr.type)
+                           else pr.name for pr in m.params)
+        answer = ("return from_bytes(nb::cast<nb::bytes>(answer));"
+                  if _is_bytes(m.returns)
+                  else f"return nb::cast<{ret}>(answer);"
+                  if m.returns is not None else "return;")
         out += ["",
                 f"{INDENT}{ret} {m.cxx_name or m.name}({params}) override",
                 f"{INDENT}{{",
@@ -795,7 +818,7 @@ def trampoline(cls: ir.ClassModel) -> list[str]:
                 f"{INDENT * 4}nb::object answer;",
                 f"{INDENT * 4}try {{",
                 f"{INDENT * 5}answer = nb_trampoline.base()"
-                f".attr(nb_ticket.key)({args});",
+                f".attr(nb_ticket.key)({handed});",
                 f"{INDENT * 4}}} catch (nb::python_error & e) {{",
                 f"{INDENT * 5}rethrow_as_nix(e);",
                 f"{INDENT * 4}}}",
@@ -1181,16 +1204,7 @@ class Emitter:
                     f"{INDENT * 2}}}{extras}{tail})"]
         extras = self._extras(waits(cls, m), m.params)
         if m.virtual:
-            # QUALIFIED, so the call is not virtual. A member pointer
-            # dispatches through the trampoline, and `super().f()` from
-            # inside an override would reach that override again.
-            args, _ = self._signature(m.params)
-            names = ", ".join(pr.name for pr in m.params)
-            spelled = m.cxx_name or m.name
-            return [f'{INDENT * 2}.def("{m.name}", '
-                    f"[]({cls.held} &{SELF}{args}){self._returns(m)} {{",
-                    f"{INDENT * 4}return {SELF}.{cls.held}::{spelled}({names});",
-                    f"{INDENT * 2}}}{extras}{tail})"]
+            return self._virtual_def(cls, m, tail)
         derived = self._derived(cls, m)
         if derived is not None:
             obj = SELF
@@ -1202,6 +1216,40 @@ class Emitter:
         spelled = m.cxx_name or m.name
         return [f'{INDENT * 2}.def("{m.name}", &{cls.held}::{spelled}'
                 f"{extras}{tail})"]
+
+    def _virtual_def(self, cls: ir.ClassModel, m: ir.MethodModel,
+                     tail: str) -> list[str]:
+        """The binding of a @virtual: the C++ implementation, called
+        QUALIFIED so the call is not virtual. A member pointer dispatches
+        through the trampoline, and `super().f()` from inside an override
+        would reach that override again.
+
+        It releases the GIL itself, not with a call guard, because bytes
+        convert on each side of the call and a conversion needs the GIL."""
+        args, _ = self._signature(m.params)
+        body = [f"{INDENT * 4}const std::string {pr.name}_ = "
+                f"from_bytes({pr.name});"
+                for pr in m.params if _is_bytes(pr.type)]
+        names = ", ".join(f"{pr.name}_" if _is_bytes(pr.type) else pr.name
+                          for pr in m.params)
+        call = f"{SELF}.{cls.held}::{m.cxx_name or m.name}({names})"
+        release = ([f"{INDENT * 5}nb::gil_scoped_release nb_released;"]
+                   if waits(cls, m) else [])
+        if _is_bytes(m.returns):
+            body += [f"{INDENT * 4}std::string answer;",
+                     f"{INDENT * 4}{{", *release,
+                     f"{INDENT * 5}answer = {call};",
+                     f"{INDENT * 4}}}",
+                     f"{INDENT * 4}return to_bytes(answer);"]
+        else:
+            body += [f"{INDENT * 4}{{", *release,
+                     f"{INDENT * 5}return {call};",
+                     f"{INDENT * 4}}}"]
+        extras = self._extras(False, m.params)
+        return [f'{INDENT * 2}.def("{m.name}", '
+                f"[]({cls.held} &{SELF}{args}){self._returns(m)} {{",
+                *body,
+                f"{INDENT * 2}}}{extras}{tail})"]
 
     def _signature(self, params: Sequence[ir.ParamModel],
                    ) -> tuple[str, list[str]]:
@@ -2034,8 +2082,10 @@ class Emitter:
                            *body, "}"]) + "\n"
 
     def _converts_bytes(self, classes: Sequence[ir.ClassModel]) -> bool:
-        """Whether any accessor here answers bytes, so a unit needs BYTES."""
-        return any(m.returns is not None and m.returns.cxx in BYTES_SPELLINGS
+        """Whether any accessor here answers bytes, or a @virtual takes
+        them, so a unit needs BYTES."""
+        return any((m.returns is not None and m.returns.cxx in BYTES_SPELLINGS)
+                   or (m.virtual and any(_is_bytes(pr.type) for pr in m.params))
                    for cls in classes for m in cls.bound)
 
     def _errors_used(self, classes: Sequence[ir.ClassModel],
