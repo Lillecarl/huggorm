@@ -153,7 +153,46 @@ private:
     void anchor() override {}
 };
 
-using StoreBase = std::conditional_t<LayeredStoreConfig::has_path_type<>, Anchored<nix::Store>, nix::Store>;
+/**
+ * Nix after 2.35 makes `registerDrvOutputUnchecked` the pure virtual
+ * that `registerDrvOutput(output)` was. It is protected, so only a
+ * subclass sees which one this Nix has.
+ */
+struct Probe : nix::Store
+{
+    template<typename Self = Probe>
+    static constexpr bool unchecked =
+        requires(Self & self, const nix::Realisation & output) { self.registerDrvOutputUnchecked(output); };
+};
+
+/** The pure registration this Nix has, as the checked one without checks. */
+template<typename Base>
+struct Registers : Base
+{
+    using Base::Base;
+    using Base::registerDrvOutput;
+
+protected:
+    void registerDrvOutputUnchecked(const nix::Realisation & output) override
+    {
+        this->registerDrvOutput(output, nix::NoCheckSigs);
+    }
+};
+
+template<typename Base>
+struct RegistersOne : Base
+{
+    using Base::Base;
+    using Base::registerDrvOutput;
+
+    void registerDrvOutput(const nix::Realisation & output) override
+    {
+        this->registerDrvOutput(output, nix::NoCheckSigs);
+    }
+};
+
+using Anchor = std::conditional_t<LayeredStoreConfig::has_path_type<>, Anchored<nix::Store>, nix::Store>;
+using StoreBase = std::conditional_t<Probe::unchecked<>, Registers<Anchor>, RegistersOne<Anchor>>;
 
 class LayeredStore : public StoreBase
 {
@@ -406,9 +445,11 @@ public:
             .addToStoreFromDump(dump, name, dumpMethod, hashMethod, hashAlgo, references, repair);
     }
 
-    void registerDrvOutput(const nix::Realisation & output) override
+    using StoreBase::registerDrvOutput;
+
+    void registerDrvOutput(const nix::Realisation & output, nix::CheckSigsFlag checkSigs) override
     {
-        below("registerDrvOutput").registerDrvOutput(output);
+        below("registerDrvOutput").registerDrvOutput(output, checkSigs);
     }
 
     void narFromPath(const nix::StorePath & path, nix::Sink & sink) override
