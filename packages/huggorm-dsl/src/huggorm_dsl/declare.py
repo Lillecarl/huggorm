@@ -359,6 +359,10 @@ class Decl:
     threading: Threading = Threading.POOL
     blocking: bool = True
     wire: Crossing = Crossing.PROXY
+    # The declared class this one derives from, or "". Only an
+    # `@in_process` class has one: no async or remote surface carries
+    # a hierarchy.
+    base: str = ""
     # Each part either a `Field` or the NAME of the accessor that
     # answers it. See `wire_value`.
     fields: tuple[Field | str, ...] = ()
@@ -533,6 +537,8 @@ MARKERS: dict[str, Marker] = {
     "constructs": Marker(_t("free"), "once"),
     "startup": Marker(_t("free"), "flag"),
     "translator": Marker(_t("free"), "flag"),
+    # On a method of an @in_process class.
+    "virtual": Marker(_t("method"), "flag"),
 }
 
 
@@ -1030,6 +1036,22 @@ def local[F: Callable[..., Any]](fn: F) -> F:
     without it. If it could, the accessor is a convenience and belongs
     here."""
     fn._local = True  # type: ignore[attr-defined]
+    return fn
+
+
+def virtual[F: Callable[..., Any]](fn: F) -> F:
+    """A Python subclass may override this C++ virtual.
+
+    The binding emits a trampoline. When C++ calls the method, a
+    Python override answers; with none, the C++ implementation does,
+    and an override reaches it with `super()`. The lookup holds the
+    GIL and the C++ implementation runs without it. A declared Nix
+    error the override raises reaches C++ as that error.
+
+    Only on an `@in_process` class: an override is Python in this
+    process, and a remote caller could not reach it. The method binds
+    the C++ member by name, so it carries no body."""
+    fn._virtual = True  # type: ignore[attr-defined]
     return fn
 
 

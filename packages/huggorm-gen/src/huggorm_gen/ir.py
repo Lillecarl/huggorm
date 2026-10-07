@@ -505,6 +505,8 @@ class MethodModel:
     fills: Fill | None = None
     # `@local`: bound on the object and kept off the wire.
     local: bool = False
+    # `@virtual`: a Python subclass may override it.
+    virtual: bool = False
     # The C++ type of the HANDLE class it returns, or "".
     returns_handle: str = ""
     # It returns a vocabulary with a C++ enum behind it.
@@ -534,7 +536,7 @@ class MethodModel:
                    guard=guard, names=tagged if m.names else None,
                    produces=m.produces,
                    fills=_fill(owner, m, params, resolver),
-                   local=m.local,
+                   local=m.local, virtual=_virtual(owner, m),
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
                                  and bool(word.decl.enumerated)),
@@ -701,6 +703,8 @@ class ClassModel:
     factory_name: str = ""
     # How a value that holds values is walked, or None.
     tree: callspec.Tree | None = None
+    # The declared class this one derives from, or "".
+    base: str = ""
     # How Python data becomes a value, or None.
     builds: callspec.Builds | None = None
 
@@ -755,6 +759,7 @@ class ClassModel:
             factory_name=decl.factory,
             tree=_tree(decl),
             builds=_builds(decl),
+            base=decl.base,
         )
 
     @property
@@ -839,6 +844,22 @@ class ClassModel:
     @property
     def message(self) -> str:
         return f"{self.name}Msg"
+
+def _virtual(owner: Class, m: Method) -> bool:
+    """`@virtual`, refused where no trampoline can carry it."""
+    if not m.virtual:
+        return False
+    if owner.decl.wire is not Crossing.LOCAL:
+        raise TypeError(
+            f"{owner.name}.{m.name}: @virtual needs an @in_process class. "
+            f"An override is Python in this process, and a remote caller "
+            f"could not reach it.")
+    if m.cxx_body is not None or m.reads:
+        raise TypeError(
+            f"{owner.name}.{m.name}: @virtual overrides the C++ member of "
+            f"that name, so it carries no body and reads no member.")
+    return True
+
 
 def _tree(decl: Decl) -> callspec.Tree | None:
     """`@tree(...)`, as the record the server reads."""

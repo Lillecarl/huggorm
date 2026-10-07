@@ -703,6 +703,13 @@ def test_stubs(out: pathlib.Path) -> None:
     bindings = importlib.import_module("huggorm_bindings")
     failures = []
     checked = 0
+    # Every stub's classes, because a base may be declared in another
+    # module: `LayeredStore(Store)` (huggorm#149). Names are unique.
+    everywhere: dict[str, ast.ClassDef] = {
+        node.name: node
+        for pyi in stub_dir.glob("*.pyi")
+        for node in ast.parse(pyi.read_text()).body
+        if isinstance(node, ast.ClassDef)}
     for pyi in sorted(stub_dir.glob("*.pyi")):
         if pyi.name == "__init__.pyi":
             continue
@@ -754,7 +761,7 @@ def test_stubs(out: pathlib.Path) -> None:
         # over `classes` rather than rebuilt inside the loop: a closure
         # written in a loop body reads as a deferred capture of the
         # loop variable, which is a bug in every case but this one.
-        def surface(n: str, classes: dict[str, ast.ClassDef] = classes) -> set[str]:
+        def surface(n: str, classes: dict[str, ast.ClassDef] = everywhere) -> set[str]:
             out_: set[str] = set()
             cn = classes.get(n)
             if cn is None:

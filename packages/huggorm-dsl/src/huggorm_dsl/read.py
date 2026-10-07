@@ -504,6 +504,8 @@ class Method:
     # crosses as every accessor it has, so this is the one thing an
     # accessor has to be able to say for itself.
     local: bool = False
+    # `@virtual`: a Python subclass may override it.
+    virtual: bool = False
     # The `@local` accessor the wire reads this part through, from
     # @wire_read. Empty means this accessor itself.
     wire_read: str = ""
@@ -1288,6 +1290,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         member_collection=getattr(marked, "_member_collection", ""),
         cxx_body=_body(node),
         local=bool(getattr(marked, "_local", False)),
+        virtual=bool(getattr(marked, "_virtual", False)),
         wire_read=getattr(marked, "_wire_read", ""),
         headers=tuple(getattr(marked, NEEDS, ())),
         spells=tuple(getattr(marked, "_spells", ())),
@@ -1377,12 +1380,19 @@ def _class(node: ast.ClassDef, vocab: dict[str, str],
                 node, f"{node.name}: a vocabulary is a StrEnum. Write "
                       f"`class {node.name}(StrEnum)`.")
     elif holder.__bases__ != (object,):
-        # No emitter carries a class hierarchy (huggorm#60): nanobind
-        # downcasts by exact type, so a bound base buys nothing. A base
-        # written here would be dropped in silence, so it is refused.
-        raise DeclarationError(
-            node, f"{node.name}: a bound class has no base. Declare "
-                  f"the methods on {node.name} itself (huggorm#60).")
+        # One base, and only on an @in_process class. Nix hands a
+        # Python-implemented store back as the object Python made, so
+        # that object must BE a Store to nanobind: accepted where one
+        # is, with its methods (huggorm#149). The async and remote
+        # surfaces carry no hierarchy, so a served class has no base.
+        (base,) = holder.__bases__ if len(holder.__bases__) == 1 else (None,)
+        if (base is None or "_decl" not in base.__dict__
+                or decl.wire is not Crossing.LOCAL):
+            raise DeclarationError(
+                node, f"{node.name}: only an @in_process class has a base, "
+                      f"and it is one declared class. Declare the methods "
+                      f"on {node.name} itself (huggorm#60).")
+        decl.base = base.__name__
     # `@needs` writes onto whatever it decorates, and on a class that
     # is the stand-in rather than the Decl - so it is read here
     # instead of being restated in declare.py, which is the same trick

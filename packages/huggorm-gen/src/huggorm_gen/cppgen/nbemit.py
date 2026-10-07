@@ -709,6 +709,104 @@ def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:
     return False
 
 
+def _virtuals(cls: ir.ClassModel) -> tuple[ir.MethodModel, ...]:
+    """The methods a Python subclass may override (`@virtual`)."""
+    return tuple(m for m in cls.bound if m.virtual)
+
+
+def _plain(cls: ir.ClassModel, m: ir.MethodModel) -> None:
+    """Refuse a parameter an override cannot take as declared. The
+    trampoline's signature must match the C++ virtual exactly, and a
+    vocabulary or an absent container arrives as another type."""
+    for pr in m.params:
+        if pr.parsed_by or pr.absent:
+            raise TypeError(
+                f"{cls.name}.{m.name}({pr.name}): a @virtual takes each "
+                f"parameter as the C++ virtual does, and this one arrives "
+                f"converted.")
+
+
+def rethrow_as_nix(errors: ir.Errors) -> list[str]:
+    """The catch chain reversed: a Python override's declared Nix error,
+    thrown as the C++ exception it stands for. Most-derived first, as
+    the chain is.
+
+    A class whose C++ type cannot be built from a message is skipped,
+    and the check is the compiler's, not a list: `EvalError` needs an
+    evaluator. Its Python instance then matches a base further down.
+    Anything else rethrows as the Python error it is."""
+    out = ["#include <type_traits>", "", f"namespace {NAMESPACE} {{", "",
+           "// A template, so the branch a type cannot take is never compiled.",
+           "template<typename E>",
+           "void throw_as(const std::string & what)",
+           "{",
+           f"{INDENT}if constexpr (std::is_constructible_v<E, const char *, "
+           f"std::string>)",
+           f'{INDENT * 2}throw E("%s", what);',
+           "}", "",
+           "[[noreturn]] inline void rethrow_as_nix(nb::python_error & e)",
+           "{",
+           f'{INDENT}nb::module_ errors = nb::module_::import_("{errors.module}");',
+           f"{INDENT}std::string what = nb::str(e.value()).c_str();"]
+    for name in errors.caught:
+        cxx_type = errors.classes[name].cxx
+        out += [f'{INDENT}if (e.matches(errors.attr("{name}")))',
+                f"{INDENT * 2}throw_as<{cxx_type}>(what);"]
+    return [*out, f"{INDENT}throw;", "}", "",
+            f"}}  // namespace {NAMESPACE}", ""]
+
+
+def trampoline(cls: ir.ClassModel) -> list[str]:
+    """The C++ subclass that hands `cls`'s virtuals to a Python override
+    (huggorm#84).
+
+    Not `NB_OVERRIDE`: its ticket holds the GIL for the whole scope,
+    so the fall-through to the C++ implementation would run under the
+    GIL. That implementation may wait on a daemon, or call back into
+    Python on another thread, and nanopynix measured both as a stall
+    or a deadlock. Here the ticket's scope ends before the base call.
+
+    An override falls through by calling `super()`, whose binding calls
+    the C++ implementation non-virtually. A declared Nix error it raises
+    becomes that Nix exception again (`rethrow_as_nix`), so Nix's own
+    catch - `isValidPath` catching `InvalidPath` - sees what it expects."""
+    methods = _virtuals(cls)
+    if not methods:
+        return []
+    for m in methods:
+        _plain(cls, m)
+    out = [f"namespace {NAMESPACE} {{", "",
+           f"struct Py{cls.name} : public {cls.held}",
+           "{",
+           f"{INDENT}NB_TRAMPOLINE({cls.held}, {len(methods)});"]
+    for m in methods:
+        ret = m.returns.cxx if m.returns is not None else "void"
+        params = ", ".join(f"{pr.cxx} {pr.name}" for pr in m.params)
+        args = ", ".join(pr.name for pr in m.params)
+        answer = (f"return nb::cast<{ret}>(answer);" if m.returns is not None
+                  else "return;")
+        out += ["",
+                f"{INDENT}{ret} {m.cxx_name or m.name}({params}) override",
+                f"{INDENT}{{",
+                f"{INDENT * 2}{{",
+                f'{INDENT * 3}nb::detail::ticket nb_ticket(nb_trampoline, '
+                f'"{m.name}", false);',
+                f"{INDENT * 3}if (nb_ticket.key.is_valid()) {{",
+                f"{INDENT * 4}nb::object answer;",
+                f"{INDENT * 4}try {{",
+                f"{INDENT * 5}answer = nb_trampoline.base()"
+                f".attr(nb_ticket.key)({args});",
+                f"{INDENT * 4}}} catch (nb::python_error & e) {{",
+                f"{INDENT * 5}rethrow_as_nix(e);",
+                f"{INDENT * 4}}}",
+                f"{INDENT * 4}{answer}",
+                f"{INDENT * 3}}}",
+                f"{INDENT * 2}}}",
+                f"{INDENT * 2}return NBBase::{m.cxx_name or m.name}({args});",
+                f"{INDENT}}}"]
+    return [*out, "};", "", f"}}  // namespace {NAMESPACE}", ""]
+
+
 class Emitter:
     """The binding C++ for classes that may name each other.
 
@@ -802,6 +900,8 @@ class Emitter:
                     if spelling in body}
 
         out = ["#include <nanobind/nanobind.h>"]
+        if any(_virtuals(cls) for cls in classes):
+            out.append("#include <nanobind/trampoline.h>")
         out += [f"#include <nanobind/stl/{c}.h>" for c in sorted(casters)]
         if any(cls.wire is Crossing.VALUE and cls.semantics.text
                for cls in classes):
@@ -1080,6 +1180,17 @@ class Emitter:
             return [head, *opening, *self._guard_head(cls, m), *body,
                     f"{INDENT * 2}}}{extras}{tail})"]
         extras = self._extras(waits(cls, m), m.params)
+        if m.virtual:
+            # QUALIFIED, so the call is not virtual. A member pointer
+            # dispatches through the trampoline, and `super().f()` from
+            # inside an override would reach that override again.
+            args, _ = self._signature(m.params)
+            names = ", ".join(pr.name for pr in m.params)
+            spelled = m.cxx_name or m.name
+            return [f'{INDENT * 2}.def("{m.name}", '
+                    f"[]({cls.held} &{SELF}{args}){self._returns(m)} {{",
+                    f"{INDENT * 4}return {SELF}.{cls.held}::{spelled}({names});",
+                    f"{INDENT * 2}}}{extras}{tail})"]
         derived = self._derived(cls, m)
         if derived is not None:
             obj = SELF
@@ -1745,6 +1856,18 @@ class Emitter:
                 f"{cls.name}: no C++ type to bind. @binding(cxx=...) names it.")
         held = cls.held
         holds = [held]
+        if cls.base:
+            # nanobind then accepts one where the base is wanted, and
+            # the base's methods answer on it.
+            holds.append(self.model.classes[cls.base].held)
+        if _virtuals(cls):
+            if cls.init is not None and cls.init.cxx_body is not None:
+                raise TypeError(
+                    f"{cls.name}: a class with @virtual methods constructs "
+                    f"through nb::init, which alone builds the trampoline "
+                    f"for a Python subclass. A body would build the base, "
+                    f"and every override would go unseen.")
+            holds.append(f"{NAMESPACE}::Py{cls.name}")
         # A WIRE VALUE is final, and that is a contract rather than a
         # preference. Such a class crosses as its declared parts, so a
         # subclass carrying state no part reads would arrive on the far
@@ -1988,6 +2111,10 @@ class Emitter:
             for u in wrapped:
                 head += self.caster(u)
             head += ["}  // namespace nanobind::detail", ""]
+        if any(_virtuals(cls) for cls in classes):
+            head += rethrow_as_nix(self.model.errors)
+        for cls in classes:
+            head += trampoline(cls)
         out = "\n".join(head) + "\n" + "\n".join(
             self.bind_function(cls) for cls in classes)
         return out + ("\n" + self.free_functions(exported)
@@ -2038,13 +2165,15 @@ def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
                f'{f"{package}." if package else ""}{stem}");'
                for stem in imports(unit, model)]
     translators = [translator(fn, chain) for fn in unit.translators]
-    # Only a unit that HAS a translator catches anything, so only that
-    # unit needs the headers behind the chain.
+    # Only a unit that HAS a translator catches anything, and only one
+    # with a trampoline throws one back, so only those need the headers
+    # behind the chain.
+    rethrows = any(_virtuals(cls) for cls in classes)
     return "\n".join([
         Emitter(model, unit).module(
             classes, unit.functions, unit.exported,
             errors,
-            error_headers if translators else (), package),
+            error_headers if translators or rethrows else (), package),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
         # The declaration file's own docstring, which is the only

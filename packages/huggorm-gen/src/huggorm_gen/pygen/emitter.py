@@ -999,7 +999,11 @@ def _stub_dunders(name: str, dunders: list[str]) -> list[ast.stmt]:
 def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
                 coroutines: Mapping[ir.MethodRef | None, str]) -> ast.ClassDef:
     name = c.name
-    cls = ast.ClassDef(name=name, bases=[], keywords=[], body=[],
+    bases: list[ast.expr] = []
+    if c.base:
+        spell.need(c.base, BINDINGS)
+        bases.append(ast.Name(id=c.base))
+    cls = ast.ClassDef(name=name, bases=bases, keywords=[], body=[],
                        decorator_list=[], type_params=[])
     cls.body.append(ast.Expr(value=ast.Constant(value=(
         c.doc or f"Binding for the C++ {c.binds}. Threading "
