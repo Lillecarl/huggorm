@@ -397,6 +397,8 @@ async def test_a_dropped_value_releases_its_root() -> None:
 
     state = AsyncEvalState(AsyncStore(URI))
     await state.eval_expr("1")
+    # Garbage an earlier test left would leave the count during the test.
+    await collect()
     before = huggorm_bindings.gc_stats()["live_roots"]
     kept = [await state.make_string(f'{"p" * 200}-{i}') for i in range(200)]
     assert huggorm_bindings.gc_stats()["live_roots"] >= before + 200
