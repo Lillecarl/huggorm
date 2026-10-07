@@ -320,8 +320,8 @@ def policy_module(model: ir.Model) -> str:
     classes = [*model.constructed, *model.handed_back]
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
-        import_from("_callspec", "Acquire", "Arg", "Call", "Entries", "Items",
-                    "Leaf", "Tree", "Wire", "WireKind", level=1),
+        import_from("_callspec", "Acquire", "Arg", "Builds", "Call", "Entries",
+                    "Items", "Leaf", "Tree", "Wire", "WireKind", level=1),
     ]
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
                        [(c.name, _args([(f.name, f.type) for f in c.wire_fields]))
@@ -355,6 +355,8 @@ def policy_module(model: ir.Model) -> str:
     # its first handle (huggorm#32).
     body.append(_table("TREES", "dict[str, Tree]", [
         (c.name, c.tree) for c in classes if c.tree is not None]))
+    body.append(_table("BUILDERS", "dict[str, Builds]", [
+        (c.name, c.builds) for c in classes if c.builds is not None]))
     body.append(_table("ASYNC_CLASS", "dict[str, str]", [
         (c.name, c.async_name)
         for c in classes if c.served]))

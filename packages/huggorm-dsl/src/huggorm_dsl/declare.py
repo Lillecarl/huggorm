@@ -404,6 +404,9 @@ class Decl:
     # by the RPC layer, so no layer above the declaration knows what
     # the type is or which of its methods do what.
     tree: Tree | None = None
+    # How Python DATA becomes one of the tree's values, on a type that
+    # makes them. Read by the RPC layer, as `tree` is.
+    builds: Builds | None = None
     # What Python holds one of these THROUGH. Empty for the usual
     # case, where Python owns the object outright. "shared_ptr" for a
     # class whose factory hands back a reference-counted handle -
@@ -494,6 +497,7 @@ MARKERS: dict[str, Marker] = {
     "abstract": Marker(_t("class"), "flag"),
     "tagged": Marker(_t("class"), "once"),
     "binding": Marker(_t("class"), "once"),
+    "builds": Marker(_t("class"), "once"),
     "custom": Marker(_t("class"), "once"),
     "gc_slots": Marker(_t("class"), "once"),
     "header": Marker(_t("class"), "once"),
@@ -601,6 +605,39 @@ def tree(kind: str, kinds: dict[str, Leaf | Items | Entries],
 
     def apply(cls: type) -> type:
         _decl(cls).tree = spec
+        return cls
+    return apply
+
+
+@dataclass(frozen=True)
+class Builds:
+    """How Python data becomes a value, by the methods that make one.
+
+    `null` takes no argument. `leaves` maps a tree leaf's wire type to
+    the method that makes one from that scalar. `items` makes an empty
+    list and `add_item(list, value)` appends to it; `entries` and
+    `add_entry(attrs, name, value)` do the same for an attribute set."""
+
+    null: str
+    leaves: dict[str, str]
+    items: str
+    add_item: str
+    entries: str
+    add_entry: str
+
+
+def builds(null: str, leaves: dict[str, str], items: str, add_item: str,
+           entries: str, add_entry: str) -> Callable[[type], type]:
+    """How Python data becomes a value, for a type that makes values.
+
+    The RPC layer reads it and builds a whole value in one hop, so no
+    layer above this declaration names a builder. The build checks
+    every method it names against the class, and the emitter writes it
+    into `_policy.BUILDERS`."""
+    spec = Builds(null, leaves, items, add_item, entries, add_entry)
+
+    def apply(cls: type) -> type:
+        _decl(cls).builds = spec
         return cls
     return apply
 

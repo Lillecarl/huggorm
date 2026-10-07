@@ -701,6 +701,8 @@ class ClassModel:
     factory_name: str = ""
     # How a value that holds values is walked, or None.
     tree: callspec.Tree | None = None
+    # How Python data becomes a value, or None.
+    builds: callspec.Builds | None = None
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -752,6 +754,7 @@ class ClassModel:
             gc_slots=decl.gc_slots,
             factory_name=decl.factory,
             tree=_tree(decl),
+            builds=_builds(decl),
         )
 
     @property
@@ -880,6 +883,31 @@ def _walkable(cls: ClassModel, spec: callspec.Tree) -> None:
             f"not bind.")
 
 
+def _builds(decl: Decl) -> callspec.Builds | None:
+    """`@builds(...)`, as the record the server reads."""
+    spec = decl.builds
+    if spec is None:
+        return None
+    return callspec.Builds(spec.null, dict(spec.leaves), spec.items,
+                           spec.add_item, spec.entries, spec.add_entry)
+
+
+def _buildable(cls: ClassModel, spec: callspec.Builds) -> None:
+    """Refuse builders the class does not bind, or a leaf the tree has
+    no arm for."""
+    if odd := sorted(set(spec.leaves) - TREE_LEAVES):
+        raise TypeError(
+            f"{cls.name}: @builds makes leaves {odd}. A leaf is one of "
+            f"{sorted(TREE_LEAVES)}.")
+    names = [spec.null, *spec.leaves.values(), spec.items, spec.add_item,
+             spec.entries, spec.add_entry]
+    bound = {m.name for m in cls.bound}
+    if missing := [n for n in names if n not in bound]:
+        raise TypeError(
+            f"{cls.name}: its @builds names {missing}, which this class "
+            f"does not bind.")
+
+
 def _shaped(cls: ClassModel) -> ClassModel:
     """`cls`, refused when its value shape cannot round-trip.
 
@@ -892,6 +920,8 @@ def _shaped(cls: ClassModel) -> ClassModel:
             f"{cls.name}: \"{text}\" names no accessor on this class.")
     if cls.tree is not None:
         _walkable(cls, cls.tree)
+    if cls.builds is not None:
+        _buildable(cls, cls.builds)
     fields = [f.name for f in cls.wire_fields]
     if (cls.wire is Crossing.VALUE and (fields or cls.semantics.unit)
             and not cls.is_value

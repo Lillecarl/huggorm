@@ -195,3 +195,19 @@ class Tree:
     identity: str = ""
     force: str = ""
     stop: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Builds:
+    """How Python data becomes a value, by the methods of the type that
+    makes values.
+
+    `leaves` is keyed by a tree leaf's wire type. `add_item` and
+    `add_entry` fill what `items` and `entries` made."""
+
+    null: str
+    leaves: dict[str, str]
+    items: str
+    add_item: str
+    entries: str
+    add_entry: str

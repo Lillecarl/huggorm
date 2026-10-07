@@ -45,6 +45,7 @@ from huggorm_dsl.declare import (
     binding,
     binds,
     blocks,
+    builds,
     cxx_name,
     fills,
     gc_slots,
@@ -1469,6 +1470,16 @@ return huggorm::ReplSelection{std::string(state.symbols[name]), self.wrap(attrs)
 # Python's collector cannot see through, so the class says how to
 # traverse it (huggorm#93).
 @gc_slots("huggorm::evaluator_slots")
+# How `client.value(state, data)` makes a Value from Python data, in
+# one hop on this state's thread (huggorm#147). The builders below, so
+# the RPC layer names none of them.
+@builds(
+    null="make_null",
+    leaves={"int": "make_int", "float": "make_float", "str": "make_string",
+            "bool": "make_bool"},
+    items="make_list", add_item="list_append",
+    entries="make_attrs", add_entry="attrs_set",
+)
 @binding(
     cxx="huggorm::Evaluator",
     # Not thread-safe, one per thread. libexpr says so and this is
