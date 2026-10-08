@@ -58,11 +58,17 @@ class Memory(SourceAccessor):
         data, executable = node if isinstance(node, tuple) else (node, False)
         return Stat(FileType.REGULAR, len(data), executable)
 
-    def read_directory(self, path: str) -> list[str]:
+    def read_directory(self, path: str) -> dict[str, FileType | None]:
         prefix = path.rstrip("/") + "/"
-        return sorted({p[len(prefix):].split("/")[0]
-                       for p in [*self.tree, *self._dirs()]
-                       if p.startswith(prefix) and p != prefix})
+        names = {p[len(prefix):].split("/")[0]
+                 for p in [*self.tree, *self._dirs()]
+                 if p.startswith(prefix) and p != prefix}
+        entries: dict[str, FileType | None] = {}
+        for name in sorted(names):
+            stat = self.maybe_lstat(prefix + name)
+            assert stat is not None
+            entries[name] = stat.type()
+        return entries
 
     def read_link(self, path: str) -> str:
         node = self.tree[path]
@@ -112,7 +118,19 @@ def test_python_reads_the_hooks() -> None:
     assert (stat.type(), stat.file_size(), stat.is_executable()) == (
         FileType.REGULAR, 19, True)
     assert memory.maybe_lstat("/absent") is None
-    assert memory.read_directory("/") == ["bin", "empty", "hello.txt", "link"]
+    assert memory.read_directory("/") == {
+        "bin": FileType.DIRECTORY, "empty": FileType.DIRECTORY,
+        "hello.txt": FileType.REGULAR, "link": FileType.SYMLINK}
+
+
+def test_an_entry_with_no_type_is_read_as_one_to_lstat() -> None:
+    class NamesOnly(Memory):
+        def read_directory(self, path: str) -> dict[str, FileType | None]:
+            return dict.fromkeys(super().read_directory(path))
+
+    store = dummy()
+    assert store.add_accessor_to_store("tree", NamesOnly(TREE)) == (
+        store.add_accessor_to_store("tree", Memory(TREE)))
 
 
 def test_a_layer_overrides_one_file_and_forwards_the_rest(
@@ -231,7 +249,9 @@ def test_python_reads_a_store_object() -> None:
     stat = tree.maybe_lstat("/bin/run")
     assert stat is not None and stat.is_executable()
     assert tree.read_link("/link") == "hello.txt"
-    assert tree.read_directory("/") == ["bin", "empty", "hello.txt", "link"]
+    assert tree.read_directory("/") == {
+        "bin": "directory", "empty": "directory",
+        "hello.txt": "regular", "link": "symlink"}
     assert tree.maybe_lstat("/absent") is None
     absent = store.parse_store_path(
         "/nix/store/00000000000000000000000000000000-absent")

@@ -729,7 +729,8 @@ def _plain(cls: ir.ClassModel, m: ir.MethodModel,
     if m.returns is not None and (
             m.returns.cxx == BYTES_SPELLINGS[1]
             or (m.returns.required.kind == ir.Kind.ENUM
-                and _word_answer(m.returns, model) is None)):
+                and _word_answer(m.returns, model) is None
+                and _word_values(m.returns, model) is None)):
         raise TypeError(
             f"{cls.name}.{m.name}: a @virtual cannot answer a list of bytes "
             f"or a vocabulary with no C++ enum.")
@@ -747,8 +748,27 @@ def _word_answer(t: ir.TypeRef | None, model: ir.Model | None
     return held
 
 
+def _word_values(t: ir.TypeRef | None, model: ir.Model | None
+                 ) -> ir.EnumModel | None:
+    """The vocabulary a @virtual's `dict[str, W]` answer holds as its
+    values, maybe None, when it has a C++ enum."""
+    if t is None or t.origin is not ir.Origin.DICT:
+        return None
+    return _word_answer(t.args[0], model)
+
+
+def _word_map_cxx(t: ir.TypeRef, words: ir.EnumModel) -> str:
+    """The C++ map a `dict[str, W]` answer is: the enum, maybe absent."""
+    assert words.cxx is not None
+    held = (f"std::optional<{words.cxx.held}>" if t.args[0].optional
+            else words.cxx.held)
+    return f"std::map<std::string, {held}>"
+
+
 def _answer_cxx(t: ir.TypeRef, model: ir.Model | None) -> str:
     """A @virtual's C++ return type: a vocabulary is its enum."""
+    if (values := _word_values(t, model)) is not None:
+        return _word_map_cxx(t, values)
     words = _word_answer(t, model)
     if words is None or words.cxx is None:
         return _virtual_cxx(t.cxx)
@@ -763,6 +783,17 @@ def _taken(t: ir.TypeRef | None, model: ir.Model | None) -> list[str]:
         return ["return;"]
     if _is_bytes(t):
         return ["return from_bytes(nb::cast<nb::bytes>(answer));"]
+    if (values := _word_values(t, model)) is not None:
+        assert values.cxx is not None
+        parser = values.parsed_by or f"from_word<{values.cxx.held}>"
+        word = f"{parser}(nb::cast<std::string>(item.second))"
+        if t.args[0].optional:
+            word = (f"item.second.is_none() ? std::optional<{values.cxx.held}>{{}}"
+                    f" : std::optional<{values.cxx.held}>{{{word}}}")
+        return [f"{_word_map_cxx(t, values)} out;",
+                "for (auto item : nb::cast<nb::dict>(answer))",
+                f"{INDENT}out.emplace(nb::cast<std::string>(item.first), {word});",
+                "return out;"]
     words = _word_answer(t, model)
     if words is None or words.cxx is None:
         return [f"return nb::cast<{_virtual_cxx(t.cxx)}>(answer);"]
@@ -1333,7 +1364,21 @@ class Emitter:
         release = ([f"{INDENT * 5}nb::gil_scoped_release nb_released;"]
                    if waits(cls, m) else [])
         words = _word_answer(m.returns, self.model)
-        if _is_bytes(m.returns):
+        values = _word_values(m.returns, self.model)
+        if m.returns is not None and values is not None:
+            word = f"{NAMESPACE}::as_word(item.second)"
+            if m.returns.args[0].optional:
+                word = (f"item.second ? std::optional<std::string>{{"
+                        f"{NAMESPACE}::as_word(*item.second)}} : std::nullopt")
+            body += [f"{INDENT * 4}{_answer_cxx(m.returns, self.model)} answer;",
+                     f"{INDENT * 4}{{", *release,
+                     f"{INDENT * 5}answer = {call};",
+                     f"{INDENT * 4}}}",
+                     f"{INDENT * 4}{m.returns.cxx} out;",
+                     f"{INDENT * 4}for (auto & item : answer)",
+                     f"{INDENT * 5}out.emplace(item.first, {word});",
+                     f"{INDENT * 4}return out;"]
+        elif _is_bytes(m.returns):
             body += [f"{INDENT * 4}std::string answer;",
                      f"{INDENT * 4}{{", *release,
                      f"{INDENT * 5}answer = {call};",

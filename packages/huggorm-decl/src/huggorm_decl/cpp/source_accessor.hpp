@@ -18,7 +18,6 @@
 #include <string>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include "nix/util/error.hh"
 #include "nix/util/serialise.hh"
@@ -86,16 +85,9 @@ public:
         return below("maybe_lstat").maybeLstat(nix::CanonPath(path));
     }
 
-    /**
-     * Names only. Nix reads an entry with no type as one to `lstat`
-     * later, so a subclass answers what it knows and loses nothing.
-     */
-    virtual std::vector<std::string> read_directory(const std::string & path)
+    virtual DirEntries read_directory(const std::string & path)
     {
-        std::vector<std::string> names;
-        for (auto & [name, type] : below("read_directory").readDirectory(nix::CanonPath(path)))
-            names.push_back(name);
-        return names;
+        return below("read_directory").readDirectory(nix::CanonPath(path));
     }
 
     virtual std::string read_link(const std::string & path)
@@ -115,10 +107,7 @@ public:
 
     DirEntries readDirectory(const nix::CanonPath & path) override
     {
-        DirEntries entries;
-        for (auto & name : read_directory(path.abs()))
-            entries.emplace(std::move(name), std::nullopt);
-        return entries;
+        return read_directory(path.abs());
     }
 
     std::string readLink(const nix::CanonPath & path) override

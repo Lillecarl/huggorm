@@ -82,8 +82,10 @@ class SourceAccessor:
         """What is at `path`, or None when nothing is."""
 
     @virtual
-    def read_directory(self, path: Str) -> list[Str]:
-        """The names in the directory at `path`."""
+    def read_directory(self, path: Str) -> dict[str, FileType | None]:
+        """The entries of the directory at `path`, each with its type.
+        None for a type the accessor does not know: Nix asks
+        `maybe_lstat` for it when it needs it."""
 
     @virtual
     def read_link(self, path: Str) -> Str:
