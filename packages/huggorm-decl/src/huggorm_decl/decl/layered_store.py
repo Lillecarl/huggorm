@@ -157,6 +157,11 @@ class LayeredStore(Store):
         """What a content-addressed output turned out to be, or None."""
 
     @virtual
+    def register_drv_output(self, output: Realisation,
+                            check_sigs: Bint = True) -> None:
+        """Record what a content-addressed output turned out to be."""
+
+    @virtual
     def read_derivation(self, path: StorePath) -> Derivation:
         """The derivation at `path`."""
 

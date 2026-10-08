@@ -119,11 +119,8 @@ class DrvOutput:
 class Realisation:
     """What a CA derivation's output turned out to be.
 
-    A VALUE: what the store's database said when it was asked.
-
-    Produced, never constructed. `Store.register_drv_output` is what
-    would earn a constructor and it is not bound, so nothing here
-    pretends a caller can build one.
+    A VALUE: what the store's database said when it was asked, or
+    what a caller hands `Store.register_drv_output`.
 
     UPSTREAM keeps two types where this keeps one.
     `queryRealisation` answers an `UnkeyedRealisation` - the key is
@@ -135,6 +132,11 @@ class Realisation:
     """
 
     # WIRE ORDER: what it is, what it is, and who says so.
+
+    def __init__(self, id: DrvOutput, out_path: StorePath,
+                 signatures: list[Signature] | None = None) -> None:
+        """Say that output `id` turned out to be `out_path`."""
+        Cxx("new (self) nix::Realisation{{out_path, {signatures.begin(), signatures.end()}}, id};")
 
     @reads("id")
     def id(self) -> DrvOutput:

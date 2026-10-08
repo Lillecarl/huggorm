@@ -760,6 +760,15 @@ return nix::Realisation{*found, id};
         arguments and this binds one, so there is a call to write."""
         Cxx("return self.queryDerivationOutputMap(path);")
 
+    @needs("nix/store/realisation.hh")
+    def register_drv_output(self, output: Realisation,
+                            check_sigs: Bint = True) -> None:
+        """Record what a content-addressed output turned out to be.
+
+        `check_sigs` refuses a realisation no trusted key signed, as
+        Nix does by default."""
+        Cxx("self.registerDrvOutput(output, check_sigs ? nix::CheckSigs : nix::NoCheckSigs);")
+
     # `query_missing` says what building these WOULD do; this does it.
     # The pair is upstream's own, and it is why the union exists
     # (huggorm#59): both take the same list, and only one of them

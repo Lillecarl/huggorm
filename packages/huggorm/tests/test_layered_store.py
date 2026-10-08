@@ -17,6 +17,7 @@ from huggorm_bindings import (
     BuildMode,
     LayeredStore,
     LayeredStoreConfig,
+    Realisation,
     Store,
     TrustedFlag,
     get_setting,
@@ -339,6 +340,23 @@ def test_nix_reaches_write_derivation(
     assert Store.add_derivation(store, drv.to_json()) == drv_path
     assert written == [drv.name()]
     assert under.is_valid_path(drv_path), "super() wrote below"
+
+
+def test_nix_reaches_register_drv_output(under: Any) -> None:
+    held = under.add_to_store("held", b"held")
+    output = Realisation(drv_output(1, "out"), held)
+    got: list[tuple[Any, bool]] = []
+
+    class Registers(LayeredStore):
+        def register_drv_output(self, output: Realisation,
+                                check_sigs: bool = True) -> None:
+            got.append((output, check_sigs))
+
+    Store.register_drv_output(opened(Registers), output, False)
+    assert got == [(output, False)]
+    assert output.out_path() == held and output.signatures() == []
+    with pytest.raises(Unsupported, match="registerDrvOutput"):
+        Store.register_drv_output(opened(LayeredStore), output)
 
 
 def test_ensure_path_runs_below(under: Any) -> None:

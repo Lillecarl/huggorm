@@ -294,6 +294,11 @@ public:
         return nix::Realisation{*found, id};
     }
 
+    virtual void register_drv_output(const nix::Realisation & output, bool check_sigs)
+    {
+        below("registerDrvOutput").registerDrvOutput(output, check_sigs ? nix::CheckSigs : nix::NoCheckSigs);
+    }
+
     virtual nix::Derivation read_derivation(const nix::StorePath & path)
     {
         return underlying_ ? underlying_->readDerivation(path) : Store::readDerivation(path);
@@ -548,7 +553,7 @@ public:
 
     void registerDrvOutput(const nix::Realisation & output, nix::CheckSigsFlag checkSigs) override
     {
-        below("registerDrvOutput").registerDrvOutput(output, checkSigs);
+        register_drv_output(output, checkSigs == nix::CheckSigs);
     }
 
 #if __has_include("nix/store/build.hh")
