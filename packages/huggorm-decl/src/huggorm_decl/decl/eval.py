@@ -28,6 +28,7 @@ in this binding a declaration could not have written, and
 
 from huggorm_decl.decl.flakeref import FlakeRef
 from huggorm_decl.decl.path import ErrorInfo, StorePath
+from huggorm_decl.decl.source_accessor import SourceAccessor
 from huggorm_decl.decl.store import Store
 from huggorm_dsl.declare import (
     F64,
@@ -1646,6 +1647,31 @@ if (path.empty())
 auto * made = self.alloc();
 self.state().evalFile(nix::lookupFileArg(self.state(), path), *made);
 return self.wrap(made);
+        """)
+
+    @needs("nix/fetchers/fetch-to-store.hh",
+           "nix/util/mounted-source-accessor.hh")
+    def mount(self, accessor: SourceAccessor, name: Str = "source") -> StorePath:
+        """Show `accessor`'s tree to the evaluator at its store path.
+
+        What Nix does with a lazily fetched input (`mountInput`): the
+        tree is hashed once, to find its path, and mounted there. The
+        evaluator reads the files through `accessor` from then on, and
+        the store is not written. Interpolating a path in the tree adds
+        that part to the store, read through `accessor` too.
+
+        A path, not an accessor of its own, so path arithmetic works:
+        `./. + "/x"` and a string turned back into a path both land in
+        the evaluator's root filesystem, which holds the mount. Pure
+        evaluation may read it."""
+        Cxx("""
+auto & state = self.state();
+nix::ref<nix::SourceAccessor> tree{accessor};
+auto path = nix::fetchToStore2(
+    state.fetchSettings, *state.store, nix::SourcePath{tree}, nix::FetchMode::DryRun, name).first;
+state.allowPath(path);
+state.storeFS->mount(nix::CanonPath(state.store->printStorePath(path)), tree);
+return path;
         """)
 
     def cached_files(self) -> list[Str]:

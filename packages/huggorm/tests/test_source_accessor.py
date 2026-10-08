@@ -1,9 +1,11 @@
 """File trees Python serves to Nix (huggorm#152).
 
 A `SourceAccessor` subclass answers four hooks, and Nix reads the tree
-through them: here `add_accessor_to_store` dumps it as a NAR.
+through them: `add_accessor_to_store` dumps it as a NAR, and
+`EvalState.mount` shows it to the evaluator at its store path.
 """
 
+import json
 import os
 import pathlib
 from typing import Any
@@ -146,3 +148,60 @@ def test_a_raising_hook_is_an_error() -> None:
 def test_an_accessor_with_nothing_below_raises() -> None:
     with pytest.raises(Exception, match="nothing below it"):
         SourceAccessor().read_file("/")
+
+
+SOURCE: dict[str, Any] = {
+    "/default.nix": b"""{
+  imported = import ./sub/x.nix;
+  joined = builtins.readFile (./. + "/hello.txt");
+  listed = builtins.readDir ./.;
+  missing = builtins.pathExists ./absent;
+  linked = builtins.readFile ./link;
+}
+""",
+    "/sub/x.nix": b"41 + 1\n",
+    "/hello.txt": b"hello\n",
+    "/link": "hello.txt",
+}
+
+
+@pytest.mark.parametrize("pure", [False, True])
+def test_the_evaluator_reads_a_mounted_tree(pure: bool) -> None:
+    """Path arithmetic and pure evaluation both reach the mount
+    (huggorm#153)."""
+    from huggorm_bindings import EvalState
+
+    store = dummy()
+    state = EvalState(store, {"pure-eval": str(pure).lower()})
+    path = state.mount(Memory(SOURCE))
+    assert path == dummy().add_accessor_to_store("source", Memory(SOURCE))
+    entry = f"{store.print_store_path(path)}/default.nix"
+    got = json.loads(state.eval_file(entry).to_json())
+    assert got == {
+        "imported": 42,
+        "joined": "hello\n",
+        "listed": {"default.nix": "regular", "hello.txt": "regular",
+                   "link": "symlink", "sub": "directory"},
+        "missing": False,
+        "linked": "hello\n",
+    }
+
+
+def test_mounting_reads_without_adding() -> None:
+    from huggorm_bindings import EvalState
+
+    store = dummy()
+    path = EvalState(store).mount(Memory(SOURCE))
+    assert not store.is_valid_path(path)
+
+
+def test_interpolating_a_mounted_path_copies_it_through_python() -> None:
+    from huggorm_bindings import EvalState
+
+    store = dummy()
+    state = EvalState(store)
+    path = state.mount(Memory(SOURCE))
+    sub = f"{store.print_store_path(path)}/sub"
+    copied = state.eval_expr(f'"${{{sub}}}"').string_value()
+    added = store.add_accessor_to_store("sub", Memory(SOURCE), "/sub")
+    assert copied == store.print_store_path(added)
