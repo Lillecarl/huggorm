@@ -7,6 +7,7 @@ keeps a Python callable.
 """
 
 import itertools
+import pathlib
 from typing import Any
 
 import pytest
@@ -316,6 +317,28 @@ def test_nix_reaches_is_trusted_client(under: Any) -> None:
     assert Store.is_trusted_client(opened(Unsure)) is None
     below = Store.is_trusted_client(under)
     assert Store.is_trusted_client(opened(LayeredStore, under)) == below
+
+
+def test_nix_reaches_write_derivation(
+        under: Any, tmp_path: pathlib.Path) -> None:
+    """`add_derivation` parses JSON and calls Nix's `writeDerivation`,
+    which reaches the override; `super()` writes below."""
+    from test_derivation import LEAF, instantiate
+
+    src = Store(str(tmp_path))
+    drv_path = instantiate(tmp_path, LEAF)
+    drv = src.read_derivation(drv_path)
+    written: list[Any] = []
+
+    class Writes(LayeredStore):
+        def write_derivation(self, drv: Any, repair: bool = False) -> Any:
+            written.append(drv.name())
+            return super().write_derivation(drv, repair)
+
+    store = opened(Writes, under)
+    assert Store.add_derivation(store, drv.to_json()) == drv_path
+    assert written == [drv.name()]
+    assert under.is_valid_path(drv_path), "super() wrote below"
 
 
 def test_ensure_path_runs_below(under: Any) -> None:

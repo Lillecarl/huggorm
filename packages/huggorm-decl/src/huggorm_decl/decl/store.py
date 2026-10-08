@@ -898,6 +898,14 @@ return self.writeDerivation(drv);
 auto drv = nix::Derivation::parseJsonAndValidate(self, nlohmann::json::parse(json));
 return self.writeDerivation(drv);
             """)
+    @needs("nix/store/derivations.hh")
+    def write_derivation(self, drv: Derivation,
+                         repair: Bint = False) -> StorePath:
+        """Write `drv` to the store as a `.drv`, and answer its path.
+
+        `add_derivation` does the same from Nix's JSON."""
+        Cxx("return self.writeDerivation(drv, repair ? nix::Repair : nix::NoRepair);")
+
     @needs("nix/store/log-store.hh", "nix/store/store-cast.hh")
     def get_build_log(self, path: StorePath) -> Str | None:
         """The log of the build that made this path, or None.

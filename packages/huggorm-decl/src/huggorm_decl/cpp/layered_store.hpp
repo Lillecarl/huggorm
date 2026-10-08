@@ -299,6 +299,12 @@ public:
         return underlying_ ? underlying_->readDerivation(path) : Store::readDerivation(path);
     }
 
+    virtual nix::StorePath write_derivation(nix::Derivation & drv, bool repair)
+    {
+        auto flag = repair ? nix::Repair : nix::NoRepair;
+        return underlying_ ? underlying_->writeDerivation(drv, flag) : Store::writeDerivation(drv, flag);
+    }
+
     virtual void optimise_store()
     {
         if (underlying_)
@@ -472,6 +478,13 @@ public:
     nix::Derivation readDerivation(const nix::StorePath & path) override
     {
         return read_derivation(path);
+    }
+
+    nix::StorePath writeDerivation(const nix::Derivation & drv, nix::RepairFlag repair) override
+    {
+        // The emitter spells a bound parameter without `const`. Nothing
+        // writes through it: the trampoline hands Python a copy.
+        return write_derivation(const_cast<nix::Derivation &>(drv), repair == nix::Repair);
     }
 
     void optimiseStore() override

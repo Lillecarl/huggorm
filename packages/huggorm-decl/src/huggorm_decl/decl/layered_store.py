@@ -155,6 +155,11 @@ class LayeredStore(Store):
         """The derivation at `path`."""
 
     @virtual
+    def write_derivation(self, drv: Derivation,
+                         repair: Bint = False) -> StorePath:
+        """Write `drv` to the store as a `.drv`, and answer its path."""
+
+    @virtual
     def optimise_store(self) -> None:
         """Hard-link identical files together."""
 
