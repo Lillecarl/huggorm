@@ -717,11 +717,10 @@ def _virtuals(cls: ir.ClassModel) -> tuple[ir.MethodModel, ...]:
 def _plain(cls: ir.ClassModel, m: ir.MethodModel,
            model: ir.Model | None) -> None:
     """Refuse a parameter an override cannot take as declared. The
-    trampoline's signature must match the C++ virtual exactly, and an
-    absent container arrives as another type. A vocabulary is the enum
-    it parses to, so it needs one."""
+    trampoline's signature must match the C++ virtual exactly. A
+    vocabulary is the enum it parses to, so it needs one."""
     for pr in m.params:
-        if (pr.absent or pr.type.cxx == BYTES_SPELLINGS[1]
+        if (pr.type.cxx == BYTES_SPELLINGS[1]
                 or (pr.parsed_by and _word_enum(pr, model) is None)):
             raise TypeError(
                 f"{cls.name}.{m.name}({pr.name}): a @virtual takes each "
@@ -787,10 +786,13 @@ def _word_enum(pr: ir.ParamModel, model: ir.Model | None
 
 
 def _virtual_param(pr: ir.ParamModel, model: ir.Model | None) -> str:
-    """A @virtual parameter's C++ type: a vocabulary is its enum."""
+    """A @virtual parameter's C++ type: a vocabulary is its enum, and a
+    container that may be None is the container, opened by the binding."""
     words = _word_enum(pr, model)
     if words is not None and words.cxx is not None:
         return words.cxx.held
+    if pr.absent:
+        return f"const {pr.type.required.cxx} &"
     return _virtual_cxx(pr.cxx)
 
 
