@@ -714,19 +714,54 @@ def _virtuals(cls: ir.ClassModel) -> tuple[ir.MethodModel, ...]:
     return tuple(m for m in cls.bound if m.virtual)
 
 
-def _plain(cls: ir.ClassModel, m: ir.MethodModel) -> None:
+def _plain(cls: ir.ClassModel, m: ir.MethodModel,
+           model: ir.Model | None) -> None:
     """Refuse a parameter an override cannot take as declared. The
-    trampoline's signature must match the C++ virtual exactly, and a
-    vocabulary or an absent container arrives as another type."""
+    trampoline's signature must match the C++ virtual exactly, and an
+    absent container arrives as another type. A vocabulary is the enum
+    it parses to, so it needs one."""
     for pr in m.params:
-        if pr.parsed_by or pr.absent or pr.type.cxx == BYTES_SPELLINGS[1]:
+        if (pr.absent or pr.type.cxx == BYTES_SPELLINGS[1]
+                or (pr.parsed_by and _word_enum(pr, model) is None)):
             raise TypeError(
                 f"{cls.name}.{m.name}({pr.name}): a @virtual takes each "
                 f"parameter as the C++ virtual does, and this one arrives "
                 f"converted.")
-    if m.returns is not None and m.returns.cxx == BYTES_SPELLINGS[1]:
+    if m.returns is not None and (m.returns.cxx == BYTES_SPELLINGS[1]
+                                  or m.returns_word):
         raise TypeError(
-            f"{cls.name}.{m.name}: a @virtual cannot answer a list of bytes.")
+            f"{cls.name}.{m.name}: a @virtual cannot answer a list of bytes "
+            f"or a vocabulary.")
+
+
+def _word_enum(pr: ir.ParamModel, model: ir.Model | None
+               ) -> ir.EnumModel | None:
+    """The vocabulary a parameter parses, when it has a C++ enum."""
+    if not pr.parsed_by or model is None:
+        return None
+    held = model.declared(pr.type)
+    if not isinstance(held, ir.EnumModel) or held.cxx is None:
+        return None
+    return held
+
+
+def _virtual_param(pr: ir.ParamModel, model: ir.Model | None) -> str:
+    """A @virtual parameter's C++ type: a vocabulary is its enum."""
+    words = _word_enum(pr, model)
+    if words is not None and words.cxx is not None:
+        return words.cxx.held
+    return _virtual_cxx(pr.cxx)
+
+
+def _handed(pr: ir.ParamModel, model: ir.Model | None) -> str:
+    """How the trampoline hands one argument to a Python override: as the
+    type the override is annotated with. A vocabulary is its member."""
+    if _is_bytes(pr.type):
+        return f"to_bytes({pr.name})"
+    if (words := _word_enum(pr, model)) is not None:
+        return (f'nb::module_::import_("{words.module}")'
+                f'.attr("{words.name}")(as_word({pr.name}))')
+    return pr.name
 
 
 def _virtual_cxx(spelled: str) -> str:
@@ -774,7 +809,7 @@ def rethrow_as_nix(errors: ir.Errors) -> list[str]:
             f"}}  // namespace {NAMESPACE}", ""]
 
 
-def trampoline(cls: ir.ClassModel) -> list[str]:
+def trampoline(cls: ir.ClassModel, model: ir.Model | None = None) -> list[str]:
     """The C++ subclass that hands `cls`'s virtuals to a Python override
     (huggorm#84).
 
@@ -792,18 +827,17 @@ def trampoline(cls: ir.ClassModel) -> list[str]:
     if not methods:
         return []
     for m in methods:
-        _plain(cls, m)
+        _plain(cls, m, model)
     out = [f"namespace {NAMESPACE} {{", "",
            f"struct Py{cls.name} : public {cls.held}",
            "{",
            f"{INDENT}NB_TRAMPOLINE({cls.held}, {len(methods)});"]
     for m in methods:
         ret = _virtual_cxx(m.returns.cxx) if m.returns is not None else "void"
-        params = ", ".join(f"{_virtual_cxx(pr.cxx)} {pr.name}"
+        params = ", ".join(f"{_virtual_param(pr, model)} {pr.name}"
                            for pr in m.params)
         args = ", ".join(pr.name for pr in m.params)
-        handed = ", ".join(f"to_bytes({pr.name})" if _is_bytes(pr.type)
-                           else pr.name for pr in m.params)
+        handed = ", ".join(_handed(pr, model) for pr in m.params)
         answer = ("return from_bytes(nb::cast<nb::bytes>(answer));"
                   if _is_bytes(m.returns)
                   else f"return nb::cast<{ret}>(answer);"
@@ -1248,9 +1282,9 @@ class Emitter:
 
         It releases the GIL itself, not with a call guard, because bytes
         convert on each side of the call and a conversion needs the GIL."""
-        args, _ = self._signature(m.params)
+        args, opening = self._signature(m.params)
         me, held = self._self(cls)
-        body = [*held] + [f"{INDENT * 4}const std::string {pr.name}_ = "
+        body = [*held, *opening] + [f"{INDENT * 4}const std::string {pr.name}_ = "
                 f"from_bytes({pr.name});"
                 for pr in m.params if _is_bytes(pr.type)]
         names = ", ".join(f"{pr.name}_" if _is_bytes(pr.type) else pr.name
@@ -2187,7 +2221,7 @@ class Emitter:
         if any(_virtuals(cls) for cls in classes):
             head += rethrow_as_nix(self.model.errors)
         for cls in classes:
-            head += trampoline(cls)
+            head += trampoline(cls, self.model)
         out = "\n".join(head) + "\n" + "\n".join(
             self.bind_function(cls) for cls in classes)
         return out + ("\n" + self.free_functions(exported)
