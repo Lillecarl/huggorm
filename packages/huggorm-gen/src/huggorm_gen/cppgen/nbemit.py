@@ -727,11 +727,52 @@ def _plain(cls: ir.ClassModel, m: ir.MethodModel,
                 f"{cls.name}.{m.name}({pr.name}): a @virtual takes each "
                 f"parameter as the C++ virtual does, and this one arrives "
                 f"converted.")
-    if m.returns is not None and (m.returns.cxx == BYTES_SPELLINGS[1]
-                                  or m.returns_word):
+    if m.returns is not None and (
+            m.returns.cxx == BYTES_SPELLINGS[1]
+            or (m.returns.required.kind == ir.Kind.ENUM
+                and _word_answer(m.returns, model) is None)):
         raise TypeError(
             f"{cls.name}.{m.name}: a @virtual cannot answer a list of bytes "
-            f"or a vocabulary.")
+            f"or a vocabulary with no C++ enum.")
+
+
+def _word_answer(t: ir.TypeRef | None, model: ir.Model | None
+                 ) -> ir.EnumModel | None:
+    """The vocabulary a @virtual answers, maybe None, when it has a C++
+    enum."""
+    if t is None or model is None or t.required.origin:
+        return None
+    held = model.declared(t.required)
+    if not isinstance(held, ir.EnumModel) or held.cxx is None:
+        return None
+    return held
+
+
+def _answer_cxx(t: ir.TypeRef, model: ir.Model | None) -> str:
+    """A @virtual's C++ return type: a vocabulary is its enum."""
+    words = _word_answer(t, model)
+    if words is None or words.cxx is None:
+        return _virtual_cxx(t.cxx)
+    return (f"std::optional<{words.cxx.held}>" if t.optional
+            else words.cxx.held)
+
+
+def _taken(t: ir.TypeRef | None, model: ir.Model | None) -> list[str]:
+    """How the trampoline turns an override's `answer` into the C++
+    return: bytes and a vocabulary convert, and the rest casts."""
+    if t is None:
+        return ["return;"]
+    if _is_bytes(t):
+        return ["return from_bytes(nb::cast<nb::bytes>(answer));"]
+    words = _word_answer(t, model)
+    if words is None or words.cxx is None:
+        return [f"return nb::cast<{_virtual_cxx(t.cxx)}>(answer);"]
+    parser = words.parsed_by or f"from_word<{words.cxx.held}>"
+    parsed = [f"return {parser}(nb::cast<std::string>(answer));"]
+    if t.optional:
+        return ["if (answer.is_none())", f"{INDENT}return std::nullopt;",
+                *parsed]
+    return parsed
 
 
 def _word_enum(pr: ir.ParamModel, model: ir.Model | None
@@ -833,15 +874,12 @@ def trampoline(cls: ir.ClassModel, model: ir.Model | None = None) -> list[str]:
            "{",
            f"{INDENT}NB_TRAMPOLINE({cls.held}, {len(methods)});"]
     for m in methods:
-        ret = _virtual_cxx(m.returns.cxx) if m.returns is not None else "void"
+        ret = (_answer_cxx(m.returns, model) if m.returns is not None
+               else "void")
         params = ", ".join(f"{_virtual_param(pr, model)} {pr.name}"
                            for pr in m.params)
         args = ", ".join(pr.name for pr in m.params)
         handed = ", ".join(_handed(pr, model) for pr in m.params)
-        answer = ("return from_bytes(nb::cast<nb::bytes>(answer));"
-                  if _is_bytes(m.returns)
-                  else f"return nb::cast<{ret}>(answer);"
-                  if m.returns is not None else "return;")
         out += ["",
                 f"{INDENT}{ret} {m.cxx_name or m.name}({params}) override",
                 f"{INDENT}{{",
@@ -856,7 +894,7 @@ def trampoline(cls: ir.ClassModel, model: ir.Model | None = None) -> list[str]:
                 f"{INDENT * 4}}} catch (nb::python_error & e) {{",
                 f"{INDENT * 5}rethrow_as_nix(e);",
                 f"{INDENT * 4}}}",
-                f"{INDENT * 4}{answer}",
+                *[f"{INDENT * 4}{line}" for line in _taken(m.returns, model)],
                 f"{INDENT * 3}}}",
                 f"{INDENT * 2}}}",
                 f"{INDENT * 2}return NBBase::{m.cxx_name or m.name}({args});",
@@ -1292,12 +1330,24 @@ class Emitter:
         call = f"{SELF}.{cls.held}::{m.cxx_name or m.name}({names})"
         release = ([f"{INDENT * 5}nb::gil_scoped_release nb_released;"]
                    if waits(cls, m) else [])
+        words = _word_answer(m.returns, self.model)
         if _is_bytes(m.returns):
             body += [f"{INDENT * 4}std::string answer;",
                      f"{INDENT * 4}{{", *release,
                      f"{INDENT * 5}answer = {call};",
                      f"{INDENT * 4}}}",
                      f"{INDENT * 4}return to_bytes(answer);"]
+        elif m.returns is not None and words is not None:
+            body += [f"{INDENT * 4}{_answer_cxx(m.returns, self.model)} answer;",
+                     f"{INDENT * 4}{{", *release,
+                     f"{INDENT * 5}answer = {call};",
+                     f"{INDENT * 4}}}"]
+            if m.returns.optional:
+                body += [f"{INDENT * 4}if (!answer)",
+                         f"{INDENT * 5}return std::nullopt;",
+                         f"{INDENT * 4}return {NAMESPACE}::as_word(*answer);"]
+            else:
+                body += [f"{INDENT * 4}return {NAMESPACE}::as_word(answer);"]
         else:
             body += [f"{INDENT * 4}{{", *release,
                      f"{INDENT * 5}return {call};",
