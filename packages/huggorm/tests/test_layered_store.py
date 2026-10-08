@@ -13,6 +13,7 @@ import pytest
 from nixversion import drv_output
 
 from huggorm_bindings import (
+    BuildMode,
     LayeredStore,
     LayeredStoreConfig,
     Store,
@@ -269,6 +270,35 @@ def test_a_copy_asks_the_destination_which_paths_it_holds(
     under.copy_closure(opened(LayeredStore, below), [held],
                        check_sigs=False)
     assert below.is_valid_path(held), "and copies without the claim"
+
+
+def test_nix_reaches_the_build_hooks(under: Any) -> None:
+    """On Nix git the builds are on `getBuilder`'s builder, before that on
+    the store; both reach the same hooks. The mode arrives as its word,
+    and no eval store as None."""
+    held = under.add_to_store("held", b"held")
+    called: list[tuple[str, list[Any], str, Any]] = []
+
+    class Builds(LayeredStore):
+        def build_paths(self, targets: list[Any],
+                        mode: BuildMode = BuildMode.NORMAL,
+                        eval_store: Any = None) -> None:
+            called.append(("build_paths", targets, mode, eval_store))
+
+        def build_paths_with_results(
+                self, targets: list[Any], mode: BuildMode = BuildMode.NORMAL,
+                eval_store: Any = None) -> list[Any]:
+            called.append(("with_results", targets, mode, eval_store))
+            return super().build_paths_with_results(targets, mode, eval_store)
+
+    store = opened(Builds, under)
+    Store.build_paths(store, [held], BuildMode.REPAIR)
+    [result] = Store.build_paths_with_results(store, [held])
+    assert result.path() == held
+    assert called == [("build_paths", [held], BuildMode.REPAIR, None),
+                      ("with_results", [held], BuildMode.NORMAL, None)]
+    assert all(type(mode) is BuildMode for _, _, mode, _ in called), (
+        "the override gets the member its annotation names")
 
 
 def test_ensure_path_runs_below(under: Any) -> None:

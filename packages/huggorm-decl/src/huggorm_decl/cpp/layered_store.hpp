@@ -322,6 +322,45 @@ public:
 #endif
     }
 
+    virtual void build_paths(
+        const std::vector<nix::DerivedPath> & targets,
+        nix::BuildMode mode,
+        const std::optional<std::shared_ptr<nix::Store>> & eval_store)
+    {
+        auto evalStore = eval_store.value_or(nullptr);
+#if __has_include("nix/store/build.hh")
+        (underlying_ ? underlying_->getBuilder(evalStore) : Store::getBuilder(evalStore))->buildPaths(targets, mode);
+#else
+        if (underlying_)
+            underlying_->buildPaths(targets, mode, evalStore);
+        else
+            Store::buildPaths(targets, mode, evalStore);
+#endif
+    }
+
+    virtual std::vector<nix::KeyedBuildResult> build_paths_with_results(
+        const std::vector<nix::DerivedPath> & targets,
+        nix::BuildMode mode,
+        const std::optional<std::shared_ptr<nix::Store>> & eval_store)
+    {
+        auto evalStore = eval_store.value_or(nullptr);
+#if __has_include("nix/store/build.hh")
+        return (underlying_ ? underlying_->getBuilder(evalStore) : Store::getBuilder(evalStore))
+            ->buildPathsWithResults(targets, mode);
+#else
+        return underlying_ ? underlying_->buildPathsWithResults(targets, mode, evalStore)
+                           : Store::buildPathsWithResults(targets, mode, evalStore);
+#endif
+    }
+
+    /** Nix passes no eval store as null; a hook sees None. */
+    static std::optional<std::shared_ptr<nix::Store>> maybe(std::shared_ptr<nix::Store> store)
+    {
+        if (!store)
+            return std::nullopt;
+        return store;
+    }
+
     virtual void nar_from_path(const nix::StorePath & path, Sink & sink)
     {
         below("narFromPath").narFromPath(path, sink);
@@ -478,6 +517,18 @@ public:
     {
         ensure_path(path);
     }
+
+    void buildPaths(
+        const std::vector<nix::DerivedPath> & paths, nix::BuildMode buildMode, std::shared_ptr<nix::Store> evalStore) override
+    {
+        build_paths(paths, buildMode, maybe(std::move(evalStore)));
+    }
+
+    std::vector<nix::KeyedBuildResult> buildPathsWithResults(
+        const std::vector<nix::DerivedPath> & paths, nix::BuildMode buildMode, std::shared_ptr<nix::Store> evalStore) override
+    {
+        return build_paths_with_results(paths, buildMode, maybe(std::move(evalStore)));
+    }
 #endif
 
     void narFromPath(const nix::StorePath & path, nix::Sink & sink) override
@@ -523,27 +574,29 @@ private:
 
 #if __has_include("nix/store/build.hh")
 /**
- * The builder below, with `ensurePath` handed to the store's hook. The
- * other operations have no hook yet, so they run below as they are.
+ * The store's hooks, as Nix's builder. What has no hook runs on the
+ * builder below.
  */
 class LayeredBuilder : public nix::Builder
 {
 public:
-    LayeredBuilder(std::shared_ptr<LayeredStore> store, nix::ref<nix::Builder> below)
+    LayeredBuilder(
+        std::shared_ptr<LayeredStore> store, std::shared_ptr<nix::Store> evalStore, nix::ref<nix::Builder> below)
         : store_(std::move(store))
+        , evalStore_(std::move(evalStore))
         , below_(std::move(below))
     {
     }
 
     void buildPaths(const std::vector<nix::DerivedPath> & reqs, nix::BuildMode buildMode) override
     {
-        below_->buildPaths(reqs, buildMode);
+        store_->build_paths(reqs, buildMode, LayeredStore::maybe(evalStore_));
     }
 
     std::vector<nix::KeyedBuildResult>
     buildPathsWithResults(const std::vector<nix::DerivedPath> & reqs, nix::BuildMode buildMode) override
     {
-        return below_->buildPathsWithResults(reqs, buildMode);
+        return store_->build_paths_with_results(reqs, buildMode, LayeredStore::maybe(evalStore_));
     }
 
     nix::BuildResult
@@ -564,6 +617,7 @@ public:
 
 private:
     std::shared_ptr<LayeredStore> store_;
+    std::shared_ptr<nix::Store> evalStore_;
     nix::ref<nix::Builder> below_;
 };
 
@@ -571,7 +625,7 @@ inline nix::ref<nix::Builder> LayeredStore::getBuilder(std::shared_ptr<nix::Stor
 {
     auto below = underlying_ ? underlying_->getBuilder(evalStore) : Store::getBuilder(evalStore);
     return nix::make_ref<LayeredBuilder>(
-        std::static_pointer_cast<LayeredStore>(shared_from_this()), std::move(below));
+        std::static_pointer_cast<LayeredStore>(shared_from_this()), std::move(evalStore), std::move(below));
 }
 #endif
 

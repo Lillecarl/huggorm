@@ -32,6 +32,7 @@ In process only. A subclass is Python in this process, and the factory
 a registration keeps is a Python callable.
 """
 
+from huggorm_decl.decl.build_result import KeyedBuildResult
 from huggorm_decl.decl.derivation import Derivation
 from huggorm_decl.decl.derived_path import DerivedPath
 from huggorm_decl.decl.path import StorePath
@@ -39,6 +40,7 @@ from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
 from huggorm_decl.decl.serialise import Sink, Source
 from huggorm_decl.decl.store import MissingPaths, Store
+from huggorm_decl.decl.words import BuildMode
 from huggorm_dsl.declare import (
     Bint,
     Cxx,
@@ -164,6 +166,20 @@ class LayeredStore(Store):
     @virtual
     def ensure_path(self, path: StorePath) -> None:
         """Make `path` valid, by substituting it if it is not."""
+
+    @virtual
+    def build_paths(self, targets: list[DerivedPath],
+                    mode: BuildMode = BuildMode.NORMAL,
+                    eval_store: Store | None = None) -> None:
+        """Build or fetch every one of `targets`, and wait."""
+
+    @virtual
+    def build_paths_with_results(
+            self, targets: list[DerivedPath],
+            mode: BuildMode = BuildMode.NORMAL,
+            eval_store: Store | None = None,
+    ) -> list[KeyedBuildResult]:
+        """Build or fetch every one of `targets`, and report on each."""
 
     @virtual
     def nar_from_path(self, path: StorePath, sink: Sink) -> None:
