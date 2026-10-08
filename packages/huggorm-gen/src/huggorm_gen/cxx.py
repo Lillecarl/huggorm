@@ -274,6 +274,12 @@ def param(t: Type, known: Mapping[str, Class]) -> tuple[str, str | None]:
             # words rather than about the binding, which is why the
             # emitted module is plain Python with no C++ at all.
             return CXX_PARAM["string"]
+        if other.decl.holder:
+            # Its share, as `self` is: a Python-made object has
+            # `shared_from_this()` only while a C++ share of it lives,
+            # and a body that keeps the object needs one.
+            return (f"const std::{other.decl.holder}<{bare(other, known)}> &",
+                    other.decl.holder)
         # A wire value is a copy the call reads, so const. A proxy is an
         # object the call may act on: `nix::copyClosure` writes into the
         # destination `Store &`, and a const reference cannot reach it.

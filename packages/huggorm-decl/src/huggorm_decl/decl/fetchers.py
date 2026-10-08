@@ -67,7 +67,7 @@ class Input:
 
         BLOCKS: a git work tree with uncommitted changes is answered
         by reading and hashing every changed file."""
-        Cxx("return self.getFingerprint(store);")
+        Cxx("return self.getFingerprint(*store);")
 
     @staticmethod
     @needs("huggorm_decl/cpp/call_settings.hpp",

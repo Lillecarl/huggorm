@@ -973,7 +973,7 @@ return self.writeDerivation(drv);
         substituters instead of receiving the bytes."""
         Cxx("""
 nix::copyClosure(
-    self, destination, as_set<nix::StorePathSet>(paths),
+    self, *destination, as_set<nix::StorePathSet>(paths),
     repair ? nix::Repair : nix::NoRepair,
     check_sigs ? nix::CheckSigs : nix::NoCheckSigs,
     substitute ? nix::Substitute : nix::NoSubstitute);

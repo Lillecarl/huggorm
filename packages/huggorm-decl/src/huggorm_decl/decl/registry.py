@@ -124,7 +124,7 @@ def registry_entries(store: Store,
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
     settings.value_or(std::map<std::string, std::string>{}));
 std::vector<huggorm::RegistryEntry> out;
-for (auto & registry : nix::fetchers::getRegistries(*fetch, store))
+for (auto & registry : nix::fetchers::getRegistries(*fetch, *store))
     for (auto & entry : registry->entries)
         out.push_back(huggorm::RegistryEntry{
             huggorm::as_word(registry->type), entry.from.to_string(), entry.to.to_string(),
@@ -271,7 +271,7 @@ auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path()
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(source, dir);
 auto to = nix::parseFlakeRef(target ? *target : source, dir);
-auto resolved = to.resolve(*fetch, store).input.getAccessor(*fetch, store).second;
+auto resolved = to.resolve(*fetch, *store).input.getAccessor(*fetch, *store).second;
 auto registry = nix::fetchers::Registry::read(
     *fetch,
     nix::SourcePath{nix::getFSSourceAccessor(), nix::CanonPath{file.string()}}.resolveSymlinks(),
@@ -295,7 +295,7 @@ auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path()
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(*fetch, source, dir);
 auto to = nix::parseFlakeRef(*fetch, target ? *target : source, dir);
-auto resolved = to.resolve(*fetch, store).input.getAccessor(*fetch, store).second;
+auto resolved = to.resolve(*fetch, *store).input.getAccessor(*fetch, *store).second;
 auto registry = nix::fetchers::Registry::read(
     *fetch,
     nix::SourcePath{nix::getFSSourceAccessor(), nix::CanonPath{file.string()}}.resolveSymlinks(),

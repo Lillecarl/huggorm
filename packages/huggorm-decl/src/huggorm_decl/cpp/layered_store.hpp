@@ -204,9 +204,9 @@ using StoreBase = std::conditional_t<Probe::unchecked<>, Registers<Anchor>, Regi
 class LayeredStore : public StoreBase
 {
 public:
-    LayeredStore(LayeredStoreConfig & config, const std::optional<std::shared_ptr<nix::Store>> & underlying)
-        : StoreBase{config}
-        , config_(config.shared_from_this())
+    LayeredStore(const std::shared_ptr<LayeredStoreConfig> & config, const std::optional<std::shared_ptr<nix::Store>> & underlying)
+        : StoreBase{*config}
+        , config_(config)
         , underlying_(underlying.value_or(nullptr))
     {
     }

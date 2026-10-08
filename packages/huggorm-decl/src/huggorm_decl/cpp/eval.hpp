@@ -421,12 +421,11 @@ struct LockedFlake
 class Evaluator
 {
 public:
-    // The Python `Store` holds a `shared_ptr`, so `shared_from_this`
-    // shares that store rather than opening a second one: an in-memory
-    // store opened twice is two empty stores.
-    explicit Evaluator(nix::Store & store, const std::optional<Settings> & settings = std::nullopt,
+    // Shares the caller's store rather than opening a second one: an
+    // in-memory store opened twice is two empty stores.
+    explicit Evaluator(const std::shared_ptr<nix::Store> & store, const std::optional<Settings> & settings = std::nullopt,
                        const std::optional<std::shared_ptr<nix::Store>> & build_store = std::nullopt)
-        : core_(make_core(nix::ref<nix::Store>(store.shared_from_this()), settings.value_or(Settings{}),
+        : core_(make_core(nix::ref<nix::Store>(store), settings.value_or(Settings{}),
                           build_store.value_or(nullptr)))
     {
         gc_register_thread();
