@@ -17,6 +17,7 @@ from huggorm_bindings import (
     LayeredStore,
     LayeredStoreConfig,
     Store,
+    TrustedFlag,
     get_setting,
     register_store_implementation,
     set_setting,
@@ -299,6 +300,22 @@ def test_nix_reaches_the_build_hooks(under: Any) -> None:
                       ("with_results", [held], BuildMode.NORMAL, None)]
     assert all(type(mode) is BuildMode for _, _, mode, _ in called), (
         "the override gets the member its annotation names")
+
+
+def test_nix_reaches_is_trusted_client(under: Any) -> None:
+    class Trusts(LayeredStore):
+        def is_trusted_client(self) -> TrustedFlag | None:
+            return TrustedFlag.NOT_TRUSTED
+
+    class Unsure(LayeredStore):
+        def is_trusted_client(self) -> TrustedFlag | None:
+            assert super().is_trusted_client() is None, "nothing below"
+            return None
+
+    assert Store.is_trusted_client(opened(Trusts)) == TrustedFlag.NOT_TRUSTED
+    assert Store.is_trusted_client(opened(Unsure)) is None
+    below = Store.is_trusted_client(under)
+    assert Store.is_trusted_client(opened(LayeredStore, under)) == below
 
 
 def test_ensure_path_runs_below(under: Any) -> None:

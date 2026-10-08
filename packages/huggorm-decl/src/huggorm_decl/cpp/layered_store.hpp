@@ -310,6 +310,12 @@ public:
         return underlying_ && underlying_->verifyStore(check_contents, repair ? nix::Repair : nix::NoRepair);
     }
 
+    virtual std::optional<nix::TrustedFlag> is_trusted_client()
+    {
+        // Unknown, not unsupported: Nix has an answer for "cannot say".
+        return underlying_ ? underlying_->isTrustedClient() : std::nullopt;
+    }
+
     virtual void ensure_path(const nix::StorePath & path)
     {
 #if __has_include("nix/store/build.hh")
@@ -550,8 +556,7 @@ public:
 
     std::optional<nix::TrustedFlag> isTrustedClient() override
     {
-        // Unknown, not unsupported: Nix has an answer for "cannot say".
-        return underlying_ ? underlying_->isTrustedClient() : std::nullopt;
+        return is_trusted_client();
     }
 
 private:

@@ -40,7 +40,7 @@ from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
 from huggorm_decl.decl.serialise import Sink, Source
 from huggorm_decl.decl.store import MissingPaths, Store
-from huggorm_decl.decl.words import BuildMode
+from huggorm_decl.decl.words import BuildMode, TrustedFlag
 from huggorm_dsl.declare import (
     Bint,
     Cxx,
@@ -162,6 +162,11 @@ class LayeredStore(Store):
     def verify_store(self, check_contents: Bint,
                      repair: Bint = False) -> Bint:
         """Check the store, and answer True when errors remain."""
+
+    @virtual
+    def is_trusted_client(self) -> TrustedFlag | None:
+        """Whether this store trusts its client, or None if it cannot
+        say."""
 
     @virtual
     def ensure_path(self, path: StorePath) -> None:
