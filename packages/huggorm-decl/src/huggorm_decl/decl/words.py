@@ -105,6 +105,20 @@ class HashAlgorithm(StrEnum):
     known, the feature is off until enabled."""
 
 
+@header("nix/util/file-content-address.hh")
+@words(parsed_by="nix::parseFileSerialisationMethod",
+       enumerated=Enumerated(
+           "nix::FileSerialisationMethod",
+           spelled={"FLAT": "Flat", "NAR": "NixArchive"},
+       ))
+class FileSerialisationMethod(StrEnum):
+    """How a file system object becomes bytes: one regular file's
+    contents, or a NAR of the whole tree."""
+
+    FLAT = "flat"
+    NAR = "nar"
+
+
 @header("nix/store/store-api.hh")
 @words(
     # No `parsed_by`, and that is a fact about upstream rather than an

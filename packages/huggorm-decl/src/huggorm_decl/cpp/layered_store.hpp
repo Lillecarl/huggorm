@@ -378,6 +378,26 @@ public:
         below("narFromPath").narFromPath(path, sink);
     }
 
+    virtual nix::StorePath add_to_store_from_dump(
+        Source & dump,
+        const std::string & name,
+        nix::FileSerialisationMethod dump_method,
+        nix::ContentAddressMethod hash_method,
+        nix::HashAlgorithm hash_algo,
+        const std::vector<nix::StorePath> & references,
+        bool repair)
+    {
+        return below("addToStoreFromDump")
+            .addToStoreFromDump(
+                dump,
+                name,
+                dump_method,
+                hash_method,
+                hash_algo,
+                {references.begin(), references.end()},
+                repair ? nix::Repair : nix::NoRepair);
+    }
+
     virtual void add_to_store_nar(const nix::ValidPathInfo & info, Source & source, bool repair, bool check_sigs)
     {
         below("addToStore").addToStore(
@@ -518,8 +538,10 @@ public:
         const nix::StorePathSet & references,
         nix::RepairFlag repair) override
     {
-        return below("addToStoreFromDump")
-            .addToStoreFromDump(dump, name, dumpMethod, hashMethod, hashAlgo, references, repair);
+        Source wrapped{dump};
+        Ended ended{wrapped};
+        return add_to_store_from_dump(
+            wrapped, std::string(name), dumpMethod, hashMethod, hashAlgo, listed(references), repair == nix::Repair);
     }
 
     using StoreBase::registerDrvOutput;

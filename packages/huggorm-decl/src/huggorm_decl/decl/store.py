@@ -21,6 +21,7 @@ from huggorm_decl.decl.serialise import Sink, Source
 from huggorm_decl.decl.words import (
     BuildMode,
     ContentAddressMethod,
+    FileSerialisationMethod,
     HashAlgorithm,
     TrustedFlag,
 )
@@ -599,6 +600,29 @@ return local->config->getBuildDir().string();
 
         Raises InvalidPath when the store does not hold it."""
         Cxx("self.narFromPath(path, sink);")
+
+    # `add_to_store` is this with the bytes in memory and a flat dump.
+    def add_to_store_from_dump(
+        self,
+        dump: Source,
+        name: Str,
+        dump_method: FileSerialisationMethod = FileSerialisationMethod.NAR,
+        hash_method: ContentAddressMethod = ContentAddressMethod.NAR,
+        hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
+        references: list[StorePath] | None = None,
+        repair: Bint = False,
+    ) -> StorePath:
+        """Add what `dump` serialises, and name the result. Nix's
+        `addToStoreFromDump`.
+
+        `dump_method` says how the bytes arrive, `hash_method` how the
+        name is hashed. The defaults are Nix's own."""
+        Cxx("""
+return self.addToStoreFromDump(
+    dump, name, dump_method, hash_method, hash_algo,
+    as_set<nix::StorePathSet>(references),
+    repair ? nix::Repair : nix::NoRepair);
+        """)
 
     # Named after the daemon's `AddToStoreNar`: `add_to_store` is
     # `addToStoreFromDump`, which hashes a file and names the path.

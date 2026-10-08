@@ -40,7 +40,13 @@ from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
 from huggorm_decl.decl.serialise import Sink, Source
 from huggorm_decl.decl.store import MissingPaths, Store
-from huggorm_decl.decl.words import BuildMode, TrustedFlag
+from huggorm_decl.decl.words import (
+    BuildMode,
+    ContentAddressMethod,
+    FileSerialisationMethod,
+    HashAlgorithm,
+    TrustedFlag,
+)
 from huggorm_dsl.declare import (
     Bint,
     Cxx,
@@ -194,6 +200,19 @@ class LayeredStore(Store):
     @virtual
     def nar_from_path(self, path: StorePath, sink: Sink) -> None:
         """Write `path` as a NAR into `sink`."""
+
+    @virtual
+    def add_to_store_from_dump(
+        self,
+        dump: Source,
+        name: Str,
+        dump_method: FileSerialisationMethod = FileSerialisationMethod.NAR,
+        hash_method: ContentAddressMethod = ContentAddressMethod.NAR,
+        hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
+        references: list[StorePath] | None = None,
+        repair: Bint = False,
+    ) -> StorePath:
+        """Add what `dump` serialises, and name the result."""
 
     @virtual
     def add_to_store_nar(self, info: PathInfo, source: Source,

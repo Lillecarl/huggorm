@@ -10,6 +10,9 @@ from typing import Any
 import pytest
 
 from huggorm_bindings import (
+    ContentAddressMethod,
+    FileSerialisationMethod,
+    HashAlgorithm,
     LayeredStore,
     LayeredStoreConfig,
     Sink,
@@ -94,6 +97,42 @@ async def test_the_async_store_streams_through_python() -> None:
     out = Collect()
     await store.nar_from_path(held, out)
     assert out.nar().startswith(NAR_MAGIC)
+
+
+def test_a_dump_streams_in_through_python() -> None:
+    store = dummy()
+    added = store.add_to_store_from_dump(
+        Chunks(b"hello"), "hello", FileSerialisationMethod.FLAT,
+        ContentAddressMethod.FLAT)
+    assert added == store.add_to_store(
+        "hello", b"hello", ContentAddressMethod.FLAT)
+
+
+def test_nix_reaches_the_dump_hook() -> None:
+    """`add_to_store` hands Nix a flat dump; the override reads it, and
+    `super()` adds what it read below."""
+    below = dummy()
+    seen: list[tuple[str, bytes, Any, Any]] = []
+
+    class Reads(LayeredStore):
+        def add_to_store_from_dump(
+                self, dump: Source, name: str,
+                dump_method: FileSerialisationMethod = FileSerialisationMethod.NAR,
+                hash_method: ContentAddressMethod = ContentAddressMethod.NAR,
+                hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
+                references: list[Any] | None = None,
+                repair: bool = False) -> Any:
+            data = b""
+            while part := dump.read(1 << 16):
+                data += part
+            seen.append((name, data, dump_method, references))
+            return super().add_to_store_from_dump(
+                Chunks(data), name, dump_method, hash_method, hash_algo,
+                references, repair)
+
+    added = opened(Reads, below).add_to_store("held", b"held")
+    assert seen == [("held", b"held", FileSerialisationMethod.FLAT, [])]
+    assert below.is_valid_path(added)
 
 
 def test_a_stream_with_no_override_has_nothing_below() -> None:
