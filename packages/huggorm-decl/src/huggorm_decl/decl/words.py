@@ -438,3 +438,28 @@ class RegistryType(StrEnum):
 
     CUSTOM = "custom"
     """A file a command names with `--registry`."""
+
+
+@header("nix/util/source-accessor.hh")
+@words(
+    # No `parsed_by`: nothing upstream parses a type from a string.
+    # The words are `Stat::typeString`'s, which Nix prints in errors.
+    enumerated=Enumerated(
+        "nix::SourceAccessor::Type",
+        spelled={"REGULAR": "tRegular", "SYMLINK": "tSymlink",
+                 "DIRECTORY": "tDirectory", "CHAR": "tChar",
+                 "BLOCK": "tBlock", "SOCKET": "tSocket", "FIFO": "tFifo",
+                 "UNKNOWN": "tUnknown"},
+    ),
+)
+class FileType(StrEnum):
+    """What a file system object is, as a `SourceAccessor` says."""
+
+    REGULAR = "regular"
+    SYMLINK = "symlink"
+    DIRECTORY = "directory"
+    CHAR = "character device"
+    BLOCK = "block device"
+    SOCKET = "socket"
+    FIFO = "fifo"
+    UNKNOWN = "unknown"

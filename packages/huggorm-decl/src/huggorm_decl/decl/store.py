@@ -18,6 +18,7 @@ from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
 from huggorm_decl.decl.serialise import Sink, Source
+from huggorm_decl.decl.source_accessor import SourceAccessor
 from huggorm_decl.decl.words import (
     BuildMode,
     ContentAddressMethod,
@@ -365,6 +366,28 @@ return self.computeStorePath(
     method,
     hash_algo,
     as_set<nix::StorePathSet>(references)).first;
+        """)
+
+    def add_accessor_to_store(
+        self,
+        name: Str,
+        accessor: SourceAccessor,
+        path: Str = "/",
+        method: ContentAddressMethod = ContentAddressMethod.NAR,
+        hash_algo: HashAlgorithm = HashAlgorithm.SHA256,
+        references: list[StorePath] | None = None,
+    ) -> StorePath:
+        """Add the object at `path` in `accessor` to the store.
+
+        `add_path_to_store`, with the tree read through `accessor`
+        instead of the filesystem."""
+        Cxx("""
+return self.addToStore(
+    name,
+    nix::SourcePath{nix::ref<nix::SourceAccessor>{accessor}, nix::CanonPath{path}},
+    method,
+    hash_algo,
+    as_set<nix::StorePathSet>(references));
         """)
     @cxx_name("queryAllValidPaths")
     def query_all_valid_paths(self) -> list[StorePath]:
