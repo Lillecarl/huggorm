@@ -39,6 +39,7 @@ from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.pathinfo import PathInfo
 from huggorm_decl.decl.realisation import DrvOutput, Realisation
 from huggorm_decl.decl.serialise import Sink, Source
+from huggorm_decl.decl.source_accessor import SourceAccessor
 from huggorm_decl.decl.store import MissingPaths, Store
 from huggorm_decl.decl.words import (
     BuildMode,
@@ -201,6 +202,13 @@ class LayeredStore(Store):
             eval_store: Store | None = None,
     ) -> list[KeyedBuildResult]:
         """Build or fetch every one of `targets`, and report on each."""
+
+    @virtual
+    def get_fs_accessor(self, path: StorePath,
+                        require_valid_path: Bint = True) -> SourceAccessor | None:
+        """The files of `path`, or None when the store has none there.
+        Nix reads a store path's files through this, the evaluator
+        included."""
 
     @virtual
     def nar_from_path(self, path: StorePath, sink: Sink) -> None:

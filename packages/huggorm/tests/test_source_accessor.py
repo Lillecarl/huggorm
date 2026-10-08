@@ -5,6 +5,7 @@ through them: `add_accessor_to_store` dumps it as a NAR, and
 `EvalState.mount` shows it to the evaluator at its store path.
 """
 
+import itertools
 import json
 import os
 import pathlib
@@ -20,6 +21,7 @@ TREE: dict[str, Any] = {
     "/link": "hello.txt",
     "/empty": {},
 }
+_names = itertools.count()
 
 
 def dummy() -> Any:
@@ -205,3 +207,86 @@ def test_interpolating_a_mounted_path_copies_it_through_python() -> None:
     copied = state.eval_expr(f'"${{{sub}}}"').string_value()
     added = store.add_accessor_to_store("sub", Memory(SOURCE), "/sub")
     assert copied == store.print_store_path(added)
+
+
+def opened(cls: type, underlying: Any = None) -> Any:
+    """A `LayeredStore` subclass over `underlying`, through a fresh scheme."""
+    from huggorm_bindings import LayeredStoreConfig, register_store_implementation
+
+    name = f"accessor-test-{next(_names)}"
+
+    def factory(config: LayeredStoreConfig) -> Any:
+        return cls(config, underlying)
+
+    register_store_implementation(name, [name], factory)
+    return Store(f"{name}://")
+
+
+def test_python_reads_a_store_object() -> None:
+    store = dummy()
+    held = store.add_accessor_to_store("tree", Memory(TREE))
+    tree = store.get_fs_accessor(held)
+    assert tree is not None
+    assert tree.read_file("/hello.txt") == b"hello\n"
+    stat = tree.maybe_lstat("/bin/run")
+    assert stat is not None and stat.is_executable()
+    assert tree.read_link("/link") == "hello.txt"
+    assert tree.read_directory("/") == ["bin", "empty", "hello.txt", "link"]
+    assert tree.maybe_lstat("/absent") is None
+    absent = store.parse_store_path(
+        "/nix/store/00000000000000000000000000000000-absent")
+    assert store.get_fs_accessor(absent) is None
+
+
+def test_a_layer_over_a_store_object() -> None:
+    """A virtual file over a real store object: Python reads the object
+    through Nix, and Nix reads the layer through Python."""
+
+    class Greeting(SourceAccessor):
+        def read_file(self, path: str) -> bytes:
+            if path == "/hello.txt":
+                return b"hi\n"
+            return super().read_file(path)
+
+        def maybe_lstat(self, path: str) -> Stat | None:
+            if path == "/hello.txt":
+                return Stat(FileType.REGULAR, 3)
+            return super().maybe_lstat(path)
+
+    store = dummy()
+    held = store.add_accessor_to_store("tree", Memory(TREE))
+    layered = store.add_accessor_to_store(
+        "tree", Greeting(store.get_fs_accessor(held)))
+    assert layered == store.add_accessor_to_store(
+        "tree", Memory({**TREE, "/hello.txt": b"hi\n"}))
+
+
+def test_a_python_store_falls_through_to_the_store_below() -> None:
+    from huggorm_bindings import LayeredStore
+
+    below = dummy()
+    held = below.add_accessor_to_store("tree", Memory(TREE))
+    tree = Store.get_fs_accessor(opened(LayeredStore, below), held)
+    assert tree is not None and tree.read_file("/hello.txt") == b"hello\n"
+
+
+def test_the_evaluator_reads_a_python_store() -> None:
+    """A store path no store holds: the Python store answers its files,
+    and the evaluator reads them through the store's whole-store
+    accessor."""
+    from huggorm_bindings import EvalState, LayeredStore
+
+    path = dummy().add_accessor_to_store("source", Memory(SOURCE))
+    asked: list[bool] = []
+
+    class Virtual(LayeredStore):
+        def get_fs_accessor(self, wanted: Any,
+                            require_valid_path: bool = True) -> SourceAccessor | None:
+            asked.append(require_valid_path)
+            return Memory(SOURCE) if wanted == path else None
+
+    store = opened(Virtual, dummy())
+    state = EvalState(store)
+    entry = f"{store.print_store_path(path)}/default.nix"
+    assert json.loads(state.eval_file(entry).to_json())["imported"] == 42
+    assert asked == [False]

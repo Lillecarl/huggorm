@@ -624,6 +624,18 @@ return local->config->getBuildDir().string();
         Raises InvalidPath when the store does not hold it."""
         Cxx("self.narFromPath(path, sink);")
 
+    def get_fs_accessor(self, path: StorePath,
+                        require_valid_path: Bint = True) -> SourceAccessor | None:
+        """The files of `path`, or None when the store has no object
+        there. With `require_valid_path` off, a path the store holds but
+        has not registered is read too."""
+        Cxx("""
+auto found = self.getFSAccessor(path, require_valid_path);
+if (!found)
+    return std::nullopt;
+return std::make_shared<huggorm::SourceAccessor>(std::move(found));
+        """)
+
     # `add_to_store` is this with the bytes in memory and a flat dump.
     def add_to_store_from_dump(
         self,

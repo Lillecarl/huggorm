@@ -25,6 +25,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -43,6 +44,7 @@
 #include "nix/util/callback.hh"
 
 #include "huggorm_decl/cpp/serialise.hpp"
+#include "huggorm_decl/cpp/source_accessor.hpp"
 
 // Nix 2.36 moves `ensurePath` and the builds onto a `Builder` that
 // `Store::getBuilder` hands out, in a header earlier Nix does not have.
@@ -200,6 +202,93 @@ struct RegistersOne : Base
 
 using Anchor = std::conditional_t<LayeredStoreConfig::has_path_type<>, Anchored<nix::Store>, nix::Store>;
 using StoreBase = std::conditional_t<Probe::unchecked<>, Registers<Anchor>, RegistersOne<Anchor>>;
+
+/**
+ * The whole store as one tree, as Nix's `RemoteFSAccessor` shows it:
+ * `/<name>/rest` is `rest` in the accessor for that store path, which
+ * the store's own `getFSAccessor` answers. The root is a directory that
+ * lists nothing, as the dummy store's is. An accessor is kept once
+ * found, because a store object does not change.
+ */
+class StoreTree : public AccessorBase
+{
+public:
+    StoreTree(nix::ref<nix::Store> store, bool requireValidPath)
+        : store_(std::move(store))
+        , requireValidPath_(requireValidPath)
+    {
+        setPathDisplay(store_->storeDir);
+    }
+
+    std::optional<Stat> maybeLstat(const nix::CanonPath & path) override
+    {
+        if (path.isRoot())
+            return Stat{.type = tDirectory};
+        auto found = find(path);
+        return found ? found->first->maybeLstat(found->second) : std::nullopt;
+    }
+
+    DirEntries readDirectory(const nix::CanonPath & path) override
+    {
+        if (path.isRoot())
+            return {};
+        auto [accessor, rest] = need(path);
+        return accessor->readDirectory(rest);
+    }
+
+    std::string readLink(const nix::CanonPath & path) override
+    {
+        auto [accessor, rest] = need(path);
+        return accessor->readLink(rest);
+    }
+
+    void readFile(const nix::CanonPath & path, nix::Sink & sink, nix::fun<void(uint64_t)> sizeCallback) override
+    {
+        auto [accessor, rest] = need(path);
+        accessor->readFile(rest, sink, sizeCallback);
+    }
+
+private:
+    using Found = std::pair<nix::ref<nix::SourceAccessor>, nix::CanonPath>;
+
+    /** The accessor and the rest of `path`, or none when nothing is there. */
+    std::optional<Found> find(const nix::CanonPath & path)
+    {
+        std::optional<std::pair<nix::StorePath, nix::CanonPath>> split;
+        try {
+            split = store_->toStorePath(store_->storeDir + path.abs());
+        } catch (nix::BadStorePath &) {
+            return std::nullopt;
+        }
+        auto & [storePath, rest] = *split;
+        std::shared_ptr<nix::SourceAccessor> accessor;
+        {
+            std::lock_guard lock(mutex_);
+            if (auto kept = found_.find(storePath); kept != found_.end())
+                accessor = kept->second;
+        }
+        if (!accessor) {
+            accessor = store_->getFSAccessor(storePath, requireValidPath_);
+            if (!accessor)
+                return std::nullopt;
+            std::lock_guard lock(mutex_);
+            found_.emplace(storePath, accessor);
+        }
+        return Found{nix::ref<nix::SourceAccessor>(accessor), rest};
+    }
+
+    Found need(const nix::CanonPath & path)
+    {
+        if (auto found = find(path))
+            return *found;
+        throw nix::FileNotFound("path '%s' does not exist", showPath(path));
+    }
+
+    nix::ref<nix::Store> store_;
+    bool requireValidPath_;
+    std::mutex mutex_;
+    std::map<nix::StorePath, std::shared_ptr<nix::SourceAccessor>> found_;
+};
 
 class LayeredStore : public StoreBase
 {
@@ -376,6 +465,20 @@ public:
         if (!store)
             return std::nullopt;
         return store;
+    }
+
+    /**
+     * The files of one store object, or none when the store has none
+     * there. Below, the same accessor from the underlying store, wrapped
+     * so that Python can read it.
+     */
+    virtual std::optional<std::shared_ptr<huggorm::SourceAccessor>>
+    get_fs_accessor(const nix::StorePath & path, bool require_valid_path)
+    {
+        auto found = below("getFSAccessor").getFSAccessor(path, require_valid_path);
+        if (!found)
+            return std::nullopt;
+        return std::make_shared<huggorm::SourceAccessor>(std::move(found));
     }
 
     virtual void nar_from_path(const nix::StorePath & path, Sink & sink)
@@ -584,14 +687,15 @@ public:
         nar_from_path(path, wrapped);
     }
 
+    /** Every path through the hook, so an override reaches the evaluator too. */
     nix::ref<nix::SourceAccessor> getFSAccessor(bool requireValidPath) override
     {
-        return below("getFSAccessor").getFSAccessor(requireValidPath);
+        return nix::make_ref<StoreTree>(nix::ref<nix::Store>(shared_from_this()), requireValidPath);
     }
 
     std::shared_ptr<nix::SourceAccessor> getFSAccessor(const nix::StorePath & path, bool requireValidPath) override
     {
-        return below("getFSAccessor").getFSAccessor(path, requireValidPath);
+        return get_fs_accessor(path, requireValidPath).value_or(nullptr);
     }
 
     std::optional<nix::TrustedFlag> isTrustedClient() override
