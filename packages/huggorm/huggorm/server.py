@@ -20,8 +20,9 @@ import enum
 import functools
 import logging
 import os
+import signal
 import weakref
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -680,9 +681,12 @@ class Dispatcher:
         `start_soon` is a plain method, not a coroutine, so a
         callback the sweep calls synchronously can still use it."""
         async def _close() -> None:
+            # Shielded: a server that stops cancels this group, and a
+            # state must still leave its own thread.
             # Nothing to report a failure to: the connection that owned
             # this handle is already gone.
-            with contextlib.suppress(Exception):
+            with anyio.CancelScope(shield=True), \
+                    contextlib.suppress(Exception):
                 await obj.aclose()
 
         # The fan-out goes with the state. It is the one removal that
@@ -1196,6 +1200,9 @@ async def serve(path: str, lease_ttl: float = 120.0, *,
             with contextlib.suppress(OSError):
                 os.unlink(path)
             loops.cancel_scope.cancel()
+            # Every state closes on its own thread, which `work` awaits.
+            dropped = dispatcher.table.close()
+            logger.info("stopping: closing %d handle(s)", len(dropped))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1220,8 +1227,31 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     for name, value in args.option:
         set_setting(name, value)
-    anyio.run(functools.partial(serve, args.path, args.ttl,
-                                callbacks=args.experimental_callbacks))
+    anyio.run(_until_signalled, functools.partial(
+        serve, args.path, args.ttl, callbacks=args.experimental_callbacks))
+
+
+async def _until_signalled(
+        serving: Callable[[], Coroutine[Any, Any, None]]) -> None:
+    """Serve until SIGTERM or SIGINT, then stop as a cancel does: the
+    calls in flight are interrupted, and every state is closed on its
+    own thread.
+
+    Nix checks for an interrupt only in some places, and pure evaluation
+    is not one of them, so a busy state can hold the stop open. After
+    the first signal both take their default effect, so a second one
+    stops the process at once. Closing the receiver is not enough: it
+    puts back asyncio's SIGINT handler, which only cancels again."""
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(serving)
+        with anyio.open_signal_receiver(signal.SIGTERM,
+                                        signal.SIGINT) as signals:
+            async for signum in signals:
+                logger.info("stopping on %s", signal.Signals(signum).name)
+                break
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, signal.SIG_DFL)
+        tg.cancel_scope.cancel()
 
 
 if __name__ == "__main__":

@@ -350,6 +350,16 @@ class HandleTable:
                         entry.tokens.discard(t)
         return self._reap(released)
 
+    def close(self) -> list[str]:
+        """Release every lease, held or escrowed, and drop every entry,
+        children before their parents. For a server that stops."""
+        for entry in self.entries.values():
+            entry.leases = 0
+        self.connections.clear()
+        self.escrow.clear()
+        self._escrowed_at.clear()
+        return self._reap(list(self.entries))
+
     def _reap(self, candidates: Iterable[str]) -> list[str]:
         """Drop each candidate with no leases and no live children, and
         then its parents, which unlinking it may free. Only an entry
