@@ -117,6 +117,53 @@ public:
     }
 };
 
+/**
+ * `below` behind a 32 KiB buffer, for a call that hands it to Nix. Nix
+ * writes a NAR in pieces of a few bytes, and each piece is a call into
+ * Python: 6515 for a 45 KB NAR of 100 files (huggorm#155). The call that
+ * makes one flushes it, because a destructor cannot report a failed write.
+ */
+class SinkBuffer : public nix::BufferedSink
+{
+public:
+    explicit SinkBuffer(nix::Sink & below)
+        : below_(below)
+    {
+    }
+
+protected:
+    void writeUnbuffered(std::string_view data) override
+    {
+        below_(data);
+    }
+
+private:
+    nix::Sink & below_;
+};
+
+/**
+ * The next `size` bytes of `below`, read in pieces of up to 32 KiB. It
+ * never asks for more than `size`: what follows a NAR belongs to the
+ * next reader, and a stream that holds nothing more would block.
+ */
+class SourceBuffer : public nix::BufferedSource
+{
+public:
+    SourceBuffer(nix::Source & below, std::uint64_t size)
+        : sized_(below, size)
+    {
+    }
+
+protected:
+    size_t readUnbuffered(char * data, size_t len) override
+    {
+        return sized_.read(data, len);
+    }
+
+private:
+    nix::SizedSource sized_;
+};
+
 /** Ends `stream` when the call it was made for returns or throws. */
 template<typename Stream>
 class Ended

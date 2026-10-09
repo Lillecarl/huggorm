@@ -483,7 +483,9 @@ public:
 
     virtual void nar_from_path(const nix::StorePath & path, Sink & sink)
     {
-        below("narFromPath").narFromPath(path, sink);
+        SinkBuffer buffered{sink};
+        below("narFromPath").narFromPath(path, buffered);
+        buffered.flush();
     }
 
     virtual nix::StorePath add_to_store_from_dump(
@@ -508,8 +510,9 @@ public:
 
     virtual void add_to_store_nar(const nix::ValidPathInfo & info, Source & source, bool repair, bool check_sigs)
     {
+        SourceBuffer buffered{source, info.narSize};
         below("addToStore").addToStore(
-            info, source, repair ? nix::Repair : nix::NoRepair, check_sigs ? nix::CheckSigs : nix::NoCheckSigs);
+            info, buffered, repair ? nix::Repair : nix::NoRepair, check_sigs ? nix::CheckSigs : nix::NoCheckSigs);
     }
 
     // -- Nix's virtuals: each calls a hook, or forwards ------------------

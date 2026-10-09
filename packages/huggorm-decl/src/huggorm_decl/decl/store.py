@@ -622,7 +622,11 @@ return local->config->getBuildDir().string();
         """Write `path` as a NAR into `sink`. `nix-store --dump`.
 
         Raises InvalidPath when the store does not hold it."""
-        Cxx("self.narFromPath(path, sink);")
+        Cxx("""
+huggorm::SinkBuffer buffered{sink};
+self.narFromPath(path, buffered);
+buffered.flush();
+        """)
 
     def get_fs_accessor(self, path: StorePath,
                         require_valid_path: Bint = True) -> SourceAccessor | None:
@@ -672,8 +676,9 @@ return self.addToStoreFromDump(
         `check_sigs` refuses a path no trusted key signed, as Nix
         does by default."""
         Cxx("""
+huggorm::SourceBuffer buffered{source, info.narSize};
 self.addToStore(
-    info, source, repair ? nix::Repair : nix::NoRepair,
+    info, buffered, repair ? nix::Repair : nix::NoRepair,
     check_sigs ? nix::CheckSigs : nix::NoCheckSigs);
         """)
     # Pure string work: no daemon, no lock, no file. Releasing

@@ -5,6 +5,7 @@
 """
 
 import itertools
+import pathlib
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from huggorm_bindings import (
     Sink,
     Source,
     Store,
+    filesystem_accessor,
     register_store_implementation,
 )
 
@@ -73,6 +75,51 @@ def test_a_nar_goes_out_and_back_through_python() -> None:
     dst.add_to_store_nar(src.query_path_info(held), Chunks(out.nar()),
                          check_sigs=False)
     assert dst.is_valid_path(held)
+
+
+def many_files(tmp_path: pathlib.Path) -> tuple[Any, Any, bytes]:
+    """A store, a path of 100 small files it holds, and the path's NAR."""
+    root = tmp_path / "many"
+    for i in range(100):
+        (root / f"d{i}").mkdir(parents=True)
+        (root / f"d{i}" / "f").write_text("x" * 100)
+    store = dummy()
+    path = store.add_accessor_to_store("many", filesystem_accessor(root))
+    out = Collect()
+    store.nar_from_path(path, out)
+    return store, path, out.nar()
+
+
+def test_python_sees_a_nar_in_large_pieces(tmp_path: pathlib.Path) -> None:
+    """Nix moves a NAR a few bytes at a time: 6515 pieces each way for
+    this one. Each would be a call into Python (huggorm#155)."""
+    store, path, nar = many_files(tmp_path)
+    out = Collect()
+    store.nar_from_path(path, out)
+    assert out.nar() == nar
+    pieces = -(-len(nar) // (32 * 1024))
+    assert len(out.parts) <= pieces + 1
+
+    class Counted(Chunks):
+        reads = 0
+
+        def read(self, n: int) -> bytes:
+            Counted.reads += 1
+            return super().read(n)
+
+    dst = dummy()
+    dst.add_to_store_nar(store.query_path_info(path),
+                         Counted(nar, 1 << 20), check_sigs=False)
+    assert dst.is_valid_path(path)
+    assert Counted.reads <= pieces + 1
+
+
+def test_a_nar_is_read_no_further_than_its_end(tmp_path: pathlib.Path) -> None:
+    store, path, nar = many_files(tmp_path)
+    source = Chunks(nar + b"the next reader's", 1 << 20)
+    dummy().add_to_store_nar(store.query_path_info(path), source,
+                             check_sigs=False)
+    assert source.data == b"the next reader's"
 
 
 def test_a_source_must_not_answer_more_than_asked() -> None:
