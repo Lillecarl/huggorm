@@ -1237,11 +1237,11 @@ async def _until_signalled(
     calls in flight are interrupted, and every state is closed on its
     own thread.
 
-    Nix checks for an interrupt only in some places, and pure evaluation
-    is not one of them, so a busy state can hold the stop open. After
-    the first signal both take their default effect, so a second one
-    stops the process at once. Closing the receiver is not enough: it
-    puts back asyncio's SIGINT handler, which only cancels again."""
+    Nix checks for an interrupt between system calls, not inside one, so
+    a call that blocks can hold the stop open. After the first signal
+    both take their default effect, so a second one stops the process
+    at once. Closing the receiver is not enough: it puts back asyncio's
+    SIGINT handler, which only cancels again."""
     async with anyio.create_task_group() as tg:
         tg.start_soon(serving)
         with anyio.open_signal_receiver(signal.SIGTERM,

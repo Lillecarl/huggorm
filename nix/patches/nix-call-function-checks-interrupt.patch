@@ -1,0 +1,40 @@
+Check for an interrupt in every function call.
+
+libexpr calls checkInterrupt only while it prints a value: print.cc,
+print-ambiguous.cc, value-to-json.cc and value-to-xml.cc. Pure evaluation
+never checks, so a cancel cannot stop it (huggorm#158). Measured before
+this patch: a cancelled call to
+
+    let sum = builtins.foldl' (a: b: a + b) 0;
+        range = n: builtins.genList (x: x) n;
+    in builtins.foldl' (a: _: a + sum (range 1000)) 0 (range 1000000)
+
+returned 67.68s after the cancel, and held its EvalState all that time.
+
+Every loop in the language is a chain of function calls, so
+EvalState::callFunction is the one place that sees each iteration.
+EvalState::eval had this check until 2012 (f491ae97d), which removed it
+for speed.
+
+The cost, measured on 2.34.8 with huggorm's interrupt hook installed:
+the expression above with range 100000 makes 300,300,001 calls, and
+takes 7.71s before and 8.00s after, best of 15 runs each. That is about
+1 ns, or 4%, per call, in an expression that does nothing but call.
+
+The hunk has no signature line in its context, so the same file applies
+to 2.34, 2.35 and git. On 2.34 it needs nix/util/signals.hh, which
+nix-2.34-interrupted-thunk-recovers.patch includes.
+
+--- a/src/libexpr/eval.cc
++++ b/src/libexpr/eval.cc
+@@ -1511,6 +1511,10 @@
+ {
+     auto _level = addCallDepth(pos);
+
++    /* Every loop in the language is a chain of calls, so this makes a
++       pure evaluation interruptible. */
++    checkInterrupt();
++
+     auto neededHooks = profiler.getNeededHooks();
+     if (neededHooks.test(EvalProfiler::preFunctionCall)) [[unlikely]]
+         profiler.preFunctionCallHook(*this, fun, args, pos);

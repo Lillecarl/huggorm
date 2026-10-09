@@ -9,6 +9,9 @@ The slow work is a Python primop that sleeps, reached once per list
 element, so how long the uncancelled work takes is a number here and
 not a property of the machine. `builtins.toJSON` calls
 `checkInterrupt` once per element (`value-to-json.cc`).
+
+A pure evaluation stops too: `nix-call-function-checks-interrupt.patch`
+calls `checkInterrupt` once per function call (huggorm#158).
 """
 
 import threading
@@ -84,6 +87,26 @@ def test_a_cancelled_request_stops_its_evaluation(
     took = time.monotonic() - started
     assert took < STOPPED_WITHIN, took
     assert spin.calls < ELEMENTS, "the work ran to its end"
+
+
+# Pure: no primop and no printing. About 7s uncancelled on dynhetz.
+PURE_SLOW = ("let sum = builtins.foldl' (a: b: a + b) 0; "
+             "range = n: builtins.genList (x: x) n; in "
+             "builtins.foldl' (a: _: a + sum (range 1000)) 0 (range 100000)")
+
+
+def test_a_cancelled_request_stops_a_pure_evaluation(
+        state: Any, request_id: int) -> None:
+    """Upstream libexpr calls `checkInterrupt` only while it prints a
+    value. Without the patch, this runs to its end."""
+    from huggorm_bindings.errors import Interrupted
+
+    cancel_later(request_id)
+    started = time.monotonic()
+    with pytest.raises(Interrupted, match="interrupted"):
+        state.eval_expr(PURE_SLOW)
+    took = time.monotonic() - started
+    assert took < STOPPED_WITHIN, took
 
 
 def test_interrupted_is_not_an_exception() -> None:

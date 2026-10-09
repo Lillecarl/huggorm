@@ -41,6 +41,9 @@ let
   # The `open_tree` polyfill defines `AT_RECURSIVE`, which glibc 2.28
   # lacks: the manylinux build needs it. 2.34 does not call `open_tree`.
   atRecursive = patch "nix-open-tree-at-recursive";
+  # A pure evaluation checks for an interrupt once per function call
+  # (huggorm#158). On 2.34 it applies after `interruptedThunk234`.
+  callChecksInterrupt = patch "nix-call-function-checks-interrupt";
 in
 {
   nix_2_34 = {
@@ -55,6 +58,7 @@ in
       countCalls234
       exprPath
       parseFile
+      callChecksInterrupt
     ];
   };
   nix_2_35 = {
@@ -69,6 +73,7 @@ in
       atRecursive
       exprPath
       parseFile
+      callChecksInterrupt
     ];
   };
   # Unpinned on purpose: it follows nixpkgs' `nixComponents_git`, so a
@@ -84,6 +89,7 @@ in
       atRecursive
       exprPath
       parseFile
+      callChecksInterrupt
     ];
     # Nix master uses `#embed`, which needs GCC 15. Every PyPA image
     # ships gcc-toolset-14 (huggorm#109).
