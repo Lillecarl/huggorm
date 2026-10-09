@@ -344,3 +344,29 @@ def test_a_given_path_the_store_holds_keeps_the_store_content() -> None:
     state.mount(Memory({**SOURCE, "/sub/x.nix": b"0\n"}), path=path)
     entry = f"{store.print_store_path(path)}/default.nix"
     assert json.loads(state.eval_file(entry).to_json())["imported"] == 42
+
+
+def test_a_filesystem_tree_reads_as_nix_reads_it(
+        tmp_path: pathlib.Path) -> None:
+    from huggorm_bindings import filesystem_accessor
+
+    root = on_disk(tmp_path / "t", TREE)
+    store = dummy()
+    assert store.add_accessor_to_store(
+        "tree", filesystem_accessor(root)) == store.add_path_to_store(
+            "tree", str(root))
+
+
+def test_a_filesystem_tree_stays_inside_its_root(
+        tmp_path: pathlib.Path) -> None:
+    """A symlink is not followed, and `..` does not leave the root."""
+    from huggorm_bindings import filesystem_accessor
+
+    (tmp_path / "outside").write_bytes(b"secret")
+    root = on_disk(tmp_path / "t", {**TREE, "/out": "../outside"})
+    tree = filesystem_accessor(root)
+    out = tree.maybe_lstat("/out")
+    assert out is not None and out.type() == FileType.SYMLINK
+    assert tree.read_link("/out") == "../outside"
+    assert tree.maybe_lstat("/../outside") is None
+    assert tree.read_file("/hello.txt") == b"hello\n"

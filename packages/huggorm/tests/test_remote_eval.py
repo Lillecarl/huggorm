@@ -6,6 +6,7 @@ for every read, from the evaluation thread.
 """
 
 import json
+import pathlib
 from typing import Any
 
 import anyio
@@ -127,3 +128,24 @@ async def test_a_server_without_the_flag_refuses(server: Server) -> None:
         with anyio.fail_after(30), pytest.raises(Exception) as caught:
             await state.mount(Memory(SOURCE))
     assert "--experimental-callbacks" in str(caught.value.__cause__)
+
+
+async def test_the_server_evaluates_a_directory_on_the_client(
+        callback_server: Server, tmp_path: pathlib.Path) -> None:
+    from huggorm_bindings import filesystem_accessor
+
+    root = tmp_path / "project"
+    (root / "sub").mkdir(parents=True)
+    (root / "default.nix").write_text(
+        '{ answer = import ./sub/x.nix; text = builtins.readFile ./hello.txt; }')
+    (root / "sub" / "x.nix").write_text("41 + 1")
+    (root / "hello.txt").write_text("hello\n")
+    path = Store(DUMMY).compute_store_path("source", str(root))
+    async with remote.connect(callback_server.path,
+                              experimental_callbacks=True) as client:
+        store = await client.acquire("Store", DUMMY)
+        state = await client.acquire("EvalState", store)
+        assert await state.mount(filesystem_accessor(root), "source",
+                                 path) == path
+        got = await evaluated(state, store, path)
+    assert got == {"answer": 42, "text": "hello\n"}

@@ -32,11 +32,13 @@ from huggorm_dsl.declare import (
     Bint,
     Bytes,
     Cxx,
+    Path,
     Str,
     binding,
     calls_back,
     header,
     in_process,
+    needs,
     reads,
     virtual,
     wire_value,
@@ -115,3 +117,18 @@ class SourceAccessor:
     def read_file(self, path: Str) -> Bytes:
         """The contents of the regular file at `path`. Not a symlink's
         target: Nix follows a symlink itself."""
+
+
+@needs("huggorm_decl/cpp/source_accessor.hpp")
+def filesystem_accessor(root: Path) -> SourceAccessor:
+    """The file tree at `root` on this machine, read as Nix reads one.
+
+    Nix's own accessor (`makeFSSourceAccessor`): it does not follow a
+    symlink, and a path cannot leave `root` through `..`. Hand it to
+    `Store.add_accessor_to_store`, or to `EvalState.mount` over a
+    connection with experimental callbacks to evaluate this machine's
+    files on a server (huggorm#153)."""
+    Cxx("""
+return std::make_shared<huggorm::SourceAccessor>(
+    nix::makeFSSourceAccessor(std::filesystem::absolute(root)).get_ptr());
+    """)
