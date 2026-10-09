@@ -18,13 +18,16 @@ A Python store's override gets one Nix made, which reads or writes the
 stream Nix holds. It is valid only during that call; after it, `read`
 and `write` raise.
 
-In process only: a stream is a callback into this process.
+An async program passes an object with an async `write` or `read`
+instead (`AsyncSink`, `AsyncSource`), and so does a remote client:
+the method runs on the loop of the call that reads it (huggorm#155).
 """
 
 from huggorm_dsl.declare import (
     U64,
     Bytes,
     binding,
+    calls_back,
     header,
     in_process,
     virtual,
@@ -32,6 +35,7 @@ from huggorm_dsl.declare import (
 
 
 @in_process
+@calls_back
 @header("huggorm_decl/cpp/serialise.hpp")
 @binding(cxx="huggorm::Sink", threading="pool", blocking=True)
 class Sink:
@@ -46,6 +50,7 @@ class Sink:
 
 
 @in_process
+@calls_back
 @header("huggorm_decl/cpp/serialise.hpp")
 @binding(cxx="huggorm::Source", threading="pool", blocking=True)
 class Source:
