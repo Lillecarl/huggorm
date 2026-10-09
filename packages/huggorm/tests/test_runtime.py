@@ -178,6 +178,52 @@ async def test_calls_on_one_thread_run_in_the_order_they_were_made(
     await fresh.aclose()
 
 
+def test_a_waiting_thread_runs_what_arrives_while_it_waits() -> None:
+    """Work submitted while the thread waits runs on it, inside the
+    wait. Work queued before the wait runs after the job that waits
+    (huggorm#155)."""
+    import concurrent.futures
+    import threading
+
+    from huggorm_generated import _runtime
+
+    home = _runtime._Home("huggorm-test-home")
+    done: concurrent.futures.Future[None] = concurrent.futures.Future()
+    started, go = threading.Event(), threading.Event()
+    order: list[str] = []
+
+    def waits() -> int:
+        started.set()
+        go.wait()
+        order.append("waits")
+        home.serve_until(done)
+        order.append("waited")
+        return threading.get_ident()
+
+    waiting = home.submit(waits)
+    assert started.wait(5)
+    before = home.submit(order.append, "queued before")
+    go.set()
+    try:
+        deadline = time.monotonic() + 5
+        while home._inbox is None:
+            assert time.monotonic() < deadline, "the thread never waited"
+            time.sleep(0.01)
+        def inside_the_wait() -> int:
+            order.append("inside")
+            return threading.get_ident()
+
+        inside = home.submit(inside_the_wait)
+        ident = inside.result(5)
+    finally:
+        # A thread still waiting would hold the interpreter at exit.
+        done.set_result(None)
+    assert waiting.result(5) == ident
+    before.result(5)
+    assert order == ["waits", "inside", "waited", "queued before"]
+    home.shutdown()
+
+
 async def test_an_untouched_evaluator_is_born_on_its_own_thread() -> None:
     from huggorm_generated import AsyncEvalState, AsyncStore
 

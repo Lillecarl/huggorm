@@ -26,6 +26,8 @@ import asyncio
 import concurrent.futures
 import contextlib
 import copy
+import functools
+import queue
 import threading
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -130,6 +132,82 @@ def _start_with_eval_stack(pool: concurrent.futures.ThreadPoolExecutor) -> None:
             pool.submit(lambda: None).result()
         finally:
             threading.stack_size(previous)
+
+
+class _Job:
+    """One piece of work and the future it answers."""
+
+    __slots__ = ("_fn", "future")
+
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        self._fn = fn
+        self.future: concurrent.futures.Future[Any] = concurrent.futures.Future()
+
+    def run(self) -> None:
+        if not self.future.set_running_or_notify_cancel():
+            return
+        try:
+            result = self._fn()
+        except BaseException as e:
+            self.future.set_exception(e)
+        else:
+            self.future.set_result(result)
+
+
+class _Home(concurrent.futures.Executor):
+    """One thread with the evaluator's stack, whose work can also run
+    while that thread waits (`serve_until`).
+
+    A worker waits so for a hook that the loop answers (huggorm#155).
+    Work submitted during the wait runs on the waiting thread, as a C++
+    call stack runs a nested call. Work queued before the wait stays
+    queued, so it still runs after the call that waits."""
+
+    def __init__(self, name: str) -> None:
+        self._pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=name)
+        _start_with_eval_stack(self._pool)
+        self._lock = threading.Lock()
+        self._inbox: queue.SimpleQueue[_Job | None] | None = None
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any,
+               **kwargs: Any) -> concurrent.futures.Future[Any]:
+        with self._lock:
+            if self._inbox is None:
+                return self._pool.submit(fn, *args, **kwargs)
+            job = _Job(functools.partial(fn, *args, **kwargs))
+            self._inbox.put(job)
+            return job.future
+
+    def shutdown(self, wait: bool = True, *,
+                 cancel_futures: bool = False) -> None:
+        self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    def serve_until(self, done: concurrent.futures.Future[Any]) -> None:
+        """Run what is submitted here until `done` completes. Only on
+        this executor's own thread, from inside a job it runs."""
+        inbox: queue.SimpleQueue[_Job | None] = queue.SimpleQueue()
+        with self._lock:
+            outer, self._inbox = self._inbox, inbox
+        done.add_done_callback(lambda _: inbox.put(None))
+        try:
+            while (job := inbox.get()) is not None:
+                job.run()
+        finally:
+            with self._lock:
+                self._inbox = outer
+                # A submit after the wake and before the line above.
+                while True:
+                    try:
+                        left = inbox.get_nowait()
+                    except queue.Empty:
+                        break
+                    if left is None:
+                        continue
+                    if outer is not None:
+                        outer.put(left)
+                    else:
+                        self._pool.submit(left.run)
 
 
 _REQUEST_LOCK = threading.Lock()
@@ -428,7 +506,7 @@ class BaseRunner:
             self.last_worker_ident = cur.ident
             self.workers_seen.add(cur.name)
 
-    def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def _executor(self) -> concurrent.futures.Executor:
         raise NotImplementedError
 
     async def aclose(self) -> None:
@@ -518,13 +596,9 @@ class AffineRunner(BaseRunner):
     def __init__(self, factory: Callable[[], Any],
                  name: str = "huggorm-affine") -> None:
         super().__init__(factory)
-        self._pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix=name
-        )
-        # An evaluator recurses on this thread.
-        _start_with_eval_stack(self._pool)
+        self._pool = _Home(name)
 
-    def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def _executor(self) -> concurrent.futures.Executor:
         return self._pool
 
     @classmethod
@@ -562,7 +636,7 @@ class AffineRunner(BaseRunner):
 class PoolRunner(BaseRunner):
     """Operations run on a shared pool. Target must be thread-safe."""
 
-    def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def _executor(self) -> concurrent.futures.Executor:
         return _shared_pool()
 
     async def aclose(self) -> None:
@@ -609,7 +683,7 @@ class AttachedRunner(BaseRunner):
         # Best knowledge: the producer's last worker is where obj was born.
         self.born_thread_name = parent.last_worker_name
 
-    def _executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def _executor(self) -> concurrent.futures.Executor:
         return self._parent._executor()
 
     async def aclose(self) -> None:
