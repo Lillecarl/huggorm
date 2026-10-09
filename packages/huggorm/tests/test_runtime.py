@@ -7,6 +7,7 @@ Hermetic: a chroot store and `dummy://` need no daemon.
 import gc
 import importlib
 import pathlib
+import time
 import types
 from typing import Any
 
@@ -142,6 +143,39 @@ async def test_an_unbuilt_affine_object_is_built_on_its_own_thread() -> None:
 
     pool = _shell(_runtime.PoolRunner(lambda: {"ok": True}))
     assert _runtime.unwrap_arg(pool) == {"ok": True}
+
+
+async def test_calls_on_one_thread_run_in_the_order_they_were_made(
+        ) -> None:
+    """A server runs the calls of one state in the order a client sent
+    them. Building an argument, or the target itself, must not let a
+    later call go first (huggorm#155)."""
+    from huggorm_generated import _runtime
+
+    order: list[str] = []
+
+    class Target:
+        def note(self, label: str, *_: Any) -> None:
+            order.append(label)
+
+    def slowly_built() -> object:
+        time.sleep(0.2)
+        return object()
+
+    runner = _runtime.AffineRunner(Target)
+    unbuilt = _shell(_runtime.PoolRunner(slowly_built))
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(runner.call, "note", ["argument", unbuilt])
+        await anyio.sleep(0)
+        tg.start_soon(runner.call, "note", ["after the argument"])
+    fresh = _runtime.AffineRunner(Target)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(fresh.run, lambda target: target.note("run"))
+        await anyio.sleep(0)
+        tg.start_soon(fresh.call, "note", ["after the run"])
+    assert order == ["argument", "after the argument", "run", "after the run"]
+    await runner.aclose()
+    await fresh.aclose()
 
 
 async def test_an_untouched_evaluator_is_born_on_its_own_thread() -> None:

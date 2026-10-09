@@ -465,14 +465,13 @@ class BaseRunner:
         many times - walking a value that holds values - and must not
         pay a handover for every visit. The function runs on the home
         thread, so everything it touches is on that thread too."""
-        await self.materialize()
         loop = asyncio.get_running_loop()
         request = _next_request()
 
         def invoke() -> Any:
             try:
                 with _InRequest(request):
-                    return fn(self.ensure())
+                    return fn(self._resolve())
             except Exception as e:
                 if hasattr(e, "to_dict"):
                     raise
@@ -483,7 +482,13 @@ class BaseRunner:
 
     async def call(self, method: str, args: list[Any]) -> Any:
         _check_isolation(self, args)
-        await _materialize_args(args)
+        # A dedicated thread runs its calls in the order they arrive here,
+        # so nothing may await before the submit (huggorm#155). Its
+        # arguments build in `_invoke` instead: a pool object builds on
+        # any thread, and `_check_isolation` refused every affine one
+        # that lives on another thread.
+        if not self.dedicated_thread:
+            await _materialize_args(args)
         loop = asyncio.get_running_loop()
         # Allocated HERE, on the loop thread, and passed in.
         # run_in_executor carries no context, so a contextvar set on
