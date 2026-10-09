@@ -179,11 +179,16 @@ async def test_a_cancelled_call_frees_a_state_whose_client_hangs(
         callback_server: Server) -> None:
     from test_async_accessor import Tree
 
-    reading = anyio.Event()
+    """The server cancels the client's hook too, while the client stays
+    connected."""
+    reading, stopped = anyio.Event(), anyio.Event()
 
     async def hangs(path: str) -> None:
         reading.set()
-        await anyio.sleep_forever()
+        try:
+            await anyio.sleep_forever()
+        finally:
+            stopped.set()
 
     async with remote.connect(callback_server.path,
                               experimental_callbacks=True) as client:
@@ -199,6 +204,7 @@ async def test_a_cancelled_call_frees_a_state_whose_client_hangs(
                 await reading.wait()
                 tg.cancel_scope.cancel()
             assert await (await state.eval_expr("1")).integer() == 1
+            await stopped.wait()
 
 
 @pytest.mark.usefixtures("flakes")

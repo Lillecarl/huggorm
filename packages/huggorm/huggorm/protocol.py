@@ -23,6 +23,10 @@ server calls an object the client keeps, and the client answers:
     CALLBACK  [Op, callback_id, client_id, method, [arg, ...]]
     REPLY     [Op, callback_id, value]
     REFUSE    [Op, callback_id, fault]
+    CANCEL    [Op, callback_id]                       server to client
+
+The server sends CANCEL when the call that waits for a callback is
+cancelled. The client cancels that hook and answers nothing.
 
 `call_id` is the client's, and a RESULT or FAULT carries it back, so
 calls on one connection may finish in any order. A CALL names its call

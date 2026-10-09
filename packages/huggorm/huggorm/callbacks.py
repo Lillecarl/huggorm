@@ -17,6 +17,7 @@ client.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import itertools
 import types
@@ -81,6 +82,13 @@ class Callbacks:
         try:
             await self.channel.send([Op.CALLBACK, n, client_id, spec.name, raw])
             await waiting.done.wait()
+        except BaseException:
+            if not waiting.done.is_set():
+                # `send` shields itself, so a cancelled caller still sends.
+                with contextlib.suppress(anyio.BrokenResourceError,
+                                         anyio.ClosedResourceError):
+                    await self.channel.send([Op.CANCEL, n])
+            raise
         finally:
             self._waiting.pop(n, None)
         match waiting.frame:

@@ -126,9 +126,9 @@ class NixClient:
         self.experimental_callbacks = experimental_callbacks
         self._objects: dict[int, tuple[str, Any]] = {}
         self._object_ids: dict[int, int] = {}
-        # The callbacks being answered. A hook may never return, and the
-        # task group waits for it, so closing cancels them.
-        self._answering: set[anyio.CancelScope] = set()
+        # The callbacks being answered, by id. A hook may never return,
+        # and the task group waits for it, so closing cancels them.
+        self._answering: dict[int, anyio.CancelScope] = {}
         self.codec = Codec()
         # Rebuilds a declared error from its parts, so a remote failure
         # has the same shape as an in-process one: an InternalError
@@ -316,6 +316,10 @@ class NixClient:
                               list(raw)] if self.experimental_callbacks:
                             self._tasks.start_soon(self._call_back, channel, n,
                                                    client_id, name, raw)
+                        case [Op.CANCEL, int(n)] if self.experimental_callbacks:
+                            hook = self._answering.get(n)
+                            if hook is not None:
+                                hook.cancel()
                         case _:
                             raise ProtocolError(
                                 f"a frame arrived as {frame!r:.80}")
@@ -366,7 +370,7 @@ class NixClient:
         if self._reader is not None:
             self._reader.cancel()
             self._reader = None
-        for scope in self._answering:
+        for scope in self._answering.values():
             scope.cancel()
 
     async def bind(self, claim_token: str | None = None) -> str:
@@ -524,11 +528,11 @@ class NixClient:
         as a binding object, runs on the loop and blocks it while it
         runs (huggorm#155)."""
         with anyio.CancelScope() as scope:
-            self._answering.add(scope)
+            self._answering[n] = scope
             try:
                 await self._answer_callback(channel, n, client_id, name, raw)
             finally:
-                self._answering.discard(scope)
+                self._answering.pop(n, None)
 
     async def _answer_callback(self, channel: Channel, n: int,
                                client_id: int, name: str,
