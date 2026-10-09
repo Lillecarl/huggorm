@@ -137,9 +137,9 @@ class TreeWalk:
       thunk is exactly what cannot be serialized;
     - a node already visited. Values are immutable and shared freely,
       so without this a diamond is copied twice and a cycle never
-      ends. The repeated position still carries a handle, and identity
-      mapping means it is the SAME handle - so the sharing survives
-      rather than being flattened away;
+      ends. The repeated position carries a handle to the value
+      instead of a copy. Two such positions get two handles: each
+      stop is a fresh wrapper, and the table keys on the wrapper;
     - a node past the depth, or one the budget ran out on.
 
     A FORCING walk forces each node first, with the declared `force`.

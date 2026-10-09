@@ -144,9 +144,7 @@ async def test_budget_bounds_the_walk_sideways(state: Any) -> None:
 async def test_a_repeated_value_crosses_once(state: Any) -> None:
     """Values are immutable and shared freely, so without visit
     tracking a diamond is copied and a cycle never ends. The repeated
-    position still carries a handle, and identity mapping makes it the
-    same handle - so the sharing survives rather than being flattened
-    away."""
+    position carries a handle instead of a second copy."""
     client = state._client
     shared = await state.make_list()
     twice = await state.make_attrs()
