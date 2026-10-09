@@ -359,6 +359,8 @@ class Decl:
     threading: Threading = Threading.POOL
     blocking: bool = True
     wire: Crossing = Crossing.PROXY
+    # A client may hand the server one of these: `@calls_back`.
+    calls_back: bool = False
     # The declared class this one derives from, or "". Only an
     # `@in_process` class has one: no async or remote surface carries
     # a hierarchy.
@@ -509,6 +511,8 @@ MARKERS: dict[str, Marker] = {
     "header": Marker(_t("class"), "once"),
     "in_process": Marker(_t("class"), "flag",
                          excludes=frozenset({"wire_value"})),
+    "calls_back": Marker(_t("class"), "flag",
+                         requires=frozenset({"in_process"})),
     "produced": Marker(_t("class"), "flag"),
     "tree": Marker(_t("class"), "once"),
     "wire_value": Marker(_t("class"), "once"),
@@ -549,6 +553,18 @@ def in_process(cls: type) -> type:
     as a base a Python subclass implements for Nix to call. A handle
     to one would name an object no remote caller can use."""
     _decl(cls).wire = Crossing.LOCAL
+    return cls
+
+
+def calls_back(cls: type) -> type:
+    """EXPERIMENTAL (huggorm#153): a remote client may pass one of these.
+
+    For an `@in_process` class whose `@virtual` methods Nix calls. The
+    client's object stays in the client and crosses as a client handle;
+    the server calls its `@virtual` methods back over the connection,
+    from the thread that needs the answer. Off unless both ends enable
+    callbacks."""
+    _decl(cls).calls_back = True
     return cls
 
 

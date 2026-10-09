@@ -136,7 +136,7 @@ def _field(model: ir.Model, owner: str, f: ir.FieldModel) -> list[str]:
     where = f"{owner}._wire_fields {f.name!r}"
     if (why := ir.wire_blocker(f.type, model.served)) is not None:
         return [f"{where}: {why}"]
-    if f.type.leaf.kind == ir.Kind.PROXY:
+    if f.type.leaf.kind in (ir.Kind.PROXY, ir.Kind.CLIENT):
         # A wire-value is rebuilt on the far side by _from_parts, which
         # needs a local object for every part, and a proxy has none
         # there (huggorm#31).

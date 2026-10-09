@@ -67,6 +67,8 @@ class Kind(StrEnum):
     ERROR = "error"
     VALUE = "value"
     PROXY = "proxy"
+    # An object a remote client keeps, which the server calls back.
+    CLIENT = "client"
     MODULE = "module"
     OPAQUE = "opaque"
 
@@ -103,6 +105,8 @@ class Resolver:
             return Kind.ENUM
         if cls.is_union:
             return Kind.UNION
+        if cls.decl.calls_back:
+            return Kind.CLIENT
         return Kind.VALUE if cls.decl.wire is Crossing.VALUE else Kind.PROXY
 
 
@@ -205,6 +209,9 @@ def wire_blocker(t: TypeRef, served: frozenset[str]) -> str | None:
         element = t.args[0]
         if element.optional:
             element = element.required
+        if element.kind == Kind.CLIENT:
+            return (f"{t.spelling}: a client object crosses alone, as one "
+                    f"argument")
         if element.kind == Kind.PROXY:
             # One lease per element, and nothing grants leases in bulk.
             return (f"{t.spelling}: a container of proxies would grant one "
@@ -359,6 +366,9 @@ def blockers(params: Sequence[ParamModel], returns: TypeRef | None,
            if (why := wire_blocker(p.type, served))]
     if returns is not None and (why := wire_blocker(returns, served)):
         out.append(f"return type: {why}")
+    elif returns is not None and returns.leaf.kind == Kind.CLIENT:
+        out.append(f"return type: {returns.spelling} crosses only from a "
+                   f"client, as an argument")
     return out
 
 
@@ -707,6 +717,8 @@ class ClassModel:
     base: str = ""
     # What C++ holds one through: "shared_ptr", or "".
     holder: str = ""
+    # A remote client may pass one, and the server calls it back.
+    calls_back: bool = False
     # How Python data becomes a value, or None.
     builds: callspec.Builds | None = None
 
@@ -763,6 +775,7 @@ class ClassModel:
             builds=_builds(decl),
             base=decl.base,
             holder=decl.holder,
+            calls_back=decl.calls_back,
         )
 
     @property
@@ -1315,7 +1328,7 @@ class Model:
         the wrong sort of declaration."""
         if t.origin:
             return None
-        if t.kind in (Kind.VALUE, Kind.PROXY):
+        if t.kind in (Kind.VALUE, Kind.PROXY, Kind.CLIENT):
             return self.classes[t.name]
         if t.kind == Kind.UNION:
             return self.unions[t.name]

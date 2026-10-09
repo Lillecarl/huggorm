@@ -244,6 +244,7 @@ _CROSSES = {
     ir.Kind.UNION: cs.WireKind.UNION,
     ir.Kind.ERROR: cs.WireKind.ERROR,
     ir.Kind.PROXY: cs.WireKind.PROXY,
+    ir.Kind.CLIENT: cs.WireKind.CLIENT,
 }
 
 
@@ -350,6 +351,12 @@ def policy_module(model: ir.Model) -> str:
                       _spec(specs.next, m.name, m.params, m.returns))
             for m in c.methods if model.offered(m)])))
     body.append(_table("METHODS", "dict[str, tuple[Call, ...]]", methods))
+    # What the server may call on a client's object: each `@virtual`,
+    # numbered within its class (huggorm#153).
+    body.append(_table("CALLBACKS", "dict[str, tuple[Call, ...]]", [
+        (c.name, tuple(_spec(i, m.name, m.params, m.returns)
+                       for i, m in enumerate(v for v in c.bound if v.virtual)))
+        for c in classes if c.calls_back]))
     # The value TREES, and the async class each served class is adopted
     # into. SERVED, not merely wrapped: an unserved class has no async
     # class emitted, and `server.adopt` would raise AttributeError on

@@ -21,7 +21,9 @@ A path is absolute within the tree: the root is `/`. A subclass made
 over another accessor forwards what it does not override, and `super()`
 reaches the one below.
 
-In process only: an accessor is a callback into this process.
+In process, or EXPERIMENTALLY from a remote client that enables
+callbacks: the server then calls the client's accessor back over the
+connection for every read (huggorm#153).
 """
 
 from huggorm_decl.decl.words import FileType
@@ -32,6 +34,7 @@ from huggorm_dsl.declare import (
     Cxx,
     Str,
     binding,
+    calls_back,
     header,
     in_process,
     reads,
@@ -84,6 +87,7 @@ return nix::SourceAccessor::Stat{
 
 
 @in_process
+@calls_back
 @header("huggorm_decl/cpp/source_accessor.hpp")
 @binding(cxx="huggorm::SourceAccessor", holder="shared_ptr",
          threading="pool", blocking=True)

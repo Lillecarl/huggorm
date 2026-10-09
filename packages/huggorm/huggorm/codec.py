@@ -15,6 +15,7 @@ The shapes:
   the same, read off the exception's attributes.
 - A UNION is `[arm index, arm]`, the index into its declared arms.
 - A PROXY is its handle id.
+- A CLIENT is the client's int id for an object it keeps.
 - A tree node is `[Node, ...]`: see `encode_tree`.
 
 Both ends run the same build, so no shape carries a version or a
@@ -151,9 +152,12 @@ class Codec:
 
     # -- values -----------------------------------------------------------
     def encode(self, w: Wire | None, value: Any,
-               proxy_id: Callable[[Any], str], depth: int = 0) -> Any:
+               proxy_id: Callable[[Any], str], depth: int = 0,
+               client_id: Callable[[Any], int] | None = None) -> Any:
         """`value` as msgpack-native data. `proxy_id` names a handle
-        for a proxy, and is called for nothing else."""
+        for a proxy, and is called for nothing else. `client_id` names
+        an object the client keeps, and only a client that enables
+        callbacks passes one (huggorm#153)."""
         if w is None or value is None:
             if w is not None and not (w.optional or w.kind in _CONTAINER):
                 raise TypeError(f"a {w.name or w.kind} is not optional")
@@ -163,10 +167,11 @@ class Codec:
                 return self._scalar_out(w, value)
             case WireKind.LIST:
                 item = _item(w)
-                return [self.encode(item, v, proxy_id, depth) for v in value]
+                return [self.encode(item, v, proxy_id, depth, client_id)
+                        for v in value]
             case WireKind.MAP:
                 item = _item(w)
-                return {k: self.encode(item, v, proxy_id, depth)
+                return {k: self.encode(item, v, proxy_id, depth, client_id)
                         for k, v in value.items()}
             case WireKind.VALUE:
                 return self._parts_out(w.name, value, depth)
@@ -178,13 +183,22 @@ class Codec:
                         for f in self.errors[w.name]]
             case WireKind.PROXY:
                 return proxy_id(value)
+            case WireKind.CLIENT:
+                if client_id is None:
+                    raise TypeError(
+                        f"a {w.name} crosses only from a client that enables "
+                        f"experimental callbacks (huggorm#153)")
+                return client_id(value)
             case _:
                 assert_never(w.kind)
 
     def decode(self, w: Wire | None, raw: Any,
-               proxy_obj: Callable[[str], Any], depth: int = 0) -> Any:
+               proxy_obj: Callable[[str], Any], depth: int = 0,
+               client_obj: Callable[[str, int], Any] | None = None) -> Any:
         """`encode` reversed. `proxy_obj` turns a handle id into the
-        object it names, and is called for nothing else.
+        object it names, and is called for nothing else. `client_obj`
+        turns a client's id into an object that calls it back, and
+        only a server that enables callbacks passes one.
 
         An absent container reads back as an empty one unless the
         declaration says it may be None."""
@@ -206,11 +220,12 @@ class Codec:
             case WireKind.LIST:
                 item = _item(w)
                 _expect(raw, list, "a list")
-                return [self.decode(item, v, proxy_obj, depth) for v in raw]
+                return [self.decode(item, v, proxy_obj, depth, client_obj)
+                        for v in raw]
             case WireKind.MAP:
                 item = _item(w)
                 _expect(raw, dict, "a map")
-                return {k: self.decode(item, v, proxy_obj, depth)
+                return {k: self.decode(item, v, proxy_obj, depth, client_obj)
                         for k, v in raw.items()}
             case WireKind.VALUE:
                 return getattr(self.bindings, w.name)._from_parts(
@@ -224,6 +239,14 @@ class Codec:
             case WireKind.PROXY:
                 _expect(raw, str, "a handle id")
                 return proxy_obj(raw)
+            case WireKind.CLIENT:
+                _expect(raw, int, "a client object id")
+                if client_obj is None:
+                    raise TypeError(
+                        f"a client sent a {w.name}, and this server does not "
+                        f"enable experimental callbacks (huggorm#153): start "
+                        f"it with --experimental-callbacks")
+                return client_obj(w.name, raw)
             case _:
                 assert_never(w.kind)
 

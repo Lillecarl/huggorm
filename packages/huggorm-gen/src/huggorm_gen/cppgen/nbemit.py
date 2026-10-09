@@ -687,7 +687,7 @@ inline std::vector<std::string> from_bytes(const std::vector<nb::bytes> & items)
 # What a declared class leaf is, as opposed to a builtin, an opaque
 # object or a module type.
 DECLARED = frozenset({ir.Kind.ENUM, ir.Kind.UNION, ir.Kind.ERROR,
-                      ir.Kind.VALUE, ir.Kind.PROXY})
+                      ir.Kind.VALUE, ir.Kind.PROXY, ir.Kind.CLIENT})
 
 
 def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:

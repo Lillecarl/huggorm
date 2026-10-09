@@ -47,6 +47,9 @@ class WireKind(StrEnum):
     ERROR = "error"
     # A handle. `name` is the class.
     PROXY = "proxy"
+    # An object the client keeps, by the client's id for it. `name` is
+    # the class, whose `CALLBACKS` the server calls (huggorm#153).
+    CLIENT = "client"
     # A repeated field or a `map<string, V>`. `item` is what it holds.
     LIST = "list"
     MAP = "map"
