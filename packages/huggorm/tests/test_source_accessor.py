@@ -310,3 +310,37 @@ def test_the_evaluator_reads_a_python_store() -> None:
     entry = f"{store.print_store_path(path)}/default.nix"
     assert json.loads(state.eval_file(entry).to_json())["imported"] == 42
     assert asked == [False]
+
+
+def test_mounting_at_a_given_path_reads_nothing_until_evaluation() -> None:
+    """A remote client hashes its own tree and sends the path, so the
+    server does not read every file over the connection to hash it."""
+    from huggorm_bindings import EvalState
+
+    reads: list[str] = []
+
+    class Counted(Memory):
+        def maybe_lstat(self, path: str) -> Stat | None:
+            reads.append(path)
+            return super().maybe_lstat(path)
+
+    store = dummy()
+    path = dummy().add_accessor_to_store("source", Memory(SOURCE))
+    state = EvalState(store)
+    assert state.mount(Counted(SOURCE), path=path) == path
+    assert reads == []
+    entry = f"{store.print_store_path(path)}/default.nix"
+    assert json.loads(state.eval_file(entry).to_json())["imported"] == 42
+    assert reads
+
+
+def test_a_given_path_the_store_holds_keeps_the_store_content() -> None:
+    """A caller cannot mount other files over a real store object."""
+    from huggorm_bindings import EvalState
+
+    store = dummy()
+    path = store.add_accessor_to_store("source", Memory(SOURCE))
+    state = EvalState(store)
+    state.mount(Memory({**SOURCE, "/sub/x.nix": b"0\n"}), path=path)
+    entry = f"{store.print_store_path(path)}/default.nix"
+    assert json.loads(state.eval_file(entry).to_json())["imported"] == 42

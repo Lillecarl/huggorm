@@ -1651,7 +1651,8 @@ return self.wrap(made);
 
     @needs("nix/fetchers/fetch-to-store.hh",
            "nix/util/mounted-source-accessor.hh")
-    def mount(self, accessor: SourceAccessor, name: Str = "source") -> StorePath:
+    def mount(self, accessor: SourceAccessor, name: Str = "source",
+              path: StorePath | None = None) -> StorePath:
         """Show `accessor`'s tree to the evaluator at its store path.
 
         What Nix does with a lazily fetched input (`mountInput`): the
@@ -1663,15 +1664,24 @@ return self.wrap(made);
         A path, not an accessor of its own, so path arithmetic works:
         `./. + "/x"` and a string turned back into a path both land in
         the evaluator's root filesystem, which holds the mount. Pure
-        evaluation may read it."""
+        evaluation may read it.
+
+        `path` is the store path the caller already computed, so the
+        tree is not read to hash it: what a remote client sends, since
+        hashing its own files is cheap and reading them over the
+        connection is not. It is TRUSTED: a wrong one shows the tree
+        under the wrong name. A path the store already holds is not
+        mounted, so a caller cannot replace a real store object, and
+        the evaluator reads the store's own copy."""
         Cxx("""
 auto & state = self.state();
 nix::ref<nix::SourceAccessor> tree{accessor};
-auto path = nix::fetchToStore2(
+auto at = path ? *path : nix::fetchToStore2(
     state.fetchSettings, *state.store, nix::SourcePath{tree}, nix::FetchMode::DryRun, name).first;
-state.allowPath(path);
-state.storeFS->mount(nix::CanonPath(state.store->printStorePath(path)), tree);
-return path;
+state.allowPath(at);
+if (!path || !state.store->isValidPath(at))
+    state.storeFS->mount(nix::CanonPath(state.store->printStorePath(at)), tree);
+return at;
         """)
 
     def cached_files(self) -> list[Str]:
