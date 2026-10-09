@@ -246,7 +246,7 @@ class HandleTable:
         else:
             conn.leases[hid] = held - n
         self.entries[hid].leases -= n
-        self._reap()
+        self._reap([hid])
 
     def share(self, from_token: str, to_token: str, hid: str,
               mode: ShareMode = ShareMode.COPY) -> None:
@@ -298,10 +298,11 @@ class HandleTable:
     def audit(self) -> None:
         """Check the one invariant the whole model rests on: an entry's
         lease count equals what connections hold plus what sits in
-        escrow. Every mutation is a MOVE between those three places, so
-        a mismatch means a lease was created or destroyed by accident -
-        which shows up much later as a leaked or prematurely reaped
-        handle. Cheap enough for tests to call after every step."""
+        escrow, and an entry nothing holds is gone. Every mutation is a
+        MOVE between those three places, so a mismatch means a lease
+        was created or destroyed by accident - which shows up much
+        later as a leaked or prematurely reaped handle. Cheap enough for
+        tests to call after every step."""
         counted: dict[str, int] = {}
         for conn in self.connections.values():
             for hid, n in conn.leases.items():
@@ -314,6 +315,8 @@ class HandleTable:
             held = counted.pop(hid, 0)
             if held != entry.leases:
                 bad.append(f"{hid[:8]}: entry says {entry.leases}, holders say {held}")
+            if not entry.leases and not entry.children:
+                bad.append(f"{hid[:8]}: nothing holds it, and it was not reaped")
         for hid, n in counted.items():
             bad.append(f"{hid[:8]}: {n} lease(s) held on a dropped entry")
         if bad:
@@ -325,6 +328,7 @@ class HandleTable:
         and every escrow bucket unclaimed past the escrow TTL, then
         cascade-drop. Returns dropped handle IDs."""
         now = now if now is not None else time.monotonic()
+        released: list[str] = []
         if self.escrow_ttl:
             stale = [t for t, at in self._escrowed_at.items()
                      if now - at > self.escrow_ttl]
@@ -332,36 +336,41 @@ class HandleTable:
                 del self._escrowed_at[t]
                 for hid, n in self.escrow.pop(t, {}).items():
                     self.entries[hid].leases -= n
+                    released.append(hid)
         if self.ttl:
             dead = [t for t, c in self.connections.items() if now - c.last_seen > self.ttl]
             for t in dead:
                 conn = self.connections.pop(t)
                 for hid, n in conn.leases.items():
                     self.entries[hid].leases -= n
+                    released.append(hid)
                 for hid in self._by_obj.pop(t, {}).values():
                     entry = self.entries.get(hid)
                     if entry is not None:
                         entry.tokens.discard(t)
-        return self._reap()
+        return self._reap(released)
 
-    def _reap(self) -> list[str]:
-        """Fixpoint: drop entries with no leases and no live children;
-        unlinking children may free their parents in turn."""
+    def _reap(self, candidates: Iterable[str]) -> list[str]:
+        """Drop each candidate with no leases and no live children, and
+        then its parents, which unlinking it may free. Only an entry
+        that lost leases can become free, so the work follows the
+        release, not the size of the table (huggorm#143)."""
         dropped: list[str] = []
-        progress = True
-        while progress:
-            progress = False
-            for hid, entry in list(self.entries.items()):
-                if entry.leases == 0 and not entry.children:
-                    for t in list(entry.tokens):
-                        self._unindex(t, hid)
-                    del self.entries[hid]
-                    dropped.append(hid)
-                    for p in entry.parents:
-                        pe = self.entries.get(p)
-                        if pe is not None:
-                            pe.children.discard(hid)
-                    if self.on_drop is not None:
-                        self.on_drop(entry.obj)
-                    progress = True
+        todo = list(candidates)
+        while todo:
+            hid = todo.pop()
+            entry = self.entries.get(hid)
+            if entry is None or entry.leases or entry.children:
+                continue
+            for t in list(entry.tokens):
+                self._unindex(t, hid)
+            del self.entries[hid]
+            dropped.append(hid)
+            for p in entry.parents:
+                pe = self.entries.get(p)
+                if pe is not None:
+                    pe.children.discard(hid)
+                    todo.append(p)
+            if self.on_drop is not None:
+                self.on_drop(entry.obj)
         return dropped
