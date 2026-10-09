@@ -17,6 +17,13 @@ carries the build identity, and a server refuses any other
     RESULT    [Op, call_id, value]
     FAULT     [Op, call_id | None, fault]
 
+Three more, only with experimental callbacks on (huggorm#153). The
+server calls an object the client keeps, and the client answers:
+
+    CALLBACK  [Op, callback_id, client_id, method, [arg, ...]]
+    REPLY     [Op, callback_id, value]
+    REFUSE    [Op, callback_id, fault]
+
 `call_id` is the client's, and a RESULT or FAULT carries it back, so
 calls on one connection may finish in any order. A CALL names its call
 by its index in the emitted `CALLS`. A FAULT with no `call_id` answers
@@ -64,6 +71,9 @@ class Op(enum.IntEnum):
     DROP = 5
     RESULT = 6
     FAULT = 7
+    CALLBACK = 8
+    REPLY = 9
+    REFUSE = 10
 
 
 class Control(enum.IntEnum):

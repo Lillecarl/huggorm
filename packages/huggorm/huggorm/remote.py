@@ -39,7 +39,7 @@ from typing import Any
 import anyio
 
 from huggorm_generated._callspec import Acquire, Call
-from huggorm_generated._policy import ACQUIRE, FREE, NO_RPC
+from huggorm_generated._policy import ACQUIRE, CALLBACKS, FREE, NO_RPC
 
 from . import views
 from .codec import Codec
@@ -102,6 +102,10 @@ def _handle_of(obj: Any) -> str:
     return str(obj.handle_id)
 
 
+def _no_handle(_: Any) -> Any:
+    raise TypeError("a callback carries no handle")
+
+
 @dataclass
 class _Pending:
     """One call waiting for its answer. `frame` stays None when the
@@ -112,8 +116,15 @@ class _Pending:
 
 
 class NixClient:
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(self, path: str | os.PathLike[str], *,
+                 experimental_callbacks: bool = False) -> None:
         self.path = os.fspath(path)
+        # EXPERIMENTAL (huggorm#153): whether this client may hand the
+        # server an object it calls back. Each one is kept, by its id,
+        # until the client closes: the server may call it at any time.
+        self.experimental_callbacks = experimental_callbacks
+        self._objects: dict[int, tuple[str, Any]] = {}
+        self._object_ids: dict[int, int] = {}
         self.codec = Codec()
         # Rebuilds a declared error from its parts, so a remote failure
         # has the same shape as an in-process one: an InternalError
@@ -297,6 +308,10 @@ class NixClient:
                             if pending is not None:
                                 pending.frame = frame
                                 pending.done.set()
+                        case [Op.CALLBACK, int(n), int(client_id), str(name),
+                              list(raw)] if self.experimental_callbacks:
+                            self._tasks.start_soon(self._call_back, channel, n,
+                                                   client_id, name, raw)
                         case _:
                             raise ProtocolError(
                                 f"a frame arrived as {frame!r:.80}")
@@ -483,8 +498,41 @@ class NixClient:
 
     def _encode_args(self, spec: Call | Acquire, args: tuple[Any, ...] | list[Any]
                      ) -> list[Any]:
-        return [self.codec.encode(a.type, v, _handle_of)
+        client_id = self._client_id if self.experimental_callbacks else None
+        return [self.codec.encode(a.type, v, _handle_of, client_id=client_id)
                 for a, v in zip(spec.args, args, strict=False)]
+
+    def _client_id(self, cls: str, obj: Any) -> int:
+        """This client's id for an object the server will call back."""
+        n = self._object_ids.get(id(obj))
+        if n is None:
+            n = self._object_ids[id(obj)] = len(self._objects) + 1
+            self._objects[n] = (cls, obj)
+        return n
+
+    async def _call_back(self, channel: Channel, n: int, client_id: int,
+                         name: str, raw: list[Any]) -> None:
+        """Answer one CALLBACK with its REPLY or REFUSE. In its own task,
+        so the reader keeps reading. The method runs on the loop, which
+        it blocks while it runs: an accessor answers from memory or a
+        local file, and a thread would be a new one to ask for."""
+        from huggorm_generated._runtime import InternalError
+
+        try:
+            cls, obj = self._objects[client_id]
+            spec = next(s for s in CALLBACKS[cls] if s.name == name)
+            args = [self.codec.decode(a.type, v, _no_handle)
+                    for a, v in zip(spec.args, raw, strict=True)]
+            answer = getattr(obj, name)(*args)
+            frame = [Op.REPLY, n,
+                     self.codec.encode(spec.returns, answer, _no_handle)]
+        except Exception as e:
+            failure = (e if hasattr(e, "to_dict")
+                       else InternalError(f"callback {name} failed", cause=e))
+            frame = [Op.REFUSE, n, self.faults.encode(failure)]
+        with contextlib.suppress(anyio.BrokenResourceError,
+                                 anyio.ClosedResourceError):
+            await channel.send(frame)
 
     async def acquire(self, cls_name: str, *args: Any) -> Any:
         """Construct one instance remotely, from typed constructor
@@ -731,7 +779,9 @@ class NixClient:
 
 @contextlib.asynccontextmanager
 async def connect(path: str | os.PathLike[str],
-                  claim: str | None = None) -> AsyncIterator[NixClient]:
+                  claim: str | None = None, *,
+                  experimental_callbacks: bool = False
+                  ) -> AsyncIterator[NixClient]:
     """Connect to the server at `path` and bind a connection identity,
     claiming escrow when a detached session's token is presented.
 
@@ -740,6 +790,7 @@ async def connect(path: str | os.PathLike[str],
     something has to hold the scope open, and the client is the only
     thing with the right lifetime (huggorm#35). The loops cannot
     outlive the client and cannot be forgotten."""
-    async with NixClient(path) as client:
+    async with NixClient(
+            path, experimental_callbacks=experimental_callbacks) as client:
         await client.bind(claim)
         yield client

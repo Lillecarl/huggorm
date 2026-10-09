@@ -50,6 +50,7 @@ from huggorm_generated._policy import (
 )
 
 from . import tree
+from .callbacks import Callbacks
 from .codec import Codec, Node
 from .lifecycle import HandleTable, ShareMode
 from .logbus import Share, widest
@@ -552,7 +553,8 @@ def _function(fn: Any) -> Callable[..., Awaitable[Any]]:
 class Dispatcher:
     def __init__(self, tasks: Any, loops: Any,
                  lease_ttl: float = 120.0,
-                 escrow_ttl: float | None = 300.0) -> None:
+                 escrow_ttl: float | None = 300.0,
+                 callbacks: bool = False) -> None:
         """Every table it reads is emitted, in
         `huggorm_generated._policy`, so this reads them by name.
 
@@ -572,6 +574,9 @@ class Dispatcher:
         # `loops` is cancelled: a log drain never returns on its own.
         self.loops = loops
         self.table = HandleTable(ttl=lease_ttl, escrow_ttl=escrow_ttl)
+        # EXPERIMENTAL (huggorm#153): whether a client may hand over an
+        # object the server calls back.
+        self.callbacks = callbacks
         self.table.on_drop = self._on_drop
         self.codec = Codec()
         # One fan-out per state, so many readers share one
@@ -792,18 +797,20 @@ class Dispatcher:
         return handlers
 
     def _arguments(self, spec: Call | Acquire, raw: list[Any],
-                   resolve: Callable[[str], Any]) -> list[Any]:
+                   resolve: Callable[[str], Any],
+                   back: Callbacks | None = None) -> list[Any]:
         """A call's decoded arguments. A constructor may be sent fewer
         than it declares, and the binding fills in the defaults."""
         least = spec.required if isinstance(spec, Acquire) else len(spec.args)
         if not least <= len(raw) <= len(spec.args):
             raise TypeError(
                 f"{len(raw)} argument(s) for {least}..{len(spec.args)}")
-        return [self.codec.decode(a.type, v, resolve)
+        client_obj = None if back is None else back.obj
+        return [self.codec.decode(a.type, v, resolve, client_obj=client_obj)
                 for a, v in zip(spec.args, raw, strict=False)]
 
     async def _run_call(self, token: str, index: int, hid: Any,
-                        raw: list[Any]) -> Any:
+                        raw: list[Any], back: Callbacks | None = None) -> Any:
         """One CALL, answered as a codec value.
 
         A proxy answer leases to the caller's connection. A method's
@@ -823,17 +830,17 @@ class Dispatcher:
                     raise ProtocolError(f"{h.label} names no handle")
                 target = resolve(hid)
                 result = await h.run(token, target,
-                                     *self._arguments(spec, raw, resolve))
+                                     *self._arguments(spec, raw, resolve, back))
                 return self.codec.encode(
                     returns, result,
                     lambda obj: self.put(obj, token, parents=[hid]))
             case Target.NEW:
                 return self.put(
-                    await h.run(token, *self._arguments(spec, raw, resolve)),
+                    await h.run(token, *self._arguments(spec, raw, resolve, back)),
                     token)
             case Target.NONE:
                 result = await h.run(token,
-                                     *self._arguments(spec, raw, resolve))
+                                     *self._arguments(spec, raw, resolve, back))
                 return self.codec.encode(returns, result,
                                          lambda obj: self.put(obj, token))
 
@@ -1037,14 +1044,21 @@ class Dispatcher:
         token, ttl = self.bind(claim)
         await channel.send([Op.WELCOME, token, ttl])
         running: dict[int, anyio.CancelScope] = {}
+        back = (Callbacks(channel, self.codec, self.faults)
+                if self.callbacks else None)
         async with anyio.create_task_group() as calls:
             try:
-                await self._frames(channel, token, calls, running)
+                await self._frames(channel, token, calls, running, back)
             finally:
+                # Before the calls are cancelled: a thread waiting on a
+                # callback must fail, or it never lets its call end.
+                if back is not None:
+                    back.close()
                 calls.cancel_scope.cancel()
 
     async def _frames(self, channel: Channel, token: str, calls: Any,
-                      running: dict[int, anyio.CancelScope]) -> None:
+                      running: dict[int, anyio.CancelScope],
+                      back: Callbacks | None = None) -> None:
         """Read frames until EOF. Each CALL and CONTROL runs in its own
         task, so a slow call does not hold up the next."""
         while True:
@@ -1059,7 +1073,7 @@ class Dispatcher:
                     calls.start_soon(
                         self._answer, channel, token, cid, running, label,
                         functools.partial(self._run_call, token, index, hid,
-                                          args))
+                                          args, back))
                 case [Op.CONTROL, int(cid), int(number), list(args)]:
                     try:
                         control = Control(number)
@@ -1079,6 +1093,8 @@ class Dispatcher:
                 case [Op.DROP, list(hids)] if all(type(h) is str
                                                   for h in hids):
                     self.release_many(token, hids)
+                case [Op.REPLY | Op.REFUSE, int(), _] if back is not None:
+                    back.answer(frame)
                 case _:
                     raise ProtocolError(f"a frame arrived as {frame!r:.80}")
 
@@ -1113,6 +1129,7 @@ class Dispatcher:
 
 async def serve(path: str, lease_ttl: float = 120.0, *,
                 escrow_ttl: float | None = 300.0,
+                callbacks: bool = False,
                 task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
     """The server on the Unix socket at `path`, and the two scopes every
     background task lives in.
@@ -1143,7 +1160,7 @@ async def serve(path: str, lease_ttl: float = 120.0, *,
     async with (anyio.create_task_group() as work,
                 anyio.create_task_group() as loops):
         dispatcher = Dispatcher(work, loops, lease_ttl=lease_ttl,
-                                escrow_ttl=escrow_ttl)
+                                escrow_ttl=escrow_ttl, callbacks=callbacks)
 
         # Connection liveness: transports never report death; the
         # sweeper notices silence past the TTL and releases what
@@ -1195,10 +1212,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("ttl", nargs="?", type=float, default=120.0)
     parser.add_argument("--option", nargs=2, action="append", default=[],
                         metavar=("NAME", "VALUE"))
+    parser.add_argument(
+        "--experimental-callbacks", action="store_true",
+        help="let a client hand over objects this server calls back, "
+             "such as a SourceAccessor (huggorm#153). EXPERIMENTAL and "
+             "unsafe for a state that several clients share")
     args = parser.parse_args(argv)
     for name, value in args.option:
         set_setting(name, value)
-    anyio.run(serve, args.path, args.ttl)
+    anyio.run(functools.partial(serve, args.path, args.ttl,
+                                callbacks=args.experimental_callbacks))
 
 
 if __name__ == "__main__":

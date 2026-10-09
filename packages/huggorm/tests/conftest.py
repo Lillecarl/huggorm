@@ -107,7 +107,7 @@ class Server:
         return "".join(self.logs[-20:])
 
 
-async def _serve(ttl: float | None) -> AsyncIterator[Server]:
+async def _serve(ttl: float | None, *extra: str) -> AsyncIterator[Server]:
     """Start a server, drain its output, and stop it on the way out.
 
     The drain runs in a task group whose scope encloses the yield, so
@@ -119,7 +119,7 @@ async def _serve(ttl: float | None) -> AsyncIterator[Server]:
     if ttl is not None:
         argv.append(str(ttl))
     # The `flakes` fixture turns the feature on in THIS process only.
-    argv += ["--option", "extra-experimental-features", "flakes"]
+    argv += ["--option", "extra-experimental-features", "flakes", *extra]
     logs: list[str] = []
 
     async with await anyio.open_process(
@@ -152,6 +152,14 @@ async def server() -> AsyncIterator[Server]:
     """The default server: a long lease TTL, so nothing is swept while
     a test is looking away."""
     async for s in _serve(None):
+        yield s
+
+
+@pytest.fixture(scope="session")
+async def callback_server() -> AsyncIterator[Server]:
+    """A server that lets a client hand over objects it calls back
+    (huggorm#153)."""
+    async for s in _serve(None, "--experimental-callbacks"):
         yield s
 
 

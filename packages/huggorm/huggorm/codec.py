@@ -153,7 +153,7 @@ class Codec:
     # -- values -----------------------------------------------------------
     def encode(self, w: Wire | None, value: Any,
                proxy_id: Callable[[Any], str], depth: int = 0,
-               client_id: Callable[[Any], int] | None = None) -> Any:
+               client_id: Callable[[str, Any], int] | None = None) -> Any:
         """`value` as msgpack-native data. `proxy_id` names a handle
         for a proxy, and is called for nothing else. `client_id` names
         an object the client keeps, and only a client that enables
@@ -188,7 +188,7 @@ class Codec:
                     raise TypeError(
                         f"a {w.name} crosses only from a client that enables "
                         f"experimental callbacks (huggorm#153)")
-                return client_id(value)
+                return client_id(w.name, value)
             case _:
                 assert_never(w.kind)
 
