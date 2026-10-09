@@ -788,6 +788,12 @@ class ClassModel:
         return next(m for m in self.methods if m.name == name)
 
     @property
+    def hooks(self) -> tuple[MethodModel, ...]:
+        """The `@virtual` methods: what Nix calls on an object a
+        program implements."""
+        return tuple(m for m in self.bound if m.virtual)
+
+    @property
     def dunders(self) -> list[str]:
         """The value dunders this class implies, sorted."""
         facts = {"value": self.wire is Crossing.VALUE,
@@ -1431,6 +1437,12 @@ class Model:
         class only a call hands back has no Acquire: there is nothing
         to build one from."""
         return [c for c in self.constructed if c.served]
+
+    @property
+    def called_back(self) -> list[ClassModel]:
+        """Every `@calls_back` class, by name."""
+        return [self.classes[n] for n in sorted(self.classes)
+                if self.classes[n].calls_back]
 
     @property
     def ordered_served(self) -> list[ClassModel]:

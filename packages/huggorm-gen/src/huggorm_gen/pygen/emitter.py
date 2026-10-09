@@ -20,6 +20,7 @@ from huggorm_gen.payload.wiretypes import (
 from huggorm_gen.pygen.spell import (
     BINDINGS,
     PROTOCOLS,
+    Rename,
     Source,
     Spelling,
     import_from,
@@ -104,6 +105,24 @@ def _twinned(call: str, t: ir.TypeRef) -> str:
         return f"return [{twin}(item) for item in await {call}]"
     raise TypeError(f"{t.spelling}: an async twin has no spelling inside "
                     f"a {t.origin}")
+
+
+def _adapted(t: ir.TypeRef) -> bool:
+    """A `@calls_back` argument, which may be an async object."""
+    return not t.container and t.leaf.kind == ir.Kind.CLIENT
+
+
+def _passed(params: Sequence[ir.ParamModel]) -> str:
+    """The arguments a call hands its runner. A `@calls_back` one goes
+    through `adapt`, which wraps an async object in a stub Nix can
+    call (huggorm#155)."""
+    return ", ".join(f"adapt({p.type.leaf.name}, {p.name})"
+                     if _adapted(p.type) else p.name for p in params)
+
+
+def _client_rename(source: Source | None) -> Rename:
+    """A `@calls_back` class's async protocol, from `source`."""
+    return lambda t: (f"{ASYNC}{t.name}", source)
 
 
 RUNNER = {
@@ -355,8 +374,8 @@ def policy_module(model: ir.Model) -> str:
     # numbered within its class (huggorm#153).
     body.append(_table("CALLBACKS", "dict[str, tuple[Call, ...]]", [
         (c.name, tuple(_spec(i, m.name, m.params, m.returns)
-                       for i, m in enumerate(v for v in c.bound if v.virtual)))
-        for c in classes if c.calls_back]))
+                       for i, m in enumerate(c.hooks)))
+        for c in model.called_back]))
     # The value TREES, and the async class each served class is adopted
     # into. SERVED, not merely wrapped: an unserved class has no async
     # class emitted, and `server.adopt` would raise AttributeError on
@@ -429,14 +448,16 @@ def _as_async(t: ir.TypeRef) -> tuple[str, Source | None]:
     return f"{ASYNC}{t.name}", sibling(t.name)
 
 
-def _widened(spell: Spelling, model: ir.Model, t: ir.TypeRef) -> str:
+def _widened(spell: Spelling, model: ir.Model, t: ir.TypeRef,
+             client: bool = False) -> str:
     """A constructor's or a free function's parameter: on no protocol,
-    so a bare proxy takes the sync object or its async wrapper."""
+    so a bare proxy takes the sync object or its async wrapper.
+    `client` widens a `@calls_back` class where the call adapts it."""
     if t.kind == ir.Kind.PROXY and not t.origin and t.name in model.served:
         spell.need(t.name, BINDINGS)
         spell.need(f"{ASYNC}{t.name}", sibling(t.name))
         return f"{t.name} | {ASYNC}{t.name}"
-    return spell(t, _as_binding)
+    return spell(t, _as_binding, client=client)
 
 
 def _async_spelling(model: ir.Model, c: ir.ClassModel
@@ -454,11 +475,12 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
     method has no RPC, and the runner calls it in this process."""
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
                                 PROTOCOLS) if t.name in model.served
-                     else (t.name, BINDINGS))
+                     else (t.name, BINDINGS),
+                     client=_client_rename(PROTOCOLS))
     ctor = [_widened(spell, model, p.type) for p in c.ctor]
     methods: dict[str, tuple[list[str], str]] = {}
     for m in c.methods:
-        params = [spell(p.type) for p in m.params]
+        params = [spell(p.type, client=True) for p in m.params]
         if model.adopted(m.returns) is not None:
             ret = spell.returns(m.returns, _as_async)
         elif m.returns is not None:
@@ -476,8 +498,7 @@ def _hop_method(cls: ast.ClassDef, model: ir.Model,
     """One `async def` that hops to the runner, adopting what it
     returns where the return is a served class."""
     params, returns = signature
-    call = (f"self._runner.call({m.name!r}, "
-            f"[{', '.join(p.name for p in m.params)}])")
+    call = f"self._runner.call({m.name!r}, [{_passed(m.params)}])"
     if (adopted := model.adopted(m.returns)) is not None:
         body = _adopting(call, f"{ASYNC}{adopted.name}", "self._runner",
                          m.returns is not None and m.returns.optional)
@@ -531,6 +552,8 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
     if any(m.returns is not None and model.adopted(m.returns) is None
            for m in c.methods):
         typing_names = typing_names | {"cast"}
+    if any(_adapted(p.type) for m in c.methods for p in m.params):
+        runtime_names = runtime_names | {"adapt"}
     # Docstring FIRST: anything before it demotes it to a dead
     # expression and leaves the module with no __doc__.
     mod = ast.Module(type_ignores=[], body=[
@@ -641,16 +664,23 @@ def protocol_module(model: ir.Model) -> ast.Module:
     parameter or return, is spelled as its protocol, here and on both
     implementations."""
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                None))
+                                None), client=_client_rename(None))
     # Spelled once, before the module is written: the imports come
     # first in the file and only the spelling knows what they are.
     # The async twin, because every implementation is async: a
     # returned Path is an anyio.Path in process and remotely alike.
     signatures = {
-        (cls.name, m.name): ([spell(p.type) for p in m.params],
+        (cls.name, m.name): ([spell(p.type, client=True) for p in m.params],
                              spell.returns(m.returns, twin=True))
         for cls in model.ordered_served for m in cls.methods
         if model.offered(m)
+    }
+    # A hook takes and answers what the sync hook does: the stub that
+    # calls it hands the answer to Nix unchanged.
+    hooks = {
+        (cls.name, m.name): ([spell(p.type) for p in m.params],
+                             spell.returns(m.returns))
+        for cls in model.called_back for m in cls.hooks
     }
     for served in model.ordered_served:
         for m in served.methods:
@@ -699,6 +729,25 @@ def protocol_module(model: ir.Model) -> ast.Module:
             doc="Release this object. In process that shuts the runner's "
                 "thread down; remotely it gives the lease back. Either way "
                 "the object is spent afterwards."))
+        mod.body.append(cls)
+
+    for model_cls in model.called_back:
+        cls = ast.ClassDef(
+            name=model_cls.async_name, bases=[ast.Name(id="Protocol")],
+            keywords=[], decorator_list=[], type_params=[], body=[
+                ast.Expr(value=ast.Constant(value=(
+                    f"A {model_cls.name} written for the event loop, in "
+                    f"process or on a remote client (huggorm#155).\n\n"
+                    f"    Nix calls each method from the thread of the call "
+                    f"that reads it, and\n    the method runs on the loop, "
+                    f"in that call's task. It may await\n    other calls, "
+                    f"the same EvalState's included.\n    ")))])
+        for m in model_cls.hooks:
+            params, returns = hooks[(model_cls.name, m.name)]
+            cls.body.append(_def(
+                f"async def {m.name}() -> {returns}", doc=m.doc,
+                signature=_arguments([ast.arg(arg="self")], m.params, params,
+                                     f"{model_cls.async_name}.{m.name}")))
         mod.body.append(cls)
 
     ast.fix_missing_locations(mod)
@@ -789,13 +838,13 @@ def rpc_module(model: ir.Model) -> ast.Module:
     # proxy PARAMETER is spelled as the protocol, as on every surface,
     # and the client refuses an in-process object when it encodes one.
     spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                PROTOCOLS))
+                                PROTOCOLS), client=_client_rename(PROTOCOLS))
     returned = Spelling(lambda t: (model.classes[t.name].rpc_name,
                                    None))
     # Only the methods this module WRITES, so a type named only by a
     # method with no rpc does not become an unused import.
     signatures = {
-        (cls.name, m.name): ([spell(p.type) for p in m.params],
+        (cls.name, m.name): ([spell(p.type, client=True) for p in m.params],
                              returned.returns(m.returns, twin=True))
         for cls in ordered for m in cls.methods if model.offered(m)
     }
@@ -914,12 +963,13 @@ def free_function_module(model: ir.Model) -> ast.Module:
     fns = async_functions(model)
     pool_parent = any(model.adopted(fn.returns) is not None for fn in fns)
 
-    spell = Spelling()
+    spell = Spelling(client=_client_rename(PROTOCOLS))
     signatures = {}
     for fn in fns:
         if fn.calls is not None:
             spell.need(fn.calls.cls, BINDINGS)
-        params = [_widened(spell, model, p.type) for p in fn.params]
+        params = [_widened(spell, model, p.type, client=True)
+                  for p in fn.params]
         r = fn.returns
         ret = (spell.returns(r, _as_async)
                if model.adopted(r) is not None
@@ -941,15 +991,16 @@ def free_function_module(model: ir.Model) -> ast.Module:
         names=[ast.alias(name=f.name, asname="_" + f.name)
                for f in fns if f.calls is None],
         level=0))
-    runtime_names = ["call_function"] + (["PoolRunner"] if pool_parent else [])
+    runtime_names = (["call_function"] + (["PoolRunner"] if pool_parent else [])
+                     + (["adapt"] if any(_adapted(p.type) for fn in fns
+                                         for p in fn.params) else []))
     mod.body.append(import_from("_runtime", *runtime_names, level=1))
 
     for fn in fns:
         params, ret = signatures[fn.name]
         target = ("_" + fn.name if fn.calls is None
                   else f"{fn.calls.cls}.{fn.calls.method}")
-        call = (f"call_function({target}, "
-                f"[{', '.join(p.name for p in fn.params)}])")
+        call = f"call_function({target}, [{_passed(fn.params)}])"
         r = fn.returns
         if (adopted := model.adopted(r)) is not None:
             # A pool policy ignores the parent, so a fresh PoolRunner
@@ -1177,6 +1228,7 @@ def init_module(model: ir.Model) -> ast.Module:
     for c in served:
         mod.body.append(import_from(f"async_{c.name.lower()}", c.async_name, level=1))
     mod.body.append(import_from(PROTOCOL_MODULE, *(c.protocol_name for c in served),
+                                *(c.async_name for c in model.called_back),
                                 level=1))
     mod.body.append(import_from(RPC_MODULE, REGISTRY, *(c.rpc_name for c in served),
                                 level=1))
@@ -1224,4 +1276,5 @@ def package_exports(model: ir.Model) -> list[str]:
     here would be a lie a reader of `__all__` could measure."""
     return ([n for c in model.ordered_served
              for n in (c.async_name, c.protocol_name, c.rpc_name)]
+            + [c.async_name for c in model.called_back]
             + [REGISTRY] + wrapped_functions(model))

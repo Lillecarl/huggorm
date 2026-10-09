@@ -52,8 +52,12 @@ class Spelling:
     three ways."""
 
     def __init__(self, proxy: Rename | None = None,
-                 expand: Mapping[str, tuple[TypeRef, ...]] | None = None) -> None:
+                 expand: Mapping[str, tuple[TypeRef, ...]] | None = None,
+                 client: Rename | None = None) -> None:
         self._proxy = proxy
+        # The async protocol a parameter of a `@calls_back` class also
+        # takes, on a surface that adapts one (huggorm#155).
+        self._client = client
         # Union arms to write a union out as, instead of naming its
         # alias: a binding stub, because a compiled module holds no
         # alias for a typechecker to find.
@@ -64,16 +68,23 @@ class Spelling:
         self.modules: set[str] = set()
 
     def __call__(self, t: TypeRef, proxy: Rename | None = None,
-                 twin: bool = False) -> str:
+                 twin: bool = False, client: bool = False) -> str:
+        """`client` widens a `@calls_back` leaf to its async protocol:
+        a parameter takes one, a return never hands one back."""
         if t.optional:
-            return f"{self(t.args[0], proxy, twin)} | None"
+            return f"{self(t.args[0], proxy, twin, client)} | None"
         if t.origin is Origin.LIST:
-            return f"list[{self(t.args[0], proxy, twin)}]"
+            return f"list[{self(t.args[0], proxy, twin, client)}]"
         if t.origin is Origin.DICT:
-            return f"dict[str, {self(t.args[0], proxy, twin)}]"
+            return f"dict[str, {self(t.args[0], proxy, twin, client)}]"
         if twin and t.twin:
             self.module(t.twin)
             return t.twin
+        if client and t.kind == Kind.CLIENT and self._client is not None:
+            name, source = self._client(t)
+            self.need(t.name, BINDINGS)
+            self.need(name, source)
+            return f"{t.name} | {name}"
         return self._leaf(t, proxy or self._proxy)
 
     def _leaf(self, t: TypeRef, proxy: Rename | None) -> str:

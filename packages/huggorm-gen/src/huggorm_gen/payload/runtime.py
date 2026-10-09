@@ -23,16 +23,21 @@ Exception policy:
 from __future__ import annotations
 
 import asyncio
+import collections
 import concurrent.futures
 import contextlib
 import copy
 import functools
+import importlib
 import queue
 import threading
-from collections.abc import Callable, Iterable
+import types
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 import anyio
+import anyio.from_thread
+import anyio.lowlevel
 
 _POOL: concurrent.futures.ThreadPoolExecutor | None = None
 _POOL_LOCK = threading.Lock()
@@ -183,14 +188,20 @@ class _Home(concurrent.futures.Executor):
                  cancel_futures: bool = False) -> None:
         self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    def serve_until(self, done: concurrent.futures.Future[Any]) -> None:
+    def serve_until(self, done: concurrent.futures.Future[Any],
+                    start: Callable[[], None] = lambda: None) -> None:
         """Run what is submitted here until `done` completes. Only on
-        this executor's own thread, from inside a job it runs."""
+        this executor's own thread, from inside a job it runs.
+
+        `start` runs once the inbox takes work. Whatever completes
+        `done` begins there, so a submit it causes cannot reach the
+        queue behind this job."""
         inbox: queue.SimpleQueue[_Job | None] = queue.SimpleQueue()
         with self._lock:
             outer, self._inbox = self._inbox, inbox
         done.add_done_callback(lambda _: inbox.put(None))
         try:
+            start()
             while (job := inbox.get()) is not None:
                 job.run()
         finally:
@@ -230,6 +241,117 @@ def _next_request() -> int:
         return _REQUEST_SEQ
 
 
+# The hooks of the call this thread runs, for a stub Nix calls here.
+_CALLING = threading.local()
+
+
+class _Hooks:
+    """The async hooks one call's worker asks its awaiting coroutine to
+    run, through a stub Nix calls (huggorm#155).
+
+    The coroutine runs each on the loop, inside the caller's task, so a
+    cancel reaches the hook. The worker waits for the answer. On its
+    own `_Home` it runs new work meanwhile, so a hook may call the same
+    object back."""
+
+    __slots__ = ("_asked", "_closed", "_token", "home", "wake")
+
+    def __init__(self, executor: concurrent.futures.Executor) -> None:
+        self._token = anyio.lowlevel.current_token()
+        self.home = executor if isinstance(executor, _Home) else None
+        self._asked: collections.deque[
+            tuple[Callable[[], Awaitable[Any]],
+                  concurrent.futures.Future[Any]]] = collections.deque()
+        self.wake = anyio.Event()
+        self._closed = False
+
+    def ask(self, hook: Callable[[], Awaitable[Any]]) -> Any:
+        """From the worker: what `hook` answers on the loop."""
+        answer: concurrent.futures.Future[Any] = concurrent.futures.Future()
+
+        def put() -> None:
+            anyio.from_thread.run_sync(self._put, hook, answer,
+                                       token=self._token)
+
+        if self.home is not None:
+            self.home.serve_until(answer, put)
+        else:
+            put()
+        return answer.result()
+
+    def _put(self, hook: Callable[[], Awaitable[Any]],
+             answer: concurrent.futures.Future[Any]) -> None:
+        if self._closed:
+            answer.set_exception(_cancelled())
+            return
+        self._asked.append((hook, answer))
+        self.wake.set()
+
+    async def run_asked(self) -> None:
+        """Run every hook asked so far, in order."""
+        while self._asked:
+            hook, answer = self._asked.popleft()
+            try:
+                result = await hook()
+            except Exception as e:
+                answer.set_exception(e)
+            except BaseException:
+                answer.set_exception(_cancelled())
+                raise
+            else:
+                answer.set_result(result)
+
+    def close(self) -> None:
+        """Fail every hook asked, and every one asked later: the
+        coroutine that runs them was cancelled."""
+        self._closed = True
+        while self._asked:
+            self._asked.popleft()[1].set_exception(_cancelled())
+
+
+def _cancelled() -> RuntimeError:
+    return RuntimeError("the call that asked for this hook was cancelled")
+
+
+def adapt(base: type, obj: Any) -> Any:
+    """`obj` as Nix can call it: itself when it is a `base`, else a
+    stub whose hooks run `obj`'s async methods (huggorm#155)."""
+    if obj is None or isinstance(obj, base):
+        return obj
+    return _stub_class(base)(obj)
+
+
+@functools.cache
+def _stub_class(base: type) -> type:
+    """A subclass of `base` whose every hook asks the running call. A
+    class attribute per hook, because nanobind's trampoline finds an
+    override on the type."""
+    # By name: this file is a payload, and `_policy` exists only beside
+    # the copy the build writes.
+    callbacks = importlib.import_module(f"{__package__}._policy").CALLBACKS
+
+    def __init__(self: Any, target: Any) -> None:
+        base.__init__(self)
+        self._target = target
+
+    def hook(name: str) -> Callable[..., Any]:
+        def call(self: Any, *args: Any) -> Any:
+            hooks: _Hooks | None = getattr(_CALLING, "hooks", None)
+            if hooks is None:
+                raise RuntimeError(
+                    f"{name} is an async hook, and no huggorm call runs on "
+                    f"this thread to run it from")
+            return hooks.ask(functools.partial(getattr(self._target, name),
+                                               *args))
+        call.__name__ = name
+        return call
+
+    namespace = {"__init__": __init__,
+                 **{s.name: hook(s.name) for s in callbacks[base.__name__]}}
+    return types.new_class(f"Hooked{base.__name__}", (base,), {},
+                           lambda ns: ns.update(namespace))
+
+
 class _InRequest:
     """Name the call, ON the thread that runs it.
 
@@ -246,26 +368,32 @@ class _InRequest:
     exactly as `_release_gc_thread` does it: the runtime otherwise
     knows nothing about them."""
 
-    __slots__ = ("_previous", "_request")
+    __slots__ = ("_hooks", "_outer", "_previous", "_request")
 
-    def __init__(self, request: int) -> None:
+    def __init__(self, request: int, hooks: _Hooks | None = None) -> None:
         self._request = request
         self._previous = 0
+        self._hooks = hooks
+        self._outer: _Hooks | None = None
 
     def __enter__(self) -> None:
         import huggorm_bindings
 
         self._previous = huggorm_bindings.begin_request(self._request)
+        self._outer = getattr(_CALLING, "hooks", None)
+        _CALLING.hooks = self._hooks
 
     def __exit__(self, *exc: object) -> None:
         import huggorm_bindings
 
+        _CALLING.hooks = self._outer
         # Pushes the "finalized" marker for the id that is ending, and
         # puts back whatever this thread was inside before.
         huggorm_bindings.end_request(self._previous)
 
 
-async def _until_done(future: asyncio.Future[Any], request: int) -> Any:
+async def _until_done(future: asyncio.Future[Any], request: int,
+                      hooks: _Hooks) -> Any:
     """Await work on an executor thread, and stop it when cancelled.
 
     Cancelling the awaiting task does not stop a thread that is
@@ -278,18 +406,30 @@ async def _until_done(future: asyncio.Future[Any], request: int) -> Any:
     caller whose cancellation returned while the evaluator still ran
     would queue its next call behind that work. The outcome of the
     stopped work is discarded: the caller was cancelled, and the
-    cancellation is what it gets."""
-    done = anyio.Event()
-    future.add_done_callback(lambda _: done.set())
+    cancellation is what it gets.
+
+    Meanwhile it runs every async hook the worker asks for. A cancel
+    fails the hook that runs and refuses the next, so a worker that
+    waits for one stops too, and the shielded wait ends."""
+    future.add_done_callback(lambda _: hooks.wake.set())
     try:
-        await done.wait()
+        while not future.done():
+            await hooks.wake.wait()
+            hooks.wake = anyio.Event()
+            await hooks.run_asked()
     except BaseException:
         import huggorm_bindings
 
+        hooks.close()
         huggorm_bindings.cancel_request(request)
         try:
             with anyio.CancelScope(shield=True):
-                await done.wait()
+                while not future.done():
+                    await hooks.wake.wait()
+                    hooks.wake = anyio.Event()
+            # Discarded, so read: asyncio logs a failure nothing read.
+            if not future.cancelled():
+                future.exception()
         finally:
             huggorm_bindings.forget_request(request)
         raise
@@ -485,9 +625,9 @@ class BaseRunner:
         return [unwrap_arg(a) for a in args]
 
     def _invoke(self, method: str, args: list[Any],
-                request: int | None) -> Any:
+                request: int | None, hooks: _Hooks | None = None) -> Any:
         try:
-            with (_InRequest(request) if request is not None
+            with (_InRequest(request, hooks) if request is not None
                   else contextlib.nullcontext()):
                 obj = self._resolve()
                 attr = getattr(obj, method)
@@ -545,10 +685,11 @@ class BaseRunner:
         thread, so everything it touches is on that thread too."""
         loop = asyncio.get_running_loop()
         request = _next_request()
+        hooks = _Hooks(self._executor())
 
         def invoke() -> Any:
             try:
-                with _InRequest(request):
+                with _InRequest(request, hooks):
                     return fn(self._resolve())
             except Exception as e:
                 if hasattr(e, "to_dict"):
@@ -556,7 +697,7 @@ class BaseRunner:
                 raise InternalError("run failed", cause=e) from e
 
         return await _until_done(
-            loop.run_in_executor(self._executor(), invoke), request)
+            loop.run_in_executor(self._executor(), invoke), request, hooks)
 
     async def call(self, method: str, args: list[Any]) -> Any:
         _check_isolation(self, args)
@@ -572,9 +713,11 @@ class BaseRunner:
         # run_in_executor carries no context, so a contextvar set on
         # this side would not reach the thread that does the work.
         request = _next_request()
+        hooks = _Hooks(self._executor())
         return await _until_done(loop.run_in_executor(
-            self._executor(), lambda: self._invoke(method, args, request)),
-            request)
+            self._executor(),
+            lambda: self._invoke(method, args, request, hooks)),
+            request, hooks)
 
 
 def _release_gc_thread() -> None:
@@ -703,10 +846,11 @@ async def call_function(fn: Callable[..., Any], args: list[Any]) -> Any:
     await _materialize_args(args)
     loop = asyncio.get_running_loop()
     request = _next_request()
+    hooks = _Hooks(_shared_pool())
 
     def invoke() -> Any:
         try:
-            with _InRequest(request):
+            with _InRequest(request, hooks):
                 return fn(*[unwrap_arg(a) for a in args])
         except Exception as e:
             if hasattr(e, "to_dict"):
@@ -714,5 +858,5 @@ async def call_function(fn: Callable[..., Any], args: list[Any]) -> Any:
             raise InternalError(f"{fn.__name__} failed", cause=e) from e
 
     return await _until_done(
-        loop.run_in_executor(_shared_pool(), invoke), request)
+        loop.run_in_executor(_shared_pool(), invoke), request, hooks)
 
