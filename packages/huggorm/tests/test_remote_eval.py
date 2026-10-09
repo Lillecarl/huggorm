@@ -149,3 +149,34 @@ async def test_the_server_evaluates_a_directory_on_the_client(
                                  path) == path
         got = await evaluated(state, store, path)
     assert got == {"answer": 42, "text": "hello\n"}
+
+
+@pytest.mark.usefixtures("flakes")
+async def test_the_server_locks_a_flake_on_the_client(
+        callback_server: Server, tmp_path: pathlib.Path) -> None:
+    """The tree is copied to the server's store, then locked as the
+    `path:` flake of that store path. The flake's own `path:` inputs
+    still name the server's disk."""
+    from huggorm_bindings import filesystem_accessor, parse_flake_ref
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "flake.nix").write_text(
+        '{ description = "client"; outputs = _: { x = import ./x.nix; }; }')
+    (root / "x.nix").write_text("41 + 1")
+    async with remote.connect(callback_server.path,
+                              experimental_callbacks=True) as client:
+        store = await client.acquire("Store", str(tmp_path / "server"))
+        state = await client.acquire("EvalState", store,
+                                     {"flake-registry": ""})
+        with anyio.fail_after(30):
+            path = await store.add_accessor_to_store(
+                "source", filesystem_accessor(root))
+            ref = parse_flake_ref(f"path:{await store.print_store_path(path)}")
+            locked = await state.lock_flake(ref, write_lock_file=False)
+            assert await locked.description() == "client"
+            outputs = await state.call_flake(locked)
+            await state.force(outputs)
+            x = await outputs.get("x")
+            await state.force(x)
+            assert await x.integer() == 42
