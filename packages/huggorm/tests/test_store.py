@@ -38,6 +38,7 @@ from huggorm_bindings import (
     DerivedPathBuilt,
     Doc,
     ErrorInfo,
+    FileType,
     FlakeRef,
     GCAction,
     GCOptions,
@@ -62,6 +63,7 @@ from huggorm_bindings import (
     Signature,
     SingleDerivedPathBuilt,
     SourceLocation,
+    Stat,
     Store,
     StoreLocation,
     StorePath,
@@ -1930,6 +1932,7 @@ def wire_samples(chroot: Store) -> dict[str, tuple[Any, list[tuple[Any, ...]]]]:
                               [], False, [])),
             [("start", 3, 7, 2, 105, 41, b"copying '/tmp/x' to the store",
               [_rebuild(LogField, False, 0, b"/tmp/x")], None)]),
+        "Stat": (Stat(FileType.DIRECTORY), [(FileType.REGULAR, 7, True)]),
     }
 
     if NIX_2_35:

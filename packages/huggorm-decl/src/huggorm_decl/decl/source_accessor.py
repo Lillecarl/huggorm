@@ -36,14 +36,22 @@ from huggorm_dsl.declare import (
     in_process,
     reads,
     virtual,
+    wire_value,
 )
 
 
-@in_process
 @header("nix/util/source-accessor.hh")
 @binding(cxx="nix::SourceAccessor::Stat", threading="pool", blocking=False)
+@wire_value(
+    # PARTS: `Stat` has no comparison of its own.
+    compare="parts",
+)
 class Stat:
-    """What one file system object is, without following a symlink."""
+    """What one file system object is, without following a symlink.
+
+    A value, so a remote accessor's answer crosses as a copy."""
+
+    # WIRE ORDER: the parts, in the order the constructor takes them.
 
     def __init__(self, type: FileType, file_size: U64 | None = None,
                  is_executable: Bint = False) -> None:
@@ -65,6 +73,14 @@ new (self) nix::SourceAccessor::Stat{
     @reads("isExecutable")
     def is_executable(self) -> Bint:
         """Whether a regular file is executable."""
+
+    @staticmethod
+    def _from_parts() -> Stat:
+        """Rebuild one from the parts that crossed."""
+        Cxx("""
+return nix::SourceAccessor::Stat{
+    .type = type, .fileSize = file_size, .isExecutable = is_executable};
+        """)
 
 
 @in_process
