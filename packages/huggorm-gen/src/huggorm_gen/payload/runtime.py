@@ -32,6 +32,7 @@ import importlib
 import queue
 import threading
 import types
+import weakref
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -39,7 +40,7 @@ import anyio
 import anyio.from_thread
 import anyio.lowlevel
 
-_POOL: concurrent.futures.ThreadPoolExecutor | None = None
+_POOL: _Pool | None = None
 _POOL_LOCK = threading.Lock()
 # How many blocking calls may be in flight at once. Four is a default,
 # not a law: a store call talks to a daemon or a database and spends
@@ -56,9 +57,8 @@ def set_pool_size(workers: int) -> None:
     fifth waits. A library cannot guess the right number - it depends
     on the application, not on this package - so it takes one.
 
-    Raises once the pool exists. Resizing a live ThreadPoolExecutor is
-    not something concurrent.futures offers, and pretending otherwise
-    would silently keep the old size."""
+    Raises once the pool exists. A live pool keeps the size it started
+    with, and pretending otherwise would silently keep the old size."""
     global _POOL_SIZE
     if workers < 1:
         raise ValueError(f"pool size must be at least 1, got {workers}")
@@ -106,14 +106,11 @@ class InternalError(WrapperError):
         return d
 
 
-def _shared_pool() -> concurrent.futures.ThreadPoolExecutor:
+def _shared_pool() -> _Pool:
     global _POOL
     with _POOL_LOCK:
         if _POOL is None:
-            _POOL = concurrent.futures.ThreadPoolExecutor(
-                max_workers=_POOL_SIZE,
-                thread_name_prefix="huggorm-pool",
-            )
+            _POOL = _Pool(_POOL_SIZE)
         return _POOL
 
 
@@ -159,9 +156,115 @@ class _Job:
             self.future.set_result(result)
 
 
+class _Pool(concurrent.futures.Executor):
+    """The shared pool: `size` threads, plus one for each thread that
+    waits for a hook (`wait`, huggorm#155).
+
+    A waiting thread holds a Nix call open until the loop answers, and
+    the answer may need pool work. So the pool does not count it, as
+    Java's ForkJoinPool does for managed blocking. It does not run other
+    work meanwhile, as `_Home` does: that work belongs to other calls,
+    and would run deep inside this call's Nix stack.
+
+    A thread over the count retires after its job. Its Boehm
+    registration ends with it (`ThreadExit` in `gc.hpp`)."""
+
+    def __init__(self, size: int, name: str = "huggorm-pool") -> None:
+        self._size = size
+        self._name = name
+        self._queue: queue.SimpleQueue[_Job | None] = queue.SimpleQueue()
+        self._lock = threading.Lock()
+        self._threads: set[threading.Thread] = set()
+        self._started = 0
+        self._idle = 0
+        self._waiting = 0
+        self._shutdown = False
+        _POOLS.add(self)
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any,
+               **kwargs: Any) -> concurrent.futures.Future[Any]:
+        job = _Job(functools.partial(fn, *args, **kwargs))
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            self._queue.put(job)
+            self._grow()
+        return job.future
+
+    def _grow(self) -> None:
+        """Under the lock: one more thread, when none is idle and fewer
+        run than the size and the waiting threads allow."""
+        if self._idle == 0 and len(self._threads) < self._size + self._waiting:
+            thread = threading.Thread(
+                target=self._work, name=f"{self._name}_{self._started}")
+            self._started += 1
+            self._threads.add(thread)
+            thread.start()
+
+    def _work(self) -> None:
+        me = threading.current_thread()
+        while True:
+            with self._lock:
+                if len(self._threads) > self._size + self._waiting:
+                    self._threads.discard(me)
+                    return
+                self._idle += 1
+            job = self._queue.get()
+            with self._lock:
+                self._idle -= 1
+            if job is None:
+                # Pass the stop on to the next thread.
+                self._queue.put(None)
+                with self._lock:
+                    self._threads.discard(me)
+                return
+            job.run()
+            del job
+
+    def wait(self, done: concurrent.futures.Future[Any],
+             start: Callable[[], None] = lambda: None) -> None:
+        """Wait for `done` on a thread of this pool, which counts as
+        not running meanwhile. `start` begins what completes `done`."""
+        with self._lock:
+            self._waiting += 1
+            if not self._queue.empty():
+                self._grow()
+        try:
+            start()
+            concurrent.futures.wait([done])
+        finally:
+            with self._lock:
+                self._waiting -= 1
+
+    def shutdown(self, wait: bool = True, *,
+                 cancel_futures: bool = False) -> None:
+        with self._lock:
+            self._shutdown = True
+            threads = list(self._threads)
+        self._queue.put(None)
+        if wait:
+            for thread in threads:
+                if thread is not threading.current_thread():
+                    thread.join()
+
+
+# Every live pool, stopped before the interpreter joins its threads:
+# `concurrent.futures.thread` stops its own the same way, and an
+# `atexit` hook would run after that join.
+_POOLS: weakref.WeakSet[_Pool] = weakref.WeakSet()
+
+
+def _stop_pools() -> None:
+    for pool in list(_POOLS):
+        pool.shutdown(wait=True)
+
+
+threading._register_atexit(_stop_pools)  # type: ignore[attr-defined]
+
+
 class _Home(concurrent.futures.Executor):
     """One thread with the evaluator's stack, whose work can also run
-    while that thread waits (`serve_until`).
+    while that thread waits (`wait`).
 
     A worker waits so for a hook that the loop answers (huggorm#155).
     Work submitted during the wait runs on the waiting thread, as a C++
@@ -188,8 +291,8 @@ class _Home(concurrent.futures.Executor):
                  cancel_futures: bool = False) -> None:
         self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    def serve_until(self, done: concurrent.futures.Future[Any],
-                    start: Callable[[], None] = lambda: None) -> None:
+    def wait(self, done: concurrent.futures.Future[Any],
+             start: Callable[[], None] = lambda: None) -> None:
         """Run what is submitted here until `done` completes. Only on
         this executor's own thread, from inside a job it runs.
 
@@ -250,15 +353,17 @@ class _Hooks:
     run, through a stub Nix calls (huggorm#155).
 
     The coroutine runs each on the loop, inside the caller's task, so a
-    cancel reaches the hook. The worker waits for the answer. On its
-    own `_Home` it runs new work meanwhile, so a hook may call the same
-    object back."""
+    cancel reaches the hook. The worker waits for the answer through
+    its executor: a `_Home` runs new work on it meanwhile, so a hook may
+    call the same object back, and the `_Pool` starts a thread in its
+    place, so a hook may use the pool."""
 
-    __slots__ = ("_asked", "_closed", "_token", "home", "wake")
+    __slots__ = ("_asked", "_closed", "_token", "executor", "wake")
 
     def __init__(self, executor: concurrent.futures.Executor) -> None:
         self._token = anyio.lowlevel.current_token()
-        self.home = executor if isinstance(executor, _Home) else None
+        self.executor = (executor if isinstance(executor, _Home | _Pool)
+                         else None)
         self._asked: collections.deque[
             tuple[Callable[[], Awaitable[Any]],
                   concurrent.futures.Future[Any]]] = collections.deque()
@@ -273,8 +378,8 @@ class _Hooks:
             anyio.from_thread.run_sync(self._put, hook, answer,
                                        token=self._token)
 
-        if self.home is not None:
-            self.home.serve_until(answer, put)
+        if self.executor is not None:
+            self.executor.wait(answer, put)
         else:
             put()
         return answer.result()

@@ -196,7 +196,7 @@ def test_a_waiting_thread_runs_what_arrives_while_it_waits() -> None:
         started.set()
         go.wait()
         order.append("waits")
-        home.serve_until(done)
+        home.wait(done)
         order.append("waited")
         return threading.get_ident()
 
@@ -222,6 +222,39 @@ def test_a_waiting_thread_runs_what_arrives_while_it_waits() -> None:
     before.result(5)
     assert order == ["waits", "inside", "waited", "queued before"]
     home.shutdown()
+
+
+def test_a_pool_thread_that_waits_does_not_count() -> None:
+    """A one-thread pool whose thread waits for work it submits: the
+    pool starts a thread for that work, and retires it after
+    (huggorm#155)."""
+    import concurrent.futures
+
+    from huggorm_generated import _runtime
+
+    pool = _runtime._Pool(1, name="huggorm-test-pool")
+    done: concurrent.futures.Future[str] = concurrent.futures.Future()
+
+    def answer() -> None:
+        pool.submit(done.set_result, "answered")
+
+    def waits() -> str:
+        pool.wait(done, answer)
+        return done.result()
+
+    try:
+        assert pool.submit(waits).result(5) == "answered"
+        # The next job runs on the one thread the size allows.
+        assert pool.submit(lambda: "again").result(5) == "again"
+        # The surplus thread retires after its job, not with it.
+        deadline = time.monotonic() + 5
+        while len(pool._threads) != 1:
+            assert time.monotonic() < deadline, pool._threads
+            time.sleep(0.01)
+    finally:
+        if not done.done():
+            done.set_result("released")
+        pool.shutdown()
 
 
 async def test_an_untouched_evaluator_is_born_on_its_own_thread() -> None:
