@@ -48,7 +48,11 @@ class Sink:
     @virtual
     @posted
     def write(self, data: Bytes) -> None:
-        """Take the next bytes."""
+        """Take the next bytes.
+
+        Nix does not wait for an async `write`: the call queues it and
+        goes on. A failed write stops the writes after it, and fails
+        the call later, at a following write or at the call's end."""
 
 
 @in_process

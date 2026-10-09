@@ -348,8 +348,10 @@ def _next_request() -> int:
 _CALLING = threading.local()
 
 
-# How many `@posted` hooks one call may have queued and not yet run.
-# Each holds one piece of a stream: 32 KiB for a NAR (`SinkBuffer`).
+# How many `@posted` hooks one call may have queued and not yet run. A
+# count, not bytes: a NAR piece is what fills `SinkBuffer`'s 32 KiB, or
+# one larger write Nix makes whole. An accessor with no chunked
+# `readFile` (dummy://, an in-memory tree) writes each file whole.
 _POSTED_WINDOW = 16
 
 

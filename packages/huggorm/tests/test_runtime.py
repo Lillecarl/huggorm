@@ -312,6 +312,29 @@ async def test_a_failed_posted_hook_stops_the_ones_after_it() -> None:
     assert ran == [0, 1, 2]
 
 
+async def test_a_posted_hook_may_call_the_state_that_posts_it() -> None:
+    """On a home thread a posted hook is asked: posted, it would run
+    while the thread works, and its call would queue behind the call
+    that waits for it."""
+    from huggorm_generated import AsyncEvalState, AsyncStore, _runtime
+
+    state = AsyncEvalState(AsyncStore(URI))
+    answers: list[int] = []
+
+    async def write(i: int) -> None:
+        answers.append(await (await state.eval_expr(f"{i} + 1")).integer())
+
+    def work(_: Any) -> None:
+        hooks = _runtime._CALLING.hooks
+        for i in range(3):
+            hooks.post(functools.partial(write, i))
+
+    with anyio.fail_after(10):
+        await state._runner.run(work)
+    assert answers == [1, 2, 3]
+    await state.aclose()
+
+
 async def test_an_untouched_evaluator_is_born_on_its_own_thread() -> None:
     from huggorm_generated import AsyncEvalState, AsyncStore
 
