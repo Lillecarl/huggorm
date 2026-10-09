@@ -4,6 +4,7 @@ the collector.
 Hermetic: a chroot store and `dummy://` need no daemon.
 """
 
+import functools
 import gc
 import importlib
 import pathlib
@@ -255,6 +256,60 @@ def test_a_pool_thread_that_waits_does_not_count() -> None:
         if not done.done():
             done.set_result("released")
         pool.shutdown()
+
+
+async def test_a_worker_goes_on_while_a_posted_hook_waits() -> None:
+    """The worker queues posted hooks up to the window while the loop
+    runs the first, and its call ends only once all have run
+    (huggorm#155)."""
+    from huggorm_generated import _runtime
+
+    window = _runtime._POSTED_WINDOW
+    gate = anyio.Event()
+    posted: list[int] = []
+    ran: list[int] = []
+
+    async def write(i: int) -> None:
+        await gate.wait()
+        ran.append(i)
+
+    def work() -> None:
+        hooks = _runtime._CALLING.hooks
+        for i in range(3 * window):
+            hooks.post(functools.partial(write, i))
+            posted.append(i)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_runtime.call_function, work, [])
+        with anyio.fail_after(10):
+            while len(posted) < window:
+                await anyio.sleep(0.01)
+        await anyio.sleep(0.1)
+        assert len(posted) == window
+        assert ran == []
+        gate.set()
+    assert ran == list(range(3 * window))
+
+
+async def test_a_failed_posted_hook_stops_the_ones_after_it() -> None:
+    from huggorm_generated import _runtime
+
+    ran: list[int] = []
+
+    async def write(i: int) -> None:
+        if i == 3:
+            raise RuntimeError("the disk is full")
+        ran.append(i)
+
+    def work() -> None:
+        hooks = _runtime._CALLING.hooks
+        for i in range(8):
+            hooks.post(functools.partial(write, i))
+
+    with anyio.fail_after(10), pytest.raises(Exception) as caught:
+        await _runtime.call_function(work, [])
+    assert "the disk is full" in str(caught.value.__cause__)
+    assert ran == [0, 1, 2]
 
 
 async def test_an_untouched_evaluator_is_born_on_its_own_thread() -> None:

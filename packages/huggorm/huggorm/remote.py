@@ -541,7 +541,7 @@ class NixClient:
 
         try:
             cls, obj = self._objects[client_id]
-            spec = next(s for s in CALLBACKS[cls] if s.name == name)
+            spec = next(h.call for h in CALLBACKS[cls] if h.call.name == name)
             args = [self.codec.decode(a.type, v, _no_handle)
                     for a, v in zip(spec.args, raw, strict=True)]
             answer = getattr(obj, name)(*args)

@@ -116,6 +116,17 @@ class Call:
 
 
 @dataclass(frozen=True, slots=True)
+class Hook:
+    """One method Nix calls on an object a program implements.
+
+    `posted` is `@posted`: Nix goes on before an async object's call has
+    run (huggorm#155)."""
+
+    call: Call
+    posted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class Acquire:
     """How to construct one class remotely.
 

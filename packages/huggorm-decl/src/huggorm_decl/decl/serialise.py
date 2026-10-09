@@ -30,6 +30,7 @@ from huggorm_dsl.declare import (
     calls_back,
     header,
     in_process,
+    posted,
     virtual,
 )
 
@@ -45,6 +46,7 @@ class Sink:
         """A sink a subclass makes: `write` is the subclass's."""
 
     @virtual
+    @posted
     def write(self, data: Bytes) -> None:
         """Take the next bytes."""
 

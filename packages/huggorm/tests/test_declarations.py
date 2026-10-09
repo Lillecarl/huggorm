@@ -1974,3 +1974,53 @@ def test_a_virtual_refuses_a_list_of_bytes(
 
     with pytest.raises(TypeError, match="Stream"):
         nbemit.trampoline(_stream(tmp_path, declared))
+
+
+POSTED = '''"""A stream whose write Nix need not wait for."""
+
+from huggorm_dsl.declare import (
+    Bytes, binding, calls_back, header, in_process, posted, virtual)
+
+
+@in_process
+CALLS_BACK
+@header("x.hpp")
+@binding(cxx="x::Stream")
+class Stream:
+    """A stream."""
+
+    @virtual
+    @posted
+    def DECLARED:
+        """."""
+'''
+
+
+@pytest.mark.parametrize(("calls_back", "declared", "refusal"), [
+    ("", "write(self, data: Bytes) -> None", "needs a @calls_back class"),
+    ("@calls_back", "swap(self, data: Bytes) -> Bytes",
+     "needs a hook that answers nothing"),
+])
+def test_posted_refuses_a_hook_no_caller_could_leave(
+        tmp_path: pathlib.Path, calls_back: str, declared: str,
+        refusal: str) -> None:
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    module = read(_declaration(tmp_path, POSTED.replace(
+        "CALLS_BACK", calls_back).replace("DECLARED", declared)))
+    with pytest.raises(TypeError, match=refusal):
+        ir.ClassModel.of(module.classes[0], "pkg", "mod",
+                         ir.Resolver.of(module))
+
+
+def test_posted_reaches_the_hook_table(tmp_path: pathlib.Path) -> None:
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    module = read(_declaration(tmp_path, POSTED.replace(
+        "CALLS_BACK", "@calls_back").replace(
+            "DECLARED", "write(self, data: Bytes) -> None")))
+    cls = ir.ClassModel.of(module.classes[0], "pkg", "mod",
+                           ir.Resolver.of(module))
+    assert [(m.name, m.posted) for m in cls.hooks] == [("write", True)]

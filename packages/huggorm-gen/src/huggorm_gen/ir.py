@@ -517,6 +517,8 @@ class MethodModel:
     local: bool = False
     # `@virtual`: a Python subclass may override it.
     virtual: bool = False
+    # `@posted`: Nix need not wait for an async override.
+    posted: bool = False
     # The C++ type of the HANDLE class it returns, or "".
     returns_handle: str = ""
     # It returns a vocabulary with a C++ enum behind it.
@@ -547,6 +549,7 @@ class MethodModel:
                    produces=m.produces,
                    fills=_fill(owner, m, params, resolver),
                    local=m.local, virtual=_virtual(owner, m),
+                   posted=_posted(owner, m),
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
                                  and bool(word.decl.enumerated)),
@@ -866,6 +869,22 @@ class ClassModel:
     @property
     def message(self) -> str:
         return f"{self.name}Msg"
+
+def _posted(owner: Class, m: Method) -> bool:
+    """`@posted`, refused where no caller could go on without it."""
+    if not m.posted:
+        return False
+    if not owner.decl.calls_back:
+        raise TypeError(
+            f"{owner.name}.{m.name}: @posted needs a @calls_back class. "
+            f"Only an async object's hook can run after Nix goes on.")
+    if m.ret is not None:
+        raise TypeError(
+            f"{owner.name}.{m.name}: @posted needs a hook that answers "
+            f"nothing. Nix goes on before the hook runs, so nothing could "
+            f"take its answer.")
+    return True
+
 
 def _virtual(owner: Class, m: Method) -> bool:
     """`@virtual`, refused where no trampoline can carry it."""

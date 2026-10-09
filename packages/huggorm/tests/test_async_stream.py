@@ -111,6 +111,32 @@ async def test_a_write_may_call_the_pool() -> None:
     assert out.nar() == nar
 
 
+async def test_a_cancelled_call_frees_a_writer_that_hangs() -> None:
+    writing, stopped = anyio.Event(), anyio.Event()
+
+    async def hangs(data: bytes) -> None:
+        writing.set()
+        try:
+            await anyio.sleep_forever()
+        finally:
+            stopped.set()
+
+    _, path, _ = held()
+    store = AsyncStore(DUMMY)
+    await store.add_to_store("held", b"held" * 1000)
+
+    async def dump() -> None:
+        await store.nar_from_path(path, Written(hangs))
+
+    with anyio.fail_after(30):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(dump)
+            await writing.wait()
+            tg.cancel_scope.cancel()
+        await stopped.wait()
+        assert await store.is_valid_path(path)
+
+
 async def test_the_server_streams_a_nar_to_the_client(
         callback_server: Server) -> None:
     sync, path, nar = held()

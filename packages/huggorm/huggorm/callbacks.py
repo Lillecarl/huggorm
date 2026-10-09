@@ -128,6 +128,6 @@ def _proxy_class(cls: str) -> type:
         return call
 
     namespace = {"__init__": __init__,
-                 **{s.name: method(s) for s in CALLBACKS[cls]}}
+                 **{h.call.name: method(h.call) for h in CALLBACKS[cls]}}
     return types.new_class(f"Client{cls}", (), {},
                            lambda ns: ns.update(namespace))

@@ -506,6 +506,8 @@ class Method:
     local: bool = False
     # `@virtual`: a Python subclass may override it.
     virtual: bool = False
+    # `@posted`: Nix need not wait for an async override.
+    posted: bool = False
     # The `@local` accessor the wire reads this part through, from
     # @wire_read. Empty means this accessor itself.
     wire_read: str = ""
@@ -1291,6 +1293,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         cxx_body=_body(node),
         local=bool(getattr(marked, "_local", False)),
         virtual=bool(getattr(marked, "_virtual", False)),
+        posted=bool(getattr(marked, "_posted", False)),
         wire_read=getattr(marked, "_wire_read", ""),
         headers=tuple(getattr(marked, NEEDS, ())),
         spells=tuple(getattr(marked, "_spells", ())),

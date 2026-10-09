@@ -341,7 +341,7 @@ def policy_module(model: ir.Model) -> str:
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
         import_from("_callspec", "Acquire", "Arg", "Builds", "Call", "Entries",
-                    "Items", "Leaf", "Null", "Tree", "Wire", "WireKind",
+                    "Hook", "Items", "Leaf", "Null", "Tree", "Wire", "WireKind",
                     level=1),
     ]
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
@@ -372,8 +372,8 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("METHODS", "dict[str, tuple[Call, ...]]", methods))
     # What the server may call on a client's object: each `@virtual`,
     # numbered within its class (huggorm#153).
-    body.append(_table("CALLBACKS", "dict[str, tuple[Call, ...]]", [
-        (c.name, tuple(_spec(i, m.name, m.params, m.returns)
+    body.append(_table("CALLBACKS", "dict[str, tuple[Hook, ...]]", [
+        (c.name, tuple(cs.Hook(_spec(i, m.name, m.params, m.returns), m.posted)
                        for i, m in enumerate(c.hooks)))
         for c in model.called_back]))
     # The value TREES, and the async class each served class is adopted

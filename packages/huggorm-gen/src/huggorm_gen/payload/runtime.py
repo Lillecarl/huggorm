@@ -348,6 +348,11 @@ def _next_request() -> int:
 _CALLING = threading.local()
 
 
+# How many `@posted` hooks one call may have queued and not yet run.
+# Each holds one piece of a stream: 32 KiB for a NAR (`SinkBuffer`).
+_POSTED_WINDOW = 16
+
+
 class _Hooks:
     """The async hooks one call's worker asks its awaiting coroutine to
     run, through a stub Nix calls (huggorm#155).
@@ -356,49 +361,109 @@ class _Hooks:
     cancel reaches the hook. The worker waits for the answer through
     its executor: a `_Home` runs new work on it meanwhile, so a hook may
     call the same object back, and the `_Pool` starts a thread in its
-    place, so a hook may use the pool."""
+    place, so a hook may use the pool.
 
-    __slots__ = ("_asked", "_closed", "_token", "executor", "wake")
+    The worker and the loop share `_asked` under `_lock`. The worker
+    wakes the loop only when `_awake` is off, and the loop turns it off
+    only when it finds `_asked` empty, under the same lock. So a run of
+    posted hooks costs one hop to the loop, not one each."""
+
+    __slots__ = ("_asked", "_awake", "_broken", "_closed", "_lock",
+                 "_posted", "_token", "executor", "wake")
 
     def __init__(self, executor: concurrent.futures.Executor) -> None:
         self._token = anyio.lowlevel.current_token()
         self.executor = (executor if isinstance(executor, _Home | _Pool)
                          else None)
+        self._lock = threading.Lock()
         self._asked: collections.deque[
             tuple[Callable[[], Awaitable[Any]],
-                  concurrent.futures.Future[Any]]] = collections.deque()
-        self.wake = anyio.Event()
+                  concurrent.futures.Future[Any], bool]] = collections.deque()
+        self._awake = False
         self._closed = False
+        # The first posted hook that failed. The ones after it do not
+        # run: a stream with a gap is worse than one that stops.
+        self._broken: Exception | None = None
+        # Worker side: the answers of posted hooks, oldest first.
+        self._posted: collections.deque[
+            concurrent.futures.Future[Any]] = collections.deque()
+        self.wake = anyio.Event()
 
     def ask(self, hook: Callable[[], Awaitable[Any]]) -> Any:
         """From the worker: what `hook` answers on the loop."""
         answer: concurrent.futures.Future[Any] = concurrent.futures.Future()
-
-        def put() -> None:
-            anyio.from_thread.run_sync(self._put, hook, answer,
-                                       token=self._token)
-
-        if self.executor is not None:
-            self.executor.wait(answer, put)
-        else:
-            put()
+        self._wait(answer, lambda: self._put(hook, answer, posted=False))
         return answer.result()
 
-    def _put(self, hook: Callable[[], Awaitable[Any]],
-             answer: concurrent.futures.Future[Any]) -> None:
-        if self._closed:
-            answer.set_exception(_cancelled())
+    def post(self, hook: Callable[[], Awaitable[Any]]) -> None:
+        """From the worker: queue `hook` and go on. A full window waits
+        for the oldest. A failure raises here, at a later post, or at
+        `flush`."""
+        if isinstance(self.executor, _Home):
+            # A posted hook runs while this thread works rather than
+            # waits, so a call it makes to this thread queues behind the
+            # call that waits for the hook, and neither ends.
+            self.ask(hook)
             return
-        self._asked.append((hook, answer))
+        while self._posted and (self._posted[0].done()
+                                or len(self._posted) >= _POSTED_WINDOW):
+            self._wait(self._posted[0])
+            self._posted.popleft().result()
+        answer: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        self._put(hook, answer, posted=True)
+        self._posted.append(answer)
+
+    def flush(self) -> BaseException | None:
+        """From the worker, as its call ends: wait until every posted
+        hook has run, and answer the first failure."""
+        failure: BaseException | None = None
+        while self._posted:
+            self._wait(self._posted[0])
+            done = self._posted.popleft()
+            if failure is None:
+                failure = done.exception()
+        return failure
+
+    def _wait(self, done: concurrent.futures.Future[Any],
+              start: Callable[[], None] = lambda: None) -> None:
+        if self.executor is not None:
+            self.executor.wait(done, start)
+        else:
+            start()
+            concurrent.futures.wait([done])
+
+    def _put(self, hook: Callable[[], Awaitable[Any]],
+             answer: concurrent.futures.Future[Any], posted: bool) -> None:
+        with self._lock:
+            if self._closed:
+                answer.set_exception(_cancelled())
+                return
+            self._asked.append((hook, answer, posted))
+            if self._awake:
+                return
+            self._awake = True
+        anyio.from_thread.run_sync(self._wake, token=self._token)
+
+    def _wake(self) -> None:
+        # Reads `wake` on the loop: `_until_done` replaces it there.
         self.wake.set()
 
     async def run_asked(self) -> None:
         """Run every hook asked so far, in order."""
-        while self._asked:
-            hook, answer = self._asked.popleft()
+        while True:
+            with self._lock:
+                if not self._asked:
+                    self._awake = False
+                    return
+                hook, answer, posted = self._asked.popleft()
+            if posted and self._broken is not None:
+                answer.set_exception(self._broken)
+                continue
             try:
                 result = await hook()
             except Exception as e:
+                if posted:
+                    self._broken = e
                 answer.set_exception(e)
             except BaseException:
                 answer.set_exception(_cancelled())
@@ -409,9 +474,11 @@ class _Hooks:
     def close(self) -> None:
         """Fail every hook asked, and every one asked later: the
         coroutine that runs them was cancelled."""
-        self._closed = True
-        while self._asked:
-            self._asked.popleft()[1].set_exception(_cancelled())
+        with self._lock:
+            self._closed = True
+            asked, self._asked = self._asked, collections.deque()
+        for _, answer, _ in asked:
+            answer.set_exception(_cancelled())
 
 
 def _cancelled() -> RuntimeError:
@@ -439,20 +506,24 @@ def _stub_class(base: type) -> type:
         base.__init__(self)
         self._target = target
 
-    def hook(name: str) -> Callable[..., Any]:
+    def hook(name: str, posted: bool) -> Callable[..., Any]:
         def call(self: Any, *args: Any) -> Any:
             hooks: _Hooks | None = getattr(_CALLING, "hooks", None)
             if hooks is None:
                 raise RuntimeError(
                     f"{name} is an async hook, and no huggorm call runs on "
                     f"this thread to run it from")
-            return hooks.ask(functools.partial(getattr(self._target, name),
-                                               *args))
+            run = functools.partial(getattr(self._target, name), *args)
+            if posted:
+                hooks.post(run)
+                return None
+            return hooks.ask(run)
         call.__name__ = name
         return call
 
     namespace = {"__init__": __init__,
-                 **{s.name: hook(s.name) for s in callbacks[base.__name__]}}
+                 **{h.call.name: hook(h.call.name, h.posted)
+                    for h in callbacks[base.__name__]}}
     return types.new_class(f"Hooked{base.__name__}", (base,), {},
                            lambda ns: ns.update(namespace))
 
@@ -488,13 +559,20 @@ class _InRequest:
         self._outer = getattr(_CALLING, "hooks", None)
         _CALLING.hooks = self._hooks
 
-    def __exit__(self, *exc: object) -> None:
+    def __exit__(self, kind: object, *exc: object) -> None:
         import huggorm_bindings
 
-        _CALLING.hooks = self._outer
-        # Pushes the "finalized" marker for the id that is ending, and
-        # puts back whatever this thread was inside before.
-        huggorm_bindings.end_request(self._previous)
+        try:
+            # The call ends only once its posted hooks have run.
+            failure = (self._hooks.flush() if self._hooks is not None
+                       else None)
+            if failure is not None and kind is None:
+                raise failure
+        finally:
+            _CALLING.hooks = self._outer
+            # Pushes the "finalized" marker for the id that is ending, and
+            # puts back whatever this thread was inside before.
+            huggorm_bindings.end_request(self._previous)
 
 
 async def _until_done(future: asyncio.Future[Any], request: int,

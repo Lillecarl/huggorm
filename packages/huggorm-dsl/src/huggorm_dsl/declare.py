@@ -481,8 +481,7 @@ class Marker:
     stack.
 
     `excludes` names markers it cannot appear beside. `requires` names
-    ones it needs - empty today, and kept because `@pure` needed
-    `@virtual` before both were deleted, so the shape recurs.
+    ones it needs.
     """
 
     target: frozenset[str]
@@ -543,6 +542,7 @@ MARKERS: dict[str, Marker] = {
     "translator": Marker(_t("free"), "flag"),
     # On a method of an @in_process class.
     "virtual": Marker(_t("method"), "flag"),
+    "posted": Marker(_t("method"), "flag", requires=frozenset({"virtual"})),
 }
 
 
@@ -1068,6 +1068,18 @@ def virtual[F: Callable[..., Any]](fn: F) -> F:
     process, and a remote caller could not reach it. The method binds
     the C++ member by name, so it carries no body."""
     fn._virtual = True  # type: ignore[attr-defined]
+    return fn
+
+
+def posted[F: Callable[..., Any]](fn: F) -> F:
+    """Nix need not wait for this hook to finish (huggorm#155).
+
+    For a `@virtual` that answers nothing, on a `@calls_back` class.
+    An async object's call is queued, and Nix goes on; a full queue
+    makes Nix wait. A failure fails the call that reads the object, at
+    a later write or at its end. The call returns only once every
+    queued call has run."""
+    fn._posted = True  # type: ignore[attr-defined]
     return fn
 
 
