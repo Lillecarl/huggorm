@@ -151,6 +151,56 @@ async def test_the_server_evaluates_a_directory_on_the_client(
     assert got == {"answer": 42, "text": "hello\n"}
 
 
+async def test_an_async_client_tree_calls_the_server_back(
+        callback_server: Server) -> None:
+    """The client's hook awaits a call on the state that waits for it.
+    The state's thread runs that call while it waits (huggorm#155)."""
+    from test_async_accessor import Tree
+
+    answers: list[int] = []
+    async with remote.connect(callback_server.path,
+                              experimental_callbacks=True) as client:
+        store = await client.acquire("Store", DUMMY)
+        state = await client.acquire("EvalState", store)
+
+        async def asks(path: str) -> None:
+            answers.append(await (await state.eval_expr("1 + 1")).integer())
+
+        tree = Tree(SOURCE, asks)
+        with anyio.fail_after(30):
+            path = await state.mount(tree)
+            assert path == local_path(SOURCE)
+            got = await evaluated(state, store, path)
+    assert got["imported"] == 42
+    assert answers and set(answers) == {2}
+
+
+async def test_a_cancelled_call_frees_a_state_whose_client_hangs(
+        callback_server: Server) -> None:
+    from test_async_accessor import Tree
+
+    reading = anyio.Event()
+
+    async def hangs(path: str) -> None:
+        reading.set()
+        await anyio.sleep_forever()
+
+    async with remote.connect(callback_server.path,
+                              experimental_callbacks=True) as client:
+        store = await client.acquire("Store", DUMMY)
+        state = await client.acquire("EvalState", store)
+
+        async def mount() -> None:
+            await state.mount(Tree(SOURCE, hangs))
+
+        with anyio.fail_after(30):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(mount)
+                await reading.wait()
+                tg.cancel_scope.cancel()
+            assert await (await state.eval_expr("1")).integer() == 1
+
+
 @pytest.mark.usefixtures("flakes")
 async def test_the_server_locks_a_flake_on_the_client(
         callback_server: Server, tmp_path: pathlib.Path) -> None:

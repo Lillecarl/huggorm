@@ -27,6 +27,7 @@ opens the connection.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import itertools
 import logging
 import os
@@ -125,6 +126,9 @@ class NixClient:
         self.experimental_callbacks = experimental_callbacks
         self._objects: dict[int, tuple[str, Any]] = {}
         self._object_ids: dict[int, int] = {}
+        # The callbacks being answered. A hook may never return, and the
+        # task group waits for it, so closing cancels them.
+        self._answering: set[anyio.CancelScope] = set()
         self.codec = Codec()
         # Rebuilds a declared error from its parts, so a remote failure
         # has the same shape as an in-process one: an InternalError
@@ -362,6 +366,8 @@ class NixClient:
         if self._reader is not None:
             self._reader.cancel()
             self._reader = None
+        for scope in self._answering:
+            scope.cancel()
 
     async def bind(self, claim_token: str | None = None) -> str:
         """Connect and take a connection identity. A detached session's
@@ -513,9 +519,20 @@ class NixClient:
     async def _call_back(self, channel: Channel, n: int, client_id: int,
                          name: str, raw: list[Any]) -> None:
         """Answer one CALLBACK with its REPLY or REFUSE. In its own task,
-        so the reader keeps reading. The method runs on the loop, which
-        it blocks while it runs: an accessor answers from memory or a
-        local file, and a thread would be a new one to ask for."""
+        so the reader keeps reading. An async method (`AsyncSourceAccessor`)
+        is awaited, and may call the server meanwhile. A sync one, such
+        as a binding object, runs on the loop and blocks it while it
+        runs (huggorm#155)."""
+        with anyio.CancelScope() as scope:
+            self._answering.add(scope)
+            try:
+                await self._answer_callback(channel, n, client_id, name, raw)
+            finally:
+                self._answering.discard(scope)
+
+    async def _answer_callback(self, channel: Channel, n: int,
+                               client_id: int, name: str,
+                               raw: list[Any]) -> None:
         from huggorm_generated._runtime import InternalError
 
         try:
@@ -524,6 +541,8 @@ class NixClient:
             args = [self.codec.decode(a.type, v, _no_handle)
                     for a, v in zip(spec.args, raw, strict=True)]
             answer = getattr(obj, name)(*args)
+            if inspect.isawaitable(answer):
+                answer = await answer
             frame = [Op.REPLY, n,
                      self.codec.encode(spec.returns, answer, _no_handle)]
         except Exception as e:
