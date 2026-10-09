@@ -73,6 +73,19 @@ async def test_an_evaluator_reads_an_async_tree() -> None:
     await state.aclose()
 
 
+async def test_pure_evaluation_reads_a_mounted_tree() -> None:
+    """Pure mode guards the server's own files, not a mounted tree
+    (huggorm#153)."""
+    state = AsyncEvalState(AsyncStore(DUMMY), {"pure-eval": "true"})
+    with anyio.fail_after(30):
+        path = await state.mount(Memory(SOURCE))
+        got = await evaluated(state, path)
+        assert got["imported"] == 42
+        with pytest.raises(Exception, match="pure"):
+            await state.eval_expr("builtins.readFile /etc/hostname")
+    await state.aclose()
+
+
 async def test_a_hook_calls_the_state_that_reads_it() -> None:
     """The state's thread waits for the hook, and runs the hook's own
     call on that thread meanwhile."""
