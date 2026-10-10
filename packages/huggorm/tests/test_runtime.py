@@ -59,6 +59,14 @@ def _shell(runner: Any) -> Any:
     return types.SimpleNamespace(_runner=runner, _copied=False)
 
 
+def _probe(method: str) -> Any:
+    """A spec for a method of a test's own target, which no
+    declaration names."""
+    from huggorm_generated._callspec import Local
+
+    return Local(method, None, "a test's own target")
+
+
 async def collect() -> None:
     import huggorm_generated
 
@@ -104,7 +112,7 @@ async def test_a_pool_runner_constructs_once_under_concurrent_first_calls(
         return Probe()
 
     runner = _runtime.PoolRunner(factory)
-    assert await _all(*(runner.call("noop", []) for _ in range(8))) == ["ok"] * 8
+    assert await _all(*(runner.call(_probe("noop"), []) for _ in range(8))) == ["ok"] * 8
     assert len(made) == 1, f"factory ran {len(made)}x under concurrent first-calls"
 
 
@@ -119,10 +127,23 @@ async def test_a_failing_factory_runs_once_and_every_caller_sees_why() -> None:
         raise RuntimeError("no")
 
     runner = _runtime.PoolRunner(bad_factory)
-    errs = await _all_errors(*(runner.call("noop", []) for _ in range(4)))
+    errs = await _all_errors(*(runner.call(_probe("noop"), []) for _ in range(4)))
     assert len(failed) == 1, f"failing factory ran {len(failed)}x"
     assert all(isinstance(e, InternalError) for e in errs)
     assert all(type(e.__cause__) is RuntimeError for e in errs)
+
+
+def test_a_returned_none_is_not_adopted() -> None:
+    """`X | None` adopts X and passes None through. Adopting None
+    builds a wrapper around nothing, which fails only at the first
+    await on it."""
+    from huggorm_generated import AsyncStore, _runtime
+    from huggorm_generated._callspec import Wire, WireKind
+
+    runner = _runtime.PoolRunner(None)
+    returns = Wire(WireKind.PROXY, "Store", optional=True)
+    assert runner._adopted(returns, None) is None
+    assert isinstance(runner._adopted(returns, object()), AsyncStore)
 
 
 async def test_an_unbuilt_affine_object_is_built_on_its_own_thread() -> None:
@@ -138,7 +159,7 @@ async def test_an_unbuilt_affine_object_is_built_on_its_own_thread() -> None:
         _runtime.unwrap_arg(lazy)
 
     with pytest.raises(InternalError):
-        await lazy._runner.call("noop", [])
+        await lazy._runner.call(_probe("noop"), [])
     assert _runtime.unwrap_arg(lazy) is not None
     assert lazy._runner.born_thread_name.startswith("huggorm-affine")
 
@@ -166,14 +187,14 @@ async def test_calls_on_one_thread_run_in_the_order_they_were_made(
     runner = _runtime.AffineRunner(Target)
     unbuilt = _shell(_runtime.PoolRunner(slowly_built))
     async with anyio.create_task_group() as tg:
-        tg.start_soon(runner.call, "note", ["argument", unbuilt])
+        tg.start_soon(runner.call, _probe("note"), ["argument", unbuilt])
         await anyio.sleep(0)
-        tg.start_soon(runner.call, "note", ["after the argument"])
+        tg.start_soon(runner.call, _probe("note"), ["after the argument"])
     fresh = _runtime.AffineRunner(Target)
     async with anyio.create_task_group() as tg:
         tg.start_soon(fresh.run, lambda target: target.note("run"))
         await anyio.sleep(0)
-        tg.start_soon(fresh.call, "note", ["after the run"])
+        tg.start_soon(fresh.call, _probe("note"), ["after the run"])
     assert order == ["argument", "after the argument", "run", "after the run"]
     await runner.aclose()
     await fresh.aclose()
@@ -528,7 +549,7 @@ async def test_closing_a_busy_affine_wrapper_leaves_the_loop_free() -> None:
     timer.start()
     try:
         async with anyio.create_task_group() as tg:
-            tg.start_soon(runner.call, "work", [])
+            tg.start_soon(runner.call, _probe("work"), [])
             await anyio.sleep(0.1)
             tg.start_soon(runner.aclose)
             started = time.monotonic()

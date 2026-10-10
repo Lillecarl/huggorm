@@ -355,8 +355,8 @@ def policy_module(model: ir.Model) -> str:
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
         import_from("_callspec", "Acquire", "Arg", "Builds", "Call", "Entries",
-                    "Hook", "Items", "Leaf", "Null", "Tree", "Wire", "WireKind",
-                    level=1),
+                    "Hook", "Items", "Leaf", "Local", "Null", "Tree", "Wire",
+                    "WireKind", level=1),
     ]
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
                        [(c.name, _args([(f.name, f.type) for f in c.wire_fields]))
@@ -373,16 +373,24 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("UNION_ARMS", "dict[str, tuple[Wire, ...]]", [
         (n, tuple(_wire(a) for a in u.arms))
         for n, u in model.unions.items()]))
-    # Every call's spec, ONCE. The client reads these through `rpc.py`
-    # and the server through the tables, so the two ends of a call
-    # cannot disagree about its shape.
+    # Every call's spec, ONCE. The client reads these through `rpc.py`,
+    # the server through the tables and the runner through the async
+    # classes, so no two of them can disagree about a call's shape.
     specs = _Specs(body)
     methods = []
     for c in model.ordered_served:
-        methods.append((c.name, ast.Tuple(elts=[
-            specs.add(_spec_name(c.name, m.name),
-                      _spec(specs.next, m.name, m.params, m.returns))
-            for m in c.methods if model.offered(m)])))
+        offered: list[ast.expr] = []
+        for m in c.methods:
+            if model.offered(m):
+                offered.append(specs.add(
+                    _spec_name(c.name, m.name),
+                    _spec(specs.next, m.name, m.params, m.returns)))
+            else:
+                body.append(ast.Assign(
+                    targets=[ast.Name(id=_spec_name(c.name, m.name))],
+                    value=_literal(cs.Local(m.name, _wire(m.returns), "; ".join(
+                        ir.blockers(m.params, m.returns, model.served))))))
+        methods.append((c.name, ast.Tuple(elts=offered)))
     body.append(_table("METHODS", "dict[str, tuple[Call, ...]]", methods))
     # What the server may call on a client's object: each `@virtual`,
     # numbered within its class (huggorm#153).
@@ -509,17 +517,15 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
 def _hop_method(cls: ast.ClassDef, model: ir.Model,
                 m: ir.MethodModel, svc: str,
                 signature: tuple[list[str], str]) -> None:
-    """One `async def` that hops to the runner, adopting what it
-    returns where the return is a served class."""
+    """One `async def` that hops to the runner. The runner adopts a
+    returned served class, by the call's spec."""
     params, returns = signature
-    call = f"self._runner.call({m.name!r}, [{_passed(m.params)}])"
-    if (adopted := model.adopted(m.returns)) is not None:
-        body = _adopting(call, f"{ASYNC}{adopted.name}", "self._runner",
-                         m.returns is not None and m.returns.optional)
-    elif m.returns is not None and m.returns.leaf.twin:
+    call = (f"self._runner.call({_spec_name(svc, m.name)}, "
+            f"[{_passed(m.params)}])")
+    if m.returns is not None and m.returns.leaf.twin:
         body = _twinned(call, m.returns)
     else:
-        body = _forwarded(call, m.return_spelling)
+        body = _forwarded(call, returns)
     cls.body.append(_def(
         f"async def {m.name}() -> {returns}", body, m.doc,
         _arguments([ast.arg(arg="self")], m.params, params, f"{svc}.{m.name}")))
@@ -560,10 +566,10 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
         async def aclose(self) -> None:
             await self._runner.aclose()
         """))
-    # A forward hands back Any, and cast is where the declared type is
-    # claimed. An adopted return builds a real object instead, and a
-    # None return does not return.
-    if any(m.returns is not None and model.adopted(m.returns) is None
+    # A call hands back Any, and cast is where the declared type is
+    # claimed. A twin is built instead, and a None return does not
+    # return.
+    if any(m.returns is not None and not m.returns.leaf.twin
            for m in c.methods):
         typing_names = typing_names | {"cast"}
     if any(_adapted(p.type) for m in c.methods for p in m.params):
@@ -576,6 +582,9 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
         import_from("typing", "Self", *typing_names),
         import_from("_runtime", "BaseRunner",
                     *sorted({RUNNER[c.execution], *runtime_names}), level=1),
+        *([import_from("_policy", *(_spec_name(c.name, m.name)
+                                    for m in c.methods), level=1)]
+          if c.methods else []),
         # A value that produces values names its OWN async class, which
         # is defined right here: importing it would be a self-import.
         *spell.imports(own=c.async_name),
@@ -957,6 +966,30 @@ def rpc_module(model: ir.Model) -> ast.Module:
     mod.body.append(_code("$registry: dict[str, type[Any]] = {$items}",
                           registry=REGISTRY, items=", ".join(
                               f"{c.name!r}: {c.rpc_name}" for c in ordered)))
+    ast.fix_missing_locations(mod)
+    return mod
+
+
+CLASSES_MODULE = "_classes"
+
+
+def classes_module(model: ir.Model) -> ast.Module:
+    """`_classes.py`: each served class's async form, by declared name.
+
+    The runner reads it to adopt a returned proxy by the call's
+    `returns`. A module of its own, because it imports every async
+    class, and each of those imports `_policy`."""
+    served = model.ordered_served
+    mod = ast.Module(type_ignores=[], body=[
+        ast.Expr(value=ast.Constant(value=(
+            "Generated: each served class's async form, by declared name "
+            "- do not edit."))),
+        import_from("typing", "Any"),
+        *(import_from(f"async_{c.name.lower()}", c.async_name, level=1)
+          for c in served),
+        _table("CLASSES", "dict[str, type[Any]]",
+               [(c.name, ast.Name(id=c.async_name)) for c in served]),
+    ])
     ast.fix_missing_locations(mod)
     return mod
 

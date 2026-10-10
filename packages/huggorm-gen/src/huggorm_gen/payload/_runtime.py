@@ -40,6 +40,8 @@ import anyio
 import anyio.from_thread
 import anyio.lowlevel
 
+from ._callspec import Call, Local, Wire, WireKind
+
 _POOL: _Pool | None = None
 _POOL_LOCK = threading.Lock()
 # How many blocking calls may be in flight at once. Four is a default,
@@ -483,6 +485,18 @@ class _Hooks:
             answer.set_exception(_cancelled())
 
 
+@functools.cache
+def _classes() -> dict[str, type[Any]]:
+    """Each served class's async form, by declared name.
+
+    By name and at first use, as `_stub_class` reads `_policy`:
+    `_classes` exists only beside the copy the build writes, and it
+    imports every async class, each of which imports this module."""
+    classes: dict[str, type[Any]] = importlib.import_module(
+        f"{__package__}._classes").CLASSES
+    return classes
+
+
 def _cancelled() -> RuntimeError:
     return RuntimeError("the call that asked for this hook was cancelled")
 
@@ -863,7 +877,7 @@ class BaseRunner:
         """Run one function against the target, on the target's own
         executor.
 
-        `call` dispatches a method by name, which costs a thread
+        `call` runs one declared method, which costs a thread
         handover per call. This is for work that has to visit an object
         many times - walking a value that holds values - and must not
         pay a handover for every visit. The function runs on the home
@@ -884,7 +898,14 @@ class BaseRunner:
         return await _until_done(
             loop.run_in_executor(self._executor(), invoke), request, hooks)
 
-    async def call(self, method: str, args: list[Any]) -> Any:
+    def _adopted(self, returns: Wire | None, result: Any) -> Any:
+        """`result` in its async form when the call returns a served
+        class, which then runs as that class's execution says."""
+        if result is None or returns is None or returns.kind is not WireKind.PROXY:
+            return result
+        return _classes()[returns.name]._adopt(result, self)
+
+    async def call(self, spec: Call | Local, args: list[Any]) -> Any:
         _check_isolation(self, args)
         # A dedicated thread runs its calls in the order they arrive here,
         # so nothing may await before the submit (huggorm#155). Its
@@ -899,10 +920,11 @@ class BaseRunner:
         # this side would not reach the thread that does the work.
         request = _next_request()
         hooks = _Hooks(self._executor())
-        return await _until_done(loop.run_in_executor(
-            self._executor(),
-            lambda: self._invoke(method, args, request, hooks)),
-            request, hooks)
+        return self._adopted(spec.returns, await _until_done(
+            loop.run_in_executor(
+                self._executor(),
+                lambda: self._invoke(spec.name, args, request, hooks)),
+            request, hooks))
 
 
 def _release_gc_thread() -> None:
@@ -980,10 +1002,10 @@ class InlineRunner(BaseRunner):
     has no queue, so the marker falls through to the process queue -
     one per call, and a log drain calls every `LOG_POLL`."""
 
-    async def call(self, method: str, args: list[Any]) -> Any:
+    async def call(self, spec: Call | Local, args: list[Any]) -> Any:
         _check_isolation(self, args)
         await _materialize_args(args)
-        return self._invoke(method, args, None)
+        return self._adopted(spec.returns, self._invoke(spec.name, args, None))
 
     async def run(self, fn: Callable[[Any], Any]) -> Any:
         return fn(self.ensure())

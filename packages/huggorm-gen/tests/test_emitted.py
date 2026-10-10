@@ -119,9 +119,8 @@ def test_an_optional_return_names_a_value_or_nothing(
     huggorm#142).
 
     A WRAPPED T is allowed too. Every layer adopts T when it is there
-    and passes None through. The emitted async body is checked here,
-    because a body that adopts None builds a wrapper around nothing
-    and fails only at the first await on it."""
+    and passes None through: the runner by the call's spec
+    (`test_runtime.py`)."""
     from huggorm_gen import ir
 
     T = ir.TypeRef
@@ -142,8 +141,6 @@ def test_an_optional_return_names_a_value_or_nothing(
 
     # The corpus has the case: a Repl may hand back no Value.
     emitted = (out / "async_repl.py").read_text()
-    assert "return None if result is None else AsyncValue._adopt(result, self._runner)" \
-        in emitted, emitted
     assert "-> AsyncValue | None" in emitted, emitted
 
     # No pool class returns an affine one, plain or optional. An affine

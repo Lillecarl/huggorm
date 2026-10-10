@@ -116,6 +116,19 @@ class Call:
 
 
 @dataclass(frozen=True, slots=True)
+class Local:
+    """One method only an in-process object runs.
+
+    No `index` and no `args`: the wire cannot carry this call, and
+    `refusal` says why. The runner reads `name` and `returns` as it
+    reads a `Call`'s."""
+
+    name: str
+    returns: Wire | None
+    refusal: str
+
+
+@dataclass(frozen=True, slots=True)
 class Hook:
     """One method Nix calls on an object a program implements.
 

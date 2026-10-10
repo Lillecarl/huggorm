@@ -15,10 +15,12 @@ from huggorm_decl import corpus
 from huggorm_gen import contracts, ir
 from huggorm_gen.cppgen.generate import declared_model
 from huggorm_gen.pygen.emitter import (
+    CLASSES_MODULE,
     FREE_MODULE,
     PROTOCOL_MODULE,
     RPC_MODULE,
     STUB_PACKAGE,
+    classes_module,
     free_function_module,
     init_module,
     policy_module,
@@ -115,6 +117,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"generated {FREE_MODULE}.py for {len(free_names)} free "
               f"function(s): {', '.join(free_names)}")
 
+    (out / f"{CLASSES_MODULE}.py").write_text(
+        ast.unparse(classes_module(model)) + "\n")
     (out / f"{PROTOCOL_MODULE}.py").write_text(
         ast.unparse(protocol_module(model)) + "\n")
     (out / f"{RPC_MODULE}.py").write_text(
