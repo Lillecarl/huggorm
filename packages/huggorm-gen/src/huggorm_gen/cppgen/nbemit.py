@@ -1422,7 +1422,7 @@ class Emitter:
                 *body,
                 f"{INDENT * 2}}}{extras}{tail})"]
 
-    def _signature(self, params: Sequence[ir.ParamModel],
+    def _signature(self, params: Sequence[ir.ParamModel], depth: int = 4,
                    ) -> tuple[str, list[str]]:
         """A lambda's parameter list, and the lines that open its body.
 
@@ -1445,7 +1445,7 @@ class Emitter:
                 # value - and a second method taking the same vocabulary
                 # cannot spell the parse differently.
                 args += f", {spelled} {pr.name}_"
-                opening.append(f"{INDENT * 4}const auto {pr.name} = "
+                opening.append(f"{INDENT * depth}const auto {pr.name} = "
                                f"{parser}({pr.name}_);")
                 continue
             if not pr.absent:
@@ -1453,7 +1453,7 @@ class Emitter:
                 continue
             held = pr.type.required.cxx
             args += f", const std::optional<{held}> & {pr.name}_"
-            opening.append(f"{INDENT * 4}const {held} {pr.name} = "
+            opening.append(f"{INDENT * depth}const {held} {pr.name} = "
                            f"{pr.name}_.value_or({held}{{}});")
         return args, opening
 
@@ -1929,15 +1929,18 @@ class Emitter:
             # One line, however the declaration wrapped it: a C++ string
             # literal has no continuation and gluing two is noise.
             return [line + ",", f'{INDENT * 3}     "{doc}")']
-        lines = [f"{INDENT * 2}.def(nb::new_({self._lambda_head(made)}",
+        head, opening = self._lambda_head(made, 3)
+        lines = [f"{INDENT * 2}.def(nb::new_({head}", *opening,
                  *_carried(made.cxx_body, 3)]
         close = f"{INDENT * 2}}}){extras}"
         if not doc:
             return [*lines, close + ")"]
         return [*lines, close + ",", f'{INDENT * 3}     "{doc}")']
 
-    def _lambda_head(self, fn: ir.FunctionModel) -> str:
-        """The opening of a lambda for a function that CARRIES its C++.
+    def _lambda_head(self, fn: ir.FunctionModel,
+                     depth: int) -> tuple[str, list[str]]:
+        """The opening of a lambda for a function that CARRIES its C++,
+        and the lines `_signature` opens its body with.
 
         The return type is SPELLED, for the reason `_method` spells one:
         a body whose returns merely CONVERT to the declared type, or that
@@ -1957,9 +1960,9 @@ class Emitter:
         So this is consistency, not a fix. It is kept because the rule is
         real for bodies a person may write next, and because one rule
         spelled three ways is what this repo exists to avoid."""
-        args = ", ".join(f"{pr.cxx} {pr.name}" for pr in fn.params)
+        args, opening = self._signature(fn.params, depth)
         ret = f" -> {fn.returns.cxx}" if fn.returns is not None else ""
-        return f"[]({args}){ret} {{"
+        return f"[]({args.removeprefix(', ')}){ret} {{", opening
 
     def part_types(self, cls: ir.ClassModel) -> list[str]:
         """The C++ each part ARRIVES as, one per wire field.
@@ -2236,9 +2239,9 @@ class Emitter:
         #
         # The opening spells the return type, as `_lambda_head` does for
         # a factory body: one rule for both kinds of body.
-        body = _carried(fn.cxx_body, 2)
-        return [f'{INDENT}m.def("{fn.name}", {self._lambda_head(fn)}', *body,
-                f"{INDENT}}}{tail});"]
+        head, opening = self._lambda_head(fn, 2)
+        return [f'{INDENT}m.def("{fn.name}", {head}', *opening,
+                *_carried(fn.cxx_body, 2), f"{INDENT}}}{tail});"]
 
     def free_functions(self, fns: Sequence[ir.FunctionModel]) -> str:
         """Every free binding, in one function the module can call.
