@@ -74,7 +74,7 @@ public:
 
     ~PyRef()
     {
-        if (obj_ == nullptr || !Py_IsInitialized() || Py_IsFinalizing())
+        if (obj_ == nullptr || !Py_IsInitialized() || finalizing())
             return;
         nb::gil_scoped_acquire gil;
         Py_DECREF(obj_);
@@ -86,6 +86,20 @@ public:
     }
 
 private:
+    // `Py_IsFinalizing` is public from 3.13. Before it, CPython exports
+    // the same function as `_Py_IsFinalizing`, which is what
+    // pythoncapi_compat maps it to. Not `nb::is_alive()`: that turns
+    // false only at the end of finalization, after the modules are
+    // torn down.
+    static bool finalizing()
+    {
+#if PY_VERSION_HEX >= 0x030D0000
+        return Py_IsFinalizing();
+#else
+        return _Py_IsFinalizing();
+#endif
+    }
+
     PyObject * obj_;
 };
 
