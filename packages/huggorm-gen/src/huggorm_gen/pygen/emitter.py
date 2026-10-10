@@ -834,9 +834,10 @@ def free_function_module(model: ir.Model) -> ast.Module:
         value="Generated async wrappers for the bindings' module-level "
               "functions - do not edit. Built via ast at Nix build time.")))
     mod.body.append(_future_annotations())
-    if any(f.returns is not None and model.adopted(f.returns) is None
-           for f in fns):
-        mod.body.append(import_from("typing", "cast"))
+    mod.body.append(import_from("collections.abc", "Awaitable", "Callable"))
+    mod.body.append(import_from("typing", "Any", *(
+        ["cast"] if any(f.returns is not None and model.adopted(f.returns) is None
+                        for f in fns) else [])))
     mod.body.extend(spell.imports())
     mod.body.append(ast.ImportFrom(
         module="huggorm_bindings",
@@ -864,6 +865,10 @@ def free_function_module(model: ir.Model) -> ast.Module:
         mod.body.append(_def(f"async def {fn.name}() -> {ret}", body, fn.doc,
                              _arguments([], fn.params, params, fn.name)))
 
+    # The server finds the coroutine a wire call names here, not by an
+    # attribute lookup on the package.
+    mod.body.append(_table("FUNCTIONS", "dict[str, Callable[..., Awaitable[Any]]]",
+                           [(fn.name, ast.Name(id=fn.name)) for fn in fns]))
     ast.fix_missing_locations(mod)
     return mod
 

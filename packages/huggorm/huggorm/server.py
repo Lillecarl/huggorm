@@ -50,6 +50,7 @@ from huggorm_generated._policy import (
     TREES,
 )
 from huggorm_generated._runtime import BaseRunner
+from huggorm_generated.free_functions import FUNCTIONS
 
 from . import tree
 from .callbacks import Callbacks
@@ -554,8 +555,6 @@ class Dispatcher:
         the spec names. Emitting sixty copies would restate that rule
         sixty times, which is the thing this repo generates code to
         avoid. What IS per-method is the spec, and that is emitted."""
-        import huggorm_generated as flg
-
         handlers: dict[int, CallHandler] = {}
         for cls_name, methods in METHODS.items():
             for m in methods:
@@ -570,7 +569,7 @@ class Dispatcher:
         for fname, call in FREE.items():
             handlers[call.index] = CallHandler(
                 Target.NONE,
-                self._free_overrides.get(fname) or _function(getattr(flg, fname)),
+                self._free_overrides.get(fname) or _function(FUNCTIONS[fname]),
                 f"Functions.{fname}")
         listed = {c.index for c in CALLS}
         if handlers.keys() != listed:
