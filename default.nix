@@ -178,6 +178,7 @@ rec {
           huggorm-decl
           huggorm-gen
           ;
+        inherit python3;
         python3Packages = python3.pkgs;
 
         nixComponents =

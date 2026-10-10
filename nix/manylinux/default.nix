@@ -15,6 +15,8 @@
 {
   pkgs,
   lib,
+  # The interpreter the rest of the lane builds for.
+  python3,
   # A lane's patched Nix components, and the collector libexpr links.
   nixComponents,
   boehmgc,
@@ -59,8 +61,8 @@ let
   # replace an image interpreter's: SOABI read `cpython-314` under 3.13.
   # Only a package has `pythonModule`.
   pythonClosure =
-    packages: lib.filter (p: p ? pythonModule) (pkgs.python3.pkgs.requiredPythonModules packages);
-  pythonPath = lib.concatMapStringsSep ":" (p: "${p}/${pkgs.python3.sitePackages}");
+    packages: lib.filter (p: p ? pythonModule) (python3.pkgs.requiredPythonModules packages);
+  pythonPath = lib.concatMapStringsSep ":" (p: "${p}/${python3.sitePackages}");
 
   libs = import ./libs.nix {
     inherit
@@ -79,7 +81,7 @@ lib.makeScope pkgs.newScope (
     # variable it reads `/run/containers/<uid>`, which the sandbox refuses.
     image = (pkgs.dockerTools.pullImage images.${system}).overrideAttrs { XDG_RUNTIME_DIR = "/build"; };
 
-    rootfs = pkgs.runCommand "manylinux_2_28-rootfs" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+    rootfs = pkgs.runCommand "manylinux_2_28-rootfs" { nativeBuildInputs = [ python3 ]; } ''
       python3 ${./rootfs.py} ${self.image} $out
     '';
 
@@ -218,12 +220,12 @@ lib.makeScope pkgs.newScope (
         script = ''
           export PYTHONPATH=${
             pythonPath (pythonClosure [
-              pkgs.python3.pkgs.setuptools
-              pkgs.python3.pkgs.nanobind
+              python3.pkgs.setuptools
+              python3.pkgs.nanobind
             ])
           }
           export HUGGORM_BINDINGS_EMITTED=${bindings-src}
-          export HUGGORM_DECL_INCLUDE=${huggorm-decl}/${pkgs.python3.sitePackages}
+          export HUGGORM_DECL_INCLUDE=${huggorm-decl}/${python3.sitePackages}
           mkdir -p huggorm_bindings
           cp ${getEnvSh} huggorm_bindings/get-env.sh
           cp ${nixComponents.nix-store.src}/COPYING huggorm_bindings/COPYING.nix
@@ -239,7 +241,7 @@ lib.makeScope pkgs.newScope (
     # holds a wheel to.
     modules =
       pkgs.runCommand "huggorm-bindings-modules"
-        { nativeBuildInputs = [ (pkgs.python3.withPackages (_: [ huggorm-gen ])) ]; }
+        { nativeBuildInputs = [ (python3.withPackages (_: [ huggorm-gen ])) ]; }
         ''
           python3 -c 'from huggorm_gen.cppgen.generate import nanobind_modules; print(*nanobind_modules(), sep="\n")' > $out
         '';
@@ -267,10 +269,10 @@ lib.makeScope pkgs.newScope (
           pythonClosure (
             [
               huggorm
-              pkgs.python3.pkgs.pytest
-              pkgs.python3.pkgs.pytest-timeout
+              python3.pkgs.pytest
+              python3.pkgs.pytest-timeout
               # anyio needs it below 3.13, and nixpkgs' 3.14 build drops it.
-              pkgs.python3.pkgs.typing-extensions
+              python3.pkgs.typing-extensions
             ]
             ++ extraPythonPackages
           )
@@ -349,7 +351,7 @@ lib.makeScope pkgs.newScope (
           lib.mapAttrsToList (
             name: wheels:
             let
-              inherit (pkgs.python3.pkgs.${name}) version;
+              inherit (python3.pkgs.${name}) version;
             in
             map (
               wheel:
@@ -365,7 +367,7 @@ lib.makeScope pkgs.newScope (
             (pythonClosure [
               huggorm
               # anyio needs it below 3.13.
-              pkgs.python3.pkgs.typing-extensions
+              python3.pkgs.typing-extensions
             ])
         );
       in
