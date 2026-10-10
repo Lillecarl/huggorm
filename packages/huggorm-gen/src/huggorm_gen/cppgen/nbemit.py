@@ -854,6 +854,28 @@ def _is_bytes(t: ir.TypeRef | None) -> bool:
     return t is not None and t.cxx == BYTES_SPELLINGS[0]
 
 
+def _holds_bytes(t: ir.TypeRef | None) -> bool:
+    return t is not None and _is_bytes(t.leaf)
+
+
+def _bytes_shapes(where: str, params: Sequence[ir.ParamModel],
+                  returns: ir.TypeRef | None) -> None:
+    """Refuse a bytes shape `_derived` has no conversion for. Bound as
+    the C++ spells it, a string crosses as `str` where the declaration
+    says `bytes`."""
+    shapes: list[tuple[str, ir.TypeRef | None, bool]] = [
+        (f"parameter {pr.name!r}", pr.type, _is_bytes(pr.type))
+        for pr in params]
+    shapes.append(("return", returns, returns is not None
+                   and returns.cxx in BYTES_SPELLINGS))
+    for what, t, converted in shapes:
+        if _holds_bytes(t) and not converted:
+            assert t is not None
+            raise TypeError(
+                f"{where}: {what} `{t.spelling}` has no bytes conversion. "
+                f"Carry a Cxx body.")
+
+
 def rethrow_as_nix(errors: ir.Errors) -> list[str]:
     """The catch chain reversed: a Python override's declared Nix error,
     thrown as the C++ exception it stands for. Most-derived first, as
@@ -1134,8 +1156,11 @@ class Emitter:
                       and m.returns.origin in (ir.Origin.LIST, ir.Origin.DICT))
         if not (cls.via or m.returns_handle or m.reads or m.guard
                 or m.names or m.produces or wants_list or m.returns_word
-                or any(pr.via or pr.parsed_by for pr in m.params)):
+                or _holds_bytes(m.returns)
+                or any(pr.via or pr.parsed_by or _holds_bytes(pr.type)
+                       for pr in m.params)):
             return None
+        _bytes_shapes(f"{cls.name}.{m.name}", m.params, m.returns)
         for pr in m.params:
             if pr.collection and pr.type.optional:
                 # `as_set` converts a vector, not an optional one.
@@ -1187,6 +1212,7 @@ class Emitter:
         # decision, so `as_set` is written here rather than at each site.
         passed = ", ".join(
             f"as_set<{pr.collection}>({pr.name})" if pr.collection else
+            f"from_bytes({pr.name})" if _is_bytes(pr.type) else
             (f"{pr.name}.{pr.via}" if pr.via else pr.name)
             for pr in m.params)
         # A member is reached, not called. The declaration says which by
@@ -2247,6 +2273,11 @@ class Emitter:
             extras.append(arg)
         tail = "".join(f", {x}" for x in extras)
         if fn.cxx_body is None:
+            if _holds_bytes(fn.returns) or any(_holds_bytes(pr.type)
+                                               for pr in fn.params):
+                raise TypeError(
+                    f"{fn.name}: bound by name, a string crosses as `str` "
+                    f"where the declaration says bytes. Carry a Cxx body.")
             return [f'{INDENT}m.def("{fn.name}", &{fn.cxx_name}{tail});']
         # A body, for a function whose C++ is assembled rather than named.
         # `gc_stats` reads five counters out of gc.h and hands back one
@@ -2274,7 +2305,8 @@ class Emitter:
         """Whether any accessor here answers bytes, or a @virtual takes
         them, so a unit needs BYTES."""
         return any((m.returns is not None and m.returns.cxx in BYTES_SPELLINGS)
-                   or (m.virtual and any(_is_bytes(pr.type) for pr in m.params))
+                   or (not m.cxx_body and any(_is_bytes(pr.type)
+                                              for pr in m.params))
                    for cls in classes for m in cls.bound)
 
     def _errors_used(self, classes: Sequence[ir.ClassModel],

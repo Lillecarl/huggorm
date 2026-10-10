@@ -2312,3 +2312,67 @@ def test_a_container_of_errors_names_the_errors_module() -> None:
     emitter = nbemit.Emitter(model, ir.ModuleModel("m", "", (), (), (),
                                                     frozenset()))
     assert emitter._errors_used((), (fn,))
+
+
+BYTES_STORE = '''"""A store that takes and answers bytes."""
+
+from huggorm_dsl.declare import Bytes, binding, binds, header
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """A store."""
+
+DECLARED
+'''
+
+
+def _bytes(tmp_path: pathlib.Path, declared: str) -> str:
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen import nbemit
+
+    unit = ir.ModuleModel.of(read(_declaration(
+        tmp_path, BYTES_STORE.replace("DECLARED", declared))), "")
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {},
+                     {}, ir.Errors("", {}), (unit,))
+    emitter = nbemit.Emitter(model, unit)
+    return "\n".join([emitter.bind_function(unit.classes[0]),
+                      *(line for fn in unit.functions
+                        for line in emitter.free_function(fn))])
+
+
+def test_bytes_convert_with_no_body(tmp_path: pathlib.Path) -> None:
+    """Bound by pointer, a string crossed as `str` where the
+    declaration says `bytes`, and a `bytes` argument did not convert
+    to one (huggorm#139)."""
+    emitted = _bytes(tmp_path, '''
+    def read(self) -> Bytes:
+        """Read."""
+
+    def chunks(self) -> list[Bytes]:
+        """Chunks."""
+
+    def write(self, data: Bytes) -> None:
+        """Write."""
+''')
+    for line in ("return to_bytes(self.read());",
+                 "return to_bytes(self.chunks());",
+                 "self.write(from_bytes(data));"):
+        assert line in emitted, emitted
+    assert "&nix::Store::" not in emitted, emitted
+
+
+@pytest.mark.parametrize(("declared", "what"), [
+    ('    def maybe(self) -> Bytes | None:\n        """Maybe."""\n',
+     "Store.maybe: return"),
+    ('    def many(self, data: list[Bytes]) -> None:\n        """Many."""\n',
+     "Store.many: parameter 'data'"),
+    ('\n\n@binds("nix::put")\ndef put(data: Bytes) -> None:\n'
+     '    """Put."""\n', "put: bound by name")])
+def test_a_bytes_shape_nothing_converts_is_refused(
+        tmp_path: pathlib.Path, declared: str, what: str) -> None:
+    """Refused, not bound as the C++ spells it (huggorm#139)."""
+    with pytest.raises(TypeError, match=re.escape(what)):
+        _bytes(tmp_path, declared)
