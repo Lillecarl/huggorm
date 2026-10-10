@@ -123,10 +123,11 @@ class KeyedBuildResult:
     about.
 
     Never raises. Reading a failed result is not an exception, which
-    is the whole difference from `Store.build_paths` (huggorm#71):
-    `error` ANSWERS with the typed error rather than throwing it, and
-    it is the caller who decides what to do with one.
+    is the whole difference from `Store.build_paths`: `error` ANSWERS
+    with the typed error rather than throwing it, and it is the
+    caller who decides what to do with one.
     """
+    # huggorm#71
 
     # WIRE ORDER: what was asked, which arm answered, and the facts
     # that hold whichever arm it is.

@@ -59,10 +59,11 @@ class OutputsSpec:
     names, and neither, are both refused.
 
     `all` is NOT "no names". Absence of a container means EMPTY
-    everywhere else in this API (huggorm#41), and "no outputs" is the
-    opposite request from "every output" - so the two are different
-    fields and the constructor will not let them blur.
+    everywhere else in this API, and "no outputs" is the opposite
+    request from "every output" - so the two are different fields and
+    the constructor will not let them blur.
     """
+    # huggorm#41
 
     def __init__(self, all: Bint = False,
                  names: list[Str] | None = None) -> None:

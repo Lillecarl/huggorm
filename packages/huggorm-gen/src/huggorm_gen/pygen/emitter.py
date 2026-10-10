@@ -742,7 +742,7 @@ def protocol_module(model: ir.Model) -> ast.Module:
             keywords=[], decorator_list=[], type_params=[], body=[
                 ast.Expr(value=ast.Constant(value=(
                     f"A {model_cls.name} written for the event loop, in "
-                    f"process or on a remote client (huggorm#155).\n\n"
+                    f"process or on a remote client.\n\n"
                     f"    Nix calls each method from the thread of the call "
                     f"that reads it, and\n    the method runs on the loop, "
                     f"in that call's task. It may await\n    other calls, "
@@ -997,8 +997,7 @@ def _stub_class(c: ir.ClassModel, spell: Spelling, produced: bool,
         doc = m.doc
         if (coroutine := coroutines.get(ir.MethodRef(name, m.name))) is not None:
             doc = (f"{doc}\n\n" if doc else "") + (
-                f"Blocks. From async code, await `huggorm.{coroutine}` "
-                f"(huggorm#25).")
+                f"Blocks. From async code, await `huggorm.{coroutine}`.")
         cls.body.append(_def(
             f"def {m.name}() -> {spell.returns(m.returns)}", doc=doc,
             signature=_arguments([ast.arg(arg="self")], m.params, params,

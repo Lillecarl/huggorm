@@ -127,7 +127,8 @@ def filesystem_accessor(root: Path) -> SourceAccessor:
     symlink, and a path cannot leave `root` through `..`. Hand it to
     `Store.add_accessor_to_store`, or to `EvalState.mount` over a
     connection with experimental callbacks to evaluate this machine's
-    files on a server (huggorm#153)."""
+    files on a server."""
+    # huggorm#153
     Cxx("""
 return std::make_shared<huggorm::SourceAccessor>(
     nix::makeFSSourceAccessor(std::filesystem::absolute(root)).get_ptr());

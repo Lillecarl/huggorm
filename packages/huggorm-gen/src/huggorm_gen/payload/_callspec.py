@@ -90,8 +90,8 @@ class Arg:
 
 
 class Subscription(StrEnum):
-    """What a call does to a subscription the server shares
-    (huggorm#85). The server opens one per object, or per process for
+    """What a call does to a subscription the server shares.
+    The server opens one per object, or per process for
     a free function, and hands each caller its own reader."""
 
     OPEN = "open"
@@ -147,7 +147,7 @@ class Hook:
     """One method Nix calls on an object a program implements.
 
     `posted` is `@posted`: Nix goes on before an async object's call has
-    run (huggorm#155)."""
+    run."""
 
     call: Call
     posted: bool = False

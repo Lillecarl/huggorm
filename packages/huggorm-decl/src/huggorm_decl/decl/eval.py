@@ -329,8 +329,8 @@ return self.wrap(by_name[static_cast<std::size_t>(index)]->value);
         """One attribute by name.
 
         A missing one raises `MissingAttribute`, an `EvalError` with
-        the words and the suggestions `{ ... }.name` gives
-        (eval.cc:1438)."""
+        the words and the suggestions `{ ... }.name` gives."""
+        # eval.cc:1438
         Cxx("""
 const auto * attr = self.get()->attrs()->get(self.intern(name));
 if (attr == nullptr) {
@@ -504,11 +504,11 @@ return argv;
         """Whether this is a builtin holding SOME of its arguments.
 
         The third shape, and the one with no introspection at all:
-        `getDoc` has no branch for it and returns nothing
-        (eval.cc:571-648), and nothing in libexpr says how many
-        arguments are still wanted. Counting them means walking the
-        application chain, which is work this declaration does not do
-        and a caller cannot ask for."""
+        `getDoc` has no branch for it and returns nothing, and nothing
+        in libexpr says how many arguments are still wanted. Counting
+        them means walking the application chain, which is work this
+        declaration does not do and a caller cannot ask for."""
+        # getDoc: eval.cc:571-648
         Cxx("return self.get()->isPrimOpApp();")
 
     @blocks
@@ -523,14 +523,9 @@ return argv;
         BLOCKS: it runs the evaluator. The argument is not forced
         first, and the RESULT comes back in WHNF - `callFunction`
         evaluates the lambda's body with `Expr::eval`, which produces
-        an evaluated value rather than a thunk (eval.cc:1600). So the
-        top level is forced and everything inside it stays lazy: `x: {
-        a = x; }` answers an attribute set whose `a` is still a
-        thunk.
-
-        Measured, because the opposite was written here first. A
-        docstring claiming the result was a thunk failed its own gate
-        with `assert 'int' == 'thunk'`.
+        an evaluated value rather than a thunk. So the top level is
+        forced and everything inside it stays lazy: `x: { a = x; }`
+        answers an attribute set whose `a` is still a thunk.
 
         `noPos`, because the call site is Python and there is no Nix
         position to name. The trace on a failure therefore starts
@@ -539,6 +534,8 @@ return argv;
         No `@guard`: `callFunction` reads no payload before it checks
         the type, and it also calls a set with `__functor`, as `f x`
         does. Anything else raises Nix's own `TypeError`."""
+        # WHNF: eval.cc:1600. Measured: a docstring that said "thunk"
+        # failed its gate with `assert 'int' == 'thunk'`.
         Cxx("""
 huggorm::gc_register_thread();
 auto * out = self.state().allocValue();
@@ -559,27 +556,29 @@ return self.wrap(out);
         It REFUSES a function that declares no formals, and that
         refusal is the reason this is a separate method rather than a
         convenience. Upstream returns the function UNAPPLIED in that
-        case (eval.cc:1795-1798, `res = fun`), so a caller who passed
+        case (`res = fun`), so a caller who passed
         arguments to `x: x` would get back the function and no
         indication that nothing happened. That is this repo's named
         failure mode sitting in libexpr, and a binding may not be
         more permissive than the C++ it binds.
 
         It forces `self`, unlike everything else here, because
-        `autoCallFunction` does (eval.cc:1783) - so a thunk that
+        `autoCallFunction` does - so a thunk that
         evaluates to a function is accepted where a call would
         refuse it. `@guard` still rejects a thunk before we get here,
         so that reachability belongs to a caller who forced first.
 
         An attribute set with a `__functor` attribute is CALLABLE in
         Nix and is refused here, because `@guard("function")` sees
-        `nAttrs`. Upstream follows the functor (eval.cc:1786-1792);
-        this does not, and a caller reaches it by applying the
-        `__functor` attribute itself.
+        `nAttrs`. Upstream follows the functor; this does not, and a
+        caller reaches it by applying the `__functor` attribute
+        itself.
 
         A required formal with no value and no default raises
         MissingArgumentError, which crosses as a declared Nix
         error."""
+        # autoCallFunction in 2.34: forces at eval.cc:1783, follows the
+        # functor at 1786-1792, answers `fun` unapplied at 1795-1798.
         Cxx("""
 if (!self.get()->isLambda()
     || !self.get()->lambda().fun->getFormals().has_value())
@@ -653,11 +652,11 @@ return out;
         """The name this lambda was bound to, or "" for an anonymous
         one.
 
-        `ExprLambda::name` (nixexpr.hh:517), which the parser sets
-        when a lambda is the right-hand side of an attribute or a
-        `let`. It is for a human: two bindings of one lambda do not
-        make two functions, and this reports whichever name the
-        expression carried."""
+        `ExprLambda::name`, which the parser sets when a lambda is the
+        right-hand side of an attribute or a `let`. It is for a human:
+        two bindings of one lambda do not make two functions, and this
+        reports whichever name the expression carried."""
+        # nixexpr.hh:517
         Cxx("""
 if (!self.get()->isLambda())
     throw std::invalid_argument("value is not a lambda");
@@ -703,7 +702,8 @@ return self.get()->lambda().fun->getFormals().has_value();
         It changes what `apply_auto` PASSES, not just what it
         accepts: with an ellipsis upstream forwards every argument it
         was given, and without one it forwards only the declared
-        formals (eval.cc:1803-1813)."""
+        formals."""
+        # eval.cc:1803-1813
         Cxx("""
 if (!self.get()->isLambda())
     throw std::invalid_argument("value is not a lambda");
@@ -764,7 +764,8 @@ return names;
         `inspect.Parameter` needs to know that a default EXISTS
         rather than what it is, which is the whole use for this.
 
-        `Formal::def` non-null is the fact (nixexpr.hh:467)."""
+        `Formal::def` non-null is the fact."""
+        # nixexpr.hh:467
         Cxx("""
 if (!self.get()->isLambda())
     throw std::invalid_argument("value is not a lambda");
@@ -785,8 +786,9 @@ return names;
         Read off `PrimOp` directly rather than through `getDoc`, and
         the difference matters: `getDoc` returns NOTHING for a primop
         with no documentation, because the whole branch is behind `if
-        (primOp.doc)` (eval.cc:578). So a doc-less primop has a name
-        and an arity that `getDoc` will not tell you."""
+        (primOp.doc)`. So a doc-less primop has a name and an arity
+        that `getDoc` will not tell you."""
+        # eval.cc:578
         Cxx("""
 if (!self.get()->isPrimOp())
     throw std::invalid_argument("value is not a builtin");
@@ -829,10 +831,9 @@ return self.get()->primOp()->args;
 
         - a primop with documentation gives its own doc string;
         - a primop WITHOUT gives None, because the branch is behind
-          `if (primOp.doc)` (eval.cc:578);
+          `if (primOp.doc)`;
         - a lambda gives PROSE built for the REPL - "Function `name`
-          defined at ..." followed by its doc comment, if any
-          (eval.cc:585-625);
+          defined at ..." followed by its doc comment, if any;
         - a functor set gives the documentation of `__functor` applied
           to the set, which RUNS that function;
         - anything else, a partially-applied primop included, gives
@@ -843,20 +844,16 @@ return self.get()->primOp()->args;
         BLOCKS, and this is the surprise worth the marker. A lambda's
         doc comment is not stored: `getInnerText` resolves two
         positions and calls `getSnippetUpTo`, which calls
-        `Pos::getSource`, which calls `path.readFile()`
-        (position.cc:49). So reading a lambda's documentation OPENS
-        ITS SOURCE FILE. An accessor that looks cheap and does I/O is
-        huggorm#67's class of surprise, so it says so.
+        `Pos::getSource`, which calls `path.readFile()`. So reading a
+        lambda's documentation OPENS ITS SOURCE FILE.
 
         A source file that has GONE AWAY raises, and the message
         says so rather than letting upstream's own out-of-range
         escape. `getSource` catches its read error and answers
         nothing, and `getInnerText` then does
-        `substr(3, size() - 3 - 2)` on that empty string
-        (nixexpr.cc:644-648) - so a doc comment whose file has moved
-        throws `std::out_of_range` from inside libexpr. Measured: a
-        gate written to expect "" failed with
-        `basic_string::substr: __pos (which is 3) > this->size()`.
+        `substr(3, size() - 3 - 2)` on that empty string - so a doc
+        comment whose file has moved throws `std::out_of_range` from
+        inside libexpr.
 
         Reported rather than swallowed, and that is the choice worth
         stating. None would mean "no documentation" where the truth is
@@ -864,6 +861,11 @@ return self.get()->primOp()->args;
         this repo's named failure mode - an absence standing in for a
         failure. A caller who does not care can catch it; one who
         gets None cannot un-lose the difference."""
+        # getDoc in 2.34: the primop branch at eval.cc:578, the lambda
+        # one at 585-625. readFile at position.cc:49, substr at
+        # nixexpr.cc:644-648. Measured: a gate that expected "" failed
+        # with `basic_string::substr: __pos (which is 3) > this->size()`.
+        # A cheap-looking accessor that does I/O is huggorm#67's surprise.
         Cxx("""
 huggorm::gc_register_thread();
 self.state().forceValue(*self.get(), nix::noPos);
@@ -958,9 +960,10 @@ class Doc:
     def name(self) -> Str | None:
         """The function's name. An anonymous lambda's is "".
 
-        Optional because upstream's field is. In 2.34 both `getDoc`
-        branches set it, the lambda one to an empty name
-        (eval.cc:630), so None does not occur there."""
+        Optional because upstream's field is. Both `getDoc` branches
+        set it, the lambda one to an empty name, so None does not
+        occur."""
+        # eval.cc:630 in 2.34.
 
     def arity(self) -> I64:
         """How many arguments a primop wants. 0 for a lambda."""
@@ -1021,11 +1024,12 @@ class LogField:
 
     Nix's own `Logger::Field` is a hand-rolled variant - a two-valued
     enum, a `uint64_t` and a `std::string` - with upstream's FIXME
-    asking for a `std::variant` (logging.hh:76). This mirrors it
-    rather than picking one of the two, because a field that carried
-    only its rendering would lose the difference between the number
-    42 and the string "42", and a progress result is made of numbers.
+    asking for a `std::variant`. This mirrors it rather than picking
+    one of the two, because a field that carried only its rendering
+    would lose the difference between the number 42 and the string
+    "42", and a progress result is made of numbers.
     """
+    # The FIXME: logging.hh:76.
 
     @reads("is_int")
     def is_int(self) -> Bint:
@@ -1053,7 +1057,8 @@ class LogField:
 
         `text` decodes strict UTF-8, so a builder that prints anything
         else fails that call. A log carries bytes and not text, and the
-        decoder belongs to the caller. nanopynix#312."""
+        decoder belongs to the caller."""
+        # nanopynix#312
 
 
 @header("huggorm_decl/cpp/logging.hpp")
@@ -1072,17 +1077,16 @@ class LogRecord:
     is built from that tree rather than from messages. A binding that
     handed back only strings would throw most of it away.
 
-    The names are Nix's own, from the `internal-json` log format
-    (`logging.cc:272`), so a client that already reads that format
-    reads this one. The mechanism is different and huggorm#32 says
-    why.
+    The names are Nix's own, from the `internal-json` log format, so
+    a client that already reads that format reads this one.
 
     `level`, `type` and `id` are integers because that is what they
     are: `Verbosity`, `ActivityType` and `ResultType` are int-valued
     C++ enums and nothing upstream parses one from a string.
-    `decl/words.py` is for vocabularies whose member IS the string
-    libstore parses, and these are not that.
     """
+    # internal-json: logging.cc:272. huggorm#32 says why the mechanism
+    # differs. `decl/words.py` is for vocabularies whose member IS the
+    # string libstore parses, and these are not that.
 
     @reads("action")
     def action(self) -> Str:
@@ -1104,8 +1108,9 @@ class LogRecord:
         talkative, 5 chatty, 6 debug, 7 vomit.
 
         A field of the record, not a gate. `Activity::Activity` calls
-        `startActivity` with no test (`logging.cc:196`), so a `start`
-        arrives whatever its level says."""
+        `startActivity` with no test, so a `start` arrives whatever
+        its level says."""
+        # logging.cc:196
 
     @reads("id")
     def id(self) -> I64:
@@ -1115,9 +1120,10 @@ class LogRecord:
     def parent(self) -> I64:
         """The activity this one runs inside, for a `"start"`.
 
-        Nix tracks it per THREAD - `curActivity` is a `thread_local`
-        (`logging.cc:23`) - so the tree is already per-thread before
-        this binding sees it."""
+        Nix tracks it per THREAD - `curActivity` is a `thread_local` -
+        so the tree is already per-thread before this binding sees
+        it."""
+        # logging.cc:23
 
     @reads("type")
     def type(self) -> I64:
@@ -1145,11 +1151,12 @@ class LogRecord:
     def text(self) -> Str:
         """The message, or the activity's description.
 
-        An error arrives RENDERED, the way `JSONLogger` renders one
-        (`logging.cc:283`), and `info` holds its parts.
+        An error arrives RENDERED, the way `JSONLogger` renders one,
+        and `info` holds its parts.
 
         Strict UTF-8, like the field's: a message Nix raised as other
         bytes raises here and reads through `text_bytes`."""
+        # logging.cc:283
 
     @local
     @reads("text")
@@ -1523,9 +1530,10 @@ class EvalState:
     A caller holding THIS binding directly is on their own. Nothing
     below the async layer checks, and nothing should: the C++ here is
     exactly as permissive as libexpr, which has no such rule of its
-    own, and goal 1 asks a binding not to be MORE permissive than
-    what it binds. Carl decided this; huggorm#85 records it.
+    own.
     """
+    # Goal 1: a binding is not MORE permissive than what it binds.
+    # Carl decided this; huggorm#85 records it.
 
     def __init__(self, store: Store,
                  settings: dict[str, Str] | None = None,
@@ -1621,7 +1629,7 @@ return self.wrap(made);
         The one call that is CHEAP the second time. `evalFile` keeps a
         `fileEvalCache` keyed by resolved path, and a hit forces the
         value it already has and copies it - no open, no parse, no
-        evaluation (`eval.cc:1118`). `eval_expr` has no such cache: a
+        evaluation. `eval_expr` has no such cache: a
         string is not a key, so the same text evaluated twice is
         evaluated twice.
 
@@ -1643,6 +1651,7 @@ return self.wrap(made);
         forces the thunk before it hands the value back. Not deeply -
         an attribute set comes back with its members unforced, which
         is what makes the call cheap enough to be worth caching."""
+        # The cache hit: eval.cc:1118.
         Cxx("""
 if (path.empty())
     throw std::invalid_argument("empty path");
@@ -1689,9 +1698,9 @@ return at;
     def cached_files(self) -> list[Str]:
         """Every file whose evaluation this state has cached.
 
-        What a watcher watches. huggorm#16 wants a change to a file an
-        evaluation read to invalidate the warm state rather than throw
-        it away, and this is the set that change would touch.
+        What a watcher watches. A change to a file an evaluation read
+        invalidates the warm state rather than throwing it away, and
+        this is the set that change touches.
 
         libexpr keeps it and does not offer it: `fileEvalCache` is
         private, and the accessor every read goes through is built
@@ -1719,6 +1728,7 @@ return at;
         renders as `«nix-internal»/derivation-internal.nix`. A watcher
         has to skip what it cannot stat; the list is what the cache
         holds, not a promise that each entry is on disk."""
+        # huggorm#16
         Cxx("return huggorm::cached_files(self.state());")
 
     def forget_file(self, path: Str) -> None:
@@ -1730,19 +1740,18 @@ return at;
         it also clears the fetched flake inputs, so one edited local
         file costs a re-download.
 
-        FORGET THE CLOSURE, NOT THE FILE. Measured, and written up in
-        huggorm#16: an importer does not notice its import changing.
+        FORGET THE CLOSURE, NOT THE FILE. Measured: an importer does
+        not notice its import changing.
         `outer.nix` that says `import ./inner.nix` stays cached at its
         old answer after `inner.nix` is edited and forgotten, because
         the cache holds no edge between the two - both files are
         listed, and nothing says one read the other.
 
-        The DIFF is not that closure, and this docstring said it was.
-        `cached_files` before and after one `eval_file` differ by what
-        the evaluation newly CACHED, not by what it read - so the
-        second root to import a shared file gets a diff that does not
-        mention it, and forgetting that diff leaves the root stale.
-        Measured in huggorm#83.
+        The DIFF is not that closure. `cached_files` before and after
+        one `eval_file` differ by what the evaluation newly CACHED, not
+        by what it read - so the second root to import a shared file
+        gets a diff that does not mention it, and forgetting that diff
+        leaves the root stale.
 
         What is sound is the SNAPSHOT: everything cached when a root
         finished is a superset of what that root read. `huggorm.Watcher`
@@ -1756,6 +1765,7 @@ return at;
 
         A path that was never cached forgets nothing, which is what
         makes feeding a whole closure in safe."""
+        # The closure: huggorm#16. The diff: huggorm#83.
         Cxx("""
 if (path.empty())
     throw std::invalid_argument("empty path");
@@ -1779,7 +1789,7 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
 
         ARITY 0 IS A LAZY CONSTANT, as Nix makes it. `addPrimOp`
         registers the primop with arity 1 and binds the name to its
-        application to itself (eval.cc:523). So `fn` takes no
+        application to itself. So `fn` takes no
         arguments, and runs when an evaluation first reads the name,
         not when this call registers it.
 
@@ -1787,14 +1797,14 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         inside evaluation, so it must not await and must not hop
         threads. That is the exact inverse of every wrapper this repo
         emits, which exist to get OFF the calling thread - and it is
-        why huggorm#34, a Nix function called FROM Python, cannot
-        borrow this shape.
+        why a Nix function called FROM Python cannot borrow this
+        shape.
 
         IN-PROCESS ONLY. No rpc surface exists and the generator
         refuses to build one, because a remote registration would make
         the evaluator call back over the socket once per invocation,
-        on its evaluation thread. A decision, in huggorm#33, rather
-        than something not written yet.
+        on its evaluation thread. A decision, rather than something
+        not written yet.
 
         PERMANENT for this STATE's life, and not for the process's.
         Upstream stores a primop with `new PrimOp(...)` in GC memory
@@ -1802,24 +1812,17 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         as long as the state that took it. There is no unregister to
         add later; upstream has nowhere to put one.
 
-        CLOSING OVER THE STATE IS FINE, and this paragraph said the
-        opposite until huggorm#93. It said a callable capturing the
-        state pinned it forever, and told a caller to capture what the
-        callable needs instead - which is not advice anybody can take,
-        because a primop builds its result with `state.make_int`.
+        CLOSING OVER THE STATE IS FINE. A primop builds its result
+        with `state.make_int`, so it needs the state:
 
             state.register_primop(
-                "f", 1, lambda v: state.make_int(1))   # fine now
+                "f", 1, lambda v: state.make_int(1))
 
-        It was true when written, and measured: two leaked instances
-        at shutdown. The cycle ran through nix's own memory - the
-        state reached the callable through the base env, the callable
-        reached the state through its closure cell - and Python's
-        collector cannot walk the first arm. The C++ side's weak
-        reference broke the wrong arm.
-
-        The class now carries `@gc_slots`, so the collector is told how
-        to see it. Zero leaked instances, and a gate holds it.
+        The cycle runs through nix's own memory - the state reaches
+        the callable through the base env, the callable reaches the
+        state through its closure cell. The class carries
+        `@gc_slots`, so Python's collector sees that arm and frees
+        both.
 
         The name is not sanitised. Upstream treats a `__` prefix
         specially - it strips it for the `builtins` attribute and
@@ -1832,6 +1835,10 @@ huggorm::forget_file(self.state(), self.state().rootPath(path));
         (`nix/patches/nix-base-env-size.patch`). Registering past it
         raises rather than corrupting the heap, which stock Nix does
         not: `addPrimOp` tests no bound at all."""
+        # Arity 0: eval.cc:523. In-process only: huggorm#33; the other
+        # direction is huggorm#34. Without @gc_slots the cycle leaked
+        # two instances at shutdown, and the C++ side's weak reference
+        # broke the wrong arm (huggorm#93). A gate holds zero.
         Cxx("""
 if (name.empty())
     throw std::invalid_argument("empty name");
@@ -1873,17 +1880,15 @@ return self.make_primop(name, static_cast<std::size_t>(arity), fn);
         asked for.
 
         The subscription belongs to the THREAD, because an `EvalState`
-        is affine and this Nix evaluates on one thread - nothing under
-        `src/libexpr` names `eval-cores`, so 2.34.8 has no parallel
-        evaluation. So the thread that owns a state is the thread its
-        records are raised on, and the queue this returns holds that
-        state's records and no other state's.
+        is affine and evaluates on one thread. So the thread that owns
+        a state is the thread its records are raised on, and the queue
+        this returns holds that state's records and no other state's.
 
         `level` SETS this thread's verbosity, so it can widen as well
         as narrow, UP TO THE CEILING. `nix::verbosity` is pinned at
         import at `HUGGORM_LOG_CEILING` (CHATTY when unset), and nix
         produces nothing above it, so a subscription at `6` gets no
-        debug records under the default (huggorm#102). The level is
+        debug records under the default. The level is
         per THREAD, so what a caller KEEPS costs no other caller
         anything.
 
@@ -1892,13 +1897,8 @@ return self.make_primop(name, static_cast<std::size_t>(arity), fn);
 
         The global then goes back DOWN when this subscription ends -
         to what the remaining subscriptions still need, never past
-        them. huggorm#95 measured what leaving it up cost: the
-        daemon narrating on an unsubscribed caller's stderr, for the
-        life of the process.
-
-        It does not say "pinned wide open", which an earlier draft of
-        this docstring did. There has been no pin since huggorm#89
-        step 4 removed it, and a pin is exactly what costs the daemon.
+        them. Left up, the daemon narrates on an unsubscribed caller's
+        stderr for the life of the process.
 
         What it still does NOT see is a record raised on a fetcher or
         a file-transfer thread, because that thread subscribed to
@@ -1909,6 +1909,9 @@ return self.make_primop(name, static_cast<std::size_t>(arity), fn);
         live subscriptions on one thread would each get an arbitrary
         half of the records, which is worse than either getting none.
         """
+        # One evaluation thread: nothing under src/libexpr names
+        # `eval-cores` in 2.34.8. The ceiling: huggorm#102. Lowering
+        # again: huggorm#95. No pin since huggorm#89 step 4.
         Cxx("""
 if (capacity < 1)
     throw std::invalid_argument("capacity must be at least 1");
@@ -1931,7 +1934,7 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
         level any subscription that is still live needs - never below one, because that
         would drop a still-subscribed thread's records with nothing
         said. A thread that exits without calling this gives its
-        level back anyway (huggorm#96).
+        level back anyway.
 
         It CROSSES the wire, as `subscribe_logs` does, but the server
         does not call either straight through. Both go through the
@@ -1939,7 +1942,8 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
         and a remote unsubscribe leaves the readers that connection
         opened. Called straight through, they would replace or clear
         the subscription an open `Session/Logs` stream is pumping, and
-        leave that stream connected and silent (huggorm#85)."""
+        leave that stream connected and silent."""
+        # Thread exit: huggorm#96. The fan-out: huggorm#85.
         Cxx("""
 (void) self;
 huggorm::unsubscribe_logs();
@@ -2756,7 +2760,7 @@ def subscribe_process_logs(capacity: I64 = 1024,
     What it sees is what `EvalState.subscribe_logs` names and cannot
     reach: a record raised on a fetcher thread, a file-transfer
     thread, or a build. A build's log is the one a Nix user most
-    wants (huggorm#85).
+    wants.
 
     NOT "everything in this process". A thread that subscribed CLAIMS
     its records, so an evaluation with its own subscriber does not
@@ -2764,8 +2768,7 @@ def subscribe_process_logs(capacity: I64 = 1024,
     it was rejected: a caller holding both subscriptions would see
     every evaluation record twice, with nothing on a record to
     deduplicate by. One reader over one subscription is the shape
-    that answers the other question, and it is huggorm#85's third
-    gap.
+    that answers the other question.
 
     `level` RAISES THE PROCESS DEFAULT, and it has to. The records
     this exists for come from threads that never set a level of their
@@ -2779,7 +2782,7 @@ def subscribe_process_logs(capacity: I64 = 1024,
     (`nix-remote-verbosity.patch`), which then narrates every worker
     op back over the socket. `unsubscribe_process_logs` gives it back. A
     daemon connection ALREADY OPEN keeps what the handshake gave it,
-    which is the one thing giving it back cannot reach (huggorm#96).
+    which is the one thing giving it back cannot reach.
 
     REPLACES any process-wide subscription, and closes it. Refusing
     was the other answer: an in-process caller that drops its
@@ -2794,6 +2797,8 @@ def subscribe_process_logs(capacity: I64 = 1024,
     the READER draining it, and a reader that stops draining grows
     this without limit. The capacity does not save it, because the
     records it never drops are the ones that accumulate."""
+    # huggorm#85: the build log, and the third gap. huggorm#96: the
+    # open daemon connection.
     Cxx("""
 if (capacity < 1)
     throw std::invalid_argument("capacity must be at least 1");
@@ -2817,14 +2822,15 @@ def unsubscribe_process_logs() -> None:
 
     It puts BOTH levels back: the process default returns to nix's
     own `lvlInfo`, and the daemon level drops to the widest level any
-    per-thread subscription still holds. huggorm#95 measured what
-    the second one cost while it was missing - 1052 daemon debug
-    lines on an unsubscribed caller's stderr.
+    per-thread subscription still holds. Without the second, an
+    unsubscribed caller's stderr fills with daemon debug lines.
 
     It CROSSES the wire, and so does its counterpart, through the
     process fan-out as the pair on `EvalState` goes through the
     state's: a remote caller leaves only the readers it opened, and
-    an open `Session/ProcessLogs` stream keeps hearing (huggorm#85)."""
+    an open `Session/ProcessLogs` stream keeps hearing."""
+    # huggorm#95 measured 1052 daemon debug lines. The fan-out:
+    # huggorm#85.
 
 
 @needs("huggorm_decl/cpp/logging.hpp")
@@ -2834,20 +2840,20 @@ def _log_tap_init() -> None:
     """Put the log tap behind the logger already installed, once.
 
     At import rather than on the first `subscribe_logs`, because
-    `nix::logger` is a plain global `unique_ptr` (`logging.hh:258`)
-    and replacing it while another thread reads it is a race with no
-    lock to take.
+    `nix::logger` is a plain global, and replacing it while another
+    thread reads it is a race with no lock to take.
 
-    A REPLACEMENT, and it was a tee until huggorm#89. A tee kept the
-    logger that was already there as the MAIN one, so every record
-    reached stderr whether a subscriber took it or not - and a client
-    reading this protocol over stdin/stdout cannot have that.
+    A REPLACEMENT, not a tee. A tee keeps the logger already there as
+    the MAIN one, so every record reaches stderr whether a subscriber
+    takes it or not - and a client reading this protocol over
+    stdin/stdout cannot have that.
 
-    Subscribing to nothing still changes nothing. `LogTap` carries a
+    Subscribing to nothing changes nothing. `LogTap` carries a
     `SimpleLogger` fallback and forwards to it whatever no queue
-    claimed, so an unsubscribed caller sees what it saw before. What
-    DOES change is the subscribed case: a claimed record no longer
-    also appears on stderr."""
+    claimed, so an unsubscribed caller sees what Nix prints. A
+    claimed record does not also appear on stderr."""
+    # `extern Logger * logger;` in both lanes' logging.hh. The tee went
+    # in huggorm#89.
 
 
 @needs("huggorm_decl/cpp/gc.hpp")

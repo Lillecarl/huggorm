@@ -135,7 +135,8 @@ return static_cast<std::int64_t>(self.registrationTime);
         address by.
 
         None rather than an empty one: the two are different answers,
-        and the wire carries them both across (huggorm#48)."""
+        and the wire carries them both across."""
+        # huggorm#48
 
     @reads("references")
     def references(self) -> list[StorePath]:

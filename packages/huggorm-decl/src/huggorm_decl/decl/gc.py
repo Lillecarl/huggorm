@@ -187,18 +187,10 @@ if (max_freed)
         SENTINEL rather than a size - no store holds 18 exabytes - so
         None is the honest reading and it is what crosses. Exactly the
         shape `PathInfo.registration_time` has, where upstream spells
-        "unknown" as 0.
-
-        This was written the other way first, reading the member back
-        as the number, and the wire refused it:
-
-            ValueError: Value out of range: 18446744073709551615
-
-        Every wire field spelled `int` is one proto type and that type
-        is signed, so `GCOptions()` - the DEFAULT - could not cross an
-        RPC at all. Carrying the absence instead fixes it at the
-        declaration, where the sentinel is already a lie. The width
-        question underneath is real and is not this: huggorm#79."""
+        "unknown" as 0."""
+        # Read back as the number, the default `GCOptions()` could not
+        # cross a signed wire field: `ValueError: Value out of range:
+        # 18446744073709551615`. huggorm#79 holds the width question.
         Cxx("""
 if (self.maxFreed == std::numeric_limits<std::uint64_t>::max())
     return std::nullopt;

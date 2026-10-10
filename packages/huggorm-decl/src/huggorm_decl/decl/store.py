@@ -196,10 +196,10 @@ class Store:
         not round-trip as a store reference and it is not a cache
         key.
 
-        There is no getUri() any more. 2.34 moved it onto the config
-        as getHumanReadableURI, and Store reaches its config by
-        reference - so this reads through the member rather than
-        declaring the whole config type for one string."""
+        The config's `getHumanReadableURI`."""
+        # 2.34 moved getUri() onto the config. Store reaches its config
+        # by reference, so this reads through the member rather than
+        # declaring the whole config type for one string.
         Cxx("return self.config.getHumanReadableURI();")
     @instant
     def reference(self) -> Str:
@@ -528,7 +528,8 @@ return self.makeValidityRegistration(as_set<nix::StorePathSet>(paths),
         libstore's own refusal rather than one invented here.
 
         The answer is for the machine the store runs on. In process
-        that is here; over RPC it is the server's (huggorm#40)."""
+        that is here; over RPC it is the server's."""
+        # huggorm#40
         Cxx("""
 auto * fs = dynamic_cast<nix::LocalFSStore *>(&self);
 if (fs == nullptr)
@@ -1300,8 +1301,9 @@ return nix::DerivedPath::parse(self.config, target);
 
         The empty string raises `BadStorePath` in this body, because
         Nix does not: `parseStorePath` reaches `canonPath`, which
-        ASSERTS a non-empty path (`file-system.cc:99`), and the
-        assertion ends the process."""
+        ASSERTS a non-empty path, and the assertion ends the
+        process."""
+        # file-system.cc:99
         Cxx("""
 if (path.empty())
     throw nix::BadStorePath("a store path must not be empty");
@@ -1370,11 +1372,12 @@ def store_types_json() -> Str:
 
     Each entry holds `doc`, `uri-schemes`, `settings` and
     `experimentalFeature`, as `nix __dump-cli` prints them under
-    `stores` (main.cc:204). `settings` are the settings a URI can set,
-    each at its default, in the shape `settings_json` gives.
+    `stores`. `settings` are the settings a URI can set, each at its
+    default, in the shape `settings_json` gives.
 
     The registry fills at load, one entry per linked store, and grows
     when a caller registers a store of its own."""
+    # main.cc:204
     Cxx("""
 auto out = nlohmann::json::object();
 for (auto & [name, implementation] : nix::Implementations::registered()) {

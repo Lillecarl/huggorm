@@ -160,7 +160,7 @@ class _Job:
 
 class _Pool(concurrent.futures.Executor):
     """The shared pool: `size` threads, plus one for each thread that
-    waits for a hook (`wait`, huggorm#155).
+    waits for a hook (`wait`).
 
     A waiting thread holds a Nix call open until the loop answers, and
     the answer may need pool work. So the pool does not count it, as
@@ -268,7 +268,7 @@ class _Home(concurrent.futures.Executor):
     """One thread with the evaluator's stack, whose work can also run
     while that thread waits (`wait`).
 
-    A worker waits so for a hook that the loop answers (huggorm#155).
+    A worker waits so for a hook that the loop answers.
     Work submitted during the wait runs on the waiting thread, as a C++
     call stack runs a nested call. Work queued before the wait stays
     queued, so it still runs after the call that waits."""
@@ -359,7 +359,7 @@ _POSTED_WINDOW = 16
 
 class _Hooks:
     """The async hooks one call's worker asks its awaiting coroutine to
-    run, through a stub Nix calls (huggorm#155).
+    run, through a stub Nix calls.
 
     The coroutine runs each on the loop, inside the caller's task, so a
     cancel reaches the hook. The worker waits for the answer through
@@ -502,7 +502,7 @@ def _cancelled() -> RuntimeError:
 
 def adapt(base: type, obj: Any) -> Any:
     """`obj` as Nix can call it: itself when it is a `base`, else a
-    stub whose hooks run `obj`'s async methods (huggorm#155)."""
+    stub whose hooks run `obj`'s async methods."""
     if obj is None or isinstance(obj, base):
         return obj
     return _stub_class(base)(obj)
