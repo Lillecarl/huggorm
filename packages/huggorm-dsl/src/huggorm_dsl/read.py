@@ -1916,11 +1916,16 @@ def _resolve(body: list[ast.stmt], live: set[int]) -> list[ast.stmt]:
     return out
 
 
+@functools.cache
 def read(path: str) -> Module:
     """One declaration file, read twice.
 
     The import holds the facts; the tree supplies the text. No fact
-    is taken from both."""
+    is taken from both.
+
+    Cached by path, as `load` is. Every declaration that imports
+    another reads it again, and one corpus read made 502 reads of
+    about 20 files, 137 of them `words.py`."""
     with reading(path):
         return _read(path)
 
