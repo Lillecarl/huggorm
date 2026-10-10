@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+import huggorm
+
 if TYPE_CHECKING:
     from huggorm_gen import ir
 
@@ -27,7 +29,7 @@ def test_no_hardcoded_domain_types(model: ir.Model) -> None:
     # (huggorm#36). The builtins this layer raises ITSELF - KeyError for
     # an unknown handle - are not in that set and are not the subject.
     domain |= set(model.errors.classes)
-    here = pathlib.Path(__file__).resolve().parent.parent / "huggorm"
+    here = pathlib.Path(huggorm.__file__).resolve().parent
     offenders = []
     for mod in ("server.py", "remote.py", "lifecycle.py", "codec.py",
                 "protocol.py"):
