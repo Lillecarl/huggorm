@@ -32,6 +32,7 @@ from typing import Any
 import anyio
 import pytest
 from conftest import SHORT_TTL, Server
+from nixversion import EVALUATING_FILE, WORKER_OP
 
 URI = "dummy://"
 
@@ -1330,7 +1331,7 @@ def test_a_subscription_can_ask_for_more_than_the_default(
         state.unsubscribe_logs()
 
     assert deep, "nothing at lvlTalkative arrived, so the pin did nothing"
-    assert "evaluating file" in deep[0].text(), deep[0].text()
+    assert EVALUATING_FILE in deep[0].text(), deep[0].text()
 
 
 def test_the_same_work_at_the_default_says_nothing(
@@ -1405,7 +1406,7 @@ def test_an_unsubscribed_caller_still_sees_only_the_default(
     out, err = capfd.readouterr()
     assert "UNSUBSCRIBED-MARKER" in err, "the fallback still forwards"
     assert out == "", "descriptor 1 belongs to the protocol"
-    assert "evaluating file" not in err, err
+    assert EVALUATING_FILE not in err, err
 
 
 def test_nothing_asks_nix_for_everything(state: Any,
@@ -1628,7 +1629,7 @@ def test_a_thread_level_needs_no_queue(state: Any,
 
     deep = [r for r in process_sink.drain()
             if r.action() == "msg" and r.level() == TALKATIVE]
-    assert any("evaluating file" in r.text() for r in deep), deep
+    assert any(EVALUATING_FILE in r.text() for r in deep), deep
     assert thread_verbosity() == LOG_INFO, "back to the default"
     assert daemon_verbosity() == LOG_INFO, "and the gate back down"
 
@@ -1689,9 +1690,8 @@ def test_the_current_request_is_the_one_begun() -> None:
     assert current_request() == 0
 
 
-@pytest.mark.live
 def test_a_daemon_told_to_narrate_is_told_to_stop(
-        tmp_path: pathlib.Path,
+        private_daemon: str,
         capfd: pytest.CaptureFixture[str]) -> None:
     """The defect huggorm#95 found, as a gate.
 
@@ -1705,9 +1705,11 @@ def test_a_daemon_told_to_narrate_is_told_to_stop(
 
     So the only place to stop it is before it is produced, which
     means lowering the global - and the only way to see that is a
-    LIVE daemon store. `dummy://` opens no connection and reaches
-    none of this, which is exactly how the pin regression got as far
-    as it did.
+    real daemon. `dummy://` opens no connection and reaches none of
+    this, which is exactly how the pin regression got as far as it
+    did. The daemon is the test's own: the machine's may be a proxy
+    that drops the narration, and then the check below passes with
+    nothing to see (huggorm#160).
 
     `capfd`, not `capsys`: the write is a C++ `writeToStderr` on
     descriptor 2, and `capsys` only replaces Python's objects.
@@ -1723,16 +1725,22 @@ def test_a_daemon_told_to_narrate_is_told_to_stop(
     # AFTER the cycle, because `setOptions` runs once at handshake.
     # A connection opened while the level was up keeps it, and that
     # is the one thing lowering cannot reach (huggorm#96).
-    store = Store("auto")
-    # A path that is already there, rather than one this test adds.
-    # Every worker op narrates, so nothing has to be written - and
-    # huggorm#62 is why a suite does not write to the real store
-    # when it has a choice.
-    name = next(n for n in sorted(os.listdir("/nix/store"))
-                if len(n) > 33 and n[32] == "-")
-    held = store.parse_store_path(f"/nix/store/{name}")
+    store = Store(private_daemon)
+    # Every worker op narrates, so the path need not exist.
+    held = store.parse_store_path("/nix/store/" + "a" * 32 + "-absent")
     for _ in range(8):
         store.is_valid_path(held)
 
     err = capfd.readouterr().err
-    assert "performing daemon worker op" not in err, err
+    assert WORKER_OP not in err, err
+
+    # The control. A connection opened while the level is up keeps it,
+    # so this one narrates. Without it a Nix that rewords the line
+    # passes the assertion above and tests nothing (huggorm#160).
+    loud = subscribe_process_logs(level=7)
+    try:
+        Store(private_daemon).is_valid_path(held)
+        narrated = [r.text() for r in loud.drain()]
+    finally:
+        unsubscribe_process_logs()
+    assert any(WORKER_OP in text for text in narrated), narrated

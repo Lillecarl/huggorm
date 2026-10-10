@@ -98,6 +98,7 @@ BAD_STORE_URI = "Cannot parse Nix store"
 BUILD_LOG_STORAGE = "Build log storage and retrieval"
 CANNOT_ADD = "cannot add"
 ERROR_PREFIX = "error: "
+EVALUATING_FILE = "evaluating file"
 EXPERIMENTAL_FEATURE = "experimental Nix feature"
 FLAKES_DISABLED = "'flakes' is disabled"
 IFD_SETTING = "allow-import-from-derivation"
@@ -120,6 +121,7 @@ STRING_ORIGIN = "«string»"
 SUGGESTION = "Did you mean"
 UNDEFINED_VARIABLE = "undefined variable"
 UNKNOWN_HASH = "unknown hash algorithm"
+WORKER_OP = "performing daemon worker op"
 
 
 # Whether this build's libexpr has the collector, as the BUILD says:

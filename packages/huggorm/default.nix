@@ -8,6 +8,8 @@
   huggorm-dsl,
   gitMinimal,
   nix-tcp-store,
+  # The CLI of the Nix the bindings link, which `private_daemon` runs.
+  nix,
   ruff,
   zuban,
   ...
@@ -59,6 +61,7 @@ python3Packages.buildPythonPackage {
   # The plugin `test_plugins.py` loads: built against this lane's Nix,
   # as a plugin must be.
   env.HUGGORM_TCP_STORE_PLUGINS = "${nix-tcp-store}/lib/nix/plugins";
+  env.HUGGORM_ORACLE_NIX = "${nix}/bin/nix";
 
   propagatedBuildInputs = [
     huggorm-bindings

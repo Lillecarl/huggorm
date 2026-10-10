@@ -137,6 +137,7 @@ def test_a_set_that_fills_the_scope_exactly_is_added(repl: Repl) -> None:
 
 
 def test_one_binding_past_the_end_is_nix_s_refusal(repl: Repl) -> None:
+    """`decl/eval.py` raises it, in `libcmd/repl.cc`'s words."""
     with pytest.raises(NixError, match="environment full; cannot add more variables"):
         repl.add_attrs(repl.eval_expr(_set_of(REPL_SIZE + 1)))
     repl.add_attrs(repl.eval_expr(_set_of(REPL_SIZE)))

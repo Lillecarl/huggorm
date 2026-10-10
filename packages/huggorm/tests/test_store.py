@@ -366,8 +366,8 @@ def test_a_store_with_no_filesystem_has_no_real_path(store: Store) -> None:
     libstore puts toRealPath on LocalFSStore rather than on Store,
     because a binary cache or an ssh-ng store has no directory here at
     all. The dummy store is one of those, so the shim asks whether the
-    store IS a LocalFSStore and refuses in libstore's own words when
-    it is not."""
+    store IS a LocalFSStore and refuses when it is not. The words are
+    libstore's `unsupported()` wording, copied into `decl/store.py`."""
     with pytest.raises(Unsupported, match="not supported by store"):
         store.real_path(StorePath(HELLO))
 
@@ -2190,8 +2190,8 @@ def test_a_store_with_no_collector_refuses_to_collect() -> None:
     """`nix::GCStore` is a separate interface, and a store may not be
     one.
 
-    The refusal is libstore's own wording, from the same
-    `dynamic_cast` shape `real_path` uses. `dummy://` holds paths in
+    The refusal copies libstore's wording into `decl/store.py`, with
+    the same `dynamic_cast` shape `real_path` uses. `dummy://` holds paths in
     memory and has no collector, so this is the honest answer rather
     than an empty result."""
     with pytest.raises(Unsupported, match="not supported by store"):

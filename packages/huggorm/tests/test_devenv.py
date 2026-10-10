@@ -172,8 +172,8 @@ def test_to_rc_script_defaults_outputs_beside_the_work(
 
 
 def test_to_rc_script_without_outputs_is_upstream_s_error() -> None:
-    """No `outputs` variable names nothing to rewrite, and upstream
-    refuses with exactly this."""
+    """No `outputs` variable names nothing to rewrite. `devshell.py`
+    raises upstream's own text (`nix/develop.cc`)."""
     from huggorm.devshell import BuildEnvironment
     from huggorm.errors import NixError
 

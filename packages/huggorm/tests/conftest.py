@@ -16,9 +16,12 @@ expensive or slow to set up:
   would be minutes of sleeping for no reason.
 """
 
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +48,40 @@ def flakes() -> Iterator[None]:
         yield
     finally:
         set_setting("experimental-features", before)
+
+
+@pytest.fixture
+def private_daemon(tmp_path: pathlib.Path) -> Iterator[str]:
+    """A nix-daemon of this lane's Nix, on its own socket and store.
+
+    Not the machine's daemon. That one may be a proxy that drops the
+    narration a test asserts on: pynixd forwards no `STDERR_NEXT` line,
+    so a check for its absence passed and tested nothing (huggorm#160).
+    An empty NIX_CONF_DIR keeps the machine's nix.conf out, because its
+    `use-cgroups` refuses a daemon run as a user."""
+    nix = os.environ.get("HUGGORM_ORACLE_NIX")
+    assert nix, "HUGGORM_ORACLE_NIX names the Nix to run as the daemon"
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    sock = tmp_path / "sock"
+    log = tmp_path / "daemon.log"
+    env = {**os.environ, "NIX_CONF_DIR": str(conf), "NIX_USER_CONF_FILES": "",
+           "NIX_DAEMON_SOCKET_PATH": str(sock)}
+    with log.open("wb") as out:
+        proc = subprocess.Popen(
+            [nix, "daemon", "--store", str(tmp_path / "store"),
+             "--extra-experimental-features", "nix-command"],
+            env=env, stdout=out, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 10
+        while not sock.exists():
+            assert proc.poll() is None, log.read_text()
+            assert time.monotonic() < deadline, log.read_text()
+            time.sleep(0.05)
+        yield f"unix://{sock}"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
 
 
 @pytest.fixture(scope="session")
