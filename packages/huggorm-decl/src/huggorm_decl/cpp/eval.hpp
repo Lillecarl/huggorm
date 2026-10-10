@@ -689,6 +689,18 @@ public:
     /** Whether a caller may still fill this value. See the ctor. */
     bool is_builder() const { return built_; }
 
+    /**
+     * Nix's own refusal of a value of the wrong type. `forceAttrs`
+     * says "expected a set but found an integer" as a `TypeError`, and
+     * so does this, so a caller catches one class for both. Nix also
+     * prints the value; this does not.
+     */
+    [[noreturn]] void wrong_arm(nix::ValueType expected, const nix::Value & held) const
+    {
+        throw nix::TypeError(state(), "expected %s but found %s",
+                             nix::showType(expected), nix::showType(held));
+    }
+
     /** As `is_list`, for an attribute set. */
     bool is_attrs() const
     {

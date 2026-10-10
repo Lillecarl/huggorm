@@ -19,6 +19,8 @@ from typing import Any
 
 import pytest
 
+from huggorm_decl import PRELUDE
+
 BRANCHED = '''"""Two exception classes, one behind a version."""
 
 from huggorm_dsl.declare import NIX_VERSION
@@ -1614,7 +1616,7 @@ def test_the_emitter_must_write_every_method_the_reader_kept() -> None:
     unit = model.module("pathinfo")
     bound = unit.bindable()
     text = extension(unit, "huggorm_bindings.pathinfo", model,
-                     chain=[], errors="")
+                     chain=[], errors="", prelude=PRELUDE)
     generate.census_written(mod, bound, text)
 
     lost = text.replace('def("nar_size"', 'def("not_that_one"')
@@ -1648,7 +1650,7 @@ def test_a_function_the_emitter_writes_another_way_is_not_missing() -> None:
         assert shapes <= {f.name for f in mod.functions}
         unit = model.module(stem)
         text = extension(unit, f"huggorm_bindings.{stem}", model,
-                         chain=[], errors="")
+                         chain=[], errors="", prelude=PRELUDE)
         assert 'def("open_store"' not in text, "it is a constructor, not a name"
         generate.census_written(mod, unit.bindable(), text)
 
@@ -1702,13 +1704,13 @@ def test_a_catch_brings_the_header_that_declares_it() -> None:
     unit = declared_model().module("path")
     assert unit.translators, "the control below means nothing otherwise"
     text = extension(unit, "huggorm_bindings.path", declared_model(),
-                     chain=[], errors="",
+                     chain=[], errors="", prelude=PRELUDE,
                      error_headers=headers)
     for h in headers:
         assert f'#include "{h}"' in text, h
 
     without = extension(unit, "huggorm_bindings.path", declared_model(),
-                        chain=[], errors="")
+                        chain=[], errors="", prelude=PRELUDE)
     assert '#include "nix/store/store-dir-config.hh"' not in without, \
         "the headers come from the derivation, not from a fixed list"
 
@@ -1851,13 +1853,13 @@ def test_a_body_brings_its_own_standard_header() -> None:
     from huggorm_gen.cppgen.nbemit import extension
 
     text = extension(declared_model().module("eval"), "huggorm_bindings.eval",
-                     declared_model(), chain=[], errors="")
+                     declared_model(), chain=[], errors="", prelude=PRELUDE)
     assert "#include <stdexcept>" in text
     assert "std::invalid_argument" in text, "the body that needs it"
 
     other = extension(declared_model().module("pathinfo"),
                       "huggorm_bindings.pathinfo", declared_model(),
-                      chain=[], errors="")
+                      chain=[], errors="", prelude=PRELUDE)
     assert "#include <cstdint>" in other
     assert "#include <stdexcept>" not in other, \
         "nothing in pathinfo throws, so nothing asks for it"

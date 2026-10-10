@@ -270,7 +270,7 @@ def words_from_word(cls: ir.EnumModel) -> list[str]:
     for word in cls.members:
         out += [f'{INDENT}if (word == "{word.value}")',
                 f"{INDENT * 2}return {word.enumerator};"]
-    out += [f'{INDENT}throw nix::UsageError(',
+    out += [f'{INDENT}huggorm::refuse_word(',
             f'{INDENT * 2}"unknown {cls.name} \'%1%\', expect {listed}",'
             if listed else f'{INDENT * 2}"unknown {cls.name} \'%1%\'",',
             f"{INDENT * 2}word);",
@@ -283,14 +283,9 @@ def words_from_word(cls: ir.EnumModel) -> list[str]:
 
 
 def _wrong_arm(owner: str, hold: str, expected: str) -> str:
-    """Nix's own refusal of a value of the wrong type.
-
-    `forceAttrs` says "expected a set but found an integer", as a
-    `nix::TypeError`, and so does this: a caller catches one class for
-    both. An eval error names its state, so `owner` must have
-    `state()`. Nix also prints the value, which this does not."""
-    return (f'throw nix::TypeError({owner}.state(), "expected %s but found %s", '
-            f"nix::showType({expected}), nix::showType(*{owner}.{hold}));")
+    """Nix's own refusal of a value of the wrong type, which the
+    holder's `wrong_arm` throws."""
+    return f"{owner}.wrong_arm({expected}, *{owner}.{hold});"
 
 
 
@@ -466,7 +461,7 @@ def words_conversion(cls: ir.EnumModel) -> list[str]:
         out.append(f"{INDENT}case {word.enumerator}: "
                    f'return "{word.value}";')
     out += [f"{INDENT}}}",
-            f'{INDENT}throw nix::Error("unknown {enum.held}");',
+            f'{INDENT}huggorm::unknown_enumerator("{enum.held}");',
             "}", ""]
     return out
 
@@ -2171,7 +2166,8 @@ class Emitter:
                exported: Sequence[ir.FunctionModel],
                errors: str = "",
                error_headers: Sequence[str] = (),
-               package: str = "") -> str:
+               package: str = "",
+               *, prelude: str) -> str:
         """One translation unit: the includes, then a bind function each.
 
         Several classes, not one. A declaration file owns a module and
@@ -2179,6 +2175,7 @@ class Emitter:
         three - and a nanobind extension is one translation unit, so the
         file and the unit are the same grain."""
         head = [*self.includes(classes, functions, error_headers),
+                f'#include "{prelude}"',
                 f'#include "{runtime_include(package)}"',
                 *[f'#include "{records_include(m, package)}"'
                   for m in self.records_named(classes, functions)], "",
@@ -2244,7 +2241,8 @@ def imports(unit: ir.ModuleModel, model: ir.Model) -> list[str]:
 def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
               chain: list[str] | None = None,
               errors: str = "",
-              error_headers: Sequence[str] = ()) -> str:
+              error_headers: Sequence[str] = (),
+              *, prelude: str) -> str:
     """One whole extension module: includes, bindings, entry point.
 
     `module` stops at the `bind_<name>` functions because that is the
@@ -2275,7 +2273,8 @@ def extension(unit: ir.ModuleModel, dotted: str, model: ir.Model,
         Emitter(model, unit).module(
             classes, unit.functions, unit.exported,
             errors,
-            error_headers if translators or rethrows else (), package),
+            error_headers if translators or rethrows else (), package,
+            prelude=prelude),
         *translators,
         f"NB_MODULE({dotted.rpartition('.')[2]}, m) {{",
         # The declaration file's own docstring, which is the only
@@ -2370,6 +2369,7 @@ def census(cls: ir.ClassModel) -> dict[str, int]:
 if __name__ == "__main__":
     import sys
 
+    from huggorm_decl import PRELUDE
     from huggorm_gen.cppgen.generate import declared_model
 
     # A declaration file of the corpus, by module name: `path`, `store`.
@@ -2378,7 +2378,7 @@ if __name__ == "__main__":
         unit = whole.module(name)
         emit = Emitter(whole, unit)
         for cls in unit.bindable():
-            print(emit.module([cls], (), ()) if len(unit.classes) == 1
+            print(emit.module([cls], (), (), prelude=PRELUDE) if len(unit.classes) == 1
                   else emit.bind_function(cls))
             c = census(cls)
             total = c["derived"] + c["hatched"]

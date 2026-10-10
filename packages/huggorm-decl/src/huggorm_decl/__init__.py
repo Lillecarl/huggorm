@@ -181,6 +181,10 @@ def declaration(name: str) -> str:
 # counts these lines on every build.
 CPP = pathlib.Path(__file__).resolve().parent / "cpp"
 
+# The helper every emitted unit includes: the Nix calls the generic
+# emitter writes, behind names a version can branch under.
+PRELUDE = "huggorm_decl/cpp/prelude.hpp"
+
 
 def include_dir() -> str:
     """The directory to put on the compiler's include path.

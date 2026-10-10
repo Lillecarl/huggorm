@@ -26,7 +26,7 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from huggorm_decl import CPP, corpus
+from huggorm_decl import CPP, PRELUDE, corpus
 from huggorm_dsl import declare
 from huggorm_dsl.read import Module
 from huggorm_gen import ir
@@ -243,7 +243,8 @@ def emit_module(mod: Module, dotted: str, out: str,
     written = extension(unit, dotted, declared_model(),
                         chain=chain,
                         errors=errors_module(),
-                        error_headers=headers or ())
+                        error_headers=headers or (),
+                        prelude=PRELUDE)
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(
         nbemit.placed_lines(written, pathlib.Path(out).name))
