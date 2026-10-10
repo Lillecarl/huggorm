@@ -594,9 +594,8 @@ async def test_a_remote_handle_drains(client: Any) -> None:
     """The handle half: `subscribe_logs` answers an id, and `drain`,
     `dropped` and `close` all read through it.
 
-    The handle is a reader of the state's fan-out, which the server
-    fills every `LOG_POLL`, so the record arrives a moment after the
-    call that raised it."""
+    The handle is a reader of the state's fan-out, and each `drain`
+    pulls the shared queue."""
     state = await client.acquire(
         "EvalState", await client.acquire("Store", "dummy://"))
     stream = await state.subscribe_logs()
@@ -896,7 +895,7 @@ async def test_the_last_reader_out_unsubscribes(client: Any) -> None:
     the process sink ONLY when the raising thread has no queue, so a
     state whose reader left must fall through to it.
 
-    Drop the `_drop` await from `_Fanout.leave` and this times out:
+    Drop the `_drop` await from `Fanout._close` and this times out:
     the state's own queue would still be installed, claiming the
     record that this stream is waiting for."""
     state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
@@ -1005,7 +1004,7 @@ async def test_a_closed_process_stream_lets_the_next_one_in(
         client: Any) -> None:
     """The gate on `join` AFTER a teardown.
 
-    There is no flag any more - `_Fanout` counts readers - so what
+    There is no flag any more - `Fanout` counts readers - so what
     this now gates is the other side of that count: the last reader
     out tears the subscription down, and the next `join` has to build
     a fresh one rather than hand back the closed queue. Make `join`
@@ -1038,11 +1037,11 @@ async def test_a_closed_stream_gives_the_state_back(client: Any) -> None:
     This gated the registry entry being RELEASED, back when a second
     reader was refused. Nothing refuses now, so what it gates is that
     a state whose stream ended can be read again at all - the
-    `_Fanout` for it survives the teardown and opens a new
+    `Fanout` for it survives the teardown and opens a new
     subscription on the next `join`. Drop the fan-out from the map on
     empty and this is the shape that shows it.
 
-    It does NOT gate the ORDER of that cleanup. `_Fanout.leave`
+    It does NOT gate the ORDER of that cleanup. `Fanout.leave`
     discards the reader before it takes the lock, on the argument
     that a cancelled task cannot await - the same argument the
     handler used to make about its `pop`, and two perturbations in
@@ -1248,7 +1247,7 @@ async def test_the_marker_survives_a_queue_full_of_messages() -> None:
     vanished.
 
     The guarantee is inherited rather than written: `LogQueue::push`
-    and `_Reader.offer` both name what to DROP, so an action neither
+    and `Share.offer` both name what to DROP, so an action neither
     of them lists is kept. Perturbation: add "finalized" to either
     droppable set and this fails."""
     from huggorm_generated import AsyncEvalState, AsyncStore

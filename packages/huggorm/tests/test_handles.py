@@ -378,7 +378,7 @@ async def test_a_server_forgets_a_closed_connection() -> None:
     path = socket_path()
     async with (anyio.create_task_group() as work,
                 anyio.create_task_group() as loops):
-        dispatcher = server.Dispatcher(work, loops, lease_ttl=0)
+        dispatcher = server.Dispatcher(work, lease_ttl=0)
         listener = await anyio.create_unix_listener(path)
 
         async def serving() -> None:

@@ -54,7 +54,7 @@ from . import tree
 from .callbacks import Callbacks
 from .codec import Codec, Node
 from .lifecycle import HandleTable, ShareMode
-from .logbus import Share, widest
+from .logbus import Fanout, Reader
 from .protocol import (
     Channel,
     Control,
@@ -107,14 +107,6 @@ DEFAULT_BUDGET = 1000
 # A wrapper's declared class, by the wrapper's own name: the emitted
 # table read backwards, so no naming convention is restated here.
 DECLARED = {async_name: name for name, async_name in ASYNC_CLASS.items()}
-
-# How long a log reader waits when the queue answered nothing. A drain
-# is a mutex and a move, so polling costs almost nothing - and the
-# alternative is a condition variable in C++, which would buy latency
-# and cost a hand-written wait (huggorm#32). After a NON-empty drain the
-# loop reads again at once, so a burst leaves at full speed and only a
-# quiet stream pays this.
-LOG_POLL = 0.05
 
 
 class TreeWalk:
@@ -291,16 +283,10 @@ class Build:
 async def _drop_subscription(target: Any) -> None:
     """Clear a state's subscription, on the state's own thread.
 
-    AWAITED, under `_Fanout`'s lock. It was detached until the
-    fan-out landed, and the reason it cannot be any more is the
-    fan-out itself: the next `join` must not open a subscription
-    while this one is still being dropped, because `unsubscribe`
-    clears the slot whatever is in it (huggorm#85).
-
-    Failures go nowhere on purpose: the stream this belonged to is
-    already over, and the queue is closed either way."""
-    with contextlib.suppress(Exception):
-        await target.unsubscribe_logs()
+    AWAITED, under the fan-out's lock: the next `join` must not open a
+    subscription while this one is still being dropped, because
+    `unsubscribe` clears the slot whatever is in it (huggorm#85)."""
+    await target.unsubscribe_logs()
 
 
 async def _drop_process_subscription() -> None:
@@ -311,226 +297,18 @@ async def _drop_process_subscription() -> None:
     the process. That is the whole difference between the two, which
     is why they are two three-line functions rather than one with a
     branch."""
-    with contextlib.suppress(Exception):
-        from huggorm_generated import unsubscribe_process_logs
-        await unsubscribe_process_logs()
+    from huggorm_generated import unsubscribe_process_logs
+    await unsubscribe_process_logs()
 
 
-class _Reader(Share):
-    """One client's share of a subscription many clients read.
-
-    Duck-typed as an `AsyncLogStream` on purpose: a remote
-    `subscribe_logs` answers one as a `LogStream` handle, and the
-    client's `drain`, `dropped` and `close` calls reach it unchanged.
-    """
-
-    def __init__(self, fan: _Fanout, capacity: int, level: int) -> None:
-        super().__init__(capacity, level)
-        self._fan = fan
-
-    async def drain(self) -> list[Any]:
-        # The shared drain raised, so the queue this reads is not
-        # being filled any more. Re-raised HERE, so the client
-        # learns. A reader that just went quiet would not say so.
-        if self._fan.failure is not None:
-            raise self._fan.failure
-        return self.take()
-
-    async def dropped(self) -> int:
-        """This reader's drops PLUS the shared queue's.
-
-        Both are cumulative, so the sum is too, and a client that
-        missed a batch still learns the total. It cannot tell the two
-        apart, and does not need to: either way the record is gone.
-
-        Async for the same reason `drain` is: the shape matches.
-        """
-        return self.own_dropped + self._fan.dropped
-
-    async def close(self) -> None:
-        """Leave the fan-out. Idempotent: a reader not in it is a no-op,
-        so the reaper and an explicit close can both run."""
-        await self._fan.leave(self)
-
-    async def aclose(self) -> None:
-        await self.close()
-
-
-class _Fanout:
-    """One subscription in the binding, many readers over it.
-
-    huggorm#85's third gap. The binding REPLACES a subscription, so
-    two `subscribe_logs` calls on one thread leave the first queue
-    orphaned - which is why both log rpcs used to refuse a second
-    reader. Carl named the reader that makes the refusal wrong:
-
-    > a CLI would want a global listener that prints to stdout/stderr
-    > as things happen
-
-    That listener and a client watching one evaluation are both
-    legitimate, and neither should silence the other.
-
-    So the subscription is opened ONCE and the fan-out is here, in
-    Python. It is not in the C++ for the reason goal 2 gives: a list
-    of queues in `LogTap` would be a mapping the declaration cannot
-    say, and nothing about a fan-out needs to run on the evaluation
-    thread.
-
-    The LOCK covers the two transitions that await: no reader to one,
-    and one reader to none. Without it the teardown of the last
-    reader races the setup of the next - `unsubscribe` clears the slot
-    whatever is in it, so a detached unsubscribe could close a queue
-    a newer reader had just installed, leaving that reader connected
-    and silent. That is the failure the old refusal existed to
-    prevent, one layer down, and it was live in `process_logs` before
-    this.
-    """
-
-    def __init__(self, tasks: Any,
-                 open_sub: Callable[[int], Awaitable[Any]],
-                 drop_sub: Callable[[], Awaitable[None]]) -> None:
-        self._tasks = tasks
-        self._open = open_sub
-        # The level the live subscription was opened at, or None.
-        self._level: int | None = None
-        self._drop = drop_sub
-        self._lock = anyio.Lock()
-        self._sub: Any = None
-        # The drain's own cancel scope, and the event it sets on the
-        # way out. A TASK GROUP hands back no task handle, so this is
-        # how `leave` says stop and then waits to be told it stopped -
-        # and that ordering is what keeps the unsubscribe after the
-        # last drain (huggorm#35).
-        self._scope: Any = None
-        self._stopped: Any = None
-        self._readers: set[_Reader] = set()
-        self.dropped = 0
-        self.failure: BaseException | None = None
-
-    async def join(self, capacity: int, level: int) -> _Reader:
-        """A reader, and the subscription behind it if it is the first.
-
-        A reader that wants MORE than the live subscription reopens
-        it. That costs the records in flight during the swap, which a
-        joining reader was never going to see anyway - it is the
-        price of not subscribing at vomit by default, and huggorm#89
-        step 4 says why that default had to go.
-        """
-        reader = _Reader(self, capacity, level)
-        async with self._lock:
-            if self._sub is not None and level > (self._level or 0):
-                await self._close()
-            if self._sub is None:
-                self.dropped = 0
-                self.failure = None
-                self._level = max(level, widest(self._readers))
-                self._sub = await self._open(self._level)
-                # The subscribe is a call, and its own "finalized"
-                # lands in the queue it just installed. No reader asked
-                # for that call, so it goes before any reader joins.
-                await self._sub.drain()
-                self._stopped = anyio.Event()
-                # `start`, not `start_soon`: it waits for the task to
-                # report its cancel scope, so `leave` can never find
-                # `self._scope` still None.
-                self._scope = await self._tasks.start(
-                    self._run, self._sub, self._stopped)
-            self._readers.add(reader)
-        return reader
-
-    async def _close(self) -> None:
-        """Stop the drain and drop the subscription. LOCK HELD.
-
-        Shared by `leave`, which ends the last reader, and by `join`,
-        which reopens at a wider level. Both have to stop the pump
-        before the unsubscribe, or the drain outlives the queue it
-        reads."""
-        scope, stopped, sub = self._scope, self._stopped, self._sub
-        self._scope, self._stopped, self._sub = None, None, None
-        self._level = None
-        if scope is not None:
-            scope.cancel()
-            await stopped.wait()
-        if sub is not None:
-            await sub.close()
-        with contextlib.suppress(Exception):
-            await self._drop()
-
-    async def leave(self, reader: _Reader) -> None:
-        """Drop a reader, and the subscription with the last one.
-
-        The teardown happens UNDER the lock, including the await of
-        the unsubscribe. A `join` that arrives mid-teardown waits and
-        then opens a fresh subscription, which is the ordering the
-        detached cleanup could not give.
-
-        The DISCARD is outside it, and that is the one thing this
-        does before it can be cancelled. The single-reader path
-        detached its cleanup so that a cancelled handler could not
-        skip it; this one awaits, so a cancel between the two would
-        leave a reader nothing drains - and a "start" or a "stop"
-        bypasses the capacity check by design, so that reader's deque
-        would grow without a bound. Discarding first makes a
-        cancelled `leave` leave a CONSISTENT state instead: the
-        subscription stays installed and the next `join` reuses it.
-
-        Cancellation is not observed in either handler - two
-        perturbations in huggorm#32 failed to produce it - so this
-        is a defence and not a measured need."""
-        self._readers.discard(reader)
-        async with self._lock:
-            if self._readers or self._sub is None:
-                return
-            await self._close()
-
-    async def _run(self, sub: Any, stopped: Any, *,
-                   task_status: Any = anyio.TASK_STATUS_IGNORED) -> None:
-        """Drain the one queue, offer to every reader.
-
-        `sub` and `stopped` are parameters and not `self._sub` and
-        `self._stopped`, because `leave` clears both attributes
-        before this task notices the cancel. Reading `self._stopped`
-        here raised `AttributeError: 'NoneType' object has no
-        attribute 'set'` on the first run, and the server died at
-        startup - so the parameters are the fix and not a style.
-
-        The readers set is mutated by `join` and `leave` and read
-        here, all on one event loop and none of them across an await
-        while iterating - so it needs no lock of its own. The lock
-        above is for the awaits, not for the set.
-
-        `Exception` and never the cancellation exception: a cancel
-        leaves through the scope, which is what `leave` is waiting
-        for. Catching it would make `leave` wait for a task that has
-        decided not to stop."""
-        with anyio.CancelScope() as scope:
-            task_status.started(scope)
-            try:
-                while True:
-                    self.dropped = await sub.dropped()
-                    records = await sub.drain()
-                    if not records:
-                        await anyio.sleep(LOG_POLL)
-                        continue
-                    for record in records:
-                        for reader in self._readers:
-                            reader.offer(record)
-            except Exception as exc:  # handed to the readers, not swallowed
-                self.failure = exc
-        # OUTSIDE the scope, so a cancel reaches it too. `set` takes no
-        # checkpoint, so nothing can cancel it away.
-        stopped.set()
-
-
-async def _open_process_subscription(level: int) -> Any:
-    """Subscribe to the process sink, at the widest level any reader
-    wants.
+async def _open_process_subscription(capacity: int, level: int) -> Any:
+    """Subscribe to the process sink, as wide as any reader wants.
 
     A function rather than the binding call itself, because the
     import is deferred: `huggorm_generated` is the built extension,
     and this module is imported by tools that never load it."""
     from huggorm_generated import subscribe_process_logs
-    return await subscribe_process_logs(level=level)
+    return await subscribe_process_logs(capacity=capacity, level=level)
 
 
 def _method(name: str) -> Callable[..., Awaitable[Any]]:
@@ -552,7 +330,7 @@ def _function(fn: Any) -> Callable[..., Awaitable[Any]]:
 
 
 class Dispatcher:
-    def __init__(self, tasks: Any, loops: Any,
+    def __init__(self, tasks: Any,
                  lease_ttl: float = 120.0,
                  escrow_ttl: float | None = 300.0,
                  callbacks: bool = False) -> None:
@@ -563,17 +341,12 @@ class Dispatcher:
         body of one is a RULE - decode, call, encode - and it reads
         the same for every method. What differs is the spec, and the
         build writes that."""
-        # Two task groups, and which one a task goes in is decided
-        # by whether it ENDS. `serve` explains the split; both OWN
-        # their children, so nothing here retains a set of tasks by
-        # hand (huggorm#35).
-        #
         # `tasks` finishes what it holds: a runner shutdown releases
         # an affine thread from the collector's list, and cancelling
-        # that is how a dead thread stays registered.
+        # that is how a dead thread stays registered. It OWNS its
+        # children, so nothing here retains a set of tasks by hand
+        # (huggorm#35).
         self.tasks = tasks
-        # `loops` is cancelled: a log drain never returns on its own.
-        self.loops = loops
         self.table = HandleTable(ttl=lease_ttl, escrow_ttl=escrow_ttl)
         # EXPERIMENTAL (huggorm#153): whether a client may hand over an
         # object the server calls back.
@@ -593,12 +366,12 @@ class Dispatcher:
         # which the binding answers by replacing the first. So an
         # empty fan-out stays, holds nothing, and is dropped with the
         # state it belongs to (`_on_drop`).
-        self._log_fanouts: dict[int, _Fanout] = {}
+        self._log_fanouts: dict[int, Fanout] = {}
         # One fan-out for the process sink. Not a map, because there
         # is one sink and nothing to key by, and not created lazily
         # for the same reason.
-        self._process_fanout = _Fanout(loops, _open_process_subscription,
-                                       _drop_process_subscription)
+        self._process_fanout = Fanout(_open_process_subscription,
+                                      _drop_process_subscription)
         # The generated subscribe rpcs, routed through the fan-outs.
         # Called straight through, `subscribe_logs` REPLACES the
         # thread's subscription, and an open `Session/Logs` stream on
@@ -618,14 +391,14 @@ class Dispatcher:
             "subscribe_process_logs": self._subscribe_process_logs,
             "unsubscribe_process_logs": self._unsubscribe_process_logs,
         }
-        self._handle_readers: dict[tuple[str, int], weakref.WeakSet[_Reader]] = {}
+        self._handle_readers: dict[tuple[str, int], weakref.WeakSet[Reader]] = {}
         # A failure crosses the same way a value does: by what the
         # bindings declare, never by a type this file names
         # (huggorm#36).
         self.faults = Faults(self.codec)
         self.handlers = self._handlers()
 
-    def _fanout(self, target: Any) -> _Fanout:
+    def _fanout(self, target: Any) -> Fanout:
         """This state's fan-out, made on first use.
 
         `subscribe_logs` hops onto the state's own thread, so the
@@ -634,15 +407,15 @@ class Dispatcher:
         key = id(target)
         fan = self._log_fanouts.get(key)
         if fan is None:
-            fan = _Fanout(
-                self.loops,
-                lambda level: target.subscribe_logs(level=level),
+            fan = Fanout(
+                lambda capacity, level: target.subscribe_logs(
+                    capacity=capacity, level=level),
                 lambda: _drop_subscription(target))
             self._log_fanouts[key] = fan
         return fan
 
-    async def _join(self, fan: _Fanout, key: tuple[str, int],
-                    capacity: int, level: int) -> _Reader:
+    async def _join(self, fan: Fanout, key: tuple[str, int],
+                    capacity: int, level: int) -> Reader:
         reader = await fan.join(capacity, level)
         self._handle_readers.setdefault(key, weakref.WeakSet()).add(reader)
         return reader
@@ -652,7 +425,7 @@ class Dispatcher:
             await reader.close()
 
     async def _subscribe_logs(self, token: str, target: Any,
-                              capacity: int, level: int) -> _Reader:
+                              capacity: int, level: int) -> Reader:
         return await self._join(self._fanout(target), (token, id(target)),
                                 capacity, level)
 
@@ -660,7 +433,7 @@ class Dispatcher:
         await self._leave_all((token, id(target)))
 
     async def _subscribe_process_logs(self, token: str,
-                                      capacity: int, level: int) -> _Reader:
+                                      capacity: int, level: int) -> Reader:
         return await self._join(self._process_fanout, (token, 0),
                                 capacity, level)
 
@@ -1156,10 +929,10 @@ async def serve(path: str, lease_ttl: float = 120.0, *,
     right here.
 
     `loops` is the inner one and it is CANCELLED. It holds the
-    sweeper and the log drains, which never return on their own, so
-    waiting for them would hang the shutdown. Being inner is what
-    orders the two: the loops stop first, and anything they started
-    is still awaited by `work` afterwards.
+    sweeper, which never returns on its own, so waiting for it would
+    hang the shutdown. Being inner is what orders the two: the loops
+    stop first, and anything they started is still awaited by `work`
+    afterwards.
 
     That split is the trap huggorm#35 names first: a task group does
     not cancel its children on exit, it waits for them.
@@ -1171,7 +944,7 @@ async def serve(path: str, lease_ttl: float = 120.0, *,
     # for the combined form and it says the same thing.
     async with (anyio.create_task_group() as work,
                 anyio.create_task_group() as loops):
-        dispatcher = Dispatcher(work, loops, lease_ttl=lease_ttl,
+        dispatcher = Dispatcher(work, lease_ttl=lease_ttl,
                                 escrow_ttl=escrow_ttl, callbacks=callbacks)
 
         # Connection liveness: transports never report death; the

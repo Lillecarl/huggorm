@@ -825,7 +825,7 @@ def test_a_call_nothing_serves_stops_the_server(
 
     monkeypatch.setattr(server, "FREE", {})
     with pytest.raises(RuntimeError, match="have no handler"):
-        server.Dispatcher(None, None)
+        server.Dispatcher(None)
 
 
 async def test_a_client_of_another_build_is_refused(
