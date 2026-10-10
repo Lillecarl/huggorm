@@ -1599,7 +1599,8 @@ class Emitter:
         doc = _doc(init.doc)
         return [line + ",", f'{INDENT * 3}     "{doc}")']
 
-    def record_fields(self, cls: ir.ClassModel) -> list[tuple[str, str]]:
+    def record_fields(self, cls: ir.ClassModel
+                      ) -> list[tuple[str, ir.TypeRef]]:
         """Every member of a produced value's struct, in declared order.
 
         Nothing is listed. A produced value's ACCESSORS are its fields -
@@ -1608,7 +1609,7 @@ class Emitter:
         it returns. Order is the declaration's, which is the order a
         reader of the declaration sees and the order the constructor
         takes."""
-        return [(m.name, m.returns.cxx)
+        return [(m.name, m.returns)
                 for m in cls.bound if m.returns is not None and not m.local]
 
     def record(self, cls: ir.ClassModel) -> list[str]:
@@ -1634,8 +1635,8 @@ class Emitter:
         # reader rather than for this.
         lead = " ".join(_paragraph(cls.doc))
         out = [f"/** {lead} */", f"struct {cls.name}", "{"]
-        out += [f"{INDENT}{spelling} {name};"
-                for name, spelling in self.record_fields(cls)]
+        out += [f"{INDENT}{t.cxx} {name};"
+                for name, t in self.record_fields(cls)]
         # A value compares as its parts, and `= default` is the whole of
         # that sentence. Written out, it would be one line per field with
         # nothing to gate it against the field list.
@@ -1899,10 +1900,9 @@ class Emitter:
         # KeyedBuildResult with no failure arm could not be rebuilt at
         # all, and the message named every parameter as compatible
         # (huggorm#71).
-        args = "".join(f', "{name}"_a' + (".none()" if spelling == "nb::object"
-                                          else "")
-                       for name, spelling in fields)
-        made = ", ".join(f"{spelling} {name}" for name, spelling in fields)
+        args = "".join(f', "{name}"_a' + (".none()" if t.pyobject else "")
+                       for name, t in fields)
+        made = ", ".join(f"{t.cxx} {name}" for name, t in fields)
         values = ", ".join(name for name, _ in fields)
         return [
             *self._produced_ctor(cls),
@@ -2076,8 +2076,9 @@ class Emitter:
         # KeyedBuildResult with no failure arm could not be rebuilt at
         # all, and the message listed every parameter as compatible
         # (huggorm#71).
-        keywords = "".join(f', "{n}"_a' + (".none()" if t == "nb::object" else "")
-                           for (n, _, _), t in zip(fields, types, strict=True))
+        keywords = "".join(f', "{n}"_a' + (".none()" if f.type.pyobject else "")
+                           for (n, _, _), f in zip(fields, cls.wire_fields,
+                                                   strict=True))
         written = cls.from_parts
         if written is not None and written.cxx_body is not None:
             body = _carried(written.cxx_body, 3)

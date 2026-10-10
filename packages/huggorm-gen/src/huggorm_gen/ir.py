@@ -177,6 +177,13 @@ class TypeRef:
     def holds_bytes(self) -> bool:
         return self.leaf.is_bytes
 
+    @property
+    def pyobject(self) -> bool:
+        """Crosses as a bare `nb::object`, which takes None as a value.
+        An error drops its `| None` to get there (`cxx.value`)."""
+        t = self.required if self.kind is Kind.ERROR else self
+        return not t.origin and t.kind in (Kind.ERROR, Kind.OPAQUE)
+
     # Composing constructors, spelled the way the reader spells: a test
     # builds a shape the corpus does not declare without parsing text.
     @classmethod
