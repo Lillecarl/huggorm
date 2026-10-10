@@ -435,25 +435,11 @@ def census_gc_slots(have: Any) -> None:
     knows, and failing the build would get the marker added blindly
     rather than thought about."""
     slotted: dict[str, set[str]] = {}
-    for name in have.module_names:
-        for node in ast.walk(have.tree(name)):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            header, has_slots = "", False
-            for dec in node.decorator_list:
-                if not isinstance(dec, ast.Call) or not isinstance(
-                        dec.func, ast.Name):
-                    continue
-                if dec.func.id == "header" and dec.args:
-                    arg = dec.args[0]
-                    if isinstance(arg, ast.Constant):
-                        header = str(arg.value)
-                elif dec.func.id == "gc_slots":
-                    has_slots = True
-            if header:
-                slotted.setdefault(pathlib.Path(header).name, set())
-                if has_slots:
-                    slotted[pathlib.Path(header).name].add(node.name)
+    for cls in have.classes:
+        if cls.decl.header:
+            says = slotted.setdefault(pathlib.Path(cls.decl.header).name, set())
+            if cls.decl.gc_slots:
+                says.add(cls.name)
     for f in sorted(CPP.glob("*.hpp")):
         members = _python_members(f.read_text())
         if not members:
