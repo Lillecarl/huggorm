@@ -4,8 +4,9 @@ Nix, bound to Python through nanobind, with the bindings THEMSELVES
 generated from a declaration, and everything above them generated from
 the same declaration.
 
-One file decides five surfaces: the C++ binding, the type stub, the
-wire policy, the async wrapper and the RPC client.
+One file decides four surfaces: the C++ binding, the type stub, the
+wire policy, and the async class, which runs in process or on a
+server.
 Adding a type means editing one declaration and nothing else. That is
 the whole premise, and it is what a reviewer should push on.
 
@@ -118,7 +119,7 @@ a fact about this set of documents, not about a backend reading them.
 
     src/huggorm_gen/
       cppgen/         -> huggorm_bindings: C++, stubs, enums, errors
-      pygen/          -> huggorm_generated: async, protocols, RPC, wire tables
+      pygen/          -> huggorm_generated: async classes, protocols, wire tables
       payload/        -> neither: hand-written Python that SHIPS
 
 One package, not two, because both backends read one IR from one

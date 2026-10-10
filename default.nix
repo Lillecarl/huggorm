@@ -541,7 +541,7 @@ rec {
                 ls -1 "$pkg/huggorm_bindings-stubs"
                 ;;
               surface)
-                for f in "$gen"/async_*.py "$gen"/protocols.py "$gen"/rpc.py \
+                for f in "$gen"/async_*.py "$gen"/protocols.py "$gen"/_classes.py \
                          "$gen"/free_functions.py "$gen"/_policy.py; do
                   echo "=== $f ==="
                   cat "$f"

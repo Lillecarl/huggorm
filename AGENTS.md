@@ -1,9 +1,9 @@
 # What this is for
 
 huggorm binds Nix to Python, and generates the binding itself from a
-declaration. One file per Nix class decides five surfaces: the C++
-binding, the type stub, the wire policy, the async wrapper and the
-RPC client.
+declaration. One file per Nix class decides four surfaces: the C++
+binding, the type stub, the wire policy, and the async class, which
+runs in process or on a server.
 
 **The destination is an evaluation service, not a binding.** A binding
 that opens a store and evaluates an expression is the floor. What this
@@ -20,8 +20,8 @@ is how a later client finds the state an earlier one left warm.
 #16 holds the detail and the lifecycle contract.
 
 The binding exists because that service needs Nix in-process. The
-codegen exists because that service needs five surfaces to agree, and a
-fact stated five times disagrees once.
+codegen exists because that service needs four surfaces to agree, and a
+fact stated four times disagrees once.
 
 Three audiences, and the order is not a ranking - all three are real:
 Carl's own Nix tooling, editor and direnv-style workflows that want a
@@ -129,7 +129,7 @@ guess, never trust a memory of it.
 
 `packages/huggorm-decl/src/huggorm_decl/decl/` is the source. Everything else
 is emitted from it: the nanobind C++, the wire policy, the sync API, the
-async API, the RPC API, the type stubs, the enums.
+async API (in process and remote), the type stubs, the enums.
 
 **A MAPPING is any C++ that says "this Python name means that C++
 call".** An accessor, a constructor, a type test, an enum-to-string

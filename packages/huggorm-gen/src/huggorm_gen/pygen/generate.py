@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
     # builder reads them at build time. One definition, copied, rather
     # than two that agree until one of them changes.
     _vendor(here / "_wiretypes.py", out / "_wiretypes.py")
-    # ...and the call spec's types, which the emitted RPC classes
+    # ...and the call spec's types, which the emitted async classes
     # build and the hand-written client reads.
     _vendor(here / "_callspec.py", out / "_callspec.py")
     print(f"copied runtime into {out}")

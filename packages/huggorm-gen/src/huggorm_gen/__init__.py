@@ -7,8 +7,8 @@ worth naming:
 - `cppgen` fills `huggorm_bindings`: the nanobind C++, and the stubs,
   enum modules and exception module that ship beside the compiled
   extension.
-- `pygen` fills `huggorm_generated`: the async wrappers, the
-  protocols, the RPC client and the wire schema.
+- `pygen` fills `huggorm_generated`: the async classes, the
+  `@calls_back` protocols and the wire schema.
 
 They are ONE package, not two, because they read one IR from one
 reader. A package boundary between them would say the split is

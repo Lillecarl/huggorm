@@ -1,9 +1,9 @@
-"""What one remote call needs, as a typed value.
+"""What one call needs, as a typed value.
 
 Copied into the emitted package as `_callspec.py`, the way
-`_wiretypes.py` and `_runtime.py` are: the generated RPC classes build
-these and the hand-written client reads them, so one definition is
-copied rather than two kept in step.
+`_wiretypes.py` and `_runtime.py` are: the generated async classes
+build these and the hand-written client and server read them, so
+one definition is copied rather than two kept in step.
 
 ## Why this is not a dict
 

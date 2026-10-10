@@ -361,9 +361,9 @@ def policy_module(model: ir.Model) -> str:
     body.append(_table("UNION_ARMS", "dict[str, tuple[Wire, ...]]", [
         (n, tuple(_wire(a) for a in u.arms))
         for n, u in model.unions.items()]))
-    # Every call's spec, ONCE. The client reads these through `rpc.py`,
-    # the server through the tables and the runner through the async
-    # classes, so no two of them can disagree about a call's shape.
+    # Every call's spec, ONCE. The async classes hand them to a runner
+    # or to the client, and the server reads the tables, so no two of
+    # them can disagree about a call's shape.
     specs = _Specs(body)
     methods = []
     for c in model.ordered_served:
@@ -759,11 +759,9 @@ def _directory(model: ir.Model, specs: _Specs) -> list[ast.stmt]:
 def _spec_name(cls: str, method: str) -> str:
     """What one method's spec constant is called.
 
-    Module level, not a class attribute. A class attribute had to be
-    RESTATED by any subclass that adds a method - an attribute shadows
-    rather than merges, and an inherited body reads `self._rpc` - so
-    the base's whole table was copied into the subclass. A constant per
-    method has no such rule.
+    Module level, not a class attribute: an attribute shadows rather
+    than merges, so a subclass that adds a method would restate the
+    base's whole table. A constant per method has no such rule.
 
     Leading underscore, because it is not surface: a caller reads the
     method, not what the build decided the method does."""

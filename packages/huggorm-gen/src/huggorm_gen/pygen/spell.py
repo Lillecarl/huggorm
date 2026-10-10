@@ -1,8 +1,8 @@
 """How one emitted module writes the types it names, and what that
 needs imported (huggorm#29).
 
-A surface renames only the PROXY leaves - to a protocol, an async
-class or an RPC class - and keeps every structure around them. Every
+A surface renames only the PROXY leaves - to an async class or a
+`@calls_back` protocol - and keeps every structure around them. Every
 other leaf is written as itself, and its kind says where it comes
 from. So an import is decided by what a type IS, not by reading the
 emitted text back.
