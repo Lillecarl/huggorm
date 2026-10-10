@@ -178,6 +178,13 @@ class TypeRef:
         return self.leaf.is_bytes
 
     @property
+    def fixed_int(self) -> bool:
+        """An integer with a declared C++ width. Every `int` leaf is
+        one: `cxx.CXX_BUILTIN` has no plain `int`, so `I64` or `U64`
+        is the only way an `int` reaches here."""
+        return not self.origin and self.name == "int"
+
+    @property
     def pyobject(self) -> bool:
         """Crosses as a bare `nb::object`, which takes None as a value.
         An error drops its `| None` to get there (`cxx.value`)."""

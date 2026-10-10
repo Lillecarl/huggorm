@@ -1250,9 +1250,9 @@ class Emitter:
         # the declaration says I64, so the cast is what makes the emitted
         # C++ say what the declaration says rather than what this
         # library's version of the call happens to return.
-        spelled = m.returns.cxx
-        if spelled in ("std::int64_t", "std::uint64_t"):
-            return [*head, f"{INDENT * 4}return static_cast<{spelled}>({call});"]
+        if m.returns.fixed_int:
+            return [*head, f"{INDENT * 4}return "
+                           f"static_cast<{m.returns.cxx}>({call});"]
         return [*head, f"{INDENT * 4}return {call};"]
 
     def _guard_head(self, cls: ir.ClassModel,
