@@ -7,7 +7,7 @@ every stage that writes C++.
 
 import json
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Protocol, assert_never
 
 from huggorm_dsl.declare import Crossing, Decl, DeclKind
 from huggorm_dsl.read import Class, Origin, Param, Type
@@ -172,31 +172,34 @@ def value(t: Type, known: Mapping[str, Class]) -> tuple[str, str | None]:
         # give a Python caller one spelling for absent and the emitter
         # two.
         return "nb::object", None
-    if t.optional:
-        held, _ = value(t.required, known)
-        return f"std::optional<{held}>", "optional"
-    if t.origin is Origin.LIST:
-        held, _ = value(t.element, known)
-        # A vector, not the std::set libstore keeps them in. A set
-        # casts to a Python set, which has no order - and every one
-        # of these answers is sorted, which is information a caller
-        # can use.
-        return f"std::vector<{held}>", "vector"
-    if t.origin is Origin.DICT:
-        held, _ = value(t.element, known)
-        # `std::map`, which is what libstore keeps every one of these
-        # in - `OutputPathMap` and `SingleDrvOutputs` are both one -
-        # and what nanobind's <nanobind/stl/map.h> casts.
-        #
-        # str keys only: every map this API returns is keyed by a name,
-        # and the codec unpacks with `strict_map_key`. The declaration
-        # spells `dict[str, V]` and nothing else parses.
-        #
-        # This replaced a hard-coded `"dict[str, int]": nb::dict`
-        # entry that served one free function. A body that builds an
-        # nb::dict by hand IS the mapping this exists to derive, so
-        # the entry went and `gc_stats` returns the map.
-        return f"std::map<std::string, {held}>", "map"
+    match t.origin:
+        case Origin.OPTIONAL:
+            held, _ = value(t.required, known)
+            return f"std::optional<{held}>", "optional"
+        case Origin.LIST:
+            held, _ = value(t.element, known)
+            # A vector, not the std::set libstore keeps them in. A set
+            # casts to a Python set, which has no order - and every one
+            # of these answers is sorted, which is information a caller
+            # can use.
+            return f"std::vector<{held}>", "vector"
+        case Origin.DICT:
+            held, _ = value(t.element, known)
+            # `std::map`, which is what libstore keeps every one of
+            # these in - `OutputPathMap` and `SingleDrvOutputs` are both
+            # one - and what nanobind's <nanobind/stl/map.h> casts.
+            #
+            # str keys only: every map this API returns is keyed by a
+            # name, and the codec unpacks with `strict_map_key`. The
+            # declaration spells `dict[str, V]` and nothing else parses.
+            #
+            # Not an `nb::dict` built by hand in a body: that IS the
+            # mapping this exists to derive.
+            return f"std::map<std::string, {held}>", "map"
+        case None:
+            pass
+        case _:
+            assert_never(t.origin)
     inner = t.python
     if t.bound or inner in known:
         if inner not in known:

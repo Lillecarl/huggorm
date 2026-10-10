@@ -10,6 +10,7 @@ import enum
 import textwrap
 from collections.abc import Mapping, Sequence
 from string import Template
+from typing import assert_never
 
 from huggorm_dsl.declare import Crossing, Threading
 from huggorm_gen import ir
@@ -98,13 +99,17 @@ def _twinned(call: str, t: ir.TypeRef) -> str:
     if t.args[0].origin:
         raise TypeError(f"{t.spelling}: an async twin is spelled under one "
                         f"`| None` or `list[...]`, and this nests deeper")
-    if t.optional:
-        return (f"result = await {call}\n"
-                f"return None if result is None else {twin}(result)")
-    if t.origin is ir.Origin.LIST:
-        return f"return [{twin}(item) for item in await {call}]"
-    raise TypeError(f"{t.spelling}: an async twin has no spelling inside "
-                    f"a {t.origin}")
+    match t.origin:
+        case ir.Origin.OPTIONAL:
+            return (f"result = await {call}\n"
+                    f"return None if result is None else {twin}(result)")
+        case ir.Origin.LIST:
+            return f"return [{twin}(item) for item in await {call}]"
+        case ir.Origin.DICT:
+            raise TypeError(f"{t.spelling}: an async twin has no spelling "
+                            f"inside a dict")
+        case _:
+            assert_never(t.origin)
 
 
 def _adapted(t: ir.TypeRef) -> bool:
@@ -273,10 +278,19 @@ def _wire(t: ir.TypeRef | None) -> cs.Wire | None:
         return None
     optional = t.optional
     t = t.required
-    if t.container:
-        return cs.Wire(cs.WireKind.LIST if t.origin is ir.Origin.LIST
-                       else cs.WireKind.MAP,
-                       item=_wire(t.args[0]), optional=optional)
+    match t.origin:
+        case ir.Origin.LIST:
+            return cs.Wire(cs.WireKind.LIST, item=_wire(t.args[0]),
+                           optional=optional)
+        case ir.Origin.DICT:
+            return cs.Wire(cs.WireKind.MAP, item=_wire(t.args[0]),
+                           optional=optional)
+        case ir.Origin.OPTIONAL:
+            raise TypeError(f"{t.spelling}: `| None` under `| None`")
+        case None:
+            pass
+        case _:
+            assert_never(t.origin)
     if t.scalar is not None:
         # The leaf's own name, not the builtin it goes in as: the codec
         # converts a `datetime.timedelta` by name.

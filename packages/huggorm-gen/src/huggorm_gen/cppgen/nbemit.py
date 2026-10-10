@@ -52,6 +52,7 @@ becomes the place the real code lives.
 """
 
 from collections.abc import Iterator, Sequence
+from typing import assert_never
 
 from huggorm_dsl.declare import Crossing
 from huggorm_dsl.read import Body
@@ -1195,12 +1196,20 @@ class Emitter:
         # declaration already said `list` - so nothing needs to say it
         # twice. `as_list` is a template over any range, so wrapping is
         # right whether the call answered a set or a vector.
-        if m.returns.origin is ir.Origin.LIST:
-            return [*head, f"{INDENT * 4}return as_list({call});"]
-        # The same for a `dict[str, V]`: libstore keys many maps with a
-        # transparent `std::less<>`, and nanobind casts only the plain one.
-        if m.returns.origin is ir.Origin.DICT:
-            return [*head, f"{INDENT * 4}return as_map({call});"]
+        match m.returns.origin:
+            case ir.Origin.LIST:
+                return [*head, f"{INDENT * 4}return as_list({call});"]
+            # The same for a `dict[str, V]`: libstore keys many maps
+            # with a transparent `std::less<>`, and nanobind casts only
+            # the plain one.
+            case ir.Origin.DICT:
+                return [*head, f"{INDENT * 4}return as_map({call});"]
+            # Not converted, so nanobind casts the C++ type: a
+            # `list[T] | None` over a set is a gap (huggorm#139).
+            case ir.Origin.OPTIONAL | None:
+                pass
+            case _:
+                assert_never(m.returns.origin)
         # A declared VOCABULARY return. The enumerator libstore answers
         # with is not the word Python has, and `as_word` is the switch
         # that says which - emitted beside this, not written by hand.

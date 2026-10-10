@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable, Iterable, Mapping
+from typing import assert_never
 
 from huggorm_gen.ir import Kind, Origin, ParamModel, TypeRef
 from huggorm_gen.payload.wiretypes import python_spelling
@@ -71,12 +72,17 @@ class Spelling:
                  twin: bool = False, client: bool = False) -> str:
         """`client` widens a `@calls_back` leaf to its async protocol:
         a parameter takes one, a return never hands one back."""
-        if t.optional:
-            return f"{self(t.args[0], proxy, twin, client)} | None"
-        if t.origin is Origin.LIST:
-            return f"list[{self(t.args[0], proxy, twin, client)}]"
-        if t.origin is Origin.DICT:
-            return f"dict[str, {self(t.args[0], proxy, twin, client)}]"
+        match t.origin:
+            case Origin.OPTIONAL:
+                return f"{self(t.args[0], proxy, twin, client)} | None"
+            case Origin.LIST:
+                return f"list[{self(t.args[0], proxy, twin, client)}]"
+            case Origin.DICT:
+                return f"dict[str, {self(t.args[0], proxy, twin, client)}]"
+            case None:
+                pass
+            case _:
+                assert_never(t.origin)
         if twin and t.twin:
             self.module(t.twin)
             return t.twin
