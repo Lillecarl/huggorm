@@ -30,8 +30,17 @@ import anyio.abc
 import pytest
 from anyio.streams.text import TextReceiveStream
 
+from huggorm_generated._runtime import BaseRunner
+
 if TYPE_CHECKING:
     from huggorm_gen import ir
+
+
+def runner_of(obj: Any) -> BaseRunner:
+    """The runner behind an object in this process."""
+    backend = obj._backend
+    assert isinstance(backend, BaseRunner), backend
+    return backend
 
 @pytest.fixture
 def flakes() -> Iterator[None]:

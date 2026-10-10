@@ -2,18 +2,11 @@
 Client side of the remote layer.
 
 The client owns the connection, the codec and the lifecycle calls.
-Every object it hands back is a GENERATED class from
-huggorm_generated.rpc: real methods, real signatures, one per
-declared class, satisfying the same protocol the in-process
-wrapper satisfies.
-
-That is the whole of this module's knowledge of the domain: none. It
-looks a class up by name in the generated registry and calls it. What
-used to live here was a RemoteObj that resolved method names against
-a spec table inside __getattr__ - which worked, and which a
-typechecker could see nothing at all through. It could neither reject
-a call to a method that does not exist nor check the arguments of one
-that does, and it satisfied every Protocol vacuously.
+Every object it hands back is the GENERATED async class of its
+declared type, the one an in-process caller constructs, over a
+`Remote` backend. So a typechecker sees real methods with real
+signatures, and this module knows nothing of the domain: it looks a
+class up in `_classes.CLASSES` by the declared name.
 
 Wire-values still come back as REAL local objects (copies,
 deserialized through the private binding helpers); proxies stay remote
@@ -40,7 +33,9 @@ from typing import Any
 import anyio
 
 from huggorm_generated._callspec import Acquire, Call
+from huggorm_generated._classes import CLASSES
 from huggorm_generated._policy import ACQUIRE, CALLBACKS, FREE, NO_RPC
+from huggorm_generated._runtime import Remote
 
 from . import views
 from .codec import Codec
@@ -88,19 +83,21 @@ class ConnectionLost(ConnectionError):
     take them back while they last."""
 
 
-def _handle_of(obj: Any) -> str:
-    """A proxy argument's handle id.
+def handle_of(obj: Any) -> str:
+    """The handle `obj` holds on a server.
 
-    A protocol-typed parameter admits an in-process object statically,
-    so the location is checked here (huggorm#26): the server could not
-    reach that object, and an AttributeError would not say why."""
-    if not hasattr(obj, "handle_id"):
+    One class holds either backend, so the location is checked here
+    (huggorm#26): the server could not reach an in-process object, and
+    an AttributeError would not say why. A lease already given back is
+    a ValueError."""
+    backend = getattr(obj, "_backend", None)
+    if not isinstance(backend, Remote):
         raise TypeError(
             f"{type(obj).__name__} is not a handle on this server: a "
             f"remote call takes an object the server holds")
-    if obj.handle_id is None:
+    if backend.handle_id is None:
         raise ValueError(f"this {type(obj).__name__} was already released")
-    return str(obj.handle_id)
+    return backend.handle_id
 
 
 def _no_handle(_: Any) -> Any:
@@ -158,9 +155,8 @@ class NixClient:
     def proxy(self, cls_name: str, handle_id: str) -> Any:
         """A client-side object for one remote handle.
 
-        The class is generated - one per declared class, with
-        the same inheritance - so this is a lookup and a constructor,
-        and this module names nothing.
+        The class is generated - one per declared class - so this is
+        a lookup and a backend, and this module names nothing.
 
         The object is TRACKED: when the last one pointing at a handle
         goes away, the handle is queued for release. Two objects can
@@ -168,15 +164,13 @@ class NixClient:
         forge duplicates), so the count is per handle, not per object -
         otherwise the first drop would release a lease the second
         object is still using."""
-        from huggorm_generated.rpc import RPC_CLASSES
-
         try:
-            cls = RPC_CLASSES[cls_name]
+            cls = CLASSES[cls_name]
         except KeyError:
             raise TypeError(
-                f"{cls_name!r} has no generated client class; the build "
-                f"offers {sorted(RPC_CLASSES)}") from None
-        obj = cls(self, handle_id)
+                f"{cls_name!r} has no generated class; the build "
+                f"offers {sorted(CLASSES)}") from None
+        obj = cls._on(Remote(self, handle_id))
         self._track(obj, handle_id)
         return obj
 
@@ -185,11 +179,10 @@ class NixClient:
         with what the walk carried readable locally (huggorm#147).
         Tracked as `proxy` tracks, so dropping it releases the
         handle."""
-        from huggorm_generated.rpc import RPC_CLASSES
-
         mixin = views.AttrsView if isinstance(contents, dict) else views.ListView
-        obj = views.view_class(mixin, RPC_CLASSES[cls_name])(
-            self, handle_id, contents)
+        cls: Any = views.view_class(mixin, CLASSES[cls_name])
+        obj = cls._on(Remote(self, handle_id))
+        obj._contents = contents
         self._track(obj, handle_id)
         return obj
 
@@ -498,18 +491,18 @@ class NixClient:
     async def share(self, obj: Any, to_token: str,
                     mode: ShareMode = ShareMode.COPY) -> None:
         await self._ask(Op.CONTROL, Control.SHARE,
-                        [to_token, _handle_of(obj), mode.value])
+                        [to_token, handle_of(obj), mode.value])
 
     async def detach(self, obj: Any = None, all: bool = False) -> bool:
         """Hand our claim back as escrow under our own token. With no
         target and all=True, detaches every lease we hold."""
-        hid = None if obj is None else _handle_of(obj)
+        hid = None if obj is None else handle_of(obj)
         return bool(await self._ask(Op.CONTROL, Control.DETACH, [hid, all]))
 
     def _encode_args(self, spec: Call | Acquire, args: tuple[Any, ...] | list[Any]
                      ) -> list[Any]:
         client_id = self._client_id if self.experimental_callbacks else None
-        return [self.codec.encode(a.type, v, _handle_of, client_id=client_id)
+        return [self.codec.encode(a.type, v, handle_of, client_id=client_id)
                 for a, v in zip(spec.args, args, strict=False)]
 
     def _client_id(self, cls: str, obj: Any) -> int:
@@ -579,12 +572,12 @@ class NixClient:
                               self._encode_args(spec, args))
         return self.proxy(cls_name, hid)
 
-    async def release(self, obj: Any) -> None:
-        if obj.handle_id is None:
+    async def release(self, handle: Remote) -> None:
+        if handle.handle_id is None:
             raise ValueError("handle already released through this object")
-        await self._ask(Op.CONTROL, Control.RELEASE, [obj.handle_id])
-        self._untrack(obj.handle_id)
-        obj.handle_id = None
+        await self._ask(Op.CONTROL, Control.RELEASE, [handle.handle_id])
+        self._untrack(handle.handle_id)
+        handle.handle_id = None
 
     async def realize(self, obj: Any, depth: int = 0,
                       budget: int = 0, force: bool = False) -> Any:
@@ -613,10 +606,8 @@ class NixClient:
         bounds. It does not enter a derivation, and a node whose force
         throws comes back as a proxy whose first read raises that
         error, so the rest of the tree still arrives (huggorm#147)."""
-        if obj.handle_id is None:
-            raise ValueError("this handle was already released")
         raw = await self._ask(Op.CONTROL, Control.REALIZE,
-                              [obj.handle_id, depth, budget, force])
+                              [handle_of(obj), depth, budget, force])
         return self.codec.decode_tree(raw, self.proxy, self.view)
 
     async def value(self, state: Any, data: Any) -> Any:
@@ -632,17 +623,16 @@ class NixClient:
         read-only view with its own handle, and a scalar at the root is
         a handle. A handle in the data comes back as the object that was
         passed."""
-        if state.handle_id is None:
-            raise ValueError("this handle was already released")
+        hid_state = handle_of(state)
         passed: dict[str, Any] = {}
 
         def handle_id(obj: Any) -> str:
-            hid = _handle_of(obj)
+            hid = handle_of(obj)
             passed[hid] = obj
             return hid
 
         raw = await self._ask(Op.CONTROL, Control.BUILD, [
-            state.handle_id, self.codec.encode_data(data, handle_id)])
+            hid_state, self.codec.encode_data(data, handle_id)])
         return self.codec.decode_tree(
             # Not `passed.get(hid) or`: an empty view is falsy.
             raw, lambda cls, hid: (passed[hid] if hid in passed
@@ -686,9 +676,7 @@ class NixClient:
         start, so it needs a point where starting is safe; without the
         empty batch the first batch would be the first record, which
         arrives only after the work it was meant to report."""
-        if obj.handle_id is None:
-            raise ValueError("this handle was already released")
-        async for batch in self._log_batches(obj.handle_id, capacity, level):
+        async for batch in self._log_batches(handle_of(obj), capacity, level):
             yield batch
 
     async def process_logs(self, capacity: int = 0,
@@ -743,10 +731,8 @@ class NixClient:
         The server runs one call on the state's own thread, so its
         marker is queued after everything that thread raised before.
         A reader that sees the marker holds all of it."""
-        if obj.handle_id is None:
-            raise ValueError("this handle was already released")
         return int(await self._ask(Op.CONTROL, Control.LOGS_BARRIER,
-                                   [obj.handle_id]))
+                                   [handle_of(obj)]))
 
     async def call_function(self, name: str, *args: Any) -> Any:
         """Call one of the bindings' module-level functions remotely.

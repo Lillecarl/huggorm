@@ -187,20 +187,15 @@ def _admits_none(annotation: ast.expr) -> bool:
 # inline, because it is prose a reader of the OUTPUT sees and an
 # 800-column string literal in an emitter argument list is neither
 # readable nor lintable.
-# The two modules every served class has a form in, beside its own
+# The module every served class has a protocol in, beside its own
 # `async_<name>` module.
 PROTOCOL_MODULE = "protocols"
-RPC_MODULE = "rpc"
 
-# Every implementation closes the same way, and only the meaning
-# differs: in process it shuts the runner's thread down, remotely it
-# gives the lease back. So it belongs on the protocol, and it is the
-# one method no binding declares.
+# Every backend closes the same way, and only the meaning differs: in
+# process it shuts the runner's thread down, remotely it gives the
+# lease back. So it belongs on the protocol, and it is the one method
+# no binding declares.
 ACLOSE = "aclose"
-
-# The registry a client uses to turn a handle into an object of the
-# right class.
-REGISTRY = "RPC_CLASSES"
 
 POLICY_DOC = """The wire policy of every declared type.
 
@@ -398,17 +393,11 @@ def policy_module(model: ir.Model) -> str:
         (c.name, tuple(cs.Hook(_spec(i, m.name, m.params, m.returns), m.posted)
                        for i, m in enumerate(c.hooks)))
         for c in model.called_back]))
-    # The value TREES, and the async class each served class is adopted
-    # into. SERVED, not merely wrapped: an unserved class has no async
-    # class emitted, and `server.adopt` would raise AttributeError on
-    # its first handle (huggorm#32).
+    # The value TREES, and how values are built.
     body.append(_table("TREES", "dict[str, Tree]", [
         (c.name, c.tree) for c in classes if c.tree is not None]))
     body.append(_table("BUILDERS", "dict[str, Builds]", [
         (c.name, c.builds) for c in classes if c.builds is not None]))
-    body.append(_table("ASYNC_CLASS", "dict[str, str]", [
-        (c.name, c.async_name)
-        for c in classes if c.served]))
     body.extend(_directory(model, specs))
     body.append(ast.AnnAssign(
         target=ast.Name(id="CALLS"),
@@ -517,11 +506,11 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
 def _hop_method(cls: ast.ClassDef, model: ir.Model,
                 m: ir.MethodModel, svc: str,
                 signature: tuple[list[str], str]) -> None:
-    """One `async def` that hops to the runner. The runner adopts a
-    returned served class, by the call's spec."""
+    """One `async def` that sends its spec to the backend. The backend
+    hands a returned served class back in its async form."""
     params, returns = signature
-    call = (f"self._runner.call({_spec_name(svc, m.name)}, "
-            f"[{_passed(m.params)}])")
+    call = (f"self._backend.call({_spec_name(svc, m.name)}, "
+            f"[{', '.join(p.name for p in m.params)}])")
     if m.returns is not None and m.returns.leaf.twin:
         body = _twinned(call, m.returns)
     else:
@@ -550,21 +539,26 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
     cls = ast.ClassDef(name=c.async_name, bases=[], keywords=[], decorator_list=[], body=[
         ast.Expr(value=ast.Constant(value=class_doc)),
         _code("_copied = $copied", copied=repr(c.copied)),
-        _code("_runner: BaseRunner"),
+        _code("_backend: Backend"),
         init,
         _code("""
             @classmethod
+            def _on(cls, backend: Backend) -> Self:
+                obj = cls.__new__(cls)
+                obj._backend = backend
+                return obj
+            """),
+        _code("""
+            @classmethod
             def _adopt(cls, obj: $svc, runner: BaseRunner) -> Self:
-                adopted = cls.__new__(cls)
-                adopted._runner = $adopter.adopt(obj, runner)
-                return adopted
+                return cls._on($adopter.adopt(obj, runner))
             """, svc=c.name, adopter=RUNNER[c.execution]),
     ])
     for m in c.methods:
         _hop_method(cls, model, m, c.name, methods[m.name])
     cls.body.append(_code("""
         async def aclose(self) -> None:
-            await self._runner.aclose()
+            await self._backend.aclose()
         """))
     # A call hands back Any, and cast is where the declared type is
     # claimed. A twin is built instead, and a None return does not
@@ -572,15 +566,13 @@ def _async_module(model: ir.Model, c: ir.ClassModel, doc: str,
     if any(m.returns is not None and not m.returns.leaf.twin
            for m in c.methods):
         typing_names = typing_names | {"cast"}
-    if any(_adapted(p.type) for m in c.methods for p in m.params):
-        runtime_names = runtime_names | {"adapt"}
     # Docstring FIRST: anything before it demotes it to a dead
     # expression and leaves the module with no __doc__.
     mod = ast.Module(type_ignores=[], body=[
         ast.Expr(value=ast.Constant(value=doc)),
         _future_annotations(),
         import_from("typing", "Self", *typing_names),
-        import_from("_runtime", "BaseRunner",
+        import_from("_runtime", "Backend", "BaseRunner",
                     *sorted({RUNNER[c.execution], *runtime_names}), level=1),
         *([import_from("_policy", *(_spec_name(c.name, m.name)
                                     for m in c.methods), level=1)]
@@ -604,14 +596,14 @@ def returned_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     policy = c.threading
     init = _code("""
         def __init__(self, obj: $svc, runner: BaseRunner) -> None:
-            self._runner = $adopter.adopt(obj, runner)
+            self._backend = $adopter.adopt(obj, runner)
         """, svc=c.name, adopter=RUNNER[c.execution])
     return _async_module(
         model, c,
         f"Generated async wrapper for returned type {c.name} "
         f"(threading: {policy}) - do not edit.",
-        f"Async handle over a {c.name} produced by another wrapper. "
-        f"Policy '{policy}': " + _POLICY_DOC[c.execution],
+        f"A {c.name} that another call hands back, in this process or on "
+        f"a server. Policy '{policy}' in process: " + _POLICY_DOC[c.execution],
         init, set(), set())
 
 
@@ -638,9 +630,8 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
                 f"one. Receive one from a call that returns {svc}."))
         return _async_module(
             model, c, doc,
-            f"Async base over {svc}: the surface every subclass guarantees. "
-            f"Hold one when you do not care which implementation answered; "
-            f"construct a subclass to get one.",
+            f"A {svc}, in this process or on a server. Only a call hands one "
+            f"back: nothing declared constructs it.",
             init, {"Any"}, set())
     runner = RUNNER[ir.Execution(threading)]
     name = (f", name={f'huggorm-affine-{svc}'!r}"
@@ -653,7 +644,7 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     # target object, not the async shell.
     init = _code("""
         def __init__(self) -> None:
-            self._runner = $runner(lambda: $svc($values)$name)
+            self._backend = $runner(lambda: $svc($values)$name)
         """, _arguments([ast.arg(arg="self")], c.ctor, ctor, f"{svc}.__init__"),
         runner=runner, svc=svc, name=name,
         values=", ".join(f"unwrap_arg({p.name})" for p in c.ctor))
@@ -661,8 +652,9 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
     # what `test_no_unused_imports` rejects.
     return _async_module(
         model, c, doc,
-        f"Async in-process wrapper over {svc}. The object is constructed "
-        f"lazily on its runner thread.",
+        f"A {svc}, in this process or on a server. Constructed here, it is "
+        f"built lazily on its runner thread; `NixClient.acquire` builds one "
+        f"on a server.",
         init, set(), {runner} | ({"unwrap_arg"} if c.ctor else set()))
 
 
@@ -841,154 +833,32 @@ def _spec_name(cls: str, method: str) -> str:
     return f"_{cls}_{method}"
 
 
-def rpc_module(model: ir.Model) -> ast.Module:
-    """Emit one RPC client class per served class.
-
-    Generated classes, not a `__getattr__` proxy. A proxy resolves a
-    method name at call time, so a typechecker sees nothing: it can
-    neither reject a call that does not exist nor check the arguments
-    of one that does. A generated class has real methods with real
-    signatures, so both directions are checked - and the conformance gate compares them against the
-    protocol and the in-process wrapper.
-
-    Unlike the in-process side, NO class here is abstract. Locally an
-    abstract base has no implementation to construct; remotely every
-    handle addresses a real object on the server, and the base is a
-    perfectly good view of it - which is the common case, since a
-    caller usually does not care which store answered."""
-    ordered = model.ordered_served
-    # A returned proxy is an RPC class: the server leased a handle. A
-    # proxy PARAMETER is spelled as the protocol, as on every surface,
-    # and the client refuses an in-process object when it encodes one.
-    spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                PROTOCOLS), client=_client_rename(PROTOCOLS))
-    returned = Spelling(lambda t: (model.classes[t.name].rpc_name,
-                                   None))
-    # Only the methods this module WRITES, so a type named only by a
-    # method with no rpc does not become an unused import.
-    signatures = {
-        (cls.name, m.name): ([spell(p.type, client=True) for p in m.params],
-                             returned.returns(m.returns, twin=True))
-        for cls in ordered for m in cls.methods if model.offered(m)
-    }
-    for served_cls in ordered:
-        for m in served_cls.methods:
-            if model.offered(m):
-                spell.defaults(m.params)
-    spell.absorb(returned)
-
-    mod = ast.Module(body=[], type_ignores=[])
-    mod.body.append(ast.Expr(value=ast.Constant(value=(
-        "Generated RPC clients - do not edit. One per wrapped class, "
-        "mirroring the wrapper hierarchy. Each method carries the call "
-        "spec the build wrote for it, so a call needs no lookup and names "
-        "nothing the build did not put there."))))
-    mod.body.append(_future_annotations())
-    mod.body.append(import_from("typing", "Any", "Protocol", "cast"))
-    # The call specs, from where the build wrote them. Emitted in
-    # `_policy` rather than here, because the SERVER reads the same
-    # ones - and two derivations of one call's shape is exactly the
-    # disagreement this repo generates code to prevent.
-    specs = [_spec_name(name, m) for name, m in signatures]
-    mod.body.append(import_from("_callspec", "Call", level=1))
-    if specs:
-        mod.body.append(import_from("_policy", *specs, level=1))
-    mod.body.extend(spell.imports())
-
-    # What these classes need from whatever is driving them. Declaring
-    # it as a Protocol keeps the dependency pointing the right way: the
-    # generated package describes what it requires, and the hand-written
-    # client satisfies it without either importing the other.
-    #
-    # handle_id is Optional because release() blanks it. Passing a
-    # blanked one is a real mistake, and the client answers it with a
-    # message that says so.
-    mod.body.append(_code("""
-        class $client(Protocol):
-            $doc
-
-            async def invoke(self, spec: Call, handle_id: str | None,
-                             args: list[Any]) -> Any: ...
-
-            async def release(self, obj: Any) -> None: ...
-        """, client=CLIENT_PROTOCOL, doc=repr(
-            "What an RPC class needs from its client. The client owns the "
-            "connection, the codec and the handle lifetime; these classes "
-            "own the surface.")))
-
-    for served_cls in ordered:
-        name = served_cls.name
-        cls = _code("""
-            class $rpc:
-                $doc
-                _copied = $copied
-                _client: $client
-                handle_id: str | None
-
-                def __init__(self, client: $client, handle_id: str) -> None:
-                    self._client = client
-                    self.handle_id = handle_id
-            """, rpc=served_cls.rpc_name, copied=repr(served_cls.copied),
-            client=CLIENT_PROTOCOL, doc=repr(
-                f"A {name} living behind a handle on a server. Same surface "
-                f"as {served_cls.async_name}, different location."))
-        assert isinstance(cls, ast.ClassDef)
-        # Only the methods that HAVE an rpc. A method the wire cannot
-        # carry keeps its in-process wrapper and is simply absent here;
-        # `NO_RPC` says why, and the protocol drops it too.
-        for m in served_cls.methods:
-            if not model.offered(m):
-                continue
-            params, returns = signatures[(name, m.name)]
-            call = (f"self._client.invoke({_spec_name(name, m.name)}, "
-                    f"self.handle_id, [{', '.join(p.name for p in m.params)}])")
-            if m.returns is not None and m.returns.leaf.twin:
-                body = _twinned(call, m.returns)
-            else:
-                body = _forwarded(call, returns)
-            cls.body.append(_def(
-                f"async def {m.name}() -> {returns}", body,
-                m.doc, _arguments([ast.arg(arg="self")], m.params, params,
-                                  f"{name}.{m.name}")))
-        cls.body.append(_code("""
-            async def $aclose(self) -> None:
-                $doc
-                await self._client.release(self)
-            """, aclose=ACLOSE, doc=repr(
-                "Give the lease back. The in-process wrapper shuts its runner "
-                "down here; there is no thread to shut down on this side, so "
-                "the server's copy is what gets released.")))
-        mod.body.append(cls)
-
-    # Annotated: the inferred value type is the join of every class in
-    # it, which collapses to type[object] - and object takes no
-    # constructor arguments, so a caller could not build one.
-    mod.body.append(_code("$registry: dict[str, type[Any]] = {$items}",
-                          registry=REGISTRY, items=", ".join(
-                              f"{c.name!r}: {c.rpc_name}" for c in ordered)))
-    ast.fix_missing_locations(mod)
-    return mod
-
-
 CLASSES_MODULE = "_classes"
 
 
 def classes_module(model: ir.Model) -> ast.Module:
-    """`_classes.py`: each served class's async form, by declared name.
+    """`_classes.py`: the classes the runner finds by a spec's declared
+    name.
 
-    The runner reads it to adopt a returned proxy by the call's
-    `returns`. A module of its own, because it imports every async
-    class, and each of those imports `_policy`."""
+    `CLASSES` holds each served class's async form, which the runner
+    adopts a returned proxy into. `CALLED_BACK` holds each `@calls_back`
+    binding, which `adapt` subclasses for an argument that is a
+    program's own object. A module of its own, because it imports every
+    async class, and each of those imports `_policy`."""
     served = model.ordered_served
+    hooked = [c.name for c in model.called_back]
     mod = ast.Module(type_ignores=[], body=[
         ast.Expr(value=ast.Constant(value=(
-            "Generated: each served class's async form, by declared name "
-            "- do not edit."))),
+            "Generated: the classes the runner finds by a spec's declared "
+            "name - do not edit."))),
         import_from("typing", "Any"),
+        *([import_from("huggorm_bindings", *hooked)] if hooked else []),
         *(import_from(f"async_{c.name.lower()}", c.async_name, level=1)
           for c in served),
         _table("CLASSES", "dict[str, type[Any]]",
                [(c.name, ast.Name(id=c.async_name)) for c in served]),
+        _table("CALLED_BACK", "dict[str, type[Any]]",
+               [(n, ast.Name(id=n)) for n in hooked]),
     ])
     ast.fix_missing_locations(mod)
     return mod
@@ -1066,10 +936,6 @@ def free_function_module(model: ir.Model) -> ast.Module:
 
 
 STUB_PACKAGE = "huggorm_bindings-stubs"
-
-# What the generated RPC classes require of whatever drives them.
-CLIENT_PROTOCOL = "RPCClient"
-
 
 # What each value dunder looks like from outside. The comparisons take
 # `object` because Python's do: `a == 7` is a legal question with the
@@ -1259,9 +1125,8 @@ def stub_init_module(by_module: dict[str, list[str]]) -> ast.Module:
 
 
 def init_module(model: ir.Model) -> ast.Module:
-    """The package front door: every served class in its three forms -
-    the protocol it promises, the in-process implementation and the RPC
-    implementation - plus the free functions."""
+    """The package front door: every served class, its protocol, and the
+    free functions."""
     served = model.ordered_served
     free_names = wrapped_functions(model)
     mod = ast.Module(body=[], type_ignores=[])
@@ -1276,8 +1141,6 @@ def init_module(model: ir.Model) -> ast.Module:
         mod.body.append(import_from(f"async_{c.name.lower()}", c.async_name, level=1))
     mod.body.append(import_from(PROTOCOL_MODULE, *(c.protocol_name for c in served),
                                 *(c.async_name for c in model.called_back),
-                                level=1))
-    mod.body.append(import_from(RPC_MODULE, REGISTRY, *(c.rpc_name for c in served),
                                 level=1))
     if free_names:
         mod.body.append(ast.ImportFrom(
@@ -1315,13 +1178,8 @@ def package_exports(model: ir.Model) -> list[str]:
     list: `huggorm.__init__` re-exports this package whole, and the
     front door is emitted too (huggorm#64). Computing it there as well
     would be one list stated twice, which is exactly the thing that
-    front door existed as.
-
-    `RPC_CLASSES` is in it. It is a registry the client uses to turn a
-    handle into an object rather than surface, and the front door
-    drops it - but this package does export it, and saying otherwise
-    here would be a lie a reader of `__all__` could measure."""
+    front door existed as."""
     return ([n for c in model.ordered_served
-             for n in (c.async_name, c.protocol_name, c.rpc_name)]
+             for n in (c.async_name, c.protocol_name)]
             + [c.async_name for c in model.called_back]
-            + [REGISTRY] + wrapped_functions(model))
+            + wrapped_functions(model))

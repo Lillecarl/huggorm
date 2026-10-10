@@ -145,7 +145,7 @@ class Codec:
         """The sync binding object behind a possibly-async wrapper.
         Wire values are pool-threaded, so unwrapping is safe from any
         thread."""
-        if getattr(obj, "_runner", None) is None:
+        if getattr(obj, "_backend", None) is None:
             return obj
         from huggorm_generated._runtime import unwrap_arg
         return unwrap_arg(obj)
@@ -347,7 +347,8 @@ class Codec:
                 raise OverflowError(f"{value} does not fit a Nix integer, "
                                     f"which is 64 bits and signed")
             return [Node.LEAF, value]
-        if hasattr(value, "handle_id"):
+        if hasattr(value, "_backend"):
+            # `handle_id` refuses an object in this process by name.
             return [Node.STAYS, handle_id(value)]
         if not isinstance(value, Mapping | list | tuple):
             raise TypeError(

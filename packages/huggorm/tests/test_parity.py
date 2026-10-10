@@ -13,7 +13,7 @@ So this runs the SAME body against all three and compares answers:
 
 - **sync** - `huggorm_bindings.Store`, the compiled binding itself
 - **async** - `huggorm_generated.AsyncStore`, the in-process wrapper
-- **rpc** - `huggorm_generated.RPCStore`, over a real socket
+- **rpc** - `huggorm_generated.AsyncStore` on a server, over a real socket
 
 Every test here is written once and parameterised, because a parity
 test written three times is three tests that can drift.
@@ -216,7 +216,7 @@ async def test_an_unsupported_operation_raises_the_same_class(
 # -- proxies ----------------------------------------------------------
 # A Value stays where it is. Locally that is the object itself; over
 # the wire it is a handle, and the surface a caller sees is an
-# RPCValue wrapping it. The point of these is that the caller cannot
+# AsyncValue on a remote backend. The point of these is that the caller cannot
 # tell.
 
 

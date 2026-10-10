@@ -5,7 +5,7 @@ socket.
 The async wrappers already own threading policy and thread hopping, so
 the server does none of that. It resolves handles to wrapper objects,
 decodes wire-values into sync bindings (copies - matching _copied
-semantics), awaits the method on the wrapper's runner, encodes the
+semantics), awaits the method on the wrapper's backend, encodes the
 result. Handlers are built in a loop from the emitted specs; nothing is
 hand-written per method.
 
@@ -40,15 +40,16 @@ from huggorm_generated._callspec import (
     Null,
     Tree,
 )
+from huggorm_generated._classes import CLASSES
 from huggorm_generated._policy import (
     ACQUIRE,
-    ASYNC_CLASS,
     BUILDERS,
     CALLS,
     FREE,
     METHODS,
     TREES,
 )
+from huggorm_generated._runtime import BaseRunner
 
 from . import tree
 from .callbacks import Callbacks
@@ -104,9 +105,17 @@ class CallHandler:
 DEFAULT_DEPTH = 8
 DEFAULT_BUDGET = 1000
 
-# A wrapper's declared class, by the wrapper's own name: the emitted
-# table read backwards, so no naming convention is restated here.
-DECLARED = {async_name: name for name, async_name in ASYNC_CLASS.items()}
+# A wrapper's declared class: the emitted table read backwards, so no
+# naming convention is restated here.
+DECLARED = {cls: name for name, cls in CLASSES.items()}
+
+
+def _runner(obj: Any) -> BaseRunner:
+    """The runner of an object the server holds, which is always in
+    this process."""
+    backend = obj._backend
+    assert isinstance(backend, BaseRunner), backend
+    return backend
 
 
 class TreeWalk:
@@ -520,15 +529,13 @@ class Dispatcher:
         can have a handle - attached to the producer's runner, because
         an affine object may only be touched on the thread it was born
         on."""
-        import huggorm_generated as flg
-
         name = type(obj).__name__
-        cls = ASYNC_CLASS.get(name)
+        cls = CLASSES.get(name)
         if cls is None:
             raise TypeError(
                 f"{name} has no async wrapper, so it cannot be handed out "
                 f"as a handle")
-        return getattr(flg, cls)._adopt(obj, parent._runner)
+        return cls._adopt(obj, _runner(parent))
 
     def _handlers(self) -> dict[int, CallHandler]:
         """Every call's handler, by its index in CALLS.
@@ -558,7 +565,7 @@ class Dispatcher:
                     f"{cls_name}.{m.name}")
         for cls_name, acquire in ACQUIRE.items():
             handlers[acquire.index] = CallHandler(
-                Target.NEW, _construct(getattr(flg, "Async" + cls_name)),
+                Target.NEW, _construct(CLASSES[cls_name]),
                 f"{cls_name}.Acquire")
         for fname, call in FREE.items():
             handlers[call.index] = CallHandler(
@@ -679,14 +686,14 @@ class Dispatcher:
         throws crosses as a handle - so it still cannot raise halfway
         down a half-built message (huggorm#147)."""
         target = self.resolve(hid, token)
-        spec = TREES.get(DECLARED.get(type(target).__name__, ""))
+        spec = TREES.get(DECLARED.get(type(target), ""))
         if spec is None:
             raise TypeError(
                 f"{hid[:8]} is not a value tree: its type declares no walk")
         walk = TreeWalk(spec, depth if depth > 0 else DEFAULT_DEPTH,
                         budget if budget > 0 else DEFAULT_BUDGET, force)
         # ONE hop for the whole tree, on the value's own thread.
-        root = await target._runner.run(lambda obj: walk.node(obj, 0))
+        root = await _runner(target).run(lambda obj: walk.node(obj, 0))
         return target, root, walk
 
     async def build(self, token: str, hid: str, data: Any) -> list[Any]:
@@ -701,14 +708,14 @@ class Dispatcher:
         from huggorm_generated._runtime import _check_isolation, unwrap_arg
 
         target = self.resolve(hid, token)
-        spec = BUILDERS.get(DECLARED.get(type(target).__name__, ""))
+        spec = BUILDERS.get(DECLARED.get(type(target), ""))
         if spec is None:
             raise TypeError(
                 f"{hid[:8]} makes no values: its type declares no builders")
         given = {h: self.resolve(h, token) for h in Build.handles(data)}
-        _check_isolation(target._runner, given.values())
+        _check_isolation(_runner(target), given.values())
         build = Build(spec, {h: unwrap_arg(w) for h, w in given.items()})
-        root = await target._runner.run(lambda obj: build.root(obj, data))
+        root = await _runner(target).run(lambda obj: build.root(obj, data))
         known = {id(obj): h for h, obj in build.given.items()}
         return self.codec.encode_tree(
             root, lambda _cls, obj: known.get(id(obj)) or self.put(
@@ -743,7 +750,7 @@ class Dispatcher:
         from huggorm_bindings import current_request
 
         target = self.resolve(hid, token)
-        request: int = await target._runner.run(lambda _: current_request())
+        request: int = await _runner(target).run(lambda _: current_request())
         if not request:
             raise TypeError(
                 f"{hid[:8]} runs no call of its own, so no marker can end "

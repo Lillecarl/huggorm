@@ -2,8 +2,9 @@
 Read-only views of a realized value tree (huggorm#147).
 
 A list or an attribute set that `realize` walked comes back as one of
-these. Each IS the remote class of its node, so every remote method
-still works and the view passes wherever that class does: a Nix
+these. Each IS the async class of its node, on a remote backend, so
+every remote method still works and the view passes wherever that
+class does: a Nix
 function called with a view gets the value behind its handle. Reads
 of what the walk carried are local and synchronous.
 
@@ -12,8 +13,8 @@ so the contents never go stale. To change one, copy it - `dict(view)`
 or `view | {...}` gives a plain dict, and a plain value crosses as
 data.
 
-Mixins, joined to the remote class at run time, because this layer
-names no binding type.
+Mixins, joined to the async class at run time, because this layer
+names no binding type. The client sets `_contents`.
 """
 
 from __future__ import annotations
@@ -31,11 +32,6 @@ class AttrsView:
     which reads an attribute through its handle."""
 
     _contents: dict[str, Any]
-
-    def __init__(self, client: Any, handle_id: str,
-                 contents: dict[str, Any]) -> None:
-        super().__init__(client, handle_id)  # type: ignore[call-arg]
-        self._contents = contents
 
     def __getitem__(self, name: str) -> Any:
         return self._contents[name]
@@ -82,11 +78,6 @@ class ListView:
 
     _contents: list[Any]
 
-    def __init__(self, client: Any, handle_id: str,
-                 contents: list[Any]) -> None:
-        super().__init__(client, handle_id)  # type: ignore[call-arg]
-        self._contents = contents
-
     def __getitem__(self, index: Any) -> Any:
         return self._contents[index]
 
@@ -116,7 +107,7 @@ _JOINED: dict[tuple[type, type], type] = {}
 
 
 def view_class(mixin: type, base: type) -> type:
-    """The remote class `base` with `mixin`'s reads, built once."""
+    """The async class `base` with `mixin`'s reads, built once."""
     key = (mixin, base)
     if key not in _JOINED:
         name = base.__name__ + mixin.__name__.removesuffix("View")

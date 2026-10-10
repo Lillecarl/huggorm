@@ -41,7 +41,6 @@ from huggorm_gen.payload._wiretypes import SCALAR_NAMES, SPELLED, TREE_LEAVES
 # the class name plus one of these.
 PROTOCOL = "Like"
 ASYNC = "Async"
-RPC = "RPC"
 
 # The value dunders, and the fact about the declaration that makes a
 # class define each one. `!=` comes with `__eq__`, and the three
@@ -931,10 +930,6 @@ class ClassModel:
     @property
     def async_name(self) -> str:
         return f"{ASYNC}{self.name}"
-
-    @property
-    def rpc_name(self) -> str:
-        return f"{RPC}{self.name}"
 
     @property
     def message(self) -> str:

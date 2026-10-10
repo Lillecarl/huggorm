@@ -18,7 +18,6 @@ from huggorm_gen.pygen.emitter import (
     CLASSES_MODULE,
     FREE_MODULE,
     PROTOCOL_MODULE,
-    RPC_MODULE,
     STUB_PACKAGE,
     classes_module,
     free_function_module,
@@ -26,7 +25,6 @@ from huggorm_gen.pygen.emitter import (
     policy_module,
     protocol_module,
     returned_module,
-    rpc_module,
     stub_package,
     unions_module,
     wrapped_functions,
@@ -121,9 +119,7 @@ def main(argv: list[str] | None = None) -> None:
         ast.unparse(classes_module(model)) + "\n")
     (out / f"{PROTOCOL_MODULE}.py").write_text(
         ast.unparse(protocol_module(model)) + "\n")
-    (out / f"{RPC_MODULE}.py").write_text(
-        ast.unparse(rpc_module(model)) + "\n")
-    print(f"generated {PROTOCOL_MODULE}.py and {RPC_MODULE}.py for "
+    print(f"generated {PROTOCOL_MODULE}.py for "
           f"{len(model.ordered_served)} class(es)")
     (out / "__init__.py").write_text(ast.unparse(init_module(model)) + "\n")
 

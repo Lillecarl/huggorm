@@ -14,7 +14,7 @@ import anyio
 import pytest
 from conftest import SHORT_TTL
 
-from huggorm.remote import ConnectionExpired
+from huggorm.remote import ConnectionExpired, handle_of
 from huggorm.session import (
     AsyncRemoteSession,
     AsyncRemoteSessionLike,
@@ -23,7 +23,7 @@ from huggorm.session import (
 )
 from huggorm_generated import AsyncEvalState, AsyncStore
 from huggorm_generated._policy import ACQUIRE
-from huggorm_generated._runtime import InternalError
+from huggorm_generated._runtime import InternalError, Remote
 
 
 def _connect(server: Any, claim: str | None = None) -> Any:
@@ -185,7 +185,9 @@ async def test_remote_close_reports_a_failed_release(server: Any) -> None:
     ctx = _connect(server)
     async with ctx as session:
         store = await session.store()
-        store.handle_id = "0" * 32
+        backend = store._backend
+        assert isinstance(backend, Remote)
+        backend.handle_id = "0" * 32
         with pytest.raises(InternalError, match="release") as caught:
             await session.aclose()
         assert "lease(s) on 00000000" in str(caught.value.__cause__)
@@ -224,7 +226,7 @@ async def test_warm_state_survives_its_client(
         value = await state.eval_file(str(source))
         assert await value.integer() == 42
         token = first.token
-        state_id = state.handle_id
+        state_id = handle_of(state)
         assert token and state_id
         assert await first.detach(all=True) is True
     source.write_text("0")

@@ -17,7 +17,7 @@ Two halves, kept apart on purpose:
   step.
 
 Written against `EvalStateLike`, so one watcher serves an in-process
-`AsyncEvalState` and a remote `RPCEvalState` alike.
+`AsyncEvalState` and a remote one alike.
 
 ## Why a SNAPSHOT and not the closure
 

@@ -208,17 +208,17 @@ def test_filling_the_base_environment_raises_rather_than_corrupts(
     assert made > 128, made
 
 
-def test_no_rpc_surface(state: Any) -> None:
+async def test_a_remote_state_refuses_a_primop(client: Any) -> None:
     """A callable does not cross a wire, by decision.
 
-    The generator refuses to build an rpc for a parameter spelled
-    `nb::object`, so the remote EvalState has no `register_primop` at
-    all. Asserted rather than assumed, because an accidental rpc would
-    make the evaluator call back over the socket once per invocation
-    on its evaluation thread."""
-    from huggorm_generated.rpc import RPCEvalState
-
-    assert not hasattr(RPCEvalState, "register_primop")
+    The generator gives a parameter spelled `nb::object` no wire
+    number, so a remote EvalState refuses `register_primop` and says
+    why. An accidental rpc would make the evaluator call back over the
+    socket once per invocation, on its evaluation thread."""
+    state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
+    with pytest.raises(TypeError, match="runs only in process: parameter 'fn'"):
+        await state.register_primop("f", 1, lambda x: x)
+    await state.aclose()
 
 
 def test_every_registered_name_is_findable(state: Any) -> None:

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from nixversion import BAD_STORE_URI
 
+from huggorm.remote import handle_of
 from huggorm_bindings import (
     StoreReferenceAuto,
     StoreReferenceDaemon,
@@ -77,7 +78,7 @@ async def test_a_remote_parse_answers_a_handle(client: Any) -> None:
     and the handle's methods reach the adopted object."""
     ref = await client.call_function("parse_store_reference",
                                      "daemon?trusted=true")
-    assert ref.handle_id
+    assert handle_of(ref)
     assert await ref.params() == {"trusted": "true"}
     assert await ref.render() == "unix://?trusted=true"
 

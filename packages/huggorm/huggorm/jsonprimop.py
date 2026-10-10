@@ -15,6 +15,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from huggorm_bindings.errors import EvalError
+from huggorm_generated._runtime import BaseRunner
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -76,7 +77,11 @@ async def register_json_primop(
 
     The registration runs on the state's own thread, because the bridge
     builds its result with that state."""
-    await state._runner.run(lambda raw: raw.register_primop(name, arity, json_primop(raw, fn)))
+    runner = state._backend
+    if not isinstance(runner, BaseRunner):
+        raise TypeError("register_json_primop runs only in process: a primop "
+                        "calls Python on the evaluator's thread (huggorm#33)")
+    await runner.run(lambda raw: raw.register_primop(name, arity, json_primop(raw, fn)))
 
 
 __all__ = ["JsonValue", "json_primop", "register_json_primop"]

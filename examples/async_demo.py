@@ -3,6 +3,7 @@
 # producer's threading policy.
 
 import tempfile
+from typing import Any
 
 import anyio
 
@@ -15,7 +16,14 @@ from huggorm_generated import (
     collect_garbage,
     gc_stats,
 )
-from huggorm_generated._runtime import InternalError
+from huggorm_generated._runtime import BaseRunner, InternalError
+
+
+def _runner(obj: Any) -> BaseRunner:
+    """The runner behind an object in this process."""
+    backend = obj._backend
+    assert isinstance(backend, BaseRunner)
+    return backend
 
 
 async def _add(store: StoreLike, name: str, body: bytes) -> StorePath:
@@ -52,7 +60,7 @@ async def main() -> None:
         uri = await local.get_uri()
         valid = await local.is_valid_path(added["b.txt"])
     print(f"results: {[uri, added['c.txt'].to_string(), valid]}")
-    print(f"workers seen: {sorted(local._runner.workers_seen)}")
+    print(f"workers seen: {sorted(_runner(local).workers_seen)}")
 
     print("\n=== wire values off a real store ===")
     info = await local.query_path_info(added["a.txt"])
@@ -61,7 +69,7 @@ async def main() -> None:
     print("\n=== evaluation (EvalState, affine service) ===")
     state = AsyncEvalState(AsyncStore("dummy://"))
     print(f"store uri: {await state.get_store_uri()}")
-    print(f"born on:   {state._runner.born_thread_name}")
+    print(f"born on:   {_runner(state).born_thread_name}")
 
     thunk = await state.parse_expr("42")
     print(f"parsed: type={await thunk.type_name()}")
@@ -77,9 +85,9 @@ async def main() -> None:
     print(f"eval: {await v.string_value()!r} (type {await v.type_name()})")
 
     print("\n=== returned values inherit threading ===")
-    print(f"value workers: {sorted(v._runner.workers_seen)} "
-          f"(state's: {sorted(state._runner.workers_seen)})")
-    print(f"workers seen: {sorted(state._runner.workers_seen)}  <- must be exactly 1")
+    print(f"value workers: {sorted(_runner(v).workers_seen)} "
+          f"(state's: {sorted(_runner(state).workers_seen)})")
+    print(f"workers seen: {sorted(_runner(state).workers_seen)}  <- must be exactly 1")
 
     # Module-level binding functions get generated wrappers too.
     await collect_garbage()

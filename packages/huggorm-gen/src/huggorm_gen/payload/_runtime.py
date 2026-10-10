@@ -34,7 +34,7 @@ import threading
 import types
 import weakref
 from collections.abc import Awaitable, Callable, Iterable
-from typing import Any
+from typing import Any, Protocol
 
 import anyio
 import anyio.from_thread
@@ -486,15 +486,14 @@ class _Hooks:
 
 
 @functools.cache
-def _classes() -> dict[str, type[Any]]:
-    """Each served class's async form, by declared name.
+def _classes() -> types.ModuleType:
+    """The emitted `_classes`: each served class's async form and each
+    `@calls_back` binding, by declared name.
 
-    By name and at first use, as `_stub_class` reads `_policy`:
-    `_classes` exists only beside the copy the build writes, and it
-    imports every async class, each of which imports this module."""
-    classes: dict[str, type[Any]] = importlib.import_module(
-        f"{__package__}._classes").CLASSES
-    return classes
+    At first use, as `_stub_class` reads `_policy`: `_classes` exists
+    only beside the copy the build writes, and it imports every async
+    class, each of which imports this module."""
+    return importlib.import_module(f"{__package__}._classes")
 
 
 def _cancelled() -> RuntimeError:
@@ -683,9 +682,12 @@ def unwrap_arg(x: Any) -> Any:
     of serialization, so a future remote transport changes nothing
     about aliasing semantics. Requires the sync binding to expose
     __copy__; immutable types should always do so."""
-    r = getattr(x, "_runner", None)
+    r = getattr(x, "_backend", None)
     if r is None:
         return x
+    if not isinstance(r, BaseRunner):
+        raise TypeError(f"{type(x).__name__} is a handle on a server, and an "
+                        f"in-process call needs the object itself")
     obj = r.ensure()
     # Every wrapper the build emits states `_copied`, so a missing one
     # is an AttributeError rather than a proxy by default.
@@ -714,15 +716,15 @@ def _check_isolation(callee: Any, args: Iterable[Any]) -> None:
     belongs to no isolation, so there is nothing for an argument to
     be foreign TO."""
     for x in args:
-        r = getattr(x, "_runner", None)
+        r = getattr(x, "_backend", None)
         if r is None:
-            # A protocol-typed parameter admits a remote handle
-            # statically, so the location is checked here (huggorm#26).
-            if hasattr(x, "handle_id"):
-                raise TypeError(
-                    f"{type(x).__name__} is a handle on a server, and an "
-                    f"in-process call needs the object itself")
             continue
+        if not isinstance(r, BaseRunner):
+            # One class holds either backend, so the location is
+            # checked here, not by a typechecker (huggorm#26).
+            raise TypeError(
+                f"{type(x).__name__} is a handle on a server, and an "
+                f"in-process call needs the object itself")
         if x._copied:
             # A wire value crosses as a COPY, so it carries no tie to
             # whatever made it. That is the one crossing the rule
@@ -747,8 +749,8 @@ async def _materialize_args(args: list[Any]) -> None:
     this runs, so an affine callee waiting on an affine argument cannot
     deadlock."""
     for a in args:
-        r = getattr(a, "_runner", None)
-        if r is not None and r._obj is None:
+        r = getattr(a, "_backend", None)
+        if isinstance(r, BaseRunner) and r._obj is None:
             await r.materialize()
 
 
@@ -903,9 +905,20 @@ class BaseRunner:
         class, which then runs as that class's execution says."""
         if result is None or returns is None or returns.kind is not WireKind.PROXY:
             return result
-        return _classes()[returns.name]._adopt(result, self)
+        return _classes().CLASSES[returns.name]._adopt(result, self)
+
+    @staticmethod
+    def _adapted_args(spec: Call | Local, args: list[Any]) -> list[Any]:
+        """Each argument a `@calls_back` parameter takes, as Nix can call
+        it. A `Local` spec declares no parameter of that kind."""
+        if isinstance(spec, Local):
+            return args
+        return [adapt(_classes().CALLED_BACK[a.type.name], x)
+                if a.type.kind is WireKind.CLIENT else x
+                for a, x in zip(spec.args, args, strict=True)]
 
     async def call(self, spec: Call | Local, args: list[Any]) -> Any:
+        args = self._adapted_args(spec, args)
         _check_isolation(self, args)
         # A dedicated thread runs its calls in the order they arrive here,
         # so nothing may await before the submit (huggorm#155). Its
@@ -1003,6 +1016,7 @@ class InlineRunner(BaseRunner):
     one per call, and a log drain calls every `LOG_POLL`."""
 
     async def call(self, spec: Call | Local, args: list[Any]) -> Any:
+        args = self._adapted_args(spec, args)
         _check_isolation(self, args)
         await _materialize_args(args)
         return self._adopted(spec.returns, self._invoke(spec.name, args, None))
@@ -1040,6 +1054,41 @@ class AttachedRunner(BaseRunner):
         # Nothing to shut down: the executor is shared with the parent,
         # and the underlying C++ object dies with this wrapper.
         self._obj = None
+
+
+class Client(Protocol):
+    """What a `Remote` needs from its client. The client owns the
+    connection, the codec and the handle's lifetime."""
+
+    async def invoke(self, spec: Call, handle_id: str | None,
+                     args: list[Any]) -> Any: ...
+
+    async def release(self, handle: Remote) -> None: ...
+
+
+class Remote:
+    """A backend on a server: one handle, through one client.
+
+    `handle_id` is None once the lease is given back, and the client
+    refuses a call through it with a message that says so."""
+
+    def __init__(self, client: Client, handle_id: str) -> None:
+        self.client = client
+        self.handle_id: str | None = handle_id
+
+    async def call(self, spec: Call | Local, args: list[Any]) -> Any:
+        if isinstance(spec, Local):
+            raise TypeError(f"{spec.name} runs only in process: {spec.refusal}")
+        return await self.client.invoke(spec, self.handle_id, args)
+
+    async def aclose(self) -> None:
+        """Give the lease back. The server's object is what goes."""
+        await self.client.release(self)
+
+
+# Where a generated object's calls run. A closed set, so a check of
+# the location is an `isinstance`, not a probe for an attribute.
+Backend = BaseRunner | Remote
 
 
 async def call_function(fn: Callable[..., Any], args: list[Any]) -> Any:

@@ -378,11 +378,11 @@ def _expr(src: str) -> str:
 def test_the_declaration_is_what_got_written(out: pathlib.Path) -> None:
     """The emitted surfaces against the DECLARATION, not each other.
 
-    test_conformance compares the three modules to one another, which
-    is the right question for drift BETWEEN them and blind to drift
-    they share. Emptying the emitter's defaults loop changes all three
-    together, so they stay perfectly consistent and perfectly wrong -
-    verified, and it passed.
+    test_conformance compares the emitted modules to one another,
+    which is the right question for drift BETWEEN them and blind to
+    drift they share. Emptying the emitter's defaults loop changes
+    them together, so they stay perfectly consistent and perfectly
+    wrong - verified, and it passed.
 
     So this compares one surface to the declaration it came from. Only
     the parts that cross VERBATIM: parameter names and parameter
@@ -393,9 +393,8 @@ def test_the_declaration_is_what_got_written(out: pathlib.Path) -> None:
     default get no such treatment, so comparing them needs no rules at
     all.
 
-    The in-process wrapper is the surface picked, because it is the
-    one that carries every method: the protocol drops what it cannot
-    promise and the rpc client drops what cannot cross."""
+    The async class is the surface picked, because it is the one that
+    carries every method: the protocol drops what cannot cross."""
     from huggorm_gen.cppgen.generate import declared_model
 
     model = declared_model()
@@ -475,30 +474,26 @@ def test_the_declaration_is_what_got_written(out: pathlib.Path) -> None:
 
 
 def test_conformance(out: pathlib.Path) -> None:
-    """The three emitted surfaces must agree.
+    """The protocol and the async class must agree.
 
     A protocol is only worth having if the implementations really
     satisfy it, and isinstance() against a runtime_checkable Protocol
     checks method NAMES and nothing else - an implementation whose
     parameters drifted still passes. So this compares signatures, and
-    it compares the three modules against EACH OTHER rather than
-    against a rederivation of what the emitter should have written.
+    it compares the modules against EACH OTHER rather than against a
+    rederivation of what the emitter should have written.
 
     The rules:
-      - the async and rpc implementations offer the same method names;
-      - the rpc client and the protocol offer those minus the ones
-        that cannot cross the wire;
-      - parameter names and annotations are identical in all three
-        (which is what huggorm#25 bought: after it, a method on the
-        protocol mentions no type that differs by location);
-      - a return is identical in all three, unless the protocol names
-        another protocol - then each implementation must return ITS
-        form of that same class, or of that class or None."""
+      - the protocol offers the class's methods minus the ones that
+        cannot cross the wire;
+      - parameter names and annotations are identical in both;
+      - a return is identical in both, unless the protocol names
+        another protocol - then the class must return that class's
+        async form, or that form or None."""
     from huggorm_gen.cppgen.generate import declared_model
 
     model = declared_model()
-    # Served, not wrapped: every proxy has all three surfaces, and the
-    # gate compares all three of each.
+    # Served, not wrapped: every proxy has both surfaces.
     served = {c.name: c for c in model.ordered_served}
     # protocol name -> the class it speaks for, so a protocol-typed
     # return can be checked against each implementation's own form.
@@ -506,25 +501,16 @@ def test_conformance(out: pathlib.Path) -> None:
     found = _emitted_classes(out)
 
     def no_wire_of(c: Any) -> set[str]:
-        """What the rpc client cannot offer - and so neither can the
-        protocol, which is what both implementations satisfy."""
+        """What a remote backend cannot run, and so the protocol does
+        not promise."""
         return {m.name for m in c.methods if not model.offered(m)}
 
     failures, checked = [], 0
     for cls_name, cls in served.items():
         P = _resolved(found, cls.protocol_name)
         A = _resolved(found, cls.async_name)
-        R = _resolved(found, cls.rpc_name)
         no_wire = no_wire_of(cls)
 
-        if set(R) != set(A) - no_wire:
-            # The in-process surface is the larger one: a method the
-            # wire cannot carry keeps its wrapper and is absent from
-            # the client. Anything else is drift.
-            failures.append(
-                f"{cls_name}: in-process offers {sorted(set(A) - set(R))} "
-                f"the rpc client does not, and {sorted(set(R) - set(A))} "
-                f"the other way; {sorted(no_wire)} cannot cross the wire")
         if set(P) != set(A) - no_wire:
             failures.append(
                 f"{cls_name}: {cls.protocol_name} offers {sorted(P)}; the "
@@ -534,7 +520,7 @@ def test_conformance(out: pathlib.Path) -> None:
         for m in sorted(P):
             checked += 1
             want = P[m]
-            for label, sig in (("in-process", A.get(m)), ("rpc", R.get(m))):
+            for label, sig in (("in-process", A.get(m)),):
                 if sig is None:
                     failures.append(f"{cls_name}.{m}: no {label} implementation")
                     continue
@@ -548,10 +534,9 @@ def test_conformance(out: pathlib.Path) -> None:
                         f"{sig['annotations']}, {cls.protocol_name} declares "
                         f"{want['annotations']}")
                 if sig["defaults"] != want["defaults"]:
-                    # A default is part of what a call MEANS. Three
+                    # A default is part of what a call MEANS. Two
                     # surfaces that agree on types and disagree here
-                    # answer the same short call differently depending
-                    # on where the object lives.
+                    # answer the same short call differently.
                     failures.append(
                         f"{cls_name}.{m}: {label} defaults to "
                         f"{sig['defaults']}, {cls.protocol_name} declares "
@@ -562,8 +547,7 @@ def test_conformance(out: pathlib.Path) -> None:
                 held = expected.removesuffix(" | None")
                 if held in speaks_for:
                     c = served[speaks_for[held]]
-                    expected = expected.replace(
-                        held, c.async_name if label == "in-process" else c.rpc_name)
+                    expected = expected.replace(held, c.async_name)
                 if sig["returns"] != expected:
                     failures.append(
                         f"{cls_name}.{m}: {label} returns {sig['returns']}, "

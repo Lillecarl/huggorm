@@ -17,14 +17,14 @@ from conftest import Server
 from huggorm import remote
 from huggorm.views import AttrsView, ListView
 from huggorm_bindings.errors import NixError
-from huggorm_generated import RPCValue
+from huggorm_generated import AsyncValue
 from huggorm_generated._runtime import InternalError
 
 
 def held(value: Any) -> bool:
     """A node the walk did not expand: a handle, and not a view. A
-    view is a handle too, so `isinstance(v, RPCValue)` cannot tell."""
-    return isinstance(value, RPCValue) and not isinstance(
+    view is a handle too, so `isinstance(v, AsyncValue)` cannot tell."""
+    return isinstance(value, AsyncValue) and not isinstance(
         value, AttrsView | ListView)
 
 
@@ -75,7 +75,7 @@ async def test_an_attribute_value_is_a_handle_of_its_own(state: Any) -> None:
 # -- one round trip --------------------------------------------------------
 
 async def test_realize_returns_the_shape(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     tree = await client.realize(await bag(state))
     assert tree == {"apple": "first", "xs": [7], "zebra": 1}, tree
     assert list(tree) == ["apple", "xs", "zebra"], "still alphabetical"
@@ -84,14 +84,14 @@ async def test_realize_returns_the_shape(state: Any) -> None:
 async def test_a_float_realizes_as_a_float(state: Any) -> None:
     """A float in a tree crosses as a float. With no scalar arm for
     it, it would cross as a proxy, and the shape would hold a handle."""
-    client = state._client
+    client = state._backend.client
     tree = await client.realize(await state.eval_expr("{ x = 0.5; n = 2; }"))
     assert tree == {"n": 2, "x": 0.5}, tree
     assert isinstance(tree["x"], float)
 
 
 async def test_a_null_realizes_as_none(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     tree = await client.realize(await state.eval_expr("{ x = null; }"))
     assert tree == {"x": None}, tree
 
@@ -99,7 +99,7 @@ async def test_a_null_realizes_as_none(state: Any) -> None:
 async def test_realize_forces_nothing(state: Any) -> None:
     """A thunk is exactly what cannot be serialized, so it crosses as a
     proxy and the caller forces it with the call that already exists."""
-    client = state._client
+    client = state._backend.client
     lazy = await state.make_attrs()
     await state.attrs_set(lazy, "later", await state.parse_expr("42"))
     got = await client.realize(lazy)
@@ -112,7 +112,7 @@ async def test_realize_forces_nothing(state: Any) -> None:
 async def test_depth_bounds_the_walk(state: Any) -> None:
     """depth counts levels EXPANDED, so 1 is the root alone. Zero asks
     for the server's default."""
-    client = state._client
+    client = state._backend.client
     attrs = await bag(state)
 
     flat = await client.realize(attrs, depth=1)
@@ -129,7 +129,7 @@ async def test_budget_bounds_the_walk_sideways(state: Any) -> None:
     """The bound that actually bites: an attribute set can hold a
     hundred thousand entries one level down, which no depth limit
     touches."""
-    client = state._client
+    client = state._backend.client
     wide = await state.make_attrs()
     for i in range(20):
         await state.attrs_set(wide, f"k{i:02d}", await state.make_int(i))
@@ -145,7 +145,7 @@ async def test_a_repeated_value_crosses_once(state: Any) -> None:
     """Values are immutable and shared freely, so without visit
     tracking a diamond is copied and a cycle never ends. The repeated
     position carries a handle instead of a second copy."""
-    client = state._client
+    client = state._backend.client
     shared = await state.make_list()
     twice = await state.make_attrs()
     await state.attrs_set(twice, "a", shared)
@@ -159,7 +159,7 @@ async def test_a_repeated_value_crosses_once(state: Any) -> None:
 # -- a forcing walk (huggorm#147) ------------------------------------------
 
 async def test_a_forcing_walk_forces_what_it_visits(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     value = await state.eval_expr(
         '{ a = 1 + 1; b = [ (2 * 3) ]; d = { e = "x"; }; }')
 
@@ -173,7 +173,7 @@ async def test_a_forcing_walk_forces_what_it_visits(state: Any) -> None:
 async def test_a_throw_stays_a_handle_and_raises_on_read(state: Any) -> None:
     """Nix keeps a thrown force in the value, so the walk goes on and
     the caller's first read of that node raises the same error."""
-    client = state._client
+    client = state._backend.client
     value = await state.eval_expr('{ ok = 1; bad = throw "boom"; }')
 
     tree = await client.realize(value, force=True)
@@ -184,7 +184,7 @@ async def test_a_throw_stays_a_handle_and_raises_on_read(state: Any) -> None:
 
 
 async def test_a_forcing_walk_does_not_enter_a_derivation(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     value = await state.eval_expr(
         '{ drv = { type = "derivation"; name = "x"; };'
         '  other = { type = "other"; }; }')
@@ -197,7 +197,7 @@ async def test_a_forcing_walk_does_not_enter_a_derivation(state: Any) -> None:
 async def test_an_endless_value_ends_at_the_budget(state: Any) -> None:
     """Every level is a fresh value, so the visit set never stops it;
     the budget does. forceValueDeep would never return."""
-    client = state._client
+    client = state._backend.client
     value = await state.eval_expr(
         "let f = n: { n = n; next = f (n + 1); }; in f 0")
 
@@ -221,7 +221,7 @@ async def apply_int(state: Any, fn: str, arg: Any) -> int:
 
 async def test_a_view_reads_locally_and_passes_back(state: Any) -> None:
     """Reads are local; handing the view to Nix sends its handle."""
-    client = state._client
+    client = state._backend.client
     tree = await client.realize(
         await state.eval_expr("{ a = 1; d = { e = 2; }; }"), force=True)
 
@@ -234,7 +234,7 @@ async def test_a_view_reads_locally_and_passes_back(state: Any) -> None:
 async def test_a_child_view_outlives_its_root(state: Any) -> None:
     """The root's handle goes when its last view does, and the server
     keeps it while a child lives."""
-    client = state._client
+    client = state._backend.client
     tree = await client.realize(
         await state.eval_expr("{ d = { e = 2; }; }"), force=True)
     child = tree["d"]
@@ -246,7 +246,7 @@ async def test_a_child_view_outlives_its_root(state: Any) -> None:
 
 
 async def test_a_view_copies_to_a_plain_dict(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     tree = await client.realize(await state.eval_expr("{ a = 1; }"),
                                 force=True)
 
@@ -256,7 +256,7 @@ async def test_a_view_copies_to_a_plain_dict(state: Any) -> None:
 
 
 async def test_a_list_view(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     xs = await client.realize(await state.eval_expr("[ 1 2 3 ]"), force=True)
 
     assert isinstance(xs, ListView)
@@ -273,13 +273,13 @@ async def test_a_scalar_becomes_a_value(state: Any, data: Any,
                                         kind: str) -> None:
     """A scalar at the root answers as a handle: the caller asked for a
     value. `True` is a bool, never the int it is to isinstance."""
-    made = await state._client.value(state, data)
+    made = await state._backend.client.value(state, data)
     assert held(made)
     assert await made.type_name() == kind
 
 
 async def test_data_becomes_a_value_in_one_round_trip(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     data = {"a": 1, "xs": [1, 2, None], "d": {"e": "x"}, "t": (True,)}
 
     made = await client.value(state, data)
@@ -293,7 +293,7 @@ async def test_data_becomes_a_value_in_one_round_trip(state: Any) -> None:
 
 async def test_a_handle_in_the_data_comes_back_as_itself(state: Any) -> None:
     """Including an empty view, which is falsy."""
-    client = state._client
+    client = state._backend.client
     inner = await client.realize(await state.eval_expr("{ e = 2; }"),
                                  force=True)
     empty = await client.value(state, [])
@@ -314,18 +314,18 @@ async def test_a_handle_in_the_data_comes_back_as_itself(state: Any) -> None:
 async def test_data_nix_has_no_value_for_is_refused(
         state: Any, data: Any, error: type[Exception], match: str) -> None:
     with pytest.raises(error, match=match):
-        await state._client.value(state, [data])
+        await state._backend.client.value(state, [data])
 
 
 async def test_data_that_holds_itself_is_refused(state: Any) -> None:
     loop: list[Any] = []
     loop.append(loop)
     with pytest.raises(ValueError, match="holds itself"):
-        await state._client.value(state, loop)
+        await state._backend.client.value(state, loop)
 
 
 async def test_a_value_of_another_state_is_refused(state: Any) -> None:
-    client = state._client
+    client = state._backend.client
     other = await client.acquire("EvalState",
                                  await client.acquire("Store", "dummy://"))
     foreign = await other.make_int(1)

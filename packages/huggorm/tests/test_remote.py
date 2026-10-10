@@ -15,10 +15,11 @@ import pytest
 from nixversion import NO_SUBSTITUTER, NOT_IN_STORE, drv_output, needs_collector
 
 import huggorm_bindings
+from huggorm.remote import handle_of
 from huggorm_bindings import ContentAddressMethod as CA
 from huggorm_bindings import HashAlgorithm
 from huggorm_bindings.errors import BadStorePath, NixError, NixTypeError
-from huggorm_generated import RPCValue
+from huggorm_generated import AsyncValue
 from huggorm_generated._runtime import InternalError
 
 
@@ -37,12 +38,13 @@ async def typed_failure(coro: Any) -> dict[str, str]:
 
 async def test_acquire_returns_a_handle(client: Any) -> None:
     store = await client.acquire("Store", "dummy://")
-    assert store.handle_id
+    assert handle_of(store)
     await store.aclose()
     # aclose is the shared way to let an object go: locally it shuts the
     # runner's thread down, remotely it hands the lease back. Same call
     # either side, which is what puts it on the protocol.
-    assert store.handle_id is None, "aclose releases the lease remotely"
+    with pytest.raises(ValueError, match="already released"):
+        handle_of(store)
 
 
 async def test_wire_value_arrives_as_a_local_object(
@@ -73,7 +75,8 @@ async def test_a_value_argument_crosses_as_a_copy(
 async def test_a_proxy_stays_remote(client: Any) -> None:
     state = await client.acquire("EvalState", await client.acquire("Store", "dummy://"))
     v = await state.make_int(7)
-    assert isinstance(v, RPCValue)
+    assert isinstance(v, AsyncValue)
+    assert handle_of(v)
     assert v._copied is False
     # The generated class carries real methods, so a missing one is a
     # plain AttributeError from Python - not a lookup by name that
@@ -82,7 +85,6 @@ async def test_a_proxy_stays_remote(client: Any) -> None:
 
 
     assert not hasattr(remote, "RemoteObj")
-    assert type(v).__module__ == "huggorm_generated.rpc"
     # It answers, which means the call landed on the state's own
     # thread: a Value is affine and every method on it is routed to
     # the runner the producing state owns.
@@ -208,8 +210,8 @@ async def test_an_undeclared_cause_still_approximates(client: Any) -> None:
 
 async def test_a_released_handle_fails_typed(client: Any) -> None:
     tmp = await client.acquire("Store", "dummy://")
-    ghost_id = tmp.handle_id
-    await client.release(tmp)
+    ghost_id = handle_of(tmp)
+    await tmp.aclose()
     threw = await typed_failure(client.proxy("Store", ghost_id).get_uri())
     assert threw["cause_type"] == "KeyError", threw
 

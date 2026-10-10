@@ -41,7 +41,7 @@ async def main(path: str | Path) -> None:
 
         print("\n=== proxies stay remote behind handles ===")
         v = await state.make_int(42)
-        print("value handle:", v.handle_id[:12], "| wire:", v._wire,
+        print("value handle:", remote.handle_of(v)[:12], "| copied:", v._copied,
               "| class:", type(v).__name__)
         print("integer:", await v.integer())
         await state.force(await state.parse_expr("7"))  # proxy arg over the wire

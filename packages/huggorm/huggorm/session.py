@@ -28,7 +28,8 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, overload, runtime_chec
 
 import anyio
 
-from huggorm_generated import AsyncEvalState, AsyncStore, RPCEvalState, RPCStore, collect_garbage
+from huggorm_generated import AsyncEvalState, AsyncStore, collect_garbage
+from huggorm_generated._runtime import Remote
 
 from .lifecycle import ShareMode
 from .logbus import LOG_CAPACITY, LOG_LEVEL, Fanout
@@ -350,16 +351,16 @@ class AsyncRemoteSessionLike(Protocol):
 
     __slots__ = ()
 
-    async def store(self, uri: str | None = None) -> RPCStore:
+    async def store(self, uri: str | None = None) -> AsyncStore:
         """A store on the server, built now."""
         ...
 
     async def eval(
         self,
-        store: RPCStore,
+        store: AsyncStore,
         settings: dict[str, str] | None = None,
-        build_store: RPCStore | None = None,
-    ) -> RPCEvalState:
+        build_store: AsyncStore | None = None,
+    ) -> AsyncEvalState:
         """An evaluator on the server, bound to `store`."""
         ...
 
@@ -369,7 +370,7 @@ class AsyncRemoteSessionLike(Protocol):
 
     def logs(
         self,
-        state: RPCEvalState,
+        state: AsyncEvalState,
         capacity: int = 0,
         level: int | None = None,
     ) -> AsyncGenerator[LogBatch]:
@@ -386,7 +387,7 @@ class AsyncRemoteSessionLike(Protocol):
 
     def capture(
         self,
-        state: RPCEvalState | None = None,
+        state: AsyncEvalState | None = None,
         capacity: int = 0,
         level: int | None = None,
         settle: float = 1.0,
@@ -416,8 +417,8 @@ class AsyncRemoteSession:
             raise ValueError("the client is not bound; `await client.bind()` first")
         self._client = client
         self._store_uri = store_uri
-        self._stores: set[RPCStore] = set()
-        self._evals: set[RPCEvalState] = set()
+        self._stores: set[AsyncStore] = set()
+        self._evals: set[AsyncEvalState] = set()
         self._closed = False
 
     @classmethod
@@ -445,19 +446,19 @@ class AsyncRemoteSession:
         """This connection's identity. Detached leases rest under it."""
         return self._client.token
 
-    async def store(self, uri: str | None = None) -> RPCStore:
+    async def store(self, uri: str | None = None) -> AsyncStore:
         """Build a store on the server, tracked by this session."""
         chosen = uri if uri is not None else self._store_uri
-        proxy: RPCStore = await self._client.acquire("Store", chosen)
+        proxy: AsyncStore = await self._client.acquire("Store", chosen)
         self._stores.add(proxy)
         return proxy
 
     async def eval(
         self,
-        store: RPCStore,
+        store: AsyncStore,
         settings: dict[str, str] | None = None,
-        build_store: RPCStore | None = None,
-    ) -> RPCEvalState:
+        build_store: AsyncStore | None = None,
+    ) -> AsyncEvalState:
         """Build an evaluator on a store this session made.
 
         A foreign store raises `ValueError`: the evaluator would pin
@@ -469,7 +470,8 @@ class AsyncRemoteSession:
                 "this store belongs to another session; "
                 "make the evaluator where the store was made"
             )
-        proxy: RPCEvalState = await self._client.acquire("EvalState", store, settings, build_store)
+        proxy: AsyncEvalState = await self._client.acquire(
+            "EvalState", store, settings, build_store)
         self._evals.add(proxy)
         return proxy
 
@@ -496,12 +498,12 @@ class AsyncRemoteSession:
         await self._client.share(obj, to_token, mode)
 
     @overload
-    def attach(self, cls_name: Literal["Store"], handle_id: str) -> RPCStore: ...
+    def attach(self, cls_name: Literal["Store"], handle_id: str) -> AsyncStore: ...
 
     @overload
-    def attach(self, cls_name: Literal["EvalState"], handle_id: str) -> RPCEvalState: ...
+    def attach(self, cls_name: Literal["EvalState"], handle_id: str) -> AsyncEvalState: ...
 
-    def attach(self, cls_name: str, handle_id: str) -> RPCStore | RPCEvalState:
+    def attach(self, cls_name: str, handle_id: str) -> AsyncStore | AsyncEvalState:
         """Adopt a live handle onto this connection, tracked here.
 
         The other half of `share` and of detach-then-`claim`: a handle
@@ -514,21 +516,22 @@ class AsyncRemoteSession:
         if cls_name not in ("Store", "EvalState"):
             raise ValueError(f"only Store and EvalState attach to a session, not {cls_name!r}")
         if cls_name == "Store":
-            store: RPCStore = self._client.proxy(cls_name, handle_id)
+            store: AsyncStore = self._client.proxy(cls_name, handle_id)
             self._stores.add(store)
             return store
-        state: RPCEvalState = self._client.proxy(cls_name, handle_id)
+        state: AsyncEvalState = self._client.proxy(cls_name, handle_id)
         self._evals.add(state)
         return state
 
     async def _release(self, obj: Any) -> None:
-        if obj.handle_id is None:
+        backend = obj._backend
+        if isinstance(backend, Remote) and backend.handle_id is None:
             return
-        await self._client.release(obj)
+        await obj.aclose()
 
     async def logs(
         self,
-        state: RPCEvalState,
+        state: AsyncEvalState,
         capacity: int = 0,
         level: int | None = None,
     ) -> AsyncGenerator[LogBatch]:
@@ -559,7 +562,7 @@ class AsyncRemoteSession:
     @contextlib.asynccontextmanager
     async def capture(
         self,
-        state: RPCEvalState | None = None,
+        state: AsyncEvalState | None = None,
         capacity: int = 0,
         level: int | None = None,
         settle: float = 1.0,

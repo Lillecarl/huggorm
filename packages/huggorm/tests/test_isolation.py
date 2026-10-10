@@ -20,6 +20,7 @@ both this file.
 from typing import Any
 
 import pytest
+from conftest import runner_of
 
 URI = "dummy://"
 
@@ -52,10 +53,10 @@ async def test_two_states_never_share_a_thread() -> None:
     drew."""
     first, second = await two_states()
     try:
-        assert first._runner.last_worker_ident is not None
-        assert first._runner.last_worker_ident \
-            != second._runner.last_worker_ident
-        assert first._runner._executor() is not second._runner._executor()
+        assert runner_of(first).last_worker_ident is not None
+        assert runner_of(first).last_worker_ident \
+            != runner_of(second).last_worker_ident
+        assert runner_of(first)._executor() is not runner_of(second)._executor()
     finally:
         await first.aclose()
         await second.aclose()

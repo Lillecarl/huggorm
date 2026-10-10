@@ -15,7 +15,7 @@ document surgery is JSON throughout, so no hash is computed here;
 Two flavours, like the session's: the sync one over a local
 `Store`, the async one over a local `AsyncStore`. The document half
 crosses RPC - `awrite_dev_shell_derivation` takes any `StoreLike`,
-an `RPCStore` too - but the build half does not follow it across:
+a remote `AsyncStore` too - but the build half does not follow it across:
 `build_paths` would build on the server's store and `real_path`
 answers the server's filesystem, while the environment has to be
 built where it will be sourced. The script text stays a parameter
@@ -413,7 +413,7 @@ async def awrite_dev_shell_derivation(
     store: StoreLike, drv_path: StorePath, get_env_script: bytes,
 ) -> StorePath:
     """The async flavour, over any `StoreLike`: an in-process
-    `AsyncStore` or a remote `RPCStore`, by the same code.
+    `AsyncStore` or a remote one, by the same code.
 
     Same rewrite, awaited. Every call here crosses the wire, and the
     derivation handle answers `to_json` the same way; only the build

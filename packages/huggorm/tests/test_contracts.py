@@ -167,22 +167,9 @@ Everything behind the front door
         for pkg in (huggorm_bindings, huggorm_generated)
         for name in pkg.__all__
     }
-    # RPC_CLASSES is a registry the client uses to turn a handle into
-    # an object; it is plumbing, not surface.
-    behind -= {"RPC_CLASSES"}
-
     missing = sorted(behind - set(huggorm.__all__))
     assert not missing, f"not reachable from `import huggorm`: {missing}"
     assert all(hasattr(huggorm, n) for n in huggorm.__all__)
-
-    # ...and the one name held BACK is held back. The subtraction above
-    # is a decision - plumbing is not surface - and the front door is
-    # emitted now, so without this line the emitter could publish it
-    # and nothing would say so. Found by trying: dropping the filter
-    # passed every gate (huggorm#64).
-    assert "RPC_CLASSES" not in huggorm.__all__, (
-        "RPC_CLASSES is a registry the remote client reads, not "
-        "something to call. It has no place on the front door.")
 
 
 def test_every_name_the_model_DECLARES_reaches_the_front_door() -> None:
@@ -274,36 +261,30 @@ def test_an_enum_survives_a_container() -> None:
 
 def test_a_method_with_no_wire_form_is_absent_everywhere(
         model: ir.Model) -> None:
-    """A method the wire cannot carry leaves three places at once.
+    """A method the wire cannot carry has no wire number.
 
     Not everything a binding offers is a remote call. EvalState's
     make_primop takes a Python callable, which is not data, and a
     remote one would make the evaluator call back over the socket
     (huggorm#33). So the server publishes no handler for it, and the
-    protocol cannot promise it because a protocol is what BOTH
-    implementations satisfy.
+    protocol cannot promise it.
 
-    What it does NOT lose is the in-process wrapper. That is the whole
-    distinction: local and remote are different surfaces, and this is
-    the machinery that lets them differ without either one lying."""
-    from huggorm_generated import AsyncEvalState, rpc
+    It stays on the one class, with a `Local` spec. A remote backend
+    refuses it with the spec's reason (`test_primop.py`)."""
+    from huggorm_generated import AsyncEvalState, _policy
+    from huggorm_generated._callspec import Local
     from huggorm_generated.protocols import EvalStateLike
-    from huggorm_generated.rpc import RPCEvalState
 
     evaluator = model.classes["EvalState"]
     blocked = {m.name for m in evaluator.methods if not model.offered(m)}
     assert "make_primop" in blocked, sorted(blocked)
 
+    wired = {m.name for m in _policy.METHODS["EvalState"]}
     for name in blocked:
-        # The remote surface cannot offer it, so the shared one cannot
-        # declare it.
         assert not hasattr(EvalStateLike, name), f"{name} is on the protocol"
-        assert hasattr(AsyncEvalState, name), f"{name} lost its wrapper too"
-        assert not hasattr(RPCEvalState, name), f"{name} is on the rpc client"
-        # ...and no call spec was emitted for it either. The specs are
-        # module-level constants now rather than an `_rpc` dict, so
-        # this asks the module instead of the class.
-        assert not hasattr(rpc, f"_EvalState_{name}"), f"{name} has a call spec"
+        assert hasattr(AsyncEvalState, name), f"{name} lost its method"
+        assert name not in wired, f"{name} has a wire number"
+        assert isinstance(getattr(_policy, f"_EvalState_{name}"), Local), name
 
 
 def test_an_untyped_cause_rebuilds_from_builtins_only() -> None:

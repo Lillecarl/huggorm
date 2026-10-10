@@ -556,11 +556,10 @@ def test_the_process_sink_has_the_same_rpc_answer(state: Any) -> None:
     Asserted on the emitted surface rather than on the absence, so a
     function that lost its rpc for some OTHER reason would not pass
     this."""
-    from huggorm_generated._policy import FREE
-    from huggorm_generated.rpc import RPCLogStream
+    from huggorm_generated._policy import FREE, METHODS
 
     assert "subscribe_process_logs" in FREE
-    assert hasattr(RPCLogStream, "drain")
+    assert "drain" in {m.name for m in METHODS["LogStream"]}
     assert "unsubscribe_process_logs" in FREE
 
 
@@ -578,13 +577,12 @@ def test_a_log_stream_crosses_as_a_handle() -> None:
     the streaming rpc beside the handle. The tests at the end of this
     file hold the streaming half; the drain test below holds the
     handle half."""
-    from huggorm_generated._policy import ASYNC_CLASS, METHODS
-    from huggorm_generated.rpc import RPCEvalState, RPCLogStream
+    from huggorm_generated._classes import CLASSES
+    from huggorm_generated._policy import METHODS
 
-    assert hasattr(RPCEvalState, "subscribe_logs")
     assert "LogStream" in METHODS, "a service, so methods"
-    assert "LogStream" in ASYNC_CLASS
-    assert hasattr(RPCLogStream, "drain")
+    assert "LogStream" in CLASSES
+    assert "drain" in {m.name for m in METHODS["LogStream"]}
     names = [m.name for m in METHODS["EvalState"]]
     assert "subscribe_logs" in names, names
     assert "unsubscribe_logs" in names, names

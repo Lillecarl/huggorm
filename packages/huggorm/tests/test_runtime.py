@@ -14,6 +14,7 @@ from typing import Any
 
 import anyio
 import pytest
+from conftest import runner_of
 from nixversion import HAS_COLLECTOR, UNDEFINED_VARIABLE, needs_collector
 
 URI = "dummy://"
@@ -56,7 +57,7 @@ async def _all_errors(*aws: Any) -> list[Any]:
 
 def _shell(runner: Any) -> Any:
     """The two attributes `unwrap_arg` reads off a wrapper."""
-    return types.SimpleNamespace(_runner=runner, _copied=False)
+    return types.SimpleNamespace(_backend=runner, _copied=False)
 
 
 def _probe(method: str) -> Any:
@@ -159,9 +160,9 @@ async def test_an_unbuilt_affine_object_is_built_on_its_own_thread() -> None:
         _runtime.unwrap_arg(lazy)
 
     with pytest.raises(InternalError):
-        await lazy._runner.call(_probe("noop"), [])
+        await lazy._backend.call(_probe("noop"), [])
     assert _runtime.unwrap_arg(lazy) is not None
-    assert lazy._runner.born_thread_name.startswith("huggorm-affine")
+    assert lazy._backend.born_thread_name.startswith("huggorm-affine")
 
     pool = _shell(_runtime.PoolRunner(lambda: {"ok": True}))
     assert _runtime.unwrap_arg(pool) == {"ok": True}
@@ -351,7 +352,7 @@ async def test_a_posted_hook_may_call_the_state_that_posts_it() -> None:
             hooks.post(functools.partial(write, i))
 
     with anyio.fail_after(10):
-        await state._runner.run(work)
+        await runner_of(state).run(work)
     assert answers == [1, 2, 3]
     await state.aclose()
 
@@ -360,9 +361,9 @@ async def test_an_untouched_evaluator_is_born_on_its_own_thread() -> None:
     from huggorm_generated import AsyncEvalState, AsyncStore
 
     untouched = AsyncEvalState(AsyncStore(URI))
-    assert untouched._runner._obj is None, "expected an unconstructed wrapper"
+    assert runner_of(untouched)._obj is None, "expected an unconstructed wrapper"
     assert await (await untouched.eval_expr("1")).integer() == 1
-    born = untouched._runner.born_thread_name
+    born = runner_of(untouched).born_thread_name
     assert born is not None and born.startswith("huggorm-affine"), born
     await untouched.aclose()
 
@@ -376,13 +377,13 @@ async def test_an_evaluator_and_its_values_share_one_thread() -> None:
     state = AsyncEvalState(AsyncStore(URI))
     assert await state.get_store_uri() == URI
     await _all(state.eval_expr("1"), state.eval_expr("2"))
-    assert len(state._runner.workers_seen) == 1, state._runner.workers_seen
+    assert len(runner_of(state).workers_seen) == 1, runner_of(state).workers_seen
 
     value = await state.make_int(11)
     assert isinstance(value, AsyncValue)
     assert await value.integer() == 11
     assert await value.type_name() == "int"
-    assert value._runner.workers_seen == state._runner.workers_seen
+    assert runner_of(value).workers_seen == runner_of(state).workers_seen
     await value.aclose()
     await state.aclose()
 

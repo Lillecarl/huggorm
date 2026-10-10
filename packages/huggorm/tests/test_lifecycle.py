@@ -72,7 +72,7 @@ async def test_a_handle_is_a_capability(ttl_server: Server) -> None:
     async with (remote.connect(ttl_server.path) as a,
                 remote.connect(ttl_server.path) as b):
         store = await a.acquire("Store", "dummy://")
-        cross = b.proxy("Store", store.handle_id)
+        cross = b.proxy("Store", remote.handle_of(store))
         assert await cross.get_uri() == "dummy://"
 
 
@@ -83,7 +83,7 @@ async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
     async with (remote.connect(ttl_server.path) as a,
                 remote.connect(ttl_server.path) as b):
         shared = await a.acquire("Store", "dummy://")
-        hid = shared.handle_id
+        hid = remote.handle_of(shared)
         borrowed = b.proxy("Store", hid)
         assert await borrowed.get_uri() == "dummy://"
 
@@ -92,10 +92,10 @@ async def test_naming_a_handle_makes_you_a_holder(ttl_server: Server) -> None:
         # client-side object, not once per call.
         await borrowed.get_uri()
         await borrowed.get_uri()
-        await a.release(shared)
+        await shared.aclose()
         assert await borrowed.get_uri() == "dummy://", "outlives its acquirer"
 
-        await b.release(borrowed)
+        await borrowed.aclose()
         gone = await wrapper_error(b.proxy("Store", hid).get_uri())
         assert gone["cause_type"] == "KeyError", gone
 
@@ -106,15 +106,15 @@ async def test_double_release_fails_typed(ttl_server: Server) -> None:
     asserted that releasing handle "" fails - which proves nothing."""
     async with remote.connect(ttl_server.path) as a:
         store = await a.acquire("Store", "dummy://")
-        hid = store.handle_id
-        await a.release(store)
+        hid = remote.handle_of(store)
+        await store.aclose()
         again = a.proxy("Store", hid)
-        threw = await wrapper_error(a.release(again))
+        threw = await wrapper_error(again.aclose())
         assert threw["cause_type"] == "ValueError", threw
         assert hid[:8] in threw["cause_message"], threw
 
         with pytest.raises(ValueError, match="already released"):
-            await a.release(store)  # blanked client-side
+            await store.aclose()  # blanked client-side
 
 
 # -- share -----------------------------------------------------------------
@@ -124,9 +124,9 @@ async def test_share_copy_survives_the_granter(ttl_server: Server) -> None:
                 remote.connect(ttl_server.path) as b):
         assert b.token is not None  # connect() binds
         store = await a.acquire("Store", "dummy://")
-        hid = store.handle_id
+        hid = remote.handle_of(store)
         await a.share(store, b.token, mode=ShareMode.COPY)
-        await a.release(store)
+        await store.aclose()
         assert await b.proxy("Store", hid).get_uri() == "dummy://"
 
 
@@ -135,9 +135,9 @@ async def test_share_transfer_moves_ownership(ttl_server: Server) -> None:
                 remote.connect(ttl_server.path) as b):
         assert b.token is not None
         store = await a.acquire("Store", "dummy://")
-        hid = store.handle_id
+        hid = remote.handle_of(store)
         await a.share(store, b.token, mode=ShareMode.TRANSFER)
-        threw = await wrapper_error(a.release(store))
+        threw = await wrapper_error(store.aclose())
         assert threw["cause_type"] == "ValueError", threw
         assert await b.proxy("Store", hid).get_uri() == "dummy://"
 
@@ -156,15 +156,15 @@ async def test_producer_pinning_and_cascade_reap(ttl_server: Server) -> None:
     the cascade and the adopt path get."""
     async with remote.connect(ttl_server.path) as a:
         state = await a.acquire("EvalState", await a.acquire("Store", "dummy://"))
-        hid_state = state.handle_id
+        hid_state = remote.handle_of(state)
         v = await state.make_int(42)
         assert await v.integer() == 42
 
-        await a.release(state)
+        await state.aclose()
         assert await v.integer() == 42, "child keeps the producer alive"
 
-        hid_v = v.handle_id
-        await a.release(v)
+        hid_v = remote.handle_of(v)
+        await v.aclose()
         for cls, hid in (("Value", hid_v), ("EvalState", hid_state)):
             gone = await wrapper_error(a.proxy(cls, hid).is_gc_managed()
                                        if cls == "Value"
@@ -223,9 +223,9 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
         state = await a.acquire("EvalState", await a.acquire("Store", "dummy://"))
         thunk = await state.parse_expr("42")
         await state.force(thunk)
-        thunk_id = thunk.handle_id
+        thunk_id = remote.handle_of(thunk)
         assert await a.detach(all=True), "detach reports moved leases"
-        threw = await wrapper_error(a.release(thunk))
+        threw = await wrapper_error(thunk.aclose())
         assert threw["cause_type"] == "ValueError", "detached leases are not ours"
         assert await thunk.integer() == 42, "detached handles stay callable"
         a.stop_pinging()
@@ -246,14 +246,15 @@ async def swept(ttl_server: Server, tmp_path_factory: Any) -> Any:
         warm_file.write_text("40 + 2\n")
         assert await (await warm.eval_file(str(warm_file))).integer() == 42
         warm_file.unlink()
-        state_id, bag_id, lazy_id = warm.handle_id, bag.handle_id, lazy.handle_id
+        state_id, bag_id, lazy_id = (
+            remote.handle_of(warm), remote.handle_of(bag), remote.handle_of(lazy))
         assert await maker.detach(all=True)
         maker.stop_pinging()
 
         # 3. a connection abandoned WITHOUT detaching: its handles go.
         d = await client()
         doomed = await d.acquire("Store", "dummy://")
-        doomed_id = doomed.handle_id
+        doomed_id = remote.handle_of(doomed)
         d.stop_pinging()
 
         # 4. the control: a client that keeps pinging is immune.
@@ -379,7 +380,7 @@ async def test_a_claimed_lease_is_a_normal_lease(swept: Swept) -> None:
     its handle for good."""
     async with remote.connect(swept.path, claim=swept.escrow_token) as c:
         claimed = c.proxy("Value", swept.thunk_id)
-        await c.release(claimed)
+        await claimed.aclose()
         gone = await wrapper_error(c.proxy("Value", swept.thunk_id).integer())
         assert gone["cause_type"] == "KeyError", gone
 
@@ -449,7 +450,7 @@ async def test_dropping_the_last_reference_releases(client: Any) -> None:
     ids = []
     for i in range(10):
         v = await state.eval_expr(f'"v{i}"')
-        ids.append(v.handle_id)
+        ids.append(remote.handle_of(v))
         del v
     gc.collect()
     assert len(client._dropped) == 10, client._dropped
@@ -467,7 +468,7 @@ async def test_two_objects_one_handle(client: Any) -> None:
     store = await client.acquire("Store", "dummy://")
     state = await client.acquire("EvalState", store)
     v = await state.eval_expr('"shared"')
-    shared_id = v.handle_id
+    shared_id = remote.handle_of(v)
     twin = client.proxy("Value", shared_id)
     del v
     gc.collect()
@@ -488,7 +489,7 @@ async def test_reacquired_before_the_flush_is_not_released(client: Any) -> None:
     store = await client.acquire("Store", "dummy://")
     state = await client.acquire("EvalState", store)
     v = await state.eval_expr('"resurrected"')
-    res_id = v.handle_id
+    res_id = remote.handle_of(v)
     del v
     gc.collect()
     again = client.proxy("Value", res_id)
