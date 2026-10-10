@@ -1549,49 +1549,19 @@ class Digest:
 '''
 
 
-def test_a_body_takes_the_arm_its_nix_takes(tmp_path: pathlib.Path) -> None:
-    """One body, two spellings of one call (huggorm#55).
-
-    The arm is picked with the `NIX_VERSION` the import used, so the
-    emitted C++ holds one call and nothing above the binding changes."""
-    have = _one_file_corpus(tmp_path, _versioned_body('''
-if NIX_VERSION >= (99, 0):
-    Cxx("return self.future();")
-elif NIX_VERSION >= (2, 0):
-    Cxx("return self.now();")
-else:
-    Cxx("return self.past();")
-'''))
-    [method] = have.module("digest.py").classes[0].methods
-    assert method.cxx_body is not None
-    assert method.cxx_body.text.strip() == "return self.now();"
-
-
-@pytest.mark.parametrize(("body", "refusal"), [
-    ('''
-if NIX_VERSION >= (2, 0):
-    Cxx("return self.now();")
-''', "needs an `else`"),
-    ('''
-if len("x") > 0:
-    Cxx("return self.now();")
-else:
-    Cxx("return self.past();")
-''', "tests NIX_VERSION"),
-    ('''
-if NIX_VERSION >= (2, 0):
-    x = 1
-else:
-    Cxx("return self.past();")
-''', "one Cxx"),
-])
-def test_a_versioned_body_that_says_more_is_refused(
-        tmp_path: pathlib.Path, body: str, refusal: str) -> None:
-    """An `if` with no `else` would leave one Nix a derived binding in
-    silence; any other test would be a declaration that runs code."""
+def test_a_body_with_a_version_test_is_refused(tmp_path: pathlib.Path) -> None:
+    """A body is one call for every Nix (huggorm#134). A call whose
+    shape differs goes in a helper that detects the shape, so the
+    reader refuses an `if` in a body instead of choosing an arm."""
     from huggorm_dsl.read import DeclarationError
 
-    with pytest.raises(DeclarationError, match=re.escape(refusal)):
+    body = '''
+if NIX_VERSION >= (2, 0):
+    Cxx("return self.now();")
+else:
+    Cxx("return self.past();")
+'''
+    with pytest.raises(DeclarationError, match="a body holds no version test"):
         _one_file_corpus(tmp_path, _versioned_body(body)).module("digest.py")
 
 
