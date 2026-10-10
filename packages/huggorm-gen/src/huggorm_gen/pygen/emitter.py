@@ -96,7 +96,7 @@ def _twinned(call: str, t: ir.TypeRef) -> str:
     twin = t.leaf.twin
     if not t.origin:
         return f"return {twin}(await {call})"
-    if t.args[0].origin:
+    if t.inner.origin:
         raise TypeError(f"{t.spelling}: an async twin is spelled under one "
                         f"`| None` or `list[...]`, and this nests deeper")
     match t.origin:

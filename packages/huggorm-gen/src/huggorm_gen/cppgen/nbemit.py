@@ -694,8 +694,8 @@ def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:
             for one in declared:
                 for node in _nodes(one):
                     if (node.origin is ir.Origin.LIST
-                            and node.args[0].kind in DECLARED
-                            and not node.args[0].origin):
+                            and node.inner.kind in DECLARED
+                            and not node.inner.origin):
                         return True
                     # Every `dict` return goes through `as_map`.
                     if node.origin is ir.Origin.DICT:
@@ -748,13 +748,13 @@ def _word_values(t: ir.TypeRef | None, model: ir.Model | None
     values, maybe None, when it has a C++ enum."""
     if t is None or t.origin is not ir.Origin.DICT:
         return None
-    return _word_answer(t.args[0], model)
+    return _word_answer(t.inner, model)
 
 
 def _word_map_cxx(t: ir.TypeRef, words: ir.EnumModel) -> str:
     """The C++ map a `dict[str, W]` answer is: the enum, maybe absent."""
     assert words.cxx is not None
-    held = (f"std::optional<{words.cxx.held}>" if t.args[0].optional
+    held = (f"std::optional<{words.cxx.held}>" if t.inner.optional
             else words.cxx.held)
     return f"std::map<std::string, {held}>"
 
@@ -781,7 +781,7 @@ def _taken(t: ir.TypeRef | None, model: ir.Model | None) -> list[str]:
         assert values.cxx is not None
         parser = values.parsed_by or f"from_word<{values.cxx.held}>"
         word = f"{parser}(nb::cast<std::string>(item.second))"
-        if t.args[0].optional:
+        if t.inner.optional:
             word = (f"item.second.is_none() ? std::optional<{values.cxx.held}>{{}}"
                     f" : std::optional<{values.cxx.held}>{{{word}}}")
         return [f"{_word_map_cxx(t, values)} out;",
@@ -1405,7 +1405,7 @@ class Emitter:
         values = _word_values(m.returns, self.model)
         if m.returns is not None and values is not None:
             word = f"{NAMESPACE}::as_word(item.second)"
-            if m.returns.args[0].optional:
+            if m.returns.inner.optional:
                 word = (f"item.second ? std::optional<std::string>{{"
                         f"{NAMESPACE}::as_word(*item.second)}} : std::nullopt")
             body += [f"{INDENT * 4}{_answer_cxx(m.returns, self.model)} answer;",

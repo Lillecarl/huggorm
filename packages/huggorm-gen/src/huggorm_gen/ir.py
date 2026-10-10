@@ -149,15 +149,28 @@ class TypeRef:
         return None if spelled is None else spelled.field
 
     @property
+    def inner(self) -> TypeRef:
+        """What this node wraps. Every walk that follows one argument
+        comes through here, so a new `Origin` fails type-check here
+        rather than being skipped (huggorm#139)."""
+        match self.origin:
+            case None:
+                raise TypeError(f"'{self.spelling}' wraps nothing")
+            case Origin.OPTIONAL | Origin.LIST | Origin.DICT:
+                return self.args[0]
+            case _:
+                assert_never(self.origin)
+
+    @property
     def required(self) -> TypeRef:
         """This type without the None, or itself."""
-        return self.args[0] if self.optional else self
+        return self.inner if self.optional else self
 
     @property
     def leaf(self) -> TypeRef:
         t = self
-        while t.args:
-            t = t.args[0]
+        while t.origin:
+            t = t.inner
         return t
 
     @property
@@ -171,7 +184,7 @@ class TypeRef:
 
     @property
     def bytes_list(self) -> bool:
-        return self.origin is Origin.LIST and self.args[0].is_bytes
+        return self.origin is Origin.LIST and self.inner.is_bytes
 
     @property
     def holds_bytes(self) -> bool:

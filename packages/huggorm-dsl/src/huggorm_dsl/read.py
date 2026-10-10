@@ -359,9 +359,22 @@ class Type:
         return self.origin is Origin.OPTIONAL
 
     @property
+    def inner(self) -> Type:
+        """What this node wraps. Every walk that follows one argument
+        comes through here, so a new `Origin` fails type-check here
+        rather than being skipped (huggorm#139)."""
+        match self.origin:
+            case None:
+                raise TypeError(f"'{self.python}' wraps nothing")
+            case Origin.OPTIONAL | Origin.LIST | Origin.DICT:
+                return self.args[0]
+            case _:
+                typing.assert_never(self.origin)
+
+    @property
     def required(self) -> Type:
         """This type without the None, or itself."""
-        return self.args[0] if self.optional else self
+        return self.inner if self.optional else self
 
     @property
     def container(self) -> bool:
@@ -372,14 +385,14 @@ class Type:
         """What a list holds, or a map's value."""
         if not self.container:
             raise TypeError(f"'{self.python}' is not a container")
-        return self.args[0]
+        return self.inner
 
     @property
     def leaf(self) -> Type:
         """The type at the bottom of every container and optional."""
         t = self
-        while t.args:
-            t = t.args[0]
+        while t.origin:
+            t = t.inner
         return t
 
     @property
