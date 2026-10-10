@@ -2243,6 +2243,23 @@ def test_a_vocabulary_converts_with_no_body(tmp_path: pathlib.Path) -> None:
     assert "&nix::Store::" not in emitted, emitted
 
 
+def test_a_vocabulary_crosses_with_the_string_caster(
+        tmp_path: pathlib.Path) -> None:
+    """A member is the string a parser takes, so its caster is the
+    string one, decided by the class and not by its spelling."""
+    from huggorm_dsl.corpus import Corpus
+    from huggorm_gen import ir
+
+    (tmp_path / "probe.py").write_text(
+        WORDS_STORE.replace("DECLARED", SCALAR_WORDS))
+    unit = ir.ModuleModel.of(
+        Corpus(tmp_path, nanobind=("probe.py",)).module("probe"), "")
+    store = next(c for c in unit.classes if c.name == "Store")
+    answer = next(m for m in store.bound if m.name == "answer").returns
+    assert answer is not None
+    assert (answer.cxx, answer.caster) == ("std::string", "string")
+
+
 @pytest.mark.parametrize(("declared", "what"), [
     ('    def many(self, algos: list[HashAlgorithm]) -> None:\n'
      '        """Many."""\n', "Store.many: parameter 'algos'"),
