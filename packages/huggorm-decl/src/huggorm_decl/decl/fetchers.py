@@ -13,7 +13,6 @@ as a copy of its attributes.
 from huggorm_decl.decl.registry import Attr
 from huggorm_decl.decl.store import Store
 from huggorm_dsl.declare import (
-    NIX_2_36,
     Cxx,
     Str,
     binding,
@@ -71,48 +70,40 @@ class Input:
 
     @staticmethod
     @needs("huggorm_decl/cpp/call_settings.hpp",
+           "huggorm_decl/cpp/fetchers.hpp",
            "nix/fetchers/fetch-settings.hh")
     def _from_parts() -> Input:
         """Rebuild one from its attributes, with the process's fetcher
         settings, as `FlakeRef` does."""
-        if NIX_2_36:
-            Cxx("return nix::fetchers::Input::fromAttrs(std::move(to_attrs));")
-        else:
-            Cxx("""
+        Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>({});
-return nix::fetchers::Input::fromAttrs(*fetch, std::move(to_attrs));
-            """)
+return huggorm::input_of_attrs(*fetch, std::move(to_attrs));
+        """)
 
 
-@needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
-       "nix/fetchers/fetchers.hh")
+@needs("huggorm_decl/cpp/call_settings.hpp", "huggorm_decl/cpp/fetchers.hpp",
+       "nix/fetchers/fetch-settings.hh", "nix/fetchers/fetchers.hh")
 @threading("pool")
 def input_from_url(url: Str) -> Input:
     """Parse `url` as `builtins.fetchTree` parses a URL.
 
-    No fetcher setting takes part: Nix 2.36 parses without one, and 2.34
-    and 2.35 get the process's."""
-    if NIX_2_36:
-        Cxx("return nix::fetchers::Input::fromURL(url);")
-    else:
-        Cxx("""
+    No fetcher setting a caller passes takes part: a Nix whose parser
+    takes settings gets the process's."""
+    Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>({});
-return nix::fetchers::Input::fromURL(*fetch, url);
-        """)
+return huggorm::input_of(*fetch, url);
+    """)
 
 
-@needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
-       "nix/fetchers/fetchers.hh")
+@needs("huggorm_decl/cpp/call_settings.hpp", "huggorm_decl/cpp/fetchers.hpp",
+       "nix/fetchers/fetch-settings.hh", "nix/fetchers/fetchers.hh")
 @threading("pool")
 def input_from_attrs(attrs: dict[str, Attr]) -> Input:
     """Build an input from its attributes, as `builtins.fetchTree` does
     from an attribute set. Refuses an attribute the input's scheme
     does not take. No fetcher setting takes part, as in
     `input_from_url`."""
-    if NIX_2_36:
-        Cxx("return nix::fetchers::Input::fromAttrs(nix::fetchers::Attrs(attrs));")
-    else:
-        Cxx("""
+    Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>({});
-return nix::fetchers::Input::fromAttrs(*fetch, nix::fetchers::Attrs(attrs));
-        """)
+return huggorm::input_of_attrs(*fetch, nix::fetchers::Attrs(attrs));
+    """)
