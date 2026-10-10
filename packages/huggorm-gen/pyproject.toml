@@ -14,7 +14,6 @@ dependencies = ["huggorm-dsl", "huggorm-decl"]
 [project.scripts]
 huggorm-cppgen = "huggorm_gen.cppgen.generate:main"
 huggorm-pygen = "huggorm_gen.pygen.generate:main"
-huggorm-smoke = "huggorm_gen.pygen.smoke_test:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

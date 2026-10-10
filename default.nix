@@ -196,7 +196,10 @@ rec {
                 ]))
               ];
               HUGGORM_NIX_VERSION = self.version;
+              # `$src` is read-only, and the emitter's ruff writes a cache
+              # into the working directory.
               PYTHONDONTWRITEBYTECODE = "1";
+              RUFF_NO_CACHE = "true";
             }
             ''
               set -o pipefail
