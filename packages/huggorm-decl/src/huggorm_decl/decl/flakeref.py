@@ -13,7 +13,6 @@ one part is its attributes: `toAttrs` writes the subdirectory as
 
 from huggorm_decl.decl.registry import Attr
 from huggorm_dsl.declare import (
-    NIX_2_36,
     Cxx,
     Str,
     binding,
@@ -64,21 +63,20 @@ class FlakeRef:
 
     @staticmethod
     @needs("huggorm_decl/cpp/call_settings.hpp",
+           "huggorm_decl/cpp/flakeref.hpp",
            "nix/fetchers/fetch-settings.hh")
     def _from_parts() -> FlakeRef:
         """Rebuild one from its attributes, with the process's fetcher
         settings: the attributes already say everything a setting would
         decide at parse time."""
-        if NIX_2_36:
-            Cxx("return nix::FlakeRef::fromAttrs(to_attrs);")
-        else:
-            Cxx("""
+        Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>({});
-return nix::FlakeRef::fromAttrs(*fetch, to_attrs);
-            """)
+return huggorm::flake_ref_from_attrs(*fetch, to_attrs);
+        """)
 
 
-@needs("huggorm_decl/cpp/call_settings.hpp", "nix/fetchers/fetch-settings.hh",
+@needs("huggorm_decl/cpp/call_settings.hpp", "huggorm_decl/cpp/flakeref.hpp",
+       "nix/fetchers/fetch-settings.hh",
        "nix/flake/flakeref.hh")
 @threading("pool")
 @blocks
@@ -90,17 +88,11 @@ def parse_flake_ref(url: Str, base: Str | None = None) -> FlakeRef:
     rather than `git+file:`, and `./x` does not parse at all. A path
     reference looks for `.git` upward, so this reads the filesystem.
 
-    No fetcher setting takes part: Nix 2.36 parses without one, and
-    2.34 and 2.35 get the process's. Nix requires the `flakes` feature,
-    and so does this."""
-    if NIX_2_36:
-        Cxx("""
-auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
-return nix::parseFlakeRef(url, dir);
-        """)
-    else:
-        Cxx("""
+    No fetcher setting a caller passes takes part: a Nix whose parser
+    takes settings gets the process's. Nix requires the `flakes`
+    feature, and so does this."""
+    Cxx("""
 auto fetch = huggorm::call_settings<nix::fetchers::Settings>({});
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
-return nix::parseFlakeRef(*fetch, url, dir);
-        """)
+return huggorm::flake_ref_of(*fetch, url, dir);
+    """)
