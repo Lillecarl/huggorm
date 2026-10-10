@@ -186,7 +186,7 @@ async def test_a_value_that_crossed_still_compares_and_hashes(
 # helper is gone because there is now one shape (huggorm#66).
 #
 # So these are written the way a CALLER writes them. That is the
-# claim: an exception type is part of a result, and `StoreLike` makes
+# claim: an exception type is part of a result, and `AsyncStore` makes
 # the three interchangeable.
 
 
@@ -495,7 +495,7 @@ async def test_one_consumer_rewrites_a_derivation_everywhere(
 
     Evaluate, force, read the derivation path, then rewrite it as
     `nix develop` does and write the rewrite back. The rewrite is the
-    library's own: the async flavour is typed against `StoreLike`, so
+    library's own: the async flavour is typed against `AsyncStore`, so
     the async and RPC runs call the SAME function. A store directory
     rather than `dummy://`, because instantiating writes a `.drv`;
     the server shares this machine, so it opens the same directory.

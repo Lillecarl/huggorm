@@ -15,8 +15,7 @@ are derived.
   already derives. Read from there rather than computed again.
 - Everything `huggorm_generated` exports, which `emitter.package_exports`
   already derives from the model. Read from there for the same
-  reason. `RPC_CLASSES` is dropped: it is a registry the client uses
-  to turn a handle into an object, not surface.
+  reason.
 - The UNION aliases. They live in `_unions` because a union has no
   home in a compiled package - the alias is Python and the module
   binding its arms is an extension - and a caller annotating their
@@ -104,11 +103,6 @@ UNIONS_MODULE = "huggorm_generated._unions"
 BINDINGS = "huggorm_bindings"
 GENERATED = "huggorm_generated"
 
-# A registry the client reads to turn a handle into an object. The
-# generated package exports it because it is a name in that package;
-# the front door does not, because it is plumbing.
-PLUMBING = frozenset({"RPC_CLASSES"})
-
 DOC = '''
 Nix, from Python.
 
@@ -124,23 +118,20 @@ the front door; `huggorm_bindings` (compiled), `huggorm_generated`
 (emitted at build time) and this one are how it is made, which is not
 something a caller should have to learn before the first import.
 
-## The three surfaces
+## The two surfaces
 
-The same store, spelled three ways, and the choice is about WHERE the
-work happens rather than what it does.
+The same store, spelled two ways.
 
 - **Sync** - `Store`, `StorePath`, `PathInfo`. The bindings
   themselves. Every call blocks the calling thread.
-- **Async** - `AsyncStore` and friends, from `connect_local`. The same
-  calls, awaited, with the blocking part moved onto a thread so an
-  event loop keeps running.
-- **Remote** - `async with connect() as client:` gives objects that
-  satisfy the same protocols (`StoreLike`) and run on another
-  process's store. A CONTEXT MANAGER, because the client pings in the
+- **Async** - `AsyncStore` and friends. The same calls, awaited. An
+  object built here runs in this process, with the blocking part on
+  a thread, so an event loop keeps running. `async with connect() as
+  client:` hands out the same classes, running on another process's
+  store. A CONTEXT MANAGER, because the client pings in the
   background and the scope is what stops the loop (huggorm#35).
 
-A protocol is what both async surfaces promise, so code written
-against `StoreLike` runs either way.
+So code written against `AsyncStore` runs in either place.
 
 ## What is NOT here
 
@@ -149,10 +140,6 @@ gone (huggorm#60). Every name the two packages behind this one export
 reaches this front door - and it is derived from them now rather than
 listed by hand, so a new binding arrives here without anyone
 noticing (huggorm#64).
-
-`RPC_CLASSES` is the one name held back. It is a registry the remote
-client reads to turn a handle into an object, so it is plumbing
-rather than something to call.
 '''
 
 
@@ -162,12 +149,11 @@ def exports(bindings: list[str], generated: list[str],
 
     The three derived groups, then the hand-written layer's own. Each
     argument is a list somebody else already derived - this joins
-    them and drops the plumbing, and states no name of its own beyond
-    `LOCAL`.
+    them, and states no name of its own beyond `LOCAL`.
     """
     out: dict[str, list[str]] = {
         BINDINGS: sorted(bindings),
-        GENERATED: sorted(n for n in generated if n not in PLUMBING),
+        GENERATED: sorted(generated),
         UNIONS_MODULE: sorted(unions),
     }
     for module, names in LOCAL.items():

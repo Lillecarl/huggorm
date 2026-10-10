@@ -58,7 +58,7 @@ import inspect
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from huggorm_generated.protocols import ValueLike
+    from huggorm_generated import AsyncValue
 
 # The default of a formal that HAS one. See the module docstring: the
 # expression itself cannot cross, and the only thing a caller needs is
@@ -71,7 +71,7 @@ UNKNOWN_DEFAULT = Ellipsis
 EXTRA = "kwargs"
 
 
-async def signature_of(value: ValueLike | Any) -> inspect.Signature:
+async def signature_of(value: AsyncValue | Any) -> inspect.Signature:
     """The `inspect.Signature` of a Nix function value.
 
     Raises `TypeError` for a value that is not a function, and for a

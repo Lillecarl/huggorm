@@ -39,7 +39,6 @@ from huggorm_gen.payload._wiretypes import SCALAR_NAMES, SPELLED, TREE_LEAVES
 
 # The words a proxy's surfaces are spelled with. Every name below is
 # the class name plus one of these.
-PROTOCOL = "Like"
 ASYNC = "Async"
 
 # The value dunders, and the fact about the declaration that makes a
@@ -922,10 +921,6 @@ class ClassModel:
         """The C++ class name the binding defines, or "" for a produced
         value, which binds no C++ type."""
         return "" if self.is_value else f"C{self.name}"
-
-    @property
-    def protocol_name(self) -> str:
-        return f"{self.name}{PROTOCOL}"
 
     @property
     def async_name(self) -> str:

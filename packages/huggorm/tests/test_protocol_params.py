@@ -1,17 +1,16 @@
-"""A proxy parameter is spelled as its protocol on every surface.
+"""A proxy parameter is spelled as its async class, wherever it lives.
 
 The type cannot say where an object lives, so each side checks at the
 call: in process a remote handle is refused, and over the wire an
 in-process object is refused (huggorm#26). A consumer typed against
-the protocols then drives either location with the same code.
+the async classes then drives either location with the same code.
 """
 
 from typing import Any
 
 import pytest
 
-from huggorm_generated import AsyncEvalState, AsyncStore
-from huggorm_generated.protocols import EvalStateLike, ValueLike
+from huggorm_generated import AsyncEvalState, AsyncStore, AsyncValue
 
 
 async def _remote_value(client: Any) -> Any:
@@ -20,9 +19,9 @@ async def _remote_value(client: Any) -> Any:
     return state, await state.eval_expr("1 + 1")
 
 
-async def _apply_twice(state: EvalStateLike, fn: ValueLike,
-                       arg: ValueLike) -> int:
-    """One consumer, typed only against the protocols."""
+async def _apply_twice(state: AsyncEvalState, fn: AsyncValue,
+                       arg: AsyncValue) -> int:
+    """One consumer, typed only against the async classes."""
     once = await fn(arg)
     twice = await fn(once)
     await state.force(twice)

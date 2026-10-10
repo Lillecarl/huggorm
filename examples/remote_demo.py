@@ -49,19 +49,18 @@ async def main(path: str | Path) -> None:
         print(f"eval: {await text.string_value()!r}")
 
         print("\n=== one function, either location, no branching ===")
-        # Typed against the generated protocol. It never asks whether the
+        # Typed against the async class. It never asks whether the
         # store answering is in this process or on the far side of the
         # socket - and a typechecker sees the whole surface either way.
-        from huggorm_generated import StoreLike
+        from huggorm_generated import AsyncStore
 
-        async def report(s: StoreLike) -> str:
+        async def report(s: AsyncStore) -> str:
             path = await s.add_to_store("shared.txt", b"either location",
                                         CA.NAR, HashAlgorithm.SHA256)
             return f"{await s.get_uri()}: {path.to_string()}"
 
         print(" remote:", await report(store))
 
-        from huggorm_generated import AsyncStore
         in_process = AsyncStore(tempfile.mkdtemp(prefix="huggorm-demo-"))
         print(" local: ", await report(in_process))
         await in_process.aclose()

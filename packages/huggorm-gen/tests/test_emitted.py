@@ -376,25 +376,19 @@ def _expr(src: str) -> str:
 
 
 def test_the_declaration_is_what_got_written(out: pathlib.Path) -> None:
-    """The emitted surfaces against the DECLARATION, not each other.
+    """The emitted surface against the DECLARATION.
 
-    test_conformance compares the emitted modules to one another,
-    which is the right question for drift BETWEEN them and blind to
-    drift they share. Emptying the emitter's defaults loop changes
-    them together, so they stay perfectly consistent and perfectly
-    wrong - verified, and it passed.
+    Two surfaces compared with each other stay consistent when one
+    emitter change moves both: emptying the defaults loop did that,
+    and such a check passed.
 
-    So this compares one surface to the declaration it came from. Only
-    the parts that cross VERBATIM: parameter names and parameter
-    defaults. An annotation is transformed on the way out - widened
-    for async, renamed to a protocol, swapped for a twin - and
+    So this compares the async class with the declaration it came
+    from. Only the parts that cross VERBATIM: parameter names and
+    parameter defaults. An annotation is transformed on the way out -
+    widened, renamed to an async class, swapped for a twin - and
     re-deriving those here would rebuild the emitter inside its own
-    test, which is exactly what test_conformance avoids. A name and a
-    default get no such treatment, so comparing them needs no rules at
-    all.
-
-    The async class is the surface picked, because it is the one that
-    carries every method: the protocol drops what cannot cross."""
+    test. A name and a default get no such treatment, so comparing
+    them needs no rules at all."""
     from huggorm_gen.cppgen.generate import declared_model
 
     model = declared_model()
@@ -471,98 +465,6 @@ def test_the_declaration_is_what_got_written(out: pathlib.Path) -> None:
                for c in declared_classes.values()
                for m in c.methods for p in m.params), (
         "no method declares a default; this gate now proves nothing")
-
-
-def test_conformance(out: pathlib.Path) -> None:
-    """The protocol and the async class must agree.
-
-    A protocol is only worth having if the implementations really
-    satisfy it, and isinstance() against a runtime_checkable Protocol
-    checks method NAMES and nothing else - an implementation whose
-    parameters drifted still passes. So this compares signatures, and
-    it compares the modules against EACH OTHER rather than against a
-    rederivation of what the emitter should have written.
-
-    The rules:
-      - the protocol offers the class's methods minus the ones that
-        cannot cross the wire;
-      - parameter names and annotations are identical in both;
-      - a return is identical in both, unless the protocol names
-        another protocol - then the class must return that class's
-        async form, or that form or None."""
-    from huggorm_gen.cppgen.generate import declared_model
-
-    model = declared_model()
-    # Served, not wrapped: every proxy has both surfaces.
-    served = {c.name: c for c in model.ordered_served}
-    # protocol name -> the class it speaks for, so a protocol-typed
-    # return can be checked against each implementation's own form.
-    speaks_for = {c.protocol_name: n for n, c in served.items()}
-    found = _emitted_classes(out)
-
-    def no_wire_of(c: Any) -> set[str]:
-        """What a remote backend cannot run, and so the protocol does
-        not promise."""
-        return {m.name for m in c.methods if not model.offered(m)}
-
-    failures, checked = [], 0
-    for cls_name, cls in served.items():
-        P = _resolved(found, cls.protocol_name)
-        A = _resolved(found, cls.async_name)
-        no_wire = no_wire_of(cls)
-
-        if set(P) != set(A) - no_wire:
-            failures.append(
-                f"{cls_name}: {cls.protocol_name} offers {sorted(P)}; the "
-                f"implementations offer {sorted(A)} and {sorted(no_wire)} "
-                f"cannot cross the wire")
-
-        for m in sorted(P):
-            checked += 1
-            want = P[m]
-            for label, sig in (("in-process", A.get(m)),):
-                if sig is None:
-                    failures.append(f"{cls_name}.{m}: no {label} implementation")
-                    continue
-                if sig["params"] != want["params"]:
-                    failures.append(
-                        f"{cls_name}.{m}: {label} takes {sig['params']}, "
-                        f"{cls.protocol_name} declares {want['params']}")
-                if sig["annotations"] != want["annotations"]:
-                    failures.append(
-                        f"{cls_name}.{m}: {label} annotates "
-                        f"{sig['annotations']}, {cls.protocol_name} declares "
-                        f"{want['annotations']}")
-                if sig["defaults"] != want["defaults"]:
-                    # A default is part of what a call MEANS. Two
-                    # surfaces that agree on types and disagree here
-                    # answer the same short call differently.
-                    failures.append(
-                        f"{cls_name}.{m}: {label} defaults to "
-                        f"{sig['defaults']}, {cls.protocol_name} declares "
-                        f"{want['defaults']}")
-                if not sig["is_async"]:
-                    failures.append(f"{cls_name}.{m}: {label} is not async")
-                expected = want["returns"]
-                held = expected.removesuffix(" | None")
-                if held in speaks_for:
-                    c = served[speaks_for[held]]
-                    expected = expected.replace(held, c.async_name)
-                if sig["returns"] != expected:
-                    failures.append(
-                        f"{cls_name}.{m}: {label} returns {sig['returns']}, "
-                        f"expected {expected} for {want['returns']}")
-
-    assert not failures, ("the generated surfaces disagree:\n  "
-                          + "\n  ".join(failures))
-    # Non-vacuity: the gate must have had something to compare, and the
-    # blocked set must be real rather than an empty rule.
-    assert checked >= 3 * len(served), (
-        f"conformance checked only {checked} method(s) across "
-        f"{len(served)} classes")
-    assert any(no_wire_of(c) for c in served.values()), (
-        "no method is blocked from the wire; either the rule stopped "
-        "working or the surface changed and this gate now proves nothing")
 
 
 def test_a_free_function_adopts_its_proxy(out: pathlib.Path) -> None:

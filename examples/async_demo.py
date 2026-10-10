@@ -12,7 +12,6 @@ from huggorm_bindings import HashAlgorithm, StorePath
 from huggorm_generated import (
     AsyncEvalState,
     AsyncStore,
-    StoreLike,
     collect_garbage,
     gc_stats,
 )
@@ -26,7 +25,7 @@ def _runner(obj: Any) -> BaseRunner:
     return backend
 
 
-async def _add(store: StoreLike, name: str, body: bytes) -> StorePath:
+async def _add(store: AsyncStore, name: str, body: bytes) -> StorePath:
     return await store.add_to_store(name, body, CA.NAR, HashAlgorithm.SHA256)
 
 
@@ -119,7 +118,7 @@ async def main() -> None:
 
     print("\n=== one function, either location, no branching ===")
 
-    async def report(store: StoreLike) -> str:
+    async def report(store: AsyncStore) -> str:
         # Typed against the protocol. Everything it calls is on the
         # generated surface, so it never asks whether the store is in
         # this process or on the far side of a socket.

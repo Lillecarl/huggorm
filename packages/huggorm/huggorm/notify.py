@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, Any
 from asyncinotify import Inotify, Mask
 
 if TYPE_CHECKING:
-    from huggorm_generated.protocols import ValueLike
+    from huggorm_generated import AsyncValue
 
     from .watch import Watcher
 
@@ -162,7 +162,7 @@ class Notifier:
                         forgotten += await self._watcher.changed(orphan)
         return sorted(set(forgotten))
 
-    async def eval_file(self, path: str) -> ValueLike:
+    async def eval_file(self, path: str) -> AsyncValue:
         """Evaluate a root through the watcher, then watch its files.
 
         The convenience, not a third owner of `eval_file`: the answer

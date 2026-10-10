@@ -5,7 +5,7 @@ path moved and `rescan()` stats for itself, so nothing here sleeps,
 polls or waits on a timer - the same reason every gate in huggorm#16
 avoided counters.
 
-In-process only. The watcher is written against `EvalStateLike`, and
+In-process only. The watcher is written against `AsyncEvalState`, and
 `test_parity` is where a claim about all three surfaces belongs; what
 these test is the BOOKKEEPING, which is the same object either way.
 """

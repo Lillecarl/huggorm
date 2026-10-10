@@ -266,14 +266,12 @@ def test_a_method_with_no_wire_form_is_absent_everywhere(
     Not everything a binding offers is a remote call. EvalState's
     make_primop takes a Python callable, which is not data, and a
     remote one would make the evaluator call back over the socket
-    (huggorm#33). So the server publishes no handler for it, and the
-    protocol cannot promise it.
+    (huggorm#33). So the server publishes no handler for it.
 
     It stays on the one class, with a `Local` spec. A remote backend
     refuses it with the spec's reason (`test_primop.py`)."""
     from huggorm_generated import AsyncEvalState, _policy
     from huggorm_generated._callspec import Local
-    from huggorm_generated.protocols import EvalStateLike
 
     evaluator = model.classes["EvalState"]
     blocked = {m.name for m in evaluator.methods if not model.offered(m)}
@@ -281,7 +279,6 @@ def test_a_method_with_no_wire_form_is_absent_everywhere(
 
     wired = {m.name for m in _policy.METHODS["EvalState"]}
     for name in blocked:
-        assert not hasattr(EvalStateLike, name), f"{name} is on the protocol"
         assert hasattr(AsyncEvalState, name), f"{name} lost its method"
         assert name not in wired, f"{name} has a wire number"
         assert isinstance(getattr(_policy, f"_EvalState_{name}"), Local), name

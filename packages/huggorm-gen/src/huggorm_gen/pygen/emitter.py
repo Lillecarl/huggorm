@@ -143,7 +143,7 @@ def _arguments(leading: list[ast.arg], params: Sequence[ir.ParamModel],
 
     `types` is the annotation each parameter is written with. The
     caller resolves it, because the same declared type is spelled
-    differently in an async wrapper, in a protocol and in a stub.
+    differently in an async class, in a protocol and in a stub.
 
     The default is written from the declared source string, so every
     surface offers the same one. A caller that omits the argument gets
@@ -187,15 +187,8 @@ def _admits_none(annotation: ast.expr) -> bool:
 # inline, because it is prose a reader of the OUTPUT sees and an
 # 800-column string literal in an emitter argument list is neither
 # readable nor lintable.
-# The module every served class has a protocol in, beside its own
-# `async_<name>` module.
+# The module the `@calls_back` protocols are in.
 PROTOCOL_MODULE = "protocols"
-
-# Every backend closes the same way, and only the meaning differs: in
-# process it shuts the runner's thread down, remotely it gives the
-# lease back. So it belongs on the protocol, and it is the one method
-# no binding declares.
-ACLOSE = "aclose"
 
 POLICY_DOC = """The wire policy of every declared type.
 
@@ -461,8 +454,8 @@ def _as_async(t: ir.TypeRef) -> tuple[str, Source | None]:
 
 def _widened(spell: Spelling, model: ir.Model, t: ir.TypeRef,
              client: bool = False) -> str:
-    """A constructor's or a free function's parameter: on no protocol,
-    so a bare proxy takes the sync object or its async wrapper.
+    """A constructor's or a free function's parameter: a bare proxy
+    takes the sync object or its async wrapper.
     `client` widens a `@calls_back` class where the call adapts it."""
     if t.kind == ir.Kind.PROXY and not t.origin and t.name in model.served:
         spell.need(t.name, BINDINGS)
@@ -479,14 +472,13 @@ def _async_spelling(model: ir.Model, c: ir.ClassModel
     and return.
 
     A constructor takes the sync object or its async wrapper, and only
-    a bare proxy is widened so. A method parameter is the protocol. An
-    adopted return is the async class, a type with an async twin is the
-    twin, and everything else is itself. An in-process class has no
-    protocol, so a method that takes one takes the binding class: the
+    a bare proxy is widened so. A served class, parameter or adopted
+    return, is its async class. A type with an async twin is the twin,
+    and everything else is itself. An unserved class has no async
+    class, so a method that takes one takes the binding class: the
     method has no RPC, and the runner calls it in this process."""
-    spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                PROTOCOLS) if t.name in model.served
-                     else (t.name, BINDINGS),
+    spell = Spelling(lambda t: _as_async(t) if t.name in model.served
+                     else _as_binding(t),
                      client=_client_rename(PROTOCOLS))
     ctor = [_widened(spell, model, p.type) for p in c.ctor]
     methods: dict[str, tuple[list[str], str]] = {}
@@ -661,8 +653,8 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
 def _future_annotations() -> ast.ImportFrom:
     """Lazy annotations, so a class may name one defined further down.
 
-    The protocol and rpc modules each hold the whole surface, and a
-    method on the first class can return the last one. PEP 649 already
+    An async class's method can name its own class or a protocol, and
+    a protocol's hook can name a class defined later. PEP 649 already
     defers evaluation on 3.14; the package also runs on 3.11 and up,
     where an async wrapper's method returning its own class needs this
     (huggorm#107)."""
@@ -671,80 +663,25 @@ def _future_annotations() -> ast.ImportFrom:
 
 
 def protocol_module(model: ir.Model) -> ast.Module:
-    """Emit one Protocol per served class: the surface a caller can
-    program against without knowing whether the object answering is in
-    this process or on the far side of a socket.
+    """Emit one Protocol per `@calls_back` class: the async object a
+    program writes for Nix to call, in process or on a remote client
+    (huggorm#155).
 
-    A method with no rpc is absent, and `NO_RPC` says why. A proxy,
-    parameter or return, is spelled as its protocol, here and on both
-    implementations."""
-    spell = Spelling(lambda t: (model.classes[t.name].protocol_name,
-                                None), client=_client_rename(None))
-    # Spelled once, before the module is written: the imports come
-    # first in the file and only the spelling knows what they are.
-    # The async twin, because every implementation is async: a
-    # returned Path is an anyio.Path in process and remotely alike.
-    signatures = {
-        (cls.name, m.name): ([spell(p.type, client=True) for p in m.params],
-                             spell.returns(m.returns, twin=True))
-        for cls in model.ordered_served for m in cls.methods
-        if model.offered(m)
-    }
-    # A hook takes and answers what the sync hook does: the stub that
-    # calls it hands the answer to Nix unchanged.
+    A hook takes and answers what the sync hook does: the stub that
+    calls it hands the answer to Nix unchanged."""
+    spell = Spelling(_as_async)
     hooks = {
         (cls.name, m.name): ([spell(p.type) for p in m.params],
                              spell.returns(m.returns))
         for cls in model.called_back for m in cls.hooks
     }
-    for served in model.ordered_served:
-        for m in served.methods:
-            if model.offered(m):
-                spell.defaults(m.params)
-
     mod = ast.Module(body=[], type_ignores=[])
     mod.body.append(ast.Expr(value=ast.Constant(value=(
-        "Generated protocols: the surface both implementations share - do "
-        "not edit. One per served class, so a function typed against "
-        "StoreLike accepts an in-process "
-        "AsyncStore and a remote RPCStore alike."))))
+        "Generated protocols: the objects a program writes for Nix to "
+        "call - do not edit."))))
     mod.body.append(_future_annotations())
-    mod.body.append(import_from("typing", "Protocol", "runtime_checkable"))
+    mod.body.append(import_from("typing", "Protocol"))
     mod.body.extend(spell.imports())
-
-    for model_cls in model.ordered_served:
-        name = model_cls.name
-        cls = ast.ClassDef(
-            name=model_cls.protocol_name, bases=[ast.Name(id="Protocol")],
-            keywords=[], body=[],
-            # isinstance() against this checks that the method NAMES are
-            # present and nothing more. `test_conformance` is what proves
-            # an implementation really conforms.
-            decorator_list=[ast.Name(id="runtime_checkable")],
-            type_params=[])
-        withheld = sorted(
-            (m.name, "; ".join(ir.blockers(m.params, m.returns, model.served)))
-            for m in model_cls.methods if not model.offered(m))
-        cls.body.append(ast.Expr(value=ast.Constant(value=(
-            f"What every {name} implementation promises."
-            + ("\n\n    Not promised, because the RPC client cannot offer "
-               "them:\n\n" + "".join(f"    - {n}: {why}\n"
-                                     for n, why in withheld)
-               + "    " if withheld else "")))))
-        for m in model_cls.methods:
-            if not model.offered(m):
-                continue
-            params, returns = signatures[(name, m.name)]
-            cls.body.append(_def(
-                f"async def {m.name}() -> {returns}", doc=m.doc,
-                signature=_arguments([ast.arg(arg="self")], m.params, params,
-                                     f"{name}.{m.name}")))
-        cls.body.append(_def(
-            f"async def {ACLOSE}(self) -> None",
-            doc="Release this object. In process that shuts the runner's "
-                "thread down; remotely it gives the lease back. Either way "
-                "the object is spent afterwards."))
-        mod.body.append(cls)
 
     for model_cls in model.called_back:
         cls = ast.ClassDef(
@@ -954,10 +891,10 @@ def _stub_dunders(name: str, dunders: list[str]) -> list[ast.stmt]:
     """The value dunders a class defines, as stub declarations.
 
     Everything else in a stub comes from the model's methods. Those are
-    surface only, so they skip the value dunders - right for the rpc
-    and protocol surfaces, and wrong here. Without these, a typechecker reads object's __eq__ and
-    calls `a < b` an error on a class that supports it, and
-    `sorted(paths)` an error on a list of them (huggorm#46).
+    surface only, so they skip the value dunders - right for the
+    async classes, and wrong here. Without these, a typechecker reads
+    object's __eq__ and calls `a < b` an error on a class that supports
+    it, and `sorted(paths)` an error on a list of them (huggorm#46).
 
     Which ones exist is reflected, not assumed: ordering and __str__
     are per-class, because a store path has a natural order and a
@@ -1036,8 +973,8 @@ def stub_module(model: ir.Model, module: str) -> ast.Module:
     """Emit the .pyi describing ONE binding module.
 
     The bindings ship as compiled extensions. A typechecker cannot read
-    a .so, so without this every binding type is Any - which is why a
-    protocol-typed consumer could catch a call to a method that does
+    a .so, so without this every binding type is Any - which is why an
+    async-typed consumer could catch a call to a method that does
     not exist and NOT catch a str passed where a StorePath is declared
     (huggorm#27).
 
@@ -1125,8 +1062,8 @@ def stub_init_module(by_module: dict[str, list[str]]) -> ast.Module:
 
 
 def init_module(model: ir.Model) -> ast.Module:
-    """The package front door: every served class, its protocol, and the
-    free functions."""
+    """The package front door: every served class, every `@calls_back`
+    protocol, and the free functions."""
     served = model.ordered_served
     free_names = wrapped_functions(model)
     mod = ast.Module(body=[], type_ignores=[])
@@ -1139,9 +1076,9 @@ def init_module(model: ir.Model) -> ast.Module:
     )
     for c in served:
         mod.body.append(import_from(f"async_{c.name.lower()}", c.async_name, level=1))
-    mod.body.append(import_from(PROTOCOL_MODULE, *(c.protocol_name for c in served),
-                                *(c.async_name for c in model.called_back),
-                                level=1))
+    if model.called_back:
+        mod.body.append(import_from(
+            PROTOCOL_MODULE, *(c.async_name for c in model.called_back), level=1))
     if free_names:
         mod.body.append(ast.ImportFrom(
             module=FREE_MODULE,
@@ -1179,7 +1116,6 @@ def package_exports(model: ir.Model) -> list[str]:
     front door is emitted too (huggorm#64). Computing it there as well
     would be one list stated twice, which is exactly the thing that
     front door existed as."""
-    return ([n for c in model.ordered_served
-             for n in (c.async_name, c.protocol_name)]
+    return ([c.async_name for c in model.ordered_served]
             + [c.async_name for c in model.called_back]
             + wrapped_functions(model))

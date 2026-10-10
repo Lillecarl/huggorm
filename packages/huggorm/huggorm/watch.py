@@ -16,8 +16,8 @@ Two halves, kept apart on purpose:
   `os.stat`; an inotify source is a separate module over the same
   step.
 
-Written against `EvalStateLike`, so one watcher serves an in-process
-`AsyncEvalState` and a remote one alike.
+Written against `AsyncEvalState`, so one watcher serves a state in
+this process and one on a server alike.
 
 ## Why a SNAPSHOT and not the closure
 
@@ -71,7 +71,7 @@ from typing import TYPE_CHECKING
 import anyio
 
 if TYPE_CHECKING:
-    from huggorm_generated.protocols import EvalStateLike, ValueLike
+    from huggorm_generated import AsyncEvalState, AsyncValue
 
 # Not every cache entry is a file. libexpr evaluates its own
 # `derivation-internal.nix` out of an in-memory accessor, and it comes
@@ -105,7 +105,7 @@ class Watcher:
     async layer.
     """
 
-    def __init__(self, state: EvalStateLike) -> None:
+    def __init__(self, state: AsyncEvalState) -> None:
         self._state = state
         # root path -> every cached file when that root finished.
         # A superset of the root's closure, and why is in the module
@@ -133,7 +133,7 @@ class Watcher:
             seen |= files
         return sorted(_watchable(seen))
 
-    async def eval_file(self, path: str) -> ValueLike:
+    async def eval_file(self, path: str) -> AsyncValue:
         """Evaluate a file and record what the state then held.
 
         The same answer as the state's own `eval_file`, including the
