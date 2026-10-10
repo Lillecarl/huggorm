@@ -1225,6 +1225,38 @@ def test_a_declaration_imports_only_from_the_allowed_modules(
         read(_declaration(tmp_path, f"{line}\n"))
 
 
+SHADOWED = '''"""A store whose import throws a method away."""
+
+from huggorm_dsl.declare import binding, header
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """A store."""
+
+    def kept(self) -> None:
+        """Kept."""
+
+    def lost(self) -> None:
+        """Lost."""
+
+    lost = kept
+'''
+
+
+def test_a_definition_under_no_branch_must_be_kept(
+        tmp_path: pathlib.Path) -> None:
+    """A `def` outside any `if` that the import did not keep is not a
+    dead arm. It is a definition the reader would drop in silence
+    (huggorm#140)."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    with pytest.raises(DeclarationError, match=r"lost: .* the import kept "
+                                               r"nothing"):
+        read(_declaration(tmp_path, SHADOWED))
+
+
 def test_a_declaration_is_one_guarded_module() -> None:
     """The reader and an importing declaration reach the same module,
     so a declared class is one class (huggorm#140), and the import

@@ -1918,17 +1918,23 @@ def _reconcile(tree: ast.Module, live: set[int], path: str) -> None:
     emits an empty binding. Silently. This is the check that makes it
     loud.
 
-    It reads one direction only, and the reason it gives for that -
-    "the other direction cannot happen" - was wrong. A tree node the
-    import KEPT can still name no live line, because `_live` reads
-    `__code__` and a descriptor has none. That is `nodes - live`, and
-    nothing here would have seen it: a `@property` accessor was
-    dropped in silence until `_live` learnt to look through the
-    descriptor (huggorm#75). The direction is still not worth a gate -
-    a dead `if` arm is exactly `nodes - live` and is not an error -
-    so the fix belongs in `_live` rather than here."""
+    The other direction, `nodes - live`, holds every dead `if` arm, so
+    it is no error in general. A definition under NO `if` is: the
+    import ran it, so a line the import did not keep means the object
+    went somewhere `_definitions` does not look - a descriptor
+    (huggorm#75), a rebound name, a wrapping decorator. The reader
+    would drop it in silence (huggorm#140)."""
     if not live:
         return
+    unbranched = [n for n in tree.body if isinstance(n, DEFINITIONS)]
+    unbranched += [m for n in unbranched if isinstance(n, ast.ClassDef)
+                   for m in n.body if isinstance(m, DEFINITIONS)]
+    for n in unbranched:
+        if not ({n.lineno} | {d.lineno for d in n.decorator_list}) & live:
+            raise DeclarationError(
+                n, f"{n.name}: this definition is under no `if`, and the "
+                   f"import kept nothing at its line. Something replaced "
+                   f"or wrapped it, and the reader would drop it.")
     nodes = {n.lineno for n in ast.walk(tree)
              if isinstance(n, DEFINITIONS)}
     nodes |= {d.lineno for n in ast.walk(tree)
