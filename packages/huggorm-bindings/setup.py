@@ -5,6 +5,7 @@ import subprocess
 
 import nanobind
 from setuptools import Extension, setup
+from setuptools.command.build_ext import build_ext
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PACKAGE = os.path.join(HERE, "huggorm_bindings")
@@ -108,17 +109,16 @@ _nix["include_dirs"] = [DECL_INCLUDE, HERE] + _nix["include_dirs"]
 # there is no hand-written source for any of them, and the list of
 # modules comes from the same place the emitter reads.
 #
-# nanobind ships its runtime as SOURCE rather than as a library, so
-# each extension compiles `nb_combined.cpp` beside its own
-# translation unit. `ext/robin_map` is nanobind's vendored hash map,
-# which its own headers include and its wheel does not put on the
-# include path.
+# nanobind ships its runtime as SOURCE rather than as a library.
+# `build_ext_runtime_once` compiles `nb_combined.cpp` one time and links
+# the object into every extension. `ext/robin_map` is nanobind's
+# vendored hash map, which its own headers include and its wheel does
+# not put on the include path.
 def nb_runtime() -> str:
     """nanobind's own runtime, beside our sources.
 
     Copied rather than named where it lives: setuptools refuses an
-    absolute path in `sources`, and nanobind's is in its wheel. One
-    file, and it compiles into each extension."""
+    absolute path in `sources`, and nanobind's is in its wheel."""
     name = "_nb_combined.cpp"
     target = os.path.join(HERE, "huggorm_bindings", name)
     shutil.copyfile(os.path.join(nanobind.source_dir(), "nb_combined.cpp"),
@@ -140,7 +140,7 @@ def nanobind_extension(module: str) -> Extension:
     ]
     return Extension(
         f"huggorm_bindings.{module}",
-        sources=[f"huggorm_bindings/{module}.cpp", nb_runtime()],
+        sources=[f"huggorm_bindings/{module}.cpp"],
         language="c++",
         # Hidden by default, which is what nanobind's own build does:
         # two extensions in one process must not export each other's
@@ -162,6 +162,29 @@ def nanobind_extension(module: str) -> Extension:
     )
 
 
+class build_ext_runtime_once(build_ext):
+    """Compile nanobind's runtime once, not once per extension.
+
+    Each extension still links its own copy, as nanobind's own build
+    does: the symbols are hidden, and two extensions share nanobind's
+    internals through a capsule. Every extension has the same flags,
+    so the first one's flags compile the runtime for all of them."""
+
+    def build_extensions(self) -> None:
+        first = self.extensions[0]
+        runtime = self.compiler.compile(
+            [nb_runtime()],
+            output_dir=self.build_temp,
+            include_dirs=first.include_dirs,
+            debug=self.debug,
+            extra_postargs=first.extra_compile_args,
+        )
+        for ext in self.extensions:
+            ext.extra_objects = [*ext.extra_objects, *runtime]
+        super().build_extensions()
+
+
 setup(
     ext_modules=[nanobind_extension(m) for m in MODULES],
+    cmdclass={"build_ext": build_ext_runtime_once},
 )

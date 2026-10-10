@@ -51,6 +51,14 @@ python3Packages.buildPythonPackage {
   env.HUGGORM_BINDINGS_EMITTED = bindings-src;
   env.HUGGORM_DECL_INCLUDE = "${huggorm-decl}/${python3Packages.python.sitePackages}";
 
+  # build_ext compiles one extension at a time unless told otherwise.
+  # setuptools reads DIST_EXTRA_CONFIG like a setup.cfg, so setup.py
+  # stays free of Nix.
+  preBuild = ''
+    printf '[build_ext]\nparallel = %s\n' "$NIX_BUILD_CORES" > "$TMPDIR/build_ext.cfg"
+    export DIST_EXTRA_CONFIG="$TMPDIR/build_ext.cfg"
+  '';
+
   # pkg-config finds real Nix. It is how nix ships its build interface:
   # nix-store.pc carries -std=c++23 and a Requires chain that a
   # hand-written include path would have to reconstruct (huggorm#15).
