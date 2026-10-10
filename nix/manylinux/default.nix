@@ -30,6 +30,8 @@
   huggorm-decl,
   # The pure Python layer, which the checks run over each wheel.
   huggorm,
+  # The lane's Nix CLI, which the suite runs as a daemon.
+  nix,
   # vivarium's lib.nix, for the test on openSUSE.
   vivarium,
 }:
@@ -237,6 +239,51 @@ lib.makeScope pkgs.newScope (
       }
     );
 
+    /**
+      The `nix-tcp-store` plugin for one wheel, built against the Nix that
+      wheel bundles.
+
+      auditwheel renames each library it bundles, and glibc matches a
+      loaded object by its soname. So each library the plugin needs gets
+      the name of the wheel's copy, and the plugin binds to the
+      libnixstore the extension already loaded. Under its own name it
+      would load a second Nix, or none.
+    */
+    tcpStore = lib.genAttrs pythons (
+      py:
+      self.build {
+        pname = "nix-tcp-store-${py}";
+        inherit (nixComponents) version;
+        src = lib.fileset.toSource {
+          root = ../../packages/nix-tcp-store;
+          fileset = ../../packages/nix-tcp-store/tcp-store.cc;
+        };
+        deps = [ self.nixLibs ];
+        tools = [ pkgs.unzip ];
+        script = ''
+          flags=()
+          if grep -q FilePathType "$(pkg-config --variable=includedir nix-store)/nix/store/remote-store.hh"; then
+            flags+=(-DNIX_TCP_STORE_FILE_PATH_TYPE)
+          fi
+          g++ -std=c++23 $CXXFLAGS $CPPFLAGS -shared -Wall -Wextra -Werror "''${flags[@]}" \
+            $(pkg-config --cflags nix-store) tcp-store.cc \
+            $LDFLAGS $(pkg-config --libs nix-store) -o libnix-tcp-store.so
+          unzip -q -d wheel ${self.wheels.${py}}/*.whl
+          for needed in $(patchelf --print-needed libnix-tcp-store.so); do
+            bundled=(wheel/huggorm_bindings.libs/"''${needed%%.so*}"-*.so*)
+            [ -e "''${bundled[0]}" ] || continue
+            [ "''${#bundled[@]}" -eq 1 ] || { echo "$needed: ''${bundled[*]}" >&2; exit 1; }
+            patchelf --replace-needed "$needed" "$(basename "''${bundled[0]}")" libnix-tcp-store.so
+          done
+          if patchelf --print-needed libnix-tcp-store.so | grep -E '^libnix[a-z]*\.so'; then
+            echo "a Nix library above is not the wheel's copy" >&2
+            exit 1
+          fi
+          install -Dm755 libnix-tcp-store.so "$out/lib/nix/plugins/libnix-tcp-store.so"
+        '';
+      }
+    );
+
     # The module list the generator gives, one per line: what `smoke.py`
     # holds a wheel to.
     modules =
@@ -298,6 +345,8 @@ lib.makeScope pkgs.newScope (
           export PYTHONPATH=/tmp/site:${pythonPath pure}
           export MSGPACK_PUREPYTHON=1
           export HUGGORM_NIX_VERSION=${lib.escapeShellArg nixComponents.version} HUGGORM_NIX_GC=1
+          export HUGGORM_TCP_STORE_PLUGINS=${self.tcpStore.${py}}/lib/nix/plugins
+          export HUGGORM_ORACLE_NIX=${nix}/bin/nix
         ''
         + script;
       };
