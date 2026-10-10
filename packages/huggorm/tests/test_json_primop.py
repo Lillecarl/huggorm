@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import pytest
+from nixversion import ERROR_PREFIX
 
 URI = "dummy://"
 
@@ -48,7 +49,7 @@ async def test_a_value_error_shows_bare(state: Any) -> None:
     with pytest.raises(NixError) as caught:
         await state.eval_expr("builtins.reject 1")
     lines = [line.strip() for line in str(caught.value).splitlines() if line.strip()]
-    assert lines[-1] == "error: not YAML", lines
+    assert lines[-1] == f"{ERROR_PREFIX}not YAML", lines
 
 
 async def test_an_answer_that_is_not_data_is_refused(state: Any) -> None:

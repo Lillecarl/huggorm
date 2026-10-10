@@ -17,7 +17,7 @@ import sys
 from collections.abc import Callable, Iterator
 
 import pytest
-from nixversion import HAS_COLLECTOR
+from nixversion import HAS_COLLECTOR, STACK_OVERFLOW
 
 PROBE = """
 import sys
@@ -261,7 +261,7 @@ def test_a_live_setting_reaches_the_next_evaluation() -> None:
     assert state.eval_expr(recurse).integer() == 0
     state.set_setting("max-call-depth", "20")
     # Nix's StackOverflowError derives EvalBaseError, not EvalError.
-    with pytest.raises(EvalBaseError, match="max-call-depth"):
+    with pytest.raises(EvalBaseError, match=STACK_OVERFLOW):
         state.eval_expr(recurse)
 
 

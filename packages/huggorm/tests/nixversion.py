@@ -91,6 +91,36 @@ else:
     MISSING_FILE = "opening file"
     MissingFileError = SysError
 
+# Nix's own wording, where no type or field tells the error apart
+# (huggorm#145). One place, so a Nix that rewords one branches it here,
+# as MISSING_FILE does. huggorm's own messages stay in the tests.
+BAD_STORE_URI = "Cannot parse Nix store"
+BUILD_LOG_STORAGE = "Build log storage and retrieval"
+CANNOT_ADD = "cannot add"
+ERROR_PREFIX = "error: "
+EXPERIMENTAL_FEATURE = "experimental Nix feature"
+FLAKES_DISABLED = "'flakes' is disabled"
+IFD_SETTING = "allow-import-from-derivation"
+INGESTION_METHODS = "expect `flat`, `nar`, or `git`"
+INTERRUPTED = "interrupted"
+MISSING_ARGUMENT = "argument without a value"
+NO_STORE_SCHEME = "don't know how to open Nix store with scheme"
+NO_SUBSTITUTER = "no substituter that can build it"
+NOT_A_FUNCTION = "attempt to call something which is not a function but"
+NOT_ABSOLUTE = "not an absolute path"
+NOT_IN_STORE = "is not in the Nix store"
+NOT_SUPPORTED_BY_SCHEME = "not supported by scheme"
+NOT_SUPPORTED_BY_STORE = "not supported by store"
+PATH_DOES_NOT_EXIST = "does not exist"
+PURE_EVAL = "in pure evaluation mode"
+SHORT_STORE_PATH = "too short to be a valid store path"
+STACK_OVERFLOW = "stack overflow; max-call-depth exceeded"
+STILL_ALIVE = "since it is still alive"
+STRING_ORIGIN = "«string»"
+SUGGESTION = "Did you mean"
+UNDEFINED_VARIABLE = "undefined variable"
+UNKNOWN_HASH = "unknown hash algorithm"
+
 
 # Whether this build's libexpr has the collector, as the BUILD says:
 # `boehm_gc()` is the binding under test and cannot vouch for itself.

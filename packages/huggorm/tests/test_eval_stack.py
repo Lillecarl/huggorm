@@ -10,6 +10,8 @@ test instead of taking the suite down with it.
 import subprocess
 import sys
 
+from nixversion import STACK_OVERFLOW
+
 CHILD = """
 import anyio
 from huggorm import AsyncSession
@@ -31,4 +33,4 @@ def test_runaway_recursion_raises_rather_than_crashing() -> None:
     done = subprocess.run(
         [sys.executable, "-c", CHILD], capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
-    assert "raised:" in done.stdout and "stack overflow" in done.stdout, done.stdout
+    assert "raised:" in done.stdout and STACK_OVERFLOW in done.stdout, done.stdout

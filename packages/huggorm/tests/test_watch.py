@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from huggorm.errors import ParseError
 from huggorm.watch import Watcher
 
 URI = "dummy://"
@@ -216,7 +217,7 @@ async def test_a_failed_evaluation_does_not_wedge_the_root(
 
     write(tmp_path / "root.nix", "1 + \n")
     assert await w.changed(root) == [root]
-    with pytest.raises(Exception, match="syntax error"):
+    with pytest.raises(ParseError):
         await w.eval_file(root)
 
     write(tmp_path / "root.nix", "2 + 2\n")
@@ -240,7 +241,7 @@ async def test_a_failure_keeps_a_healthy_root_warm(
 
     w = Watcher(state)
     assert await (await w.eval_file(good)).integer() == 2
-    with pytest.raises(Exception, match="syntax error"):
+    with pytest.raises(ParseError):
         await w.eval_file(bad)
 
     assert w.roots == [good], "the failure took nothing else with it"

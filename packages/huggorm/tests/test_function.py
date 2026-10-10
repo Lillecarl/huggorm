@@ -24,6 +24,7 @@ running it.
 from typing import Any
 
 import pytest
+from nixversion import MISSING_ARGUMENT, NOT_A_FUNCTION
 
 URI = "dummy://"
 
@@ -95,8 +96,8 @@ def test_applying_a_non_function_is_nix_s_own_refusal(state: Any) -> None:
     """What `42 1` raises, from `callFunction` itself."""
     from huggorm_bindings.errors import NixTypeError
 
-    with pytest.raises(NixTypeError, match="attempt to call something "
-                       "which is not a function but an integer"):
+    with pytest.raises(NixTypeError, match=f"{NOT_A_FUNCTION} "
+                       "an integer"):
         state.eval_expr("42")(state.make_int(1))
 
 
@@ -455,7 +456,7 @@ def test_a_required_argument_with_no_value_raises_nix(state: Any) -> None:
     args = state.make_attrs()
     state.attrs_set(args, "a", state.make_int(40))
 
-    with pytest.raises(NixError, match="without a value"):
+    with pytest.raises(NixError, match=MISSING_ARGUMENT):
         got = f.apply_auto(args)
         state.force(got)
 

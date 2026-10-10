@@ -15,7 +15,7 @@ from huggorm_bindings import (
     gc_release_thread,
     gc_stats,
 )
-from huggorm_bindings.errors import EvalError, NixError
+from huggorm_bindings.errors import EvalError, NixError, NixTypeError, UndefinedVarError
 
 
 @pytest.fixture
@@ -56,9 +56,9 @@ def test_a_rebinding_shadows_and_keeps_the_old_thunk(repl: Repl) -> None:
 
 def test_scopes_are_apart(state: EvalState, repl: Repl) -> None:
     repl.process_line("x = 1")
-    with pytest.raises(EvalError, match="undefined variable 'x'"):
+    with pytest.raises(UndefinedVarError):
         state.repl().eval_expr("x")
-    with pytest.raises(EvalError, match="undefined variable 'x'"):
+    with pytest.raises(UndefinedVarError):
         state.eval_expr("x")
 
 
@@ -69,7 +69,7 @@ def test_added_attributes_are_named_and_bound(repl: Repl) -> None:
 
 
 def test_adding_a_non_set_is_nix_s_type_error(repl: Repl) -> None:
-    with pytest.raises(EvalError, match="expected a set but found an integer"):
+    with pytest.raises(NixTypeError):
         repl.add_attrs(repl.eval_expr("1"))
 
 

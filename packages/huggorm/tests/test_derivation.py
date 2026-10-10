@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from nixversion import NOT_IN_STORE
 
 LEAF = ('derivation { name = "leaf"; system = "x86_64-linux"; '
         'builder = "/bin/sh"; args = [ "-c" "echo" ]; '
@@ -150,7 +151,7 @@ def test_a_floating_output_is_not_a_store_path_yet(
     from huggorm_bindings.errors import EvalError
 
     value = EvalState(Store(str(tmp_path))).eval_expr(INNER, str(tmp_path))
-    with pytest.raises(EvalError, match="is not in the Nix store"):
+    with pytest.raises(EvalError, match=NOT_IN_STORE):
         value.output_paths()
 
 

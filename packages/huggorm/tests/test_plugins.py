@@ -10,6 +10,8 @@ import os
 import subprocess
 import sys
 
+from nixversion import NO_STORE_SCHEME
+
 PLUGINS = os.environ["HUGGORM_TCP_STORE_PLUGINS"]
 
 CHILD = """
@@ -52,4 +54,4 @@ def test_a_loaded_plugin_registers_its_store_and_connects() -> None:
 def test_without_init_plugins_the_scheme_is_unknown() -> None:
     registered, connect, _ = run("none")
     assert registered == "False"
-    assert "don't know how to open Nix store with scheme 'tcp'" in connect, connect
+    assert f"{NO_STORE_SCHEME} 'tcp'" in connect, connect

@@ -14,7 +14,7 @@ from typing import Any
 
 import anyio
 import pytest
-from nixversion import HAS_COLLECTOR, needs_collector
+from nixversion import HAS_COLLECTOR, UNDEFINED_VARIABLE, needs_collector
 
 URI = "dummy://"
 
@@ -400,7 +400,7 @@ async def test_an_error_arrives_as_itself_or_as_internal_error() -> None:
         await state.eval_expr("not an expression")
     d = declared.value.to_dict()
     assert d["code"] == "UndefinedVarError", d
-    assert "undefined variable" in d["message"], d
+    assert UNDEFINED_VARIABLE in d["message"], d
 
     for refused in (state.parse_expr(""), state.eval_expr("")):
         with pytest.raises(InternalError) as internal:

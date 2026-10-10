@@ -8,6 +8,7 @@ different arms upstream, and a caller must be told which it got.
 from typing import Any
 
 import pytest
+from nixversion import BAD_STORE_URI
 
 from huggorm_bindings import (
     StoreReferenceAuto,
@@ -55,7 +56,7 @@ def test_a_bare_path_is_a_local_uri() -> None:
 
 
 def test_what_libstore_cannot_read_raises() -> None:
-    with pytest.raises(UsageError, match="Cannot parse Nix store"):
+    with pytest.raises(UsageError, match=BAD_STORE_URI):
         parse_store_reference("not a uri")
 
 

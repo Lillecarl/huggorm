@@ -14,6 +14,13 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from nixversion import (
+    CANNOT_ADD,
+    IFD_SETTING,
+    NO_SUBSTITUTER,
+    STRING_ORIGIN,
+    SUGGESTION,
+)
 
 DRV = ('derivation { name = "joined"; system = "x86_64-linux"; '
        'builder = "/bin/sh"; }')
@@ -84,7 +91,7 @@ def test_a_missing_attribute_is_nix_s_own_error(state: Any) -> None:
     with pytest.raises(MissingAttribute,
                        match="attribute 'fo' missing") as caught:
         state.eval_expr("{ foo = 1; bar = 2; }").get("fo")
-    assert "Did you mean foo?" in str(caught.value)
+    assert f"{SUGGESTION} foo?" in str(caught.value)
 
 
 def test_a_missing_attribute_carries_its_suggestions(state: Any) -> None:
@@ -183,8 +190,8 @@ def test_an_error_carries_its_position(state: Any) -> None:
     assert info is not None
     pos = info.pos()
     assert pos is not None
-    assert (pos.file(), pos.line(), pos.column()) == ("«string»", 4, 7)
-    assert "cannot add" in info.msg()
+    assert (pos.file(), pos.line(), pos.column()) == (STRING_ORIGIN, 4, 7)
+    assert CANNOT_ADD in info.msg()
 
 
 def test_a_deep_trace_keeps_the_frames_nearest_the_error(state: Any) -> None:
@@ -305,9 +312,9 @@ def test_a_path_stays_a_path_unless_copied(
 
 
 def test_a_function_has_no_json(state: Any) -> None:
-    from huggorm_bindings.errors import NixError
+    from huggorm_bindings.errors import NixTypeError
 
-    with pytest.raises(NixError, match="function"):
+    with pytest.raises(NixTypeError):
         state.eval_expr("{ f = x: x; }").to_json()
 
 
@@ -355,7 +362,7 @@ def test_realising_is_not_an_import_from_derivation(
                       {"allow-import-from-derivation": "false"})
     with pytest.raises(NixError) as caught:
         state.eval_expr(f'"${{{DRV}}}"').realise_string()
-    assert "allow-import-from-derivation" not in str(caught.value)
+    assert IFD_SETTING not in str(caught.value)
 
 
 def test_a_build_store_is_taken_with_the_state(
@@ -383,7 +390,7 @@ def test_the_state_shares_its_store() -> None:
     full = f"{store.store_dir()}/{path.to_string()}"
     probe = f'builtins.storePath "{full}"'
     assert EvalState(store).eval_expr(probe).string_value() == full
-    with pytest.raises(NixError, match="no substituter"):
+    with pytest.raises(NixError, match=NO_SUBSTITUTER):
         EvalState(Store(uri)).eval_expr(probe)
 
 

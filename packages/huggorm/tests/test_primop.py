@@ -15,6 +15,7 @@ import gc
 from typing import Any
 
 import pytest
+from nixversion import ERROR_PREFIX, STRING_ORIGIN
 
 URI = "dummy://"
 
@@ -111,8 +112,8 @@ def test_a_primop_raising_a_nix_error_shows_it_bare(state: Any) -> None:
     # the trace line above already names the call site, once.
     text = str(caught.value)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    assert lines[-1] == "error: no such user", lines
-    assert text.count("«string»:1:1") == 1, text
+    assert lines[-1] == f"{ERROR_PREFIX}no such user", lines
+    assert text.count(f"{STRING_ORIGIN}:1:1") == 1, text
 
 
 def test_returning_something_that_is_not_a_value_is_an_error(

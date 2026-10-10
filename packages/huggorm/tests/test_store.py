@@ -15,6 +15,17 @@ from typing import Any, cast
 
 import pytest
 from nixversion import (
+    BUILD_LOG_STORAGE,
+    EXPERIMENTAL_FEATURE,
+    INGESTION_METHODS,
+    NO_STORE_SCHEME,
+    NO_SUBSTITUTER,
+    NOT_ABSOLUTE,
+    NOT_IN_STORE,
+    NOT_SUPPORTED_BY_STORE,
+    PATH_DOES_NOT_EXIST,
+    STILL_ALIVE,
+    UNKNOWN_HASH,
     built_output,
     drv_output,
     drv_output_parts,
@@ -103,7 +114,7 @@ def test_a_store_opens_from_a_uri(store: Store) -> None:
 def test_an_unknown_scheme_is_refused() -> None:
     """openStore decides the implementation, so a URI it cannot read is
     the first thing a caller gets wrong."""
-    with pytest.raises(NixError, match="don't know how to open"):
+    with pytest.raises(NixError, match=NO_STORE_SCHEME):
         Store("bogus://nowhere")
 
 
@@ -117,7 +128,7 @@ def test_parsing_checks_the_store_directory(store: Store) -> None:
     """A different question from whether the NAME is well formed, which
     is why it lives on the store rather than on StorePath: only the
     store knows its own directory."""
-    with pytest.raises(BadStorePath, match="is not in the Nix store"):
+    with pytest.raises(BadStorePath, match=NOT_IN_STORE):
         store.parse_store_path("/somewhere/else/x")
 
 
@@ -189,7 +200,7 @@ def test_a_store_need_not_answer_for_all_its_paths(store: Store) -> None:
     Unsupported, not NixError. The distinction is worth catching by
     type: a caller can fall back to another store when this one cannot
     answer, and cannot fall back from a call that went wrong."""
-    with pytest.raises(Unsupported, match="not supported by store"):
+    with pytest.raises(Unsupported, match=NOT_SUPPORTED_BY_STORE):
         store.query_all_valid_paths()
 
 
@@ -657,7 +668,7 @@ def test_a_store_without_a_database_cannot_read_backwards(
         store: Store) -> None:
     """The dummy store, which is what nix::Store's own implementation
     answers for."""
-    with pytest.raises(Unsupported, match="not supported by store"):
+    with pytest.raises(Unsupported, match=NOT_SUPPORTED_BY_STORE):
         store.query_referrers(StorePath(HELLO))
 
 
@@ -735,14 +746,14 @@ def test_a_file_outside_the_store_has_no_holder(chroot: Store) -> None:
 
     Asserted rather than described, so an upstream fix reaches this
     build rather than a caller."""
-    with pytest.raises(NixError, match="is not in the Nix store") as caught:
+    with pytest.raises(NixError, match=NOT_IN_STORE) as caught:
         chroot.to_store_path("/somewhere/else/x")
     assert not isinstance(caught.value, BadStorePath), (
         "upstream narrowed the type; the binding can stop warning about it")
 
     # The store directory itself is not IN the store either: isInStore
     # is strictly inside.
-    with pytest.raises(NixError, match="is not in the Nix store"):
+    with pytest.raises(NixError, match=NOT_IN_STORE):
         chroot.to_store_path("/nix/store")
 
 
@@ -767,7 +778,7 @@ def test_a_store_follows_a_link_into_itself(
 
     # The string-only call refuses the same input. That IS the
     # difference between the two, spelled out.
-    with pytest.raises(NixError, match="is not in the Nix store"):
+    with pytest.raises(NixError, match=NOT_IN_STORE):
         chroot.to_store_path(str(link))
 
     # A path already in the store is answered without following
@@ -837,7 +848,7 @@ def test_a_link_that_leads_nowhere_near_the_store_is_refused(
     upstream's and this asserts both halves of it."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.write_text("not in any store\n")
-    with pytest.raises(BadStorePath, match="is not in the Nix store"):
+    with pytest.raises(BadStorePath, match=NOT_IN_STORE):
         chroot.follow_links_to_store_path(str(elsewhere))
 
 
@@ -881,7 +892,7 @@ def test_a_missing_path_is_libstores_error(
     The doubled slash is upstream's, not this binding's: `nix-store
     --add /nowhere` prints it too. It comes from rendering a path in
     an accessor rooted at `/`."""
-    with pytest.raises(NixError, match="does not exist"):
+    with pytest.raises(NixError, match=PATH_DOES_NOT_EXIST):
         chroot.add_path_to_store("nope", str(tmp_path / "missing"))
 
 
@@ -918,10 +929,10 @@ def test_the_store_names_the_vocabulary_it_accepts(chroot: Store) -> None:
     so cannot get out of date. The enums exist for the editor; libstore
     stays the authority, and a str still works at runtime because a
     StrEnum member IS one."""
-    with pytest.raises(UsageError, match="expect `flat`, `nar`, or `git`"):
+    with pytest.raises(UsageError, match=INGESTION_METHODS):
         chroot.add_to_store(
             "x", b"y", "nonsense", HashAlgorithm.SHA256)  # type: ignore[arg-type]
-    with pytest.raises(UsageError, match="unknown hash algorithm"):
+    with pytest.raises(UsageError, match=UNKNOWN_HASH):
         chroot.add_to_store("x", b"y", CA.TEXT, "md6")  # type: ignore[arg-type]
 
 
@@ -943,7 +954,7 @@ def test_every_declared_method_is_a_word_libstore_knows(
     try:
         chroot.add_to_store("probe", b"x", method, HashAlgorithm.SHA256)
     except NixError as e:
-        assert "experimental Nix feature" in str(e), (method, str(e))
+        assert EXPERIMENTAL_FEATURE in str(e), (method, str(e))
 
 
 @pytest.mark.parametrize("algo", list(HashAlgorithm))
@@ -953,7 +964,7 @@ def test_every_declared_algorithm_is_a_word_libstore_knows(
     try:
         chroot.add_to_store("probe", b"x", CA.FLAT, algo)
     except NixError as e:
-        assert "experimental Nix feature" in str(e), (algo, str(e))
+        assert EXPERIMENTAL_FEATURE in str(e), (algo, str(e))
 
 
 def test_a_member_is_the_string(chroot: Store) -> None:
@@ -1517,7 +1528,7 @@ def test_a_build_mode_reaches_libstore_as_the_enum(chroot: Store) -> None:
         chroot.build_paths([held], quiet)
         assert set(chroot.query_all_valid_paths()) == before
 
-    with pytest.raises(NixError, match="no substituter that can build it"):
+    with pytest.raises(NixError, match=NO_SUBSTITUTER):
         chroot.build_paths([held], BuildMode.REPAIR)
 
 
@@ -1559,7 +1570,7 @@ def test_building_a_path_the_store_lacks_is_libstores_error(
     assert absent.to_string().endswith("-nothing")
     assert not chroot.is_valid_path(absent)
 
-    with pytest.raises(NixError, match="no substituter that can build it"):
+    with pytest.raises(NixError, match=NO_SUBSTITUTER):
         chroot.build_paths([absent])
 
 
@@ -2205,7 +2216,7 @@ def test_a_perm_root_is_a_link_the_store_registers(
 def test_a_perm_root_must_be_absolute(chroot: Store) -> None:
     """libstore's refusal, and the empty string, which it asserts on."""
     held = chroot.add_to_store("held", b"x", CA.NAR, HashAlgorithm.SHA256)
-    with pytest.raises(NixError, match="not an absolute path"):
+    with pytest.raises(NixError, match=NOT_ABSOLUTE):
         chroot.add_perm_root(held, "result")
     with pytest.raises(NixError, match="must not be empty"):
         chroot.add_perm_root(held, "")
@@ -2358,7 +2369,7 @@ def test_deleting_a_path_this_process_holds_is_refused(chroot: Store) -> None:
     path = chroot.add_to_store(
         "doomed", b"nothing points at me\n", CA.TEXT, HashAlgorithm.SHA256)
 
-    with pytest.raises(NixError, match="still alive"):
+    with pytest.raises(NixError, match=STILL_ALIVE):
         chroot.collect_garbage(GCOptions(
             action=GCAction.DELETE_SPECIFIC,
             ignore_liveness=True,
@@ -2501,7 +2512,7 @@ def test_a_store_with_no_logs_says_so(store: Store) -> None:
     different answer from a path with none. `UsageError` is what
     libstore's `require<LogStore>` throws."""
     path = store.parse_store_path(f"/nix/store/{HELLO}")
-    with pytest.raises(UsageError, match="Build log storage"):
+    with pytest.raises(UsageError, match=BUILD_LOG_STORAGE):
         store.get_build_log(path)
 
 

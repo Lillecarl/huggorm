@@ -11,6 +11,7 @@ from typing import Any
 
 import anyio
 import pytest
+from nixversion import PURE_EVAL
 from test_source_accessor import SOURCE, Memory
 
 from huggorm_bindings import FileType, Stat, Store
@@ -81,7 +82,7 @@ async def test_pure_evaluation_reads_a_mounted_tree() -> None:
         path = await state.mount(Memory(SOURCE))
         got = await evaluated(state, path)
         assert got["imported"] == 42
-        with pytest.raises(Exception, match="pure"):
+        with pytest.raises(Exception, match=PURE_EVAL):
             await state.eval_expr("builtins.readFile /etc/hostname")
     await state.aclose()
 

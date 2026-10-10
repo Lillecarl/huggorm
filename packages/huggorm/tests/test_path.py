@@ -13,6 +13,7 @@ import copy
 from typing import TYPE_CHECKING
 
 import pytest
+from nixversion import SHORT_STORE_PATH
 
 from huggorm_bindings import StorePath
 from huggorm_bindings.errors import BadStorePath, NixError
@@ -40,7 +41,7 @@ def test_derivations_are_recognised() -> None:
 def test_validation_comes_from_libstore() -> None:
     """The whole reason to bind the real thing rather than reimplement
     it. Nothing in this repo knows what makes a store path valid."""
-    with pytest.raises(BadStorePath, match="too short to be a valid store path"):
+    with pytest.raises(BadStorePath, match=SHORT_STORE_PATH):
         StorePath("not-a-store-path")
     with pytest.raises(BadStorePath):
         StorePath("0" * 32 + "-bad name with spaces")
@@ -77,8 +78,8 @@ def test_the_colour_is_kept_beside_the_plain_message() -> None:
     assert "\x1b[" in err.colored, repr(err.colored)
     assert err.message == str(err)
     # Same message, one dressed and one not.
-    assert "too short to be a valid store path" in err.colored
-    assert "too short to be a valid store path" in err.message
+    assert SHORT_STORE_PATH in err.colored
+    assert SHORT_STORE_PATH in err.message
 
 
 def test_accessors_do_not_hand_back_views() -> None:

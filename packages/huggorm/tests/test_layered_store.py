@@ -11,7 +11,7 @@ import pathlib
 from typing import Any
 
 import pytest
-from nixversion import drv_output
+from nixversion import NO_SUBSTITUTER, NOT_SUPPORTED_BY_STORE, drv_output
 
 from huggorm_bindings import (
     BuildMode,
@@ -120,7 +120,7 @@ def test_an_operation_with_no_override_runs_below(under: Any) -> None:
         under.query_path_info(held).nar_hash())
     added = store.add_to_store("added", b"added")
     assert under.is_valid_path(added), "a write lands below"
-    with pytest.raises(Unsupported, match="by store 'dummy://'"):
+    with pytest.raises(Unsupported, match=f"{NOT_SUPPORTED_BY_STORE} 'dummy://'"):
         store.query_all_valid_paths()  # the dummy store's own refusal
 
 
@@ -364,7 +364,7 @@ def test_ensure_path_runs_below(under: Any) -> None:
     missing = under.parse_store_path(MISSING)
     store = opened(LayeredStore, under)
     Store.ensure_path(store, held)
-    with pytest.raises(Exception, match="substitute"):
+    with pytest.raises(Exception, match=NO_SUBSTITUTER):
         Store.ensure_path(store, missing)
 
 

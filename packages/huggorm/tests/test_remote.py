@@ -12,7 +12,7 @@ from typing import Any
 
 import anyio
 import pytest
-from nixversion import drv_output, needs_collector
+from nixversion import NO_SUBSTITUTER, NOT_IN_STORE, drv_output, needs_collector
 
 import huggorm_bindings
 from huggorm_bindings import ContentAddressMethod as CA
@@ -160,7 +160,7 @@ async def test_a_nix_error_keeps_its_type_and_its_colour(client: Any) -> None:
     err = caught.value
     # ...the LEAF class, not a base it happens to derive from.
     assert type(err) is BadStorePath, type(err)
-    assert "is not in the Nix store" in str(err)
+    assert NOT_IN_STORE in str(err)
     # The plain message stays plain, and the coloured one is what
     # libstore actually wrote.
     assert "\x1b[" not in str(err), repr(str(err))
@@ -420,7 +420,7 @@ async def test_a_vocabulary_of_our_own_words_crosses_as_the_word(
 
     # `repair` is not, and the raise is libstore's, which is how the
     # word is known to have arrived rather than been dropped.
-    with pytest.raises(NixError, match="no substituter that can build it"):
+    with pytest.raises(NixError, match=NO_SUBSTITUTER):
         await store.build_paths([held], huggorm_bindings.BuildMode.REPAIR)
     await store.aclose()
 

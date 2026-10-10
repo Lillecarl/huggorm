@@ -21,6 +21,7 @@ from typing import Any
 
 import anyio
 import pytest
+from nixversion import INTERRUPTED
 
 URI = "dummy://"
 STEP = 0.01
@@ -82,7 +83,7 @@ def test_a_cancelled_request_stops_its_evaluation(
     spin = Spin(state)
     cancel_later(request_id)
     started = time.monotonic()
-    with pytest.raises(Interrupted, match="interrupted"):
+    with pytest.raises(Interrupted, match=INTERRUPTED):
         state.eval_expr(SLOW)
     took = time.monotonic() - started
     assert took < STOPPED_WITHIN, took
@@ -103,7 +104,7 @@ def test_a_cancelled_request_stops_a_pure_evaluation(
 
     cancel_later(request_id)
     started = time.monotonic()
-    with pytest.raises(Interrupted, match="interrupted"):
+    with pytest.raises(Interrupted, match=INTERRUPTED):
         state.eval_expr(PURE_SLOW)
     took = time.monotonic() - started
     assert took < STOPPED_WITHIN, took
@@ -180,7 +181,7 @@ def test_a_cancelled_scope_stops_a_request_inside_it(
     spin = Spin(state)
     threading.Timer(CANCEL_AFTER, cancel_interrupt_scope, (scope_id,)).start()
     started = time.monotonic()
-    with pytest.raises(Interrupted, match="interrupted"):
+    with pytest.raises(Interrupted, match=INTERRUPTED):
         state.eval_expr(SLOW)
     assert time.monotonic() - started < STOPPED_WITHIN
     assert spin.calls < ELEMENTS, "the work ran to its end"

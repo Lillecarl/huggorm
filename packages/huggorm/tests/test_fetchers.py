@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 
 import pytest
+from nixversion import NOT_SUPPORTED_BY_SCHEME
 
 # Every fetcher scheme but `path` sits behind the `flakes` feature.
 pytestmark = pytest.mark.usefixtures("flakes")
@@ -40,7 +41,7 @@ def test_a_scheme_refuses_an_attribute_it_does_not_take() -> None:
     from huggorm_bindings import input_from_attrs
     from huggorm_bindings.errors import NixError
 
-    with pytest.raises(NixError, match="attribute 'owner' not supported by scheme 'path'"):
+    with pytest.raises(NixError, match=f"attribute 'owner' {NOT_SUPPORTED_BY_SCHEME} 'path'"):
         input_from_attrs({"type": "path", "path": "/src", "owner": "x"})
 
 
