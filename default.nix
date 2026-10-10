@@ -41,7 +41,15 @@ rec {
     pname = "huggorm-gen";
     version = "0.1.0";
     pyproject = true;
-    src = ./packages/huggorm-gen;
+    # Not `tests/`: `generator-tests` runs them, and a test edit must
+    # not rebuild every package downstream of the generator.
+    src = lib.fileset.toSource {
+      root = ./packages/huggorm-gen;
+      fileset = lib.fileset.unions [
+        ./packages/huggorm-gen/pyproject.toml
+        ./packages/huggorm-gen/src
+      ];
+    };
     build-system = [ pkgs.python3Packages.setuptools ];
     dependencies = [
       huggorm-dsl
@@ -167,6 +175,34 @@ rec {
         # The emitted C++ for this Nix. `HUGGORM_NIX_VERSION` picks each
         # declaration's `NIX_VERSION` branch (huggorm#55).
         bindings-src = bindings-src.overrideAttrs { HUGGORM_NIX_VERSION = self.version; };
+        # The generator's own suite, for this Nix, with no compile.
+        generator-tests =
+          pkgs.runCommand "huggorm-gen-tests-${self.version}"
+            {
+              src = lib.fileset.toSource {
+                root = ./packages/huggorm-gen;
+                fileset = lib.fileset.unions [
+                  ./packages/huggorm-gen/pyproject.toml
+                  ./packages/huggorm-gen/tests
+                ];
+              };
+              nativeBuildInputs = [
+                pkgs.ruff
+                (pkgs.python3.withPackages (ps: [
+                  huggorm-gen
+                  huggorm-decl
+                  huggorm-dsl
+                  ps.pytest
+                ]))
+              ];
+              HUGGORM_NIX_VERSION = self.version;
+              PYTHONDONTWRITEBYTECODE = "1";
+            }
+            ''
+              set -o pipefail
+              cd "$src"
+              pytest -p no:cacheprovider | tee "$out"
+            '';
         huggorm-bindings =
           let
             plain = self.callPackage ./packages/huggorm-bindings {
@@ -301,6 +337,16 @@ rec {
     }) (lib.filterAttrs (_: v: v ? components) versions)
   );
 
+  # nix build --file . generator-tests
+  #
+  # The generator's suite for every Nix version, with no compile.
+  generator-tests = pkgs.linkFarm "huggorm-generator-tests" (
+    lib.mapAttrsToList (name: _: {
+      inherit name;
+      path = lanes.${name}.generator-tests;
+    }) (lib.filterAttrs (_: v: v ? components) versions)
+  );
+
   # nix run --file . python -- $args
   # to be able to run Python commands
   python = pkgs.python3;
@@ -401,6 +447,7 @@ rec {
       echo "--- clang -Werror: ${huggorm-bindings-clang} ---"
       echo "--- tcp:// over loopback: ${nix-tcp-store-check} ---"
       echo "--- emitted C++ for every Nix: ${every-nix-src} ---"
+      echo "--- the generator's suite for every Nix: ${generator-tests} ---"
       echo "all checks passed"
     '';
   };

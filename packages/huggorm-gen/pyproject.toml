@@ -21,3 +21,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 huggorm_gen = ["py.typed"]
+
+# The generator's own suite: it reads declarations and emits, and needs
+# no compiled binding. `generator-tests` in default.nix runs it per Nix.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
