@@ -108,13 +108,6 @@ def _doc(text: str) -> str:
 SELF = "self"
 
 
-
-
-# What `to_bytes` and `from_bytes` convert, and nothing else does.
-BYTES_SPELLINGS = ("nb::bytes", "std::vector<nb::bytes>")
-
-
-
 def _sites(classes: Sequence[ir.ClassModel],
            functions: Sequence[ir.FunctionModel] = (),
            ) -> Iterator[tuple[ir.ParamModel | None, ir.TypeRef | None]]:
@@ -721,14 +714,14 @@ def _plain(cls: ir.ClassModel, m: ir.MethodModel,
     trampoline's signature must match the C++ virtual exactly. A
     vocabulary is the enum it parses to, so it needs one."""
     for pr in m.params:
-        if (pr.type.cxx == BYTES_SPELLINGS[1]
+        if (pr.type.bytes_list
                 or (pr.parsed_by and _word_enum(pr, model) is None)):
             raise TypeError(
                 f"{cls.name}.{m.name}({pr.name}): a @virtual takes each "
                 f"parameter as the C++ virtual does, and this one arrives "
                 f"converted.")
     if m.returns is not None and (
-            m.returns.cxx == BYTES_SPELLINGS[1]
+            m.returns.bytes_list
             or (m.returns.required.kind == ir.Kind.ENUM
                 and _word_answer(m.returns, model) is None
                 and _word_values(m.returns, model) is None)):
@@ -772,7 +765,7 @@ def _answer_cxx(t: ir.TypeRef, model: ir.Model | None) -> str:
         return _word_map_cxx(t, values)
     words = _word_answer(t, model)
     if words is None or words.cxx is None:
-        return _virtual_cxx(t.cxx)
+        return _virtual_cxx(t)
     return (f"std::optional<{words.cxx.held}>" if t.optional
             else words.cxx.held)
 
@@ -782,7 +775,7 @@ def _taken(t: ir.TypeRef | None, model: ir.Model | None) -> list[str]:
     return: bytes and a vocabulary convert, and the rest casts."""
     if t is None:
         return ["return;"]
-    if _is_bytes(t):
+    if t.is_bytes:
         return ["return from_bytes(nb::cast<nb::bytes>(answer));"]
     if (values := _word_values(t, model)) is not None:
         assert values.cxx is not None
@@ -797,7 +790,7 @@ def _taken(t: ir.TypeRef | None, model: ir.Model | None) -> list[str]:
                 "return out;"]
     words = _word_answer(t, model)
     if words is None or words.cxx is None:
-        return [f"return nb::cast<{_virtual_cxx(t.cxx)}>(answer);"]
+        return [f"return nb::cast<{_virtual_cxx(t)}>(answer);"]
     parser = words.parsed_by or f"from_word<{words.cxx.held}>"
     parsed = [f"return {parser}(nb::cast<std::string>(answer));"]
     if t.optional:
@@ -825,13 +818,15 @@ def _virtual_param(pr: ir.ParamModel, model: ir.Model | None) -> str:
         return words.cxx.held
     if pr.absent:
         return f"const {pr.type.required.cxx} &"
-    return _virtual_cxx(pr.cxx)
+    if pr.type.is_bytes:
+        return "const std::string &"
+    return pr.cxx
 
 
 def _handed(pr: ir.ParamModel, model: ir.Model | None) -> str:
     """How the trampoline hands one argument to a Python override: as the
     type the override is annotated with. A vocabulary is its member."""
-    if _is_bytes(pr.type):
+    if pr.type.is_bytes:
         return f"to_bytes({pr.name})"
     if (words := _word_enum(pr, model)) is not None:
         return (f'nb::module_::import_("{words.module}")'
@@ -839,23 +834,15 @@ def _handed(pr: ir.ParamModel, model: ir.Model | None) -> str:
     return pr.name
 
 
-def _virtual_cxx(spelled: str) -> str:
+def _virtual_cxx(t: ir.TypeRef) -> str:
     """A @virtual's C++ spelling of a type. Bytes are a `std::string`:
     the C++ side of the trampoline runs without the GIL, and an
     `nb::bytes` needs it. The trampoline converts at the boundary."""
-    if spelled == BYTES_SPELLINGS[0]:
-        return "std::string"
-    if spelled == f"const {BYTES_SPELLINGS[0]} &":
-        return "const std::string &"
-    return spelled
-
-
-def _is_bytes(t: ir.TypeRef | None) -> bool:
-    return t is not None and t.cxx == BYTES_SPELLINGS[0]
+    return "std::string" if t.is_bytes else t.cxx
 
 
 def _holds_bytes(t: ir.TypeRef | None) -> bool:
-    return t is not None and _is_bytes(t.leaf)
+    return t is not None and t.holds_bytes
 
 
 def _bytes_shapes(where: str, params: Sequence[ir.ParamModel],
@@ -864,10 +851,10 @@ def _bytes_shapes(where: str, params: Sequence[ir.ParamModel],
     the C++ spells it, a string crosses as `str` where the declaration
     says `bytes`."""
     shapes: list[tuple[str, ir.TypeRef | None, bool]] = [
-        (f"parameter {pr.name!r}", pr.type, _is_bytes(pr.type))
+        (f"parameter {pr.name!r}", pr.type, pr.type.is_bytes)
         for pr in params]
     shapes.append(("return", returns, returns is not None
-                   and returns.cxx in BYTES_SPELLINGS))
+                   and (returns.is_bytes or returns.bytes_list)))
     for what, t, converted in shapes:
         if _holds_bytes(t) and not converted:
             assert t is not None
@@ -1212,7 +1199,7 @@ class Emitter:
         # decision, so `as_set` is written here rather than at each site.
         passed = ", ".join(
             f"as_set<{pr.collection}>({pr.name})" if pr.collection else
-            f"from_bytes({pr.name})" if _is_bytes(pr.type) else
+            f"from_bytes({pr.name})" if pr.type.is_bytes else
             (f"{pr.name}.{pr.via}" if pr.via else pr.name)
             for pr in m.params)
         # A member is reached, not called. The declaration says which by
@@ -1227,7 +1214,7 @@ class Emitter:
         # A declared `Bytes` over a string, and the list of each. A string
         # is not one implicitly - `nb::bytes` takes only explicit
         # constructors - so the conversion is written here, once.
-        if m.returns.cxx in BYTES_SPELLINGS:
+        if m.returns.is_bytes or m.returns.bytes_list:
             return [*head, f"{INDENT * 4}return to_bytes({call});"]
         # A declared `list[T]` RETURN over a C++ collection that is not
         # a vector. libstore answers with a set almost everywhere, and the
@@ -1408,8 +1395,8 @@ class Emitter:
         me, held = self._self(cls)
         body = [*held, *opening] + [f"{INDENT * 4}const std::string {pr.name}_ = "
                 f"from_bytes({pr.name});"
-                for pr in m.params if _is_bytes(pr.type)]
-        names = ", ".join(f"{pr.name}_" if _is_bytes(pr.type) else pr.name
+                for pr in m.params if pr.type.is_bytes]
+        names = ", ".join(f"{pr.name}_" if pr.type.is_bytes else pr.name
                           for pr in m.params)
         call = f"{SELF}.{cls.held}::{m.cxx_name or m.name}({names})"
         release = ([f"{INDENT * 5}nb::gil_scoped_release nb_released;"]
@@ -1429,7 +1416,7 @@ class Emitter:
                      f"{INDENT * 4}for (auto & item : answer)",
                      f"{INDENT * 5}out.emplace(item.first, {word});",
                      f"{INDENT * 4}return out;"]
-        elif _is_bytes(m.returns):
+        elif m.returns is not None and m.returns.is_bytes:
             body += [f"{INDENT * 4}std::string answer;",
                      f"{INDENT * 4}{{", *release,
                      f"{INDENT * 5}answer = {call};",
@@ -2096,10 +2083,9 @@ class Emitter:
             body = _carried(written.cxx_body, 3)
         else:
             names = ", ".join(
-                f"from_bytes({n})" if t in BYTES_SPELLINGS
+                f"from_bytes({n})" if f.type.is_bytes or f.type.bytes_list
                 else self._rebuilt(f) or n
-                for (n, _, _), f, t in zip(fields, cls.wire_fields, types,
-                                           strict=True))
+                for (n, _, _), f in zip(fields, cls.wire_fields, strict=True))
             body = [f"{INDENT * 3}return {cls.held}({names});"]
         doc = _doc(written.doc) if written is not None and written.doc \
             else FROM_PARTS_DOC
@@ -2304,8 +2290,9 @@ class Emitter:
     def _converts_bytes(self, classes: Sequence[ir.ClassModel]) -> bool:
         """Whether any accessor here answers bytes, or a @virtual takes
         them, so a unit needs BYTES."""
-        return any((m.returns is not None and m.returns.cxx in BYTES_SPELLINGS)
-                   or (not m.cxx_body and any(_is_bytes(pr.type)
+        return any((m.returns is not None
+                    and (m.returns.is_bytes or m.returns.bytes_list))
+                   or (not m.cxx_body and any(pr.type.is_bytes
                                               for pr in m.params))
                    for cls in classes for m in cls.bound)
 

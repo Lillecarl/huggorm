@@ -164,6 +164,19 @@ class TypeRef:
     def container(self) -> bool:
         return self.origin in (Origin.LIST, Origin.DICT)
 
+    @property
+    def is_bytes(self) -> bool:
+        """`bytes` itself: not optional, not in a container."""
+        return not self.origin and self.name == "bytes"
+
+    @property
+    def bytes_list(self) -> bool:
+        return self.origin is Origin.LIST and self.args[0].is_bytes
+
+    @property
+    def holds_bytes(self) -> bool:
+        return self.leaf.is_bytes
+
     # Composing constructors, spelled the way the reader spells: a test
     # builds a shape the corpus does not declare without parsing text.
     @classmethod
