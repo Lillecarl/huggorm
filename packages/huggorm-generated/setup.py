@@ -6,9 +6,9 @@ wrote.
 default.nix), so the imports below are satisfied by the standard PEP
 517 build environment - no PYTHONPATH manipulation anywhere.
 
-`huggorm-bindings` is not among them. The generator reads the
-declarations and imports nothing compiled, which the assertion below
-holds it to.
+`huggorm-bindings` is not among them, and not in the build at all. The
+generator reads the declarations and imports nothing compiled, so an
+import of the bindings fails this build (huggorm#65, huggorm#145).
 
 The generation happens HERE, at import, rather than from a `build_py`
 hook. setuptools resolves and VALIDATES the package list while it
@@ -28,13 +28,11 @@ simplest way to say that is to write it first.
 
 import pathlib
 import shutil
-import sys
 
 from setuptools import setup
 from setuptools.command.build_py import build_py
 
 from huggorm_gen.pygen.generate import main as generate
-from huggorm_gen.pygen.smoke_test import main as smoke
 
 # The stub package's directory name, owned by the emitter so setup.py
 # and the generator cannot drift.
@@ -44,32 +42,6 @@ HERE = pathlib.Path(__file__).resolve().parent
 PKG_DIR = HERE / "huggorm_generated"
 
 generate(["--out", str(PKG_DIR)])
-
-# The generator did not import the compiled bindings, and this is
-# where that is PROVED rather than believed.
-#
-# Every Python surface used to be reflected off `huggorm_bindings`,
-# which put the async wrappers, the protocols, the RPC stubs and the
-# type stubs behind a C++ compiler for facts a declaration states.
-# Removing the imports one by one closed that (065), and nothing in
-# the code says so: a single `getattr(bindings, ...)` slipped back in
-# would work perfectly and quietly restore the dependency.
-#
-# `sys.modules`, not a missing package. The module IS importable here
-# - it is propagated, because the generated wrappers import it at RUN
-# time - so absence would prove nothing and could not be arranged
-# without breaking the check phase. What is checked is that nothing
-# reached for it.
-#
-# Before `smoke`, which imports it on purpose. The smoke tests COMPARE
-# what was emitted against what compiled, and that is the one job an
-# import is right for.
-assert "huggorm_bindings" not in sys.modules, (
-    "the generator imported huggorm_bindings. Every Python surface is "
-    "derived from the declarations; reflecting on the compiled package "
-    "puts them all behind a C++ compiler again (huggorm#65).")
-
-smoke(["--out", str(PKG_DIR)])
 
 
 class build_with_stubs(build_py):

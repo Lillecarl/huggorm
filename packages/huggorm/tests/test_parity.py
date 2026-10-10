@@ -1,7 +1,7 @@
 """One operation, three surfaces, one answer.
 
 The premise of this repo is that a declaration decides every surface,
-so the surfaces cannot disagree. `smoke_test.py` holds them to each
+so the surfaces cannot disagree. `test_emitted.py` holds them to each
 other by SIGNATURE - same names, same parameter types, same returns -
 and a signature is not a result. Two implementations can agree on
 every annotation and still answer differently, and the places they

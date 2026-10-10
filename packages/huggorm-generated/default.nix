@@ -1,7 +1,8 @@
 {
   lib,
   python3Packages,
-  huggorm-bindings,
+  # The Nix the surface describes (huggorm#55).
+  version,
   zuban,
   ruff,
   # The declarations, and the reader that turns them into the model.
@@ -20,12 +21,11 @@ python3Packages.buildPythonPackage {
 
   # setup.py imports huggorm_gen.pygen to run it.
   #
-  # huggorm-bindings is NOT a build requirement any more. The
-  # generator derives every surface from the declarations, so nothing
-  # here needs the compiled package to be built first (065). It is
-  # still propagated below, because the wrappers this build WRITES
-  # import it at run time - and setup.py asserts that generation
-  # never touched it.
+  # huggorm-bindings is not an input at all. The generator derives
+  # every surface from the declarations (huggorm#65), so this builds
+  # beside the compile and not after it (huggorm#145). The wrappers it
+  # writes import the bindings at run time, so a consumer installs both:
+  # `huggorm` propagates the two, and imports them in its check.
   build-system = [
     python3Packages.setuptools
     huggorm-gen
@@ -39,13 +39,15 @@ python3Packages.buildPythonPackage {
   # a type when the bindings declare one: Store.real_path returns a
   # pathlib.Path in process and an anyio.Path from the wrapper, so the
   # emitted module imports anyio (huggorm#40).
-  propagatedBuildInputs = [ huggorm-bindings python3Packages.anyio ];
+  propagatedBuildInputs = [ python3Packages.anyio ];
+  # The metadata names huggorm-bindings, truthfully, and this build has
+  # none. `huggorm` installs both and imports both in its check.
+  dontCheckRuntimeDeps = true;
 
   # pygen lays its output out with `ruff format`.
   nativeBuildInputs = [ ruff ];
 
-  # The surface describes the Nix the bindings link (huggorm#55).
-  env.HUGGORM_NIX_VERSION = huggorm-bindings.nixVersion;
+  env.HUGGORM_NIX_VERSION = version;
 
   # The emitted package and the stubs, checked as a pair. This is the
   # claim huggorm#17 and huggorm#27 make - that a consumer can be
@@ -65,6 +67,4 @@ python3Packages.buildPythonPackage {
       huggorm_generated
     runHook postCheck
   '';
-
-  pythonImportsCheck = [ "huggorm_generated" ];
 }

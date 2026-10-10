@@ -339,8 +339,8 @@ def census_markers(have: Any) -> None:
     supported.
 
     `@abstract` is why this exists. It has a table entry, three
-    emitter branches and a smoke-test assertion, and no declaration
-    has carried it since the mock went (huggorm#60). The smoke test
+    emitter branches and a test assertion, and no declaration
+    has carried it since the mock went (huggorm#60). The test
     says so in a comment, where a person finds it only by reading the
     branch that never fires - so the build says it now.
 

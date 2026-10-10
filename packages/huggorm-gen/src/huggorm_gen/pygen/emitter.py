@@ -649,7 +649,7 @@ def wrapper_module(model: ir.Model, c: ir.ClassModel) -> ast.Module:
         runner=runner, svc=svc, name=name,
         values=", ".join(f"unwrap_arg({p.name})" for p in c.ctor))
     # `unwrap_arg` only when the factory calls it: an unused import is
-    # what the smoke gate rejects.
+    # what `test_no_unused_imports` rejects.
     return _async_module(
         model, c, doc,
         f"Async in-process wrapper over {svc}. The object is constructed "
@@ -717,8 +717,8 @@ def protocol_module(model: ir.Model) -> ast.Module:
             name=model_cls.protocol_name, bases=[ast.Name(id="Protocol")],
             keywords=[], body=[],
             # isinstance() against this checks that the method NAMES are
-            # present and nothing more. The signature gate in the smoke
-            # test is what proves an implementation really conforms.
+            # present and nothing more. `test_conformance` is what proves
+            # an implementation really conforms.
             decorator_list=[ast.Name(id="runtime_checkable")],
             type_params=[])
         withheld = sorted(
