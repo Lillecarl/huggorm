@@ -1,5 +1,4 @@
 {
-  lib,
   python3Packages,
   huggorm-bindings,
   huggorm-generated,
@@ -12,19 +11,11 @@
   nix,
   ruff,
   zuban,
+  # The suite branches on the `NIX_2_3x` names, and a type checker holds
+  # a name constant only when told to.
+  checkerFlags,
   ...
 }:
-let
-  # The suite branches on `NIX_2_35` and `NIX_2_36`, and a type checker
-  # holds a name constant only when told to. `majorMinor`, because
-  # `2.36pre...` sorts BEFORE `2.36` in `versionAtLeast` (huggorm#55).
-  nixVersion = lib.versions.majorMinor huggorm-bindings.nixVersion;
-  versionFlags = lib.concatMapStringsSep " " (
-    at:
-    (if lib.versionAtLeast nixVersion at then "--always-true" else "--always-false")
-    + " NIX_${lib.replaceStrings [ "." ] [ "_" ] at}"
-  ) [ "2.35" "2.36" ];
-in
 python3Packages.buildPythonPackage {
   pname = "huggorm";
   version = "0.1.0";
@@ -112,7 +103,7 @@ python3Packages.buildPythonPackage {
     echo "--- typecheck ---"
     zuban mypy --strict \
       --python-executable ${python3Packages.python.interpreter} \
-      ${versionFlags} \
+      ${checkerFlags} \
       huggorm tests
     echo "--- pytest (hermetic only) ---"
     # -m "not live": a build sandbox has no daemon, no db and no

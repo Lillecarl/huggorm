@@ -58,6 +58,37 @@ rec {
     pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
   versions = import ./nix/versions.nix { inherit pkgs; };
+  nixes = lib.filterAttrs (_: v: v ? components) versions;
+
+  # Each Nix's `major.minor`, oldest first. `majorMinor`, because
+  # `2.36pre...` sorts BEFORE `2.36` in `versionAtLeast` (huggorm#55).
+  #
+  # The oldest is the BASE: the default lane, and the version a reader
+  # with no `HUGGORM_NIX_VERSION` sees. Every later one is a GATE, a
+  # `NIX_2_3x` name a declaration branches on. A gate means "this
+  # version or later", so the base cannot be any but the oldest.
+  minors =
+    let
+      sorted = lib.sort (a: b: lib.versionOlder a.minor b.minor) (
+        lib.mapAttrsToList (lane: v: {
+          inherit lane;
+          minor = lib.versions.majorMinor v.components.version;
+        }) nixes
+      );
+    in
+    {
+      base = lib.head sorted;
+      gates = map (v: v.minor) (lib.tail sorted);
+    };
+  gateName = at: "NIX_${lib.replaceStrings [ "." ] [ "_" ] at}";
+
+  # What a type checker holds constant for the Nix `minor`. It never
+  # evaluates a comparison, only a name it is told about.
+  checkerFlags =
+    minor:
+    lib.concatMapStringsSep " " (
+      at: (if lib.versionAtLeast minor at then "--always-true " else "--always-false ") + gateName at
+    ) minors.gates;
 
   # The variants a lane can instrument its Nix and the bindings with.
   # `nix/sanitizer.nix` gives each one's rules.
@@ -145,6 +176,7 @@ rec {
           else
             patched.overrideAllMesonComponents sanitizer.mesonComponentOverrides;
         inherit (self.nixComponents) version;
+        checkerFlags = checkerFlags (lib.versions.majorMinor self.version);
         # The CLI. nixpkgs' `nix_2_34` is `nix-everything`, which also
         # builds the manual and runs Nix's functional tests.
         nix = self.nixComponents.nix-cli;
@@ -196,6 +228,9 @@ rec {
                 ]))
               ];
               HUGGORM_NIX_VERSION = self.version;
+              # `test_versions.py` holds `declare.py` to these.
+              HUGGORM_NIX_BASE = minors.base.minor;
+              HUGGORM_NIX_GATES = toString minors.gates;
               # `$src` is read-only, and the emitter's ruff writes a cache
               # into the working directory.
               PYTHONDONTWRITEBYTECODE = "1";
@@ -275,47 +310,35 @@ rec {
       }
     );
 
-  # Every lane, by the name nanopynix's CI uses. nix_2_34 is the default
-  # below. ASAN needs `gc = false`, so `-asan` is also a lane with no
-  # collector.
-  lanes = {
-    nix_2_34 = mkLane versions.nix_2_34;
-    nix_2_34-nogc = mkLane (versions.nix_2_34 // { gc = false; });
-    nix_2_34-tsan = mkLane (versions.nix_2_34 // { sanitizer = sanitizers.tsan; });
-    nix_2_34-ubsan = mkLane (versions.nix_2_34 // { sanitizer = sanitizers.ubsan; });
-    nix_2_34-asan = mkLane (
-      versions.nix_2_34
-      // {
-        sanitizer = sanitizers.asan;
-        gc = false;
-      }
-    );
-
-    nix_2_35 = mkLane versions.nix_2_35;
-    nix_2_35-nogc = mkLane (versions.nix_2_35 // { gc = false; });
-    nix_2_35-tsan = mkLane (versions.nix_2_35 // { sanitizer = sanitizers.tsan; });
-    nix_2_35-ubsan = mkLane (versions.nix_2_35 // { sanitizer = sanitizers.ubsan; });
-    nix_2_35-asan = mkLane (
-      versions.nix_2_35
-      // {
-        sanitizer = sanitizers.asan;
-        gc = false;
-      }
-    );
-
-    git = mkLane versions.git;
-    git-nogc = mkLane (versions.git // { gc = false; });
-    git-tsan = mkLane (versions.git // { sanitizer = sanitizers.tsan; });
-    git-ubsan = mkLane (versions.git // { sanitizer = sanitizers.ubsan; });
-    git-asan = mkLane (
-      versions.git
-      // {
-        sanitizer = sanitizers.asan;
-        gc = false;
-      }
-    );
+  # What each lane adds to its Nix, by the suffix of the lane's name.
+  # ASAN needs `gc = false`, so `-asan` is also a lane with no collector.
+  variants = {
+    "" = { };
+    nogc.gc = false;
+    tsan.sanitizer = sanitizers.tsan;
+    ubsan.sanitizer = sanitizers.ubsan;
+    asan = {
+      sanitizer = sanitizers.asan;
+      gc = false;
+    };
   };
-  inherit (lanes.nix_2_34)
+
+  # Every lane, by the name nanopynix's CI uses: each Nix in
+  # `nix/versions.nix` with each variant.
+  lanes = lib.listToAttrs (
+    lib.concatLists (
+      lib.mapAttrsToList (
+        version: attrs:
+        lib.mapAttrsToList (
+          suffix: extra:
+          lib.nameValuePair (if suffix == "" then version else "${version}-${suffix}") (
+            mkLane (attrs // extra)
+          )
+        ) variants
+      ) nixes
+    )
+  );
+  inherit (lanes.${minors.base.lane})
     nix
     boehmgc
     huggorm-bindings
@@ -337,7 +360,7 @@ rec {
     lib.mapAttrsToList (name: _: {
       inherit name;
       path = lanes.${name}.bindings-src;
-    }) (lib.filterAttrs (_: v: v ? components) versions)
+    }) nixes
   );
 
   # nix build --file . generator-tests
@@ -347,7 +370,7 @@ rec {
     lib.mapAttrsToList (name: _: {
       inherit name;
       path = lanes.${name}.generator-tests;
-    }) (lib.filterAttrs (_: v: v ? components) versions)
+    }) nixes
   );
 
   # nix run --file . python -- $args
@@ -427,17 +450,23 @@ rec {
       # own run under the same configuration.
       echo "--- typecheck: every tree mypy.ini names ---"
       zuban mypy --python-executable "${ourPython}/bin/python3"
-      # The declarations branch on `NIX_2_35` and `NIX_2_36`, and
-      # `mypy.ini` holds both false, so each later Nix gets a run of
-      # its own. The suite and the generated surface need no such run
-      # here: each version's own build typechecks them (huggorm#55).
-      echo "--- typecheck: the declarations, for 2.35 and 2.36 ---"
-      zuban mypy --python-executable "${ourPython}/bin/python3" \
-        --always-true NIX_2_35 --always-false NIX_2_36 \
-        packages/huggorm-dsl/src/huggorm_dsl packages/huggorm-decl/src/huggorm_decl
-      zuban mypy --python-executable "${ourPython}/bin/python3" \
-        --always-true NIX_2_35 --always-true NIX_2_36 \
-        packages/huggorm-dsl/src/huggorm_dsl packages/huggorm-decl/src/huggorm_decl
+      # An editor reads `mypy.ini`, so it names the gates itself. It
+      # holds every one false: the base Nix.
+      grep --quiet --line-regexp --fixed-strings \
+        "always_false = ${lib.concatMapStringsSep ", " gateName minors.gates}" mypy.ini || {
+        echo "mypy.ini: always_false must name ${toString (map gateName minors.gates)}" >&2
+        exit 1
+      }
+      # The declarations branch on the gates, so each later Nix gets a
+      # run of its own. The suite and the generated surface need no
+      # such run here: each version's own build typechecks them
+      # (huggorm#55).
+      echo "--- typecheck: the declarations, for ${toString minors.gates} ---"
+      ${lib.concatMapStrings (at: ''
+        zuban mypy --python-executable "${ourPython}/bin/python3" \
+          ${checkerFlags at} \
+          packages/huggorm-dsl/src/huggorm_dsl packages/huggorm-decl/src/huggorm_decl
+      '') minors.gates}
       echo "--- typecheck: the setup scripts ---"
       zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-bindings/setup.py
       zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-generated/setup.py

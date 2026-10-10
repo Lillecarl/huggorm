@@ -161,6 +161,8 @@ NIX_VERSION: tuple[int, int] = _nix_version()
 # The same fact as names, because a type checker holds a NAME constant
 # (`--always-true NIX_2_35`) and never a comparison. The declarations
 # and the suite branch on these, so each is typechecked once per Nix.
+# The names and the default above are literal for the checker, and
+# huggorm-gen's `test_versions.py` holds them to `nix/versions.nix`.
 NIX_2_35: bool = NIX_VERSION >= (2, 35)
 NIX_2_36: bool = NIX_VERSION >= (2, 36)
 
