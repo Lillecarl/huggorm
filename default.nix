@@ -3,6 +3,12 @@
   # the umbrella's lock, so huggorm builds the Nix nanopynix builds.
   sources ? import ./nix/sources.nix,
   pkgs ? import sources.nixpkgs { },
+  # The interpreter everything here builds for. The generator needs
+  # 3.14, and a release nixpkgs can default to an older one.
+  python3 ? pkgs.python3,
+  # True for each pin in `byNixpkgs`: a pin holds no pins and no master
+  # lane.
+  pin ? false,
 }:
 rec {
   inherit pkgs;
@@ -11,23 +17,23 @@ rec {
   # parses one. No declaration and no emitter is in here, which is
   # what lets the two below depend on it without depending on each
   # other.
-  huggorm-dsl = pkgs.python3Packages.buildPythonPackage {
+  huggorm-dsl = python3.pkgs.buildPythonPackage {
     pname = "huggorm-dsl";
     version = "0.1.0";
     pyproject = true;
     src = ./packages/huggorm-dsl;
-    build-system = [ pkgs.python3Packages.setuptools ];
+    build-system = [ python3.pkgs.setuptools ];
     pythonImportsCheck = [ "huggorm_dsl" ];
   };
   # The DECLARATIONS: one document per Nix class, and the lists
   # saying which of them owns a compiled module. Data, plus the
   # statement of what data there is.
-  huggorm-decl = pkgs.python3Packages.buildPythonPackage {
+  huggorm-decl = python3.pkgs.buildPythonPackage {
     pname = "huggorm-decl";
     version = "0.1.0";
     pyproject = true;
     src = ./packages/huggorm-decl;
-    build-system = [ pkgs.python3Packages.setuptools ];
+    build-system = [ python3.pkgs.setuptools ];
     dependencies = [ huggorm-dsl ];
     pythonImportsCheck = [ "huggorm_decl" ];
   };
@@ -37,7 +43,7 @@ rec {
   #
   # One package because they read ONE IR from one reader. A boundary
   # between them would say the split is architectural, and it is not.
-  huggorm-gen = pkgs.python3Packages.buildPythonPackage {
+  huggorm-gen = python3.pkgs.buildPythonPackage {
     pname = "huggorm-gen";
     version = "0.1.0";
     pyproject = true;
@@ -50,7 +56,7 @@ rec {
         ./packages/huggorm-gen/src
       ];
     };
-    build-system = [ pkgs.python3Packages.setuptools ];
+    build-system = [ python3.pkgs.setuptools ];
     dependencies = [
       huggorm-dsl
       huggorm-decl
@@ -58,10 +64,12 @@ rec {
     pythonImportsCheck = [ "huggorm_gen.cppgen" ];
   };
   versions = import ./nix/versions.nix { inherit pkgs; };
-  nixes = lib.filterAttrs (_: v: v ? components) versions;
+  # The Nixes this nixpkgs gets lanes for. A pin skips the master lane:
+  # a release holds an older master than the minor the lane states.
+  nixes = lib.filterAttrs (_: v: v ? components && !(pin && v.master or false)) versions;
 
-  # Each Nix's `major.minor`, oldest first. `majorMinor`, because
-  # `2.36pre...` sorts BEFORE `2.36` in `versionAtLeast` (huggorm#55).
+  # Each Nix's `major.minor`, oldest first, from `nix/versions.nix` and
+  # not from the pin, so every pin shares the declarations' gates.
   #
   # The oldest is the BASE: the default lane, and the version a reader
   # with no `HUGGORM_NIX_VERSION` sees. Every later one is a GATE, a
@@ -72,8 +80,10 @@ rec {
       sorted = lib.sort (a: b: lib.versionOlder a.minor b.minor) (
         lib.mapAttrsToList (lane: v: {
           inherit lane;
-          minor = lib.versions.majorMinor v.components.version;
-        }) nixes
+          inherit (v) minor;
+        }) (
+          lib.filterAttrs (_: v: v ? components) versions
+        )
       );
     in
     {
@@ -122,15 +132,31 @@ rec {
     `wheels`
     : False when PyPA's manylinux image cannot build this Nix. A lane has
       `manylinux` wheels only with this, the collector and no sanitizer.
+
+    `minor`
+    : The `major.minor` the lane states in `nix/versions.nix`.
+
+    `master`
+    : True for the lane that follows Nix master. `nixes` reads it.
   */
   mkLane =
     {
       components,
       patches,
+      minor,
+      master ? false,
       gc ? true,
       sanitizer ? null,
       wheels ? true,
     }:
+    # `majorMinor`, because `2.36pre...` sorts BEFORE `2.36` in
+    # `versionAtLeast` (huggorm#55).
+    assert lib.assertMsg (lib.versions.majorMinor components.version == minor) ''
+      nix/versions.nix states ${minor}, and this nixpkgs gives
+      ${components.version}. A master that moved to a new minor needs
+      its `NIX_2_3x` name in declare.py and mypy.ini, and a new minor
+      here.
+    '';
     assert lib.assertMsg (!(sanitizer.requiresNoGC or false) || !gc) ''
       The ${sanitizer.name} sanitizer needs `gc = false`: libexpr's meson
       refuses the collector with it, after a rebuild of the whole closure.
@@ -152,7 +178,7 @@ rec {
           huggorm-decl
           huggorm-gen
           ;
-        inherit (pkgs) python3Packages;
+        python3Packages = python3.pkgs;
 
         nixComponents =
           let
@@ -176,7 +202,7 @@ rec {
           else
             patched.overrideAllMesonComponents sanitizer.mesonComponentOverrides;
         inherit (self.nixComponents) version;
-        checkerFlags = checkerFlags (lib.versions.majorMinor self.version);
+        checkerFlags = checkerFlags minor;
         # The CLI. nixpkgs' `nix_2_34` is `nix-everything`, which also
         # builds the manual and runs Nix's functional tests.
         nix = self.nixComponents.nix-cli;
@@ -220,7 +246,7 @@ rec {
               };
               nativeBuildInputs = [
                 pkgs.ruff
-                (pkgs.python3.withPackages (ps: [
+                (python3.withPackages (ps: [
                   huggorm-gen
                   huggorm-decl
                   huggorm-dsl
@@ -373,12 +399,47 @@ rec {
     }) nixes
   );
 
+  # nix build --file . byNixpkgs.release.lanes.nix_2_35.huggorm
+  #
+  # This file again, on another nixpkgs, with that nixpkgs' Python 3.14.
+  # `release` follows the latest NixOS release (huggorm#108).
+  byNixpkgs = lib.optionalAttrs (!pin) {
+    release =
+      let
+        release = import sources.nixpkgs-release { };
+      in
+      import ./. {
+        inherit sources;
+        pkgs = release;
+        python3 = release.python314;
+        pin = true;
+      };
+  };
+
+  # nix build --file . every-pin
+  #
+  # Each pin's emitted C++ and generator suite, with no compile.
+  every-pin = pkgs.linkFarm "huggorm-every-pin" (
+    lib.concatLists (
+      lib.mapAttrsToList (name: p: [
+        {
+          name = "${name}-src";
+          path = p.every-nix-src;
+        }
+        {
+          name = "${name}-generator-tests";
+          path = p.generator-tests;
+        }
+      ]) byNixpkgs
+    )
+  );
+
   # nix run --file . python -- $args
   # to be able to run Python commands
-  python = pkgs.python3;
+  python = python3;
   # nix run --file . python -- $args
   # to be able to run Python commands with our packages loaded
-  ourPython = pkgs.python3.withPackages (
+  ourPython = python3.withPackages (
     ps: with ps; [
       huggorm-bindings
       huggorm-generated
@@ -479,6 +540,7 @@ rec {
       echo "--- clang -Werror: ${huggorm-bindings-clang} ---"
       echo "--- tcp:// over loopback: ${nix-tcp-store-check} ---"
       echo "--- emitted C++ for every Nix: ${every-nix-src} ---"
+      echo "--- emitted C++ and the generator's suite for every nixpkgs pin: ${every-pin} ---"
       echo "--- the generator's suite for every Nix: ${generator-tests} ---"
       echo "all checks passed"
     '';
@@ -599,7 +661,7 @@ rec {
     pkgs.runCommand "huggorm-bindings-src"
       {
         nativeBuildInputs = [
-          (pkgs.python3.withPackages (_: [
+          (python3.withPackages (_: [
             huggorm-gen
             huggorm-decl
             huggorm-dsl

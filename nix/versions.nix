@@ -1,7 +1,11 @@
 /**
-  The Nix versions huggorm builds, each with the nixpkgs component scope
-  it starts from and every patch huggorm puts on it. Each patch file
-  starts with its reason and its measurement.
+  The Nix versions huggorm builds, each with its `major.minor`, the
+  nixpkgs component scope it starts from and every patch huggorm puts on
+  it. Each patch file starts with its reason and its measurement.
+
+  The minors are huggorm's own fact: the oldest is the base, and each
+  later one is a `NIX_2_3x` name the declarations branch on. A lane
+  refuses a component scope of another minor.
 
   The order of a list is part of the derivation. A reordered list builds
   the same Nix under a different store path.
@@ -47,6 +51,7 @@ let
 in
 {
   nix_2_34 = {
+    minor = "2.34";
     components = pkgs.nixVersions.nixComponents_2_34;
     patches = [
       emptyBindings
@@ -62,6 +67,7 @@ in
     ];
   };
   nix_2_35 = {
+    minor = "2.35";
     components = pkgs.nixVersions.nixComponents_2_35;
     patches = [
       emptyBindings
@@ -77,8 +83,11 @@ in
     ];
   };
   # Unpinned on purpose: it follows nixpkgs' `nixComponents_git`, so a
-  # patch that stops applying fails here first.
+  # patch that stops applying fails here first. A release nixpkgs holds
+  # an older master, so a pin in `byNixpkgs` has no git lane.
   git = {
+    minor = "2.36";
+    master = true;
     components = pkgs.nixVersions.nixComponents_git;
     patches = [
       baseEnvSize
