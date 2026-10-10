@@ -2258,3 +2258,43 @@ def test_a_vocabulary_nothing_converts_is_refused(
     with pytest.raises(TypeError, match=f"{re.escape(what)} .* nothing "
                                         f"converts here"):
         _vocabulary(tmp_path, declared)
+
+
+HANDLES = '''"""A store that takes and answers handles."""
+
+from huggorm_dsl.declare import binding, header
+
+
+@header("nix/expr/value.hh")
+@binding(cxx="huggorm::Value", via="get()", threading="pool",
+         blocking=False)
+class Value:
+    """A handle."""
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """A store."""
+
+    def METHOD
+'''
+
+
+@pytest.mark.parametrize(("method", "what"), [
+    ('take(self, values: list[Value]) -> None:\n        """Take."""',
+     "Store.take: parameter 'values'"),
+    ('give(self) -> dict[str, Value]:\n        """Give."""',
+     "Store.give: return")])
+def test_a_container_of_handles_is_refused(
+        tmp_path: pathlib.Path, method: str, what: str) -> None:
+    """`via` unwraps one handle and the return wraps one. A container
+    of them has neither (huggorm#139)."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+
+    with pytest.raises(TypeError, match=f"{re.escape(what)} .* `Value` "
+                                        f"that nothing converts here"):
+        ir.ModuleModel.of(read(_declaration(
+            tmp_path, HANDLES.replace("METHOD", method))), "")
+

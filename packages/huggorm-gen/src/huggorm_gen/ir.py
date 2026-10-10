@@ -434,13 +434,14 @@ def _spells(m: Method, where: str, resolver: Resolver) -> tuple[str, ...]:
 
 def _unconverted(m: Method, where: str, resolver: Resolver, *,
                  scalars: bool) -> None:
-    """Refuse a vocabulary no emitted line converts.
+    """Refuse a vocabulary or a handle no emitted line converts.
 
-    `_derived` parses a vocabulary parameter and renders a vocabulary
-    return, one value each. A container of them has no such line, and
-    a bound name is called with what nanobind casts: a C++ enum that
-    no Python value converts to. Either way the failure would be a
-    call that raises, far from the declaration (huggorm#139)."""
+    `_derived` parses a vocabulary parameter, renders a vocabulary
+    return, and unwraps or wraps a handle, one value each. A container
+    of them has no such line, and a bound name is called with what
+    nanobind casts: the C++ type, not the declared one. The failure
+    would be a compiler error or a call that raises, far from the
+    declaration (huggorm#139)."""
     if m.cxx_body is not None:
         return
     for t, what in [*((p.type, f"parameter {p.name!r}") for p in m.params),
@@ -449,13 +450,13 @@ def _unconverted(m: Method, where: str, resolver: Resolver, *,
             continue
         leaf = t.leaf
         held = resolver.known.get(leaf.python)
-        converts = (cxx.parsed_by(leaf, resolver.known) if what != "return"
-                    else held is not None and held.is_words
-                    and held.decl.enumerated)
-        if converts:
+        word = (cxx.parsed_by(leaf, resolver.known) if what != "return"
+                else held is not None and held.is_words
+                and held.decl.enumerated)
+        if word or cxx.handle(leaf, resolver.known) is not None:
             raise TypeError(
-                f"{where}: {what} `{t.python}` holds a vocabulary that "
-                f"nothing converts here. Carry a Cxx body.")
+                f"{where}: {what} `{t.python}` holds a `{leaf.python}` "
+                f"that nothing converts here. Carry a Cxx body.")
 
 
 def _attribute(owner: Class, m: Method) -> TypeError:
