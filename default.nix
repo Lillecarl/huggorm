@@ -392,6 +392,8 @@ rec {
       echo "--- typecheck: the setup scripts ---"
       zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-bindings/setup.py
       zuban mypy --python-executable "${ourPython}/bin/python3" packages/huggorm-generated/setup.py
+      zuban mypy --python-executable "${ourPython}/bin/python3" \
+        packages/huggorm-bindings/_backend/huggorm_bindings_backend.py
       echo "--- typecheck: the emitted package ---"
       zuban mypy --python-executable "${ourPython}/bin/python3" \
         "${huggorm-generated}/lib/python3.14/site-packages/huggorm_generated"

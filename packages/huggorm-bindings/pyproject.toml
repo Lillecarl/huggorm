@@ -1,6 +1,7 @@
 [build-system]
-requires = ["setuptools", "nanobind", "huggorm-gen", "huggorm-decl"]
-build-backend = "setuptools.build_meta"
+requires = ["setuptools", "nanobind"]
+build-backend = "huggorm_bindings_backend"
+backend-path = ["_backend"]
 
 [project]
 name = "huggorm-bindings"

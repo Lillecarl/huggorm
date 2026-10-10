@@ -1,9 +1,11 @@
 {
   lib,
   python3Packages,
-  huggorm-gen,
+  # The emitted C++ for this lane. setup.py compiles it and runs no
+  # generator, so the census prints once, in its own log.
+  bindings-src,
+  # For its headers only.
   huggorm-decl,
-  huggorm-dsl,
   boehmgc,
   # The Nix libraries this binds, as components rather than the nix
   # package. `nix` is the CLI and drags its whole closure; a binding
@@ -43,15 +45,11 @@ python3Packages.buildPythonPackage {
 
   build-system = with python3Packages; [
     setuptools
-    # nanobind, and the declarations. There is no Cython here at all:
-    # every module is C++ written from a declaration before this
-    # builds, and setup.py reads the module list out of huggorm-decl
-    # rather than naming them again.
     nanobind
-    huggorm-gen
-    huggorm-decl
-    huggorm-dsl
   ];
+
+  env.HUGGORM_BINDINGS_EMITTED = bindings-src;
+  env.HUGGORM_DECL_INCLUDE = "${huggorm-decl}/${python3Packages.python.sitePackages}";
 
   # pkg-config finds real Nix. It is how nix ships its build interface:
   # nix-store.pc carries -std=c++23 and a Requires chain that a
@@ -67,10 +65,6 @@ python3Packages.buildPythonPackage {
 
   propagatedBuildInputs = nixLibs;
 
-  # The Nix a declaration's `NIX_VERSION` branch picks an arm for
-  # (huggorm#55). Exported, so every build that emits a surface for
-  # these bindings describes the same Nix.
-  env.HUGGORM_NIX_VERSION = nix-store.version;
   passthru.nixVersion = nix-store.version;
   # Whether libexpr allocates through the collector: its tests ask
   # the build, never the binding they test.

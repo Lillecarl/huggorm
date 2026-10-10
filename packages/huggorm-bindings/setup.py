@@ -24,7 +24,9 @@ PACKAGE = os.path.join(HERE, "huggorm_bindings")
 #
 # HUGGORM_BINDINGS_EMITTED names a tree the emitter already wrote. The
 # emitter needs Python 3.14, so a wheel for 3.10 to 3.13 compiles the
-# tree a 3.14 run wrote (huggorm#107). Its module list is the `.cpp`
+# tree a 3.14 run wrote (huggorm#107). The Nix build compiles its
+# lane's `bindings-src` the same way, so the emitter runs once per lane
+# (huggorm#145). Its module list is the `.cpp`
 # files in it, one per module, which is what the emitter writes. The
 # imports stay inside the branch: the generator cannot import there.
 EMITTED = os.environ.get("HUGGORM_BINDINGS_EMITTED")
