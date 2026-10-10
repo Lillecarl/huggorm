@@ -1082,8 +1082,10 @@ inline Bridge Evaluator::make_primop(const std::string & name,
 
 /**
  * A Nix environment that later expressions see, as `nix repl` keeps
- * one. `nix::NixRepl` holds the same three things in libcmd, which
- * huggorm does not link; `env_size` is its `envSize`.
+ * one. `nix::NixRepl` holds the same three things, and `env_size` is
+ * its `envSize`. huggorm links libcmd, but `NixRepl` is defined only
+ * in `repl.cc`: `repl.hh` exposes `AbstractNixRepl`, whose one entry
+ * is the interactive `mainLoop`, so no call evaluates one line.
  *
  * THE ROOT IS THE TRAP. `allocEnv` returns collector memory, and this
  * struct lives in the Python heap, which Boehm does not scan. A plain
