@@ -2024,3 +2024,26 @@ def test_posted_reaches_the_hook_table(tmp_path: pathlib.Path) -> None:
     cls = ir.ClassModel.of(module.classes[0], "pkg", "mod",
                            ir.Resolver.of(module))
     assert [(m.name, m.posted) for m in cls.hooks] == [("write", True)]
+
+
+@pytest.mark.parametrize("decorator", [
+    "@d.binding(cxx=\"x::Stream\")", "@d.in_process", "@typing.final"])
+def test_a_decorator_that_is_not_a_bare_name_is_refused(
+        tmp_path: pathlib.Path, decorator: str) -> None:
+    """The reader matches markers by name in the AST. An attribute form
+    still works through the import, so every AST check would skip it
+    (huggorm#140)."""
+    from huggorm_dsl.read import DeclarationError, read
+
+    source = (
+        '"""A class."""\n\n'
+        "import typing\n\n"
+        "import huggorm_dsl.declare as d\n"
+        "from huggorm_dsl.declare import binding, header\n\n\n"
+        f"{decorator}\n"
+        '@header("x.hpp")\n'
+        '@binding(cxx="x::Other")\n'
+        "class Stream:\n"
+        '    """A stream."""\n')
+    with pytest.raises(DeclarationError, match="bare name"):
+        read(_declaration(tmp_path, source))

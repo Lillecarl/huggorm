@@ -985,8 +985,14 @@ def _check_markers(decorators: list[ast.expr], kind: str) -> None:
         elif isinstance(node, ast.Name):
             name, called = node.id, False
         else:
-            continue
-        if not name or name in BUILTIN_DECORATORS:
+            name = ""
+        if not name:
+            # The import would still apply `@d.reads(...)`, and every
+            # reader of the AST would miss it (huggorm#140).
+            raise DeclarationError(
+                node, "write a decorator as a bare name: "
+                "import the marker, and use @reads, not @d.reads")
+        if name in BUILTIN_DECORATORS:
             continue
         rule = declare.MARKERS.get(name)
         if rule is None:
