@@ -72,11 +72,14 @@ class Entry:
 
 
 class Connection:
-    __slots__ = ("last_seen", "leases")
+    __slots__ = ("last_seen", "leases", "streams")
 
     def __init__(self) -> None:
         self.leases: dict[str, int] = {}
         self.last_seen = time.monotonic()
+        # A client can bind one token on a second stream, so the record
+        # outlives a closed stream while another one still uses it.
+        self.streams = 0
 
 
 class HandleTable:
@@ -108,6 +111,7 @@ class HandleTable:
             conn = self.connections[token] = Connection()
         else:
             conn.last_seen = time.monotonic()
+        conn.streams += 1
         # Escrowed leases were never subtracted from the entry (that is
         # what kept it alive with no owner), so adopting them MOVES the
         # lease back onto a connection - it does not create a new one.
@@ -120,6 +124,23 @@ class HandleTable:
             if hid in self.entries:
                 self._index(token, hid)
         return token
+
+    def unbind(self, token: str, conn: Connection) -> None:
+        """One stream that bound `conn` under this token closed. The
+        record goes with the last stream, if it holds no leases
+        (huggorm#159). One that holds leases stays for the sweeper, or
+        with no TTL for good: a lease lasts until a release.
+
+        `conn` is the record the stream bound, not the token's record
+        now: the sweeper can drop a silent token while its stream stays
+        open, and a later bind then makes a new record that this close
+        must not touch."""
+        if self.connections.get(token) is not conn:
+            return
+        conn.streams -= 1
+        if conn.streams == 0 and not conn.leases:
+            del self.connections[token]
+            self._unindex_all(token)
 
     def _conn_for(self, token: str) -> Connection:
         key = token or ANON
@@ -198,6 +219,12 @@ class HandleTable:
             if not bucket:
                 del self._by_obj[token]
         entry.tokens.discard(token)
+
+    def _unindex_all(self, token: str) -> None:
+        for hid in self._by_obj.pop(token, {}).values():
+            entry = self.entries.get(hid)
+            if entry is not None:
+                entry.tokens.discard(token)
 
     def touch(self, token: str, hid: str) -> bool:
         """Make this connection a holder of a handle it named. Returns
@@ -344,10 +371,7 @@ class HandleTable:
                 for hid, n in conn.leases.items():
                     self.entries[hid].leases -= n
                     released.append(hid)
-                for hid in self._by_obj.pop(t, {}).values():
-                    entry = self.entries.get(hid)
-                    if entry is not None:
-                        entry.tokens.discard(t)
+                self._unindex_all(t)
         return self._reap(released)
 
     def close(self) -> list[str]:

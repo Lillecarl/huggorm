@@ -1016,7 +1016,8 @@ class Dispatcher:
         cancels the connection's running calls, because nobody can
         read their answers. It releases nothing: the leases stay
         until the sweeper finds the token silent, or until a client
-        that detached claims them back."""
+        that detached claims them back. A token that holds no lease
+        and no other stream is forgotten."""
         try:
             await self._connection(stream)
         except Exception:
@@ -1046,7 +1047,14 @@ class Dispatcher:
                 f"huggorm"))])
             return
         token, ttl = self.bind(claim)
-        await channel.send([Op.WELCOME, token, ttl])
+        bound = self.table.connections[token]
+        try:
+            await channel.send([Op.WELCOME, token, ttl])
+            await self._serve(channel, token)
+        finally:
+            self.table.unbind(token, bound)
+
+    async def _serve(self, channel: Channel, token: str) -> None:
         running: dict[int, anyio.CancelScope] = {}
         back = (Callbacks(channel, self.codec, self.faults)
                 if self.callbacks else None)

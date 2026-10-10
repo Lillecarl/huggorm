@@ -14,7 +14,9 @@ Run:  nix develop --file . shell --command pytest huggorm/tests
 """
 
 
+import anyio
 import pytest
+from conftest import socket_path
 
 from huggorm.lifecycle import ANON, HandleTable, ShareMode
 
@@ -299,3 +301,94 @@ def test_touch_takes_ownership_back_after_detach() -> None:
     assert (
         t.escrow[a][ha] == 1 and t.entries[ha].leases == 2
     ), "escrow still holds the detached lease"
+
+
+def test_a_closed_stream_forgets_a_token_that_holds_nothing() -> None:
+    """With no TTL nothing sweeps, so the close is the only way the
+    record goes (huggorm#159)."""
+    t = table(ttl=None)
+    a = t.bind()
+    bound = t.connections[a]
+    obj = Obj("released")
+    t.release(a, t.put(obj, a))
+    keep = t.put(Obj("other holder"), t.bind())
+    t.touch(a, keep)
+    t.release(a, keep)
+    t.unbind(a, bound)
+    t.audit()
+    assert a not in t.connections
+    assert a not in t._by_obj
+    assert a not in t.entries[keep].tokens
+
+
+def test_a_closed_stream_keeps_a_token_that_holds_a_lease() -> None:
+    """A lease lasts until a release, with no TTL to end it."""
+    t = table(ttl=None)
+    a = t.bind()
+    h = t.put(Obj("held"), a)
+    t.unbind(a, t.connections[a])
+    t.audit()
+    assert t.connections[a].leases == {h: 1}
+
+
+def test_a_token_lives_while_another_stream_uses_it() -> None:
+    t = table(ttl=None)
+    a = t.bind()
+    bound = t.connections[a]
+    assert t.bind(a) == a, "a second stream binds the live token"
+    t.unbind(a, bound)
+    assert a in t.connections, "the second stream still uses it"
+    t.unbind(a, bound)
+    assert a not in t.connections
+
+
+def test_a_stale_stream_does_not_forget_a_new_record() -> None:
+    """The sweeper drops a silent token while its stream stays open. A
+    new bind of that token makes a new record, and the old stream's
+    close must not remove it."""
+    t = table(ttl=1.0)
+    a = t.bind()
+    stale = t.connections[a]
+    t.sweep(now=stale.last_seen + 10)
+    assert a not in t.connections
+    t.bind(a)
+    t.unbind(a, stale)
+    assert a in t.connections
+
+
+def test_a_detached_token_is_claimed_after_its_stream_closed() -> None:
+    """Detach empties the record, so the close forgets it. The escrow
+    stays under the token, and a bind with it claims the escrow."""
+    t = table(ttl=None)
+    a = t.bind()
+    h = t.put(Obj("detached"), a)
+    t.detach(a)
+    t.unbind(a, t.connections[a])
+    assert a not in t.connections
+    assert t.bind(a) == a
+    t.audit()
+    assert t.connections[a].leases == {h: 1}
+
+
+async def test_a_server_forgets_a_closed_connection() -> None:
+    """The server unbinds each stream that closes. In process, so the
+    test can read the table."""
+    from huggorm import remote, server
+
+    path = socket_path()
+    async with (anyio.create_task_group() as work,
+                anyio.create_task_group() as loops):
+        dispatcher = server.Dispatcher(work, loops, lease_ttl=0)
+        listener = await anyio.create_unix_listener(path)
+
+        async def serving() -> None:
+            await listener.serve(dispatcher.connection)
+
+        loops.start_soon(serving)
+        with anyio.fail_after(10):
+            async with remote.connect(path) as client:
+                token = client.token
+                assert token in dispatcher.table.connections
+            while token in dispatcher.table.connections:
+                await anyio.sleep(0.01)
+        loops.cancel_scope.cancel()
