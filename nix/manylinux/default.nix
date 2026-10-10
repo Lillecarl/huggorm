@@ -281,7 +281,18 @@ lib.makeScope pkgs.newScope (
       self.build {
         inherit pname;
         inherit (nixComponents) version;
-        src = ../../packages/huggorm;
+        # The suite and its configuration, and not the package. The
+        # script runs in this directory and `python -m` puts it first on
+        # sys.path, so a `huggorm/` here shadows the installed one. The
+        # tree holds the `__init__.py` that `check` writes, so the
+        # server and the client ran two builds and refused each other.
+        src = lib.fileset.toSource {
+          root = ../../packages/huggorm;
+          fileset = lib.fileset.difference (lib.fileset.unions [
+            ../../packages/huggorm/pyproject.toml
+            ../../packages/huggorm/tests
+          ]) (lib.fileset.maybeMissing ../../packages/huggorm/tests/__pycache__);
+        };
         script = ''
           ${interpreter py} -m pip install --no-index --no-deps --target /tmp/site ${self.wheels.${py}}/*.whl
           export PYTHONPATH=/tmp/site:${pythonPath pure}
