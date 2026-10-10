@@ -27,7 +27,6 @@ from huggorm_decl.decl.words import (
     TrustedFlag,
 )
 from huggorm_dsl.declare import (
-    NIX_2_36,
     U64,
     Bint,
     Bytes,
@@ -844,10 +843,7 @@ return nix::Realisation{*found, id};
         `eval_store` is where the `.drv` files are, when that is not
         this store: `nix --eval-store A --store B` builds in B from
         derivations A holds. None reads them from this store."""
-        if NIX_2_36:
-            Cxx("self.getBuilder(eval_store.value_or(nullptr))->buildPaths(targets, mode);")
-        else:
-            Cxx("self.buildPaths(targets, mode, eval_store.value_or(nullptr));")
+        Cxx("huggorm::build_paths(self, targets, mode, eval_store.value_or(nullptr));")
 
     @needs("nix/store/build-result.hh", "huggorm_decl/cpp/build.hpp")
     def build_paths_with_results(
@@ -875,13 +871,9 @@ return nix::Realisation{*found, id};
         not for a caller who asked something incoherent.
 
         `eval_store` is `build_paths`' own."""
-        if NIX_2_36:
-            Cxx("""
-return self.getBuilder(eval_store.value_or(nullptr))
-    ->buildPathsWithResults(targets, mode);
-            """)
-        else:
-            Cxx("return self.buildPathsWithResults(targets, mode, eval_store.value_or(nullptr));")
+        Cxx("""
+return huggorm::build_paths_with_results(self, targets, mode, eval_store.value_or(nullptr));
+        """)
     @needs("huggorm_decl/cpp/build.hpp")
     def ensure_path(self, path: StorePath) -> None:
         """Make this path valid, by substituting it if it is not.
@@ -894,10 +886,7 @@ return self.getBuilder(eval_store.value_or(nullptr))
 
         Already valid is a no-op. Nothing to substitute from raises,
         in libstore's own words."""
-        if NIX_2_36:
-            Cxx("self.getBuilder()->ensurePath(path);")
-        else:
-            Cxx("self.ensurePath(path);")
+        Cxx("huggorm::ensure_path(self, path);")
     @cxx_name("addTempRoot")
     def add_temp_root(self, path: StorePath) -> None:
         """Keep this path from the collector while the store is open.
@@ -953,7 +942,7 @@ return self.getBuilder(eval_store.value_or(nullptr))
 
         Raises when the path is not a valid derivation in this
         store."""
-    @needs("nlohmann/json.hpp")
+    @needs("nlohmann/json.hpp", "huggorm_decl/cpp/store.hpp")
     def add_derivation(self, json: Str) -> StorePath:
         """Write a derivation from Nix's JSON, and answer its path.
 
@@ -962,16 +951,10 @@ return self.getBuilder(eval_store.value_or(nullptr))
         invariants, and `writeDerivation` stores it. So a caller can
         take `Derivation.to_json()`, change it, and write the result
         without computing a hash itself."""
-        if NIX_2_36:
-            Cxx("""
-auto drv = nix::derivation::parseJsonAndValidate(self, nlohmann::json::parse(json));
+        Cxx("""
+auto drv = huggorm::derivation_from_json(self, nlohmann::json::parse(json));
 return self.writeDerivation(drv);
-            """)
-        else:
-            Cxx("""
-auto drv = nix::Derivation::parseJsonAndValidate(self, nlohmann::json::parse(json));
-return self.writeDerivation(drv);
-            """)
+        """)
     @needs("nix/store/derivations.hh")
     def write_derivation(self, drv: Derivation,
                          repair: Bint = False) -> StorePath:
