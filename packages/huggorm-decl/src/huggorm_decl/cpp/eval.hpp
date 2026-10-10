@@ -108,8 +108,7 @@ struct Repl;
 // (`eval.hh:481`), and the accessor every read goes through is a
 // `const ref<SourceAccessor>` the constructor builds from the
 // settings alone (`eval.cc:267`), so there is nothing to substitute
-// on the way in either. Upstream is moving further this way: 2.36pre
-// makes `rootFS` private too.
+// on the way in either.
 //
 // So the cache is reached the one way the standard allows without a
 // patch. [temp.spec]/6: access checking is NOT performed on the names
