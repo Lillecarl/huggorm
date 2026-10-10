@@ -59,10 +59,14 @@ import contextlib
 import difflib
 import enum
 import functools
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import inspect
 import os
 import pathlib
 import re
+import sys
 import types
 import typing
 from collections.abc import Iterator, Mapping, Sequence
@@ -965,9 +969,9 @@ def _declared(cls: type, home: Mapping[str, Any]) -> bool:
     exceptions in `errors.py` are declared this way too, and carry no
     marker of their own.
 
-    The file's own module first: `load` runs a declaration under a
-    name `sys.modules` does not hold, so `inspect.getfile` cannot find
-    a class the file being read defines."""
+    The file's own module first: `load` runs a file outside the
+    declarations package under a name `sys.modules` does not hold, so
+    `inspect.getfile` cannot find a class that file defines."""
     if cls.__module__ == home.get("__name__"):
         return True
     file = home.get("__file__")
@@ -1626,6 +1630,61 @@ def _guarded_import(name: str, globals: Mapping[str, object] | None = None,
     return builtins.__import__(name, globals, locals, fromlist, level)
 
 
+def _guarded(module: ModuleType) -> None:
+    """Scope the import guard to one declaration's own statements.
+
+    The modules it imports run under the real builtins, and a
+    declaration among them is guarded when it runs itself."""
+    module.__builtins__ = {**vars(builtins), "__import__": _guarded_import}  # type: ignore[attr-defined]
+
+
+class _DeclarationLoader(importlib.machinery.SourceFileLoader):
+    def exec_module(self, module: ModuleType) -> None:
+        _guarded(module)
+        super().exec_module(module)
+
+
+class _DeclarationFinder(importlib.abc.MetaPathFinder):
+    """Owns every `huggorm_decl.decl.*` import, so a declaration is one
+    module object however it is reached: by `load`, by another
+    declaration or by a test. Two objects made `StorePath` two classes
+    (huggorm#140)."""
+
+    def find_spec(self, fullname: str, path: Sequence[str] | None,
+                  target: ModuleType | None = None
+                  ) -> importlib.machinery.ModuleSpec | None:
+        if not fullname.startswith(f"{DECLARATIONS}."):
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or spec.origin is None or not isinstance(
+                spec.loader, importlib.machinery.SourceFileLoader):
+            return spec
+        # Resolved: a Nix Python env reaches the package through a
+        # symlink, and `_definitions` matches `co_filename` against the
+        # resolved path. Unresolved, every definition went unmatched.
+        origin = str(pathlib.Path(spec.origin).resolve())
+        return importlib.util.spec_from_file_location(
+            fullname, origin, loader=_DeclarationLoader(fullname, origin))
+
+
+if not any(isinstance(f, _DeclarationFinder) for f in sys.meta_path):
+    sys.meta_path.insert(0, _DeclarationFinder())
+
+
+def _declaration_name(path: pathlib.Path) -> str | None:
+    """The dotted name a file in the declarations package imports as,
+    or None for a file outside it, such as a test's."""
+    try:
+        package = importlib.util.find_spec(DECLARATIONS)
+    except ModuleNotFoundError:
+        return None
+    if package is None or package.submodule_search_locations is None:
+        return None
+    homes = {pathlib.Path(p).resolve()
+             for p in package.submodule_search_locations}
+    return f"{DECLARATIONS}.{path.stem}" if path.parent in homes else None
+
+
 @functools.cache
 def load(path: str) -> ModuleType:
     """One declaration, IMPORTED.
@@ -1664,21 +1723,22 @@ def load(path: str) -> ModuleType:
 
     CACHED by path, because two readers now want the same module and
     executing a declaration twice would run its decorators twice."""
-    import importlib.util
-
-    name = f"_huggorm_decl_{pathlib.Path(path).stem}"
     here = pathlib.Path(path).name
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise DeclarationError.already(
-            f"{here}: Python will not load this file as a module at all.")
-    mod = importlib.util.module_from_spec(spec)
-    # Scoped to this module's own statements. The modules it imports
-    # run under the real builtins, and a declaration among them is
-    # guarded when it is read itself.
-    mod.__builtins__ = {**vars(builtins), "__import__": _guarded_import}  # type: ignore[attr-defined]
+    real = _declaration_name(pathlib.Path(path).resolve())
     try:
+        if real is not None:
+            return importlib.import_module(real)
+        spec = importlib.util.spec_from_file_location(
+            f"_huggorm_decl_{pathlib.Path(path).stem}", path)
+        if spec is None or spec.loader is None:
+            raise DeclarationError.already(
+                f"{here}: Python will not load this file as a module at "
+                f"all.")
+        mod = importlib.util.module_from_spec(spec)
+        _guarded(mod)
         spec.loader.exec_module(mod)
+    except DeclarationError:
+        raise
     except Exception as e:
         # The cause, verbatim. A declaration fails to import for
         # reasons that are one line to fix and impossible to guess

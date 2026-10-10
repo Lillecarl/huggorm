@@ -1225,6 +1225,20 @@ def test_a_declaration_imports_only_from_the_allowed_modules(
         read(_declaration(tmp_path, f"{line}\n"))
 
 
+def test_a_declaration_is_one_guarded_module() -> None:
+    """The reader and an importing declaration reach the same module,
+    so a declared class is one class (huggorm#140), and the import
+    guard ran on it whichever came first."""
+    import importlib
+
+    from huggorm_decl import corpus
+    from huggorm_dsl import read
+
+    loaded = read.load(str(corpus().path("path")))
+    assert loaded is importlib.import_module("huggorm_decl.decl.path")
+    assert loaded.__builtins__["__import__"] is read._guarded_import
+
+
 def test_a_declaration_that_will_not_import_is_refused(
         tmp_path: pathlib.Path) -> None:
     """The import error reaches a reader, with Python's own reason.
