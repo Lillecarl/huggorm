@@ -247,6 +247,8 @@ def emit_module(mod: Module, dotted: str, out: str,
     census_written(mod, bound, written)
     pathlib.Path(out).write_text(
         nbemit.placed_lines(written, pathlib.Path(out).name))
+    pathlib.Path(out).with_name(nbemit.RUNTIME_HEADER).write_text(
+        (pathlib.Path(__file__).parent / nbemit.RUNTIME_HEADER).read_text())
     header = nbemit.records_header(unit, PACKAGE, declared_model())
     if header is not None:
         target = pathlib.Path(out).with_name(f"{mod.name}_records.hpp")

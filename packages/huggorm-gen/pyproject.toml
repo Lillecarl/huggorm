@@ -19,7 +19,7 @@ huggorm-pygen = "huggorm_gen.pygen.generate:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-huggorm_gen = ["py.typed"]
+huggorm_gen = ["py.typed", "cppgen/*.hpp"]
 
 # The generator's own suite: it reads declarations and emits, and needs
 # no compiled binding. `generator-tests` in default.nix runs it per Nix.

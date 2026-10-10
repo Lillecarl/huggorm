@@ -368,6 +368,14 @@ def _paragraph(doc: str) -> list[str]:
 
 
 
+RUNTIME_HEADER = "huggorm_runtime.hpp"
+
+
+def runtime_include(package: str) -> str:
+    """The name every unit includes `RUNTIME_HEADER` by."""
+    return f"{package}/{RUNTIME_HEADER}" if package else RUNTIME_HEADER
+
+
 def records_include(module: str, package: str) -> str:
     """The name a unit includes a module's records header by.
 
@@ -413,10 +421,6 @@ def _unhashable(t: ir.TypeRef) -> bool:
     Python hashes neither, so the value's hash reads such a part
     through `hashable`."""
     return any(n.origin in (ir.Origin.LIST, ir.Origin.DICT) for n in _nodes(t))
-
-
-def _hashes_containers(cls: ir.ClassModel) -> bool:
-    return any(_unhashable(f.type) for f in cls.wire_fields)
 
 
 def _nodes(t: ir.TypeRef | None) -> Iterator[ir.TypeRef]:
@@ -476,39 +480,6 @@ def _arms_type(cls: ir.UnionModel) -> str:
     """A union as the std::variant of the arms PYTHON has: what the
     caster casts through, and what `from_arms` takes."""
     return f"std::variant<{', '.join(a.cxx for a in cls.arms)}>"
-
-
-
-# A part that holds a list or a dict, as something a hash can hold.
-#
-# A function rather than a cast at each call site, because
-# `nb::tuple(h.attr("x"))` does not resolve: `attr` hands back an
-# accessor, and the constructor that CONVERTS takes a handle. Passing
-# it as an argument does the conversion the constructor would not.
-#
-# A dict's items are SORTED, because two equal dicts can iterate in
-# different orders and must hash equal. Its keys are strings, so they
-# sort and never tie.
-HASHABLE = """
-/** A list as a tuple and a dict as its sorted items, at any depth. */
-inline nb::object hashable(nb::handle h)
-{
-    if (nb::isinstance<nb::list>(h)) {
-        nb::list out;
-        for (nb::handle item : h)
-            out.append(hashable(item));
-        return nb::tuple(out);
-    }
-    if (nb::isinstance<nb::dict>(h)) {
-        nb::list out;
-        for (auto [key, value] : nb::borrow<nb::dict>(h))
-            out.append(nb::make_tuple(key, hashable(value)));
-        out.attr("sort")();
-        return nb::tuple(out);
-    }
-    return nb::borrow(h);
-}
-"""
 
 
 
@@ -593,114 +564,6 @@ def markers(cls: ir.ClassModel) -> list[str]:
         out.append(f'{INDENT}cls.attr("_from_parts") = cls;')
     return out
 
-
-
-# The two conversions a CONTAINER needs, and the only ones.
-#
-# libstore answers with std::set and takes std::set; the binding
-# hands Python a list, because these answers are sorted and a Python
-# set would throw that away. Both directions are one line of C++, and
-# neither copies a string or parses a name - which is the whole
-# difference from a set flattened into a vector of strings.
-CONTAINERS = """
-/** A libstore set as the list a caller reads. Sorted, because the set is. */
-template <typename T>
-inline std::vector<typename T::value_type> as_list(const T & items)
-{
-    return {items.begin(), items.end()};
-}
-
-/**
- * A libstore map as the `std::map<std::string, V>` a caller reads.
- * libstore keys many maps with a transparent `std::less<>`, such as
- * `StringPairs`, and nanobind casts only the plain comparator.
- */
-template <typename T>
-inline std::map<std::string, typename T::mapped_type> as_map(const T & items)
-{
-    return {items.begin(), items.end()};
-}
-
-/** The mirror: a list as the set libstore takes. */
-template <typename T, typename I>
-inline T as_set(const I & items)
-{
-    return {items.begin(), items.end()};
-}
-
-/** A set of printable values as the strings a caller reads. */
-template <typename T>
-inline std::vector<std::string> to_strings(const T & items)
-{
-    std::vector<std::string> out;
-    out.reserve(items.size());
-    for (auto & item : items)
-        out.push_back(item.to_string());
-    return out;
-}
-"""
-
-
-# The two directions between a string a value holds and the bytes a
-# caller reads. `nb::bytes` has only explicit constructors, so neither
-# direction happens on its own. `to_bytes`, not `as_bytes`: <span>
-# declares a `std::as_bytes` that overload resolution finds first.
-BYTES = """
-/** A string as the bytes a caller reads. */
-inline nb::bytes to_bytes(std::string_view s)
-{
-    return nb::bytes(s.data(), s.size());
-}
-
-inline std::vector<nb::bytes> to_bytes(const std::vector<std::string> & items)
-{
-    std::vector<nb::bytes> out;
-    out.reserve(items.size());
-    for (auto & s : items)
-        out.push_back(to_bytes(s));
-    return out;
-}
-
-/** The mirror: bytes back into the string a value holds, unread. */
-inline std::string from_bytes(const nb::bytes & b)
-{
-    return std::string(b.c_str(), b.size());
-}
-
-inline std::vector<std::string> from_bytes(const std::vector<nb::bytes> & items)
-{
-    std::vector<std::string> out;
-    out.reserve(items.size());
-    for (auto & b : items)
-        out.push_back(from_bytes(b));
-    return out;
-}
-"""
-
-
-# What a declared class leaf is, as opposed to a builtin, an opaque
-# object or a module type.
-DECLARED = frozenset({ir.Kind.ENUM, ir.Kind.UNION, ir.Kind.ERROR,
-                      ir.Kind.VALUE, ir.Kind.PROXY, ir.Kind.CLIENT})
-
-
-def _crosses_container(classes: Sequence[ir.ClassModel]) -> bool:
-    """Whether any declared type here is a list of bound values."""
-    for cls in classes:
-        for m in cls.bound:
-            declared = [pr.type for pr in m.params]
-            if m.returns is not None:
-                declared.append(m.returns)
-            for one in declared:
-                for node in _nodes(one):
-                    if (node.origin is ir.Origin.LIST
-                            and node.inner.kind in DECLARED
-                            and not node.inner.origin):
-                        return True
-                    # Every `dict` return goes through `as_map`.
-                    if node.origin is ir.Origin.DICT:
-                        return True
-    return False
 
 
 def _virtuals(cls: ir.ClassModel) -> tuple[ir.MethodModel, ...]:
@@ -2288,15 +2151,6 @@ class Emitter:
         return "\n".join(["static void bind_functions(nb::module_ &m) {",
                            *body, "}"]) + "\n"
 
-    def _converts_bytes(self, classes: Sequence[ir.ClassModel]) -> bool:
-        """Whether any accessor here answers bytes, or a @virtual takes
-        them, so a unit needs BYTES."""
-        return any((m.returns is not None
-                    and (m.returns.is_bytes or m.returns.bytes_list))
-                   or (not m.cxx_body and any(pr.type.is_bytes
-                                              for pr in m.params))
-                   for cls in classes for m in cls.bound)
-
     def _errors_used(self, classes: Sequence[ir.ClassModel],
                      functions: Sequence[ir.FunctionModel]) -> bool:
         """Whether this unit names a declared EXCEPTION class anywhere.
@@ -2325,6 +2179,7 @@ class Emitter:
         three - and a nanobind extension is one translation unit, so the
         file and the unit are the same grain."""
         head = [*self.includes(classes, functions, error_headers),
+                f'#include "{runtime_include(package)}"',
                 *[f'#include "{records_include(m, package)}"'
                   for m in self.records_named(classes, functions)], "",
                 "namespace nb = nanobind;",
@@ -2337,21 +2192,10 @@ class Emitter:
                      "/** Where this build put the exception classes. */",
                      f'constexpr const char * errors_module = "{errors}";', "",
                      "}  // namespace huggorm", ""]
-        if _crosses_container(classes):
-            head += [*CONTAINERS.strip().splitlines(), ""]
-        if self._converts_bytes(classes):
-            head += [*BYTES.strip().splitlines(), ""]
-        # `hashable`, for a value whose hash covers a list or dict part.
-        # In the unit, not in `records_header`, because a class that
-        # binds a real Nix type needs the helper just the same:
-        # `pathinfo.cpp` has no record.
         unions = self._unions_used(classes, functions)
         vocabularies = self._vocabularies_used(classes, functions)
-        hashes_containers = any(_hashes_containers(cls) for cls in classes)
-        if hashes_containers or unions or vocabularies:
+        if unions or vocabularies:
             head += [f"namespace {NAMESPACE} {{", ""]
-            if hashes_containers:
-                head += [*HASHABLE.strip().splitlines(), ""]
             for v in vocabularies:
                 head += words_conversion(v)
                 if not v.parsed_by:
