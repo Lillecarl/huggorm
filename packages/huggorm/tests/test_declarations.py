@@ -2298,3 +2298,17 @@ def test_a_container_of_handles_is_refused(
         ir.ModuleModel.of(read(_declaration(
             tmp_path, HANDLES.replace("METHOD", method))), "")
 
+
+def test_a_container_of_errors_names_the_errors_module() -> None:
+    """A body answering errors looks each class up by module, so a
+    list of them needs the module as much as one does (huggorm#139)."""
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen import nbemit
+
+    gone = ir.TypeRef.named("Gone", ir.Kind.ERROR)
+    fn = ir.FunctionModel("errors", "m.m", None, (),
+                          ir.TypeRef.list_of(gone), "")
+    model = ir.Model({}, {}, {}, {}, ir.Errors("", {}))
+    emitter = nbemit.Emitter(model, ir.ModuleModel("m", "", (), (), (),
+                                                    frozenset()))
+    assert emitter._errors_used((), (fn,))
