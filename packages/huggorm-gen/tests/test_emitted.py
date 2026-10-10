@@ -8,6 +8,7 @@ must import it.
 
 import ast
 import pathlib
+import re
 from typing import Any
 
 import pytest
@@ -319,6 +320,48 @@ def test_no_unused_imports(out: pathlib.Path) -> None:
         if unused:
             offenders.append(f"{py.name}: {unused}")
     assert not offenders, "emitted modules with unused imports:\n" + "\n".join(offenders)
+
+
+_ISSUE = re.compile(r"\b[\w-]+#\d+")
+_UPSTREAM_LINE = re.compile(r"\b[\w-]+\.(?:cc|hh|hpp|cpp):\d+")
+# Not "no longer": "outputs that no longer hash to its name" is a fact.
+_HISTORY = re.compile(
+    r"\b(?:used to|any more|earlier draft|until huggorm#|a year ago)\b")
+
+
+def _shipped(out: pathlib.Path) -> list[pathlib.Path]:
+    stubs = out.parent / "huggorm_bindings-stubs"
+    return sorted([*out.glob("*.py"), *stubs.glob("*.pyi")])
+
+
+def test_shipped_docstrings_cite_no_issue_or_upstream_line(
+        out: pathlib.Path) -> None:
+    """A docstring reaches every reader of every lane. An issue number
+    sends that reader to a tracker, and an upstream line number is true
+    for one Nix release. Both belong in a `#` comment in the
+    declaration, which does not ship."""
+    offenders = []
+    for path in _shipped(out):
+        for node in ast.walk(ast.parse(path.read_text(), filename=path.name)):
+            if not isinstance(node, (ast.Module, ast.ClassDef,
+                                     ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            doc = ast.get_docstring(node, clean=False) or ""
+            where = f"{path.name}:{getattr(node, 'name', '<module>')}"
+            offenders += [f"{where}: {m.group()}"
+                          for pat in (_ISSUE, _UPSTREAM_LINE)
+                          for m in pat.finditer(doc)]
+    assert not offenders, "\n".join(offenders)
+
+
+def test_shipped_text_tells_no_history(out: pathlib.Path) -> None:
+    """Shipped prose says what the code is. What it was lives in the
+    commit that changed it."""
+    offenders = [f"{path.name}:{n}: {line.strip()}"
+                 for path in _shipped(out)
+                 for n, line in enumerate(path.read_text().splitlines(), 1)
+                 if _HISTORY.search(line)]
+    assert not offenders, "\n".join(offenders)
 
 
 def _emitted_classes(out: pathlib.Path) -> dict[str, Any]:
