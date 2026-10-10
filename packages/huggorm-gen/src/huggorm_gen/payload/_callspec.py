@@ -1,7 +1,7 @@
 """What one remote call needs, as a typed value.
 
 Copied into the emitted package as `_callspec.py`, the way
-`wiretypes.py` and `runtime.py` are: the generated RPC classes build
+`_wiretypes.py` and `_runtime.py` are: the generated RPC classes build
 these and the hand-written client reads them, so one definition is
 copied rather than two kept in step.
 

@@ -34,8 +34,8 @@ from huggorm_dsl.read import (
 )
 from huggorm_dsl.read import Origin as Origin
 from huggorm_gen import cxx
-from huggorm_gen.payload import callspec
-from huggorm_gen.payload.wiretypes import SCALAR_NAMES, SPELLED, TREE_LEAVES
+from huggorm_gen.payload import _callspec as callspec
+from huggorm_gen.payload._wiretypes import SCALAR_NAMES, SPELLED, TREE_LEAVES
 
 # The words a proxy's surfaces are spelled with. Every name below is
 # the class name plus one of these.

@@ -1155,7 +1155,7 @@ def test_a_subscriber_takes_the_message_off_stderr(
 # record says that call raised its last one. An id alone would let a
 # reader group records and never let it know a group was closed.
 #
-# The number is allocated per call by `runtime.py` and no caller is
+# The number is allocated per call by `_runtime.py` and no caller is
 # told which one it got. So these gates check the RELATION - every
 # record of one call carries one number, and the marker carries that
 # same number - rather than any particular value.

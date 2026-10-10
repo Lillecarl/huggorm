@@ -220,7 +220,7 @@ That is not a reason to write asyncio: anyio runs ON asyncio, and
 everything above is available there.
 
 **One exception, and it is measured.** The thread bridge in the
-emitted runtime (`huggorm_gen/payload/runtime.py`) keeps
+emitted runtime (`huggorm_gen/payload/_runtime.py`) keeps
 `loop.run_in_executor`. `anyio.to_thread.run_sync` runs on a SHARED,
 CHURNING pool - `_asyncio.py` pops an idle worker off a deque and
 expires any that idled past `MAX_IDLE_TIME` - so it cannot name a

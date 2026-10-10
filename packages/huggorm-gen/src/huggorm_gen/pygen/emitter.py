@@ -14,8 +14,8 @@ from typing import assert_never
 
 from huggorm_dsl.declare import Crossing, Threading
 from huggorm_gen import ir
-from huggorm_gen.payload import callspec as cs
-from huggorm_gen.payload.wiretypes import (
+from huggorm_gen.payload import _callspec as cs
+from huggorm_gen.payload._wiretypes import (
     python_spelling,
 )
 from huggorm_gen.pygen.spell import (

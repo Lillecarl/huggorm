@@ -332,7 +332,7 @@ def _same(spelling: str) -> str:
     an `_`-prefixed name reaches no stub. A collapse of the input
     spelling was written here, passed, and was removed when taking it
     out changed nothing (huggorm#71)."""
-    from huggorm_gen.payload.wiretypes import python_spelling
+    from huggorm_gen.payload._wiretypes import python_spelling
 
     out = re.sub(r"huggorm_bindings\.\w+\.", "", spelling)
     out = out.replace("collections.abc.Sequence[", "list[")

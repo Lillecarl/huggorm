@@ -2344,7 +2344,7 @@ def begin_request(request: I64) -> I64:
     the thread that does the work at 0. Declared, that mistake is
     silent: every gate still passes.
 
-    So `runtime.py` calls it directly, on the thread that is about to
+    So `_runtime.py` calls it directly, on the thread that is about to
     enter C++.
 
     It ANSWERS the previous value and `end_request` takes it back, so

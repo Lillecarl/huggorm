@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
     # The payload ships rather than runs, so it lives beside the
     # two backends rather than inside either one.
     here = pathlib.Path(__file__).resolve().parent.parent / "payload"
-    _vendor(here / "runtime.py", out / "_runtime.py")
+    _vendor(here / "_runtime.py", out / "_runtime.py")
     # ...and the SUM types, which have no home in the bindings: an
     # alias is Python and the module binding its arms is a compiled
     # extension. Written from the model, so the declaration states
@@ -183,10 +183,10 @@ def main(argv: list[str] | None = None) -> None:
     # The codec reads declared type strings at run time and the schema
     # builder reads them at build time. One definition, copied, rather
     # than two that agree until one of them changes.
-    _vendor(here / "wiretypes.py", out / "_wiretypes.py")
+    _vendor(here / "_wiretypes.py", out / "_wiretypes.py")
     # ...and the call spec's types, which the emitted RPC classes
     # build and the hand-written client reads.
-    _vendor(here / "callspec.py", out / "_callspec.py")
+    _vendor(here / "_callspec.py", out / "_callspec.py")
     print(f"copied runtime into {out}")
 
     # PEP 561: without this marker a typechecker skips an INSTALLED

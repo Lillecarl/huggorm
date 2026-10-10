@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import assert_never
 
 from huggorm_gen.ir import Kind, Origin, ParamModel, TypeRef
-from huggorm_gen.payload.wiretypes import python_spelling
+from huggorm_gen.payload._wiretypes import python_spelling
 
 # Names Python already has.
 BUILTIN = frozenset({"None", "str", "int", "float", "bool", "bytes",
