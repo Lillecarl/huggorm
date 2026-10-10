@@ -2120,3 +2120,53 @@ def test_an_absent_container_parameter_is_an_empty_one(
     emitted = nbemit.Emitter(model, unit).bind_function(unit.classes[0])
     assert (f"const std::optional<{held}> & names_" in emitted
             and f"names_.value_or({held}{{}})" in emitted), emitted
+
+
+SET_PARAM = '''"""A derived method whose parameter libstore holds as a set."""
+
+from huggorm_dsl.declare import Str, binding, header
+
+
+@header("nix/store/path.hh")
+@binding(cxx="nix::StorePath", collection="nix::StorePathSet",
+         threading="pool", blocking=False)
+class StorePath:
+    """A store path."""
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """A store."""
+
+    def names(self, paths: PARAM) -> list[Str]:
+        """Their names."""
+'''
+
+
+def _set_param(tmp_path: pathlib.Path, param: str) -> str:
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen import nbemit
+
+    unit = ir.ModuleModel.of(read(_declaration(
+        tmp_path, SET_PARAM.replace("PARAM", param))), "")
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {},
+                     {}, ir.Errors("", {}), (unit,))
+    store = next(c for c in unit.classes if c.name == "Store")
+    return nbemit.Emitter(model, unit).bind_function(store)
+
+
+def test_an_absent_list_over_a_set_converts_what_it_opens(
+        tmp_path: pathlib.Path) -> None:
+    """The binding opens the optional to a vector, and `as_set` takes
+    that vector (huggorm#139)."""
+    emitted = _set_param(tmp_path, "list[StorePath] | None = None")
+    assert "as_set<nix::StorePathSet>(paths)" in emitted, emitted
+
+
+def test_an_optional_list_over_a_set_is_refused(
+        tmp_path: pathlib.Path) -> None:
+    """`as_set` converts a vector, not an optional one (huggorm#139)."""
+    with pytest.raises(TypeError, match=r"'paths' is a .* has no conversion"):
+        _set_param(tmp_path, "list[StorePath] | None")

@@ -1136,6 +1136,14 @@ class Emitter:
                 or m.names or m.produces or wants_list
                 or any(pr.via for pr in m.params)):
             return None
+        for pr in m.params:
+            if pr.collection and pr.type.optional:
+                # `as_set` converts a vector, not an optional one.
+                raise TypeError(
+                    f"{cls.name}.{m.name}: parameter {pr.name!r} is a "
+                    f"`{pr.type.spelling}` over `{pr.collection}`, which "
+                    f"has no conversion. Default it to None, so an absent "
+                    f"one is an empty one, or carry a body.")
         obj = SELF
         reach = f"{obj}.{cls.via}->" if cls.via else f"{obj}."
         # The GUARD, for an accessor on a tagged union.
@@ -1173,11 +1181,6 @@ class Emitter:
             # a return past the switch.
             lines.append(f'{INDENT * 4}return "unknown";')
             return lines
-        # A declared `list[T]` PARAMETER over a C++ set. libstore takes
-        # StorePathSet in a dozen places and the wire carries a list, so
-        # the conversion is a fact about the two type systems rather than
-        # a decision - and `as_set` is emitted beside this, not written by
-        # hand.
         # A declared `list[T]` PARAMETER, where T's class says libstore
         # holds a collection of them some other way. The wire carries a
         # list either way; this is the two type systems disagreeing, not a

@@ -353,7 +353,7 @@ class ParamModel:
                    p.type.python if p.member else "", cxx.default(p),
                    spelled, caster, absent=cxx.absent(p),
                    parsed_by=cxx.parsed_by(p.type, resolver.known),
-                   collection=cxx.collection(p.type, resolver.known),
+                   collection=cxx.collection(p.type.required, resolver.known),
                    via=handle.decl.via if handle is not None else "",
                    defaults_to_none=p.has_default and p.default is None)
 
