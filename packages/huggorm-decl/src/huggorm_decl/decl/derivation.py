@@ -23,7 +23,6 @@ from huggorm_decl.decl.content_address import ContentAddress
 from huggorm_decl.decl.path import StorePath
 from huggorm_decl.decl.words import ContentAddressMethod, HashAlgorithm
 from huggorm_dsl.declare import (
-    NIX_2_36,
     Cxx,
     Str,
     Variant,
@@ -212,47 +211,24 @@ class Derivation:
     def env(self) -> dict[str, Str]:
         """The builder's environment."""
 
-    # Nix 2.36 holds one `std::set<SingleDerivedPath>` in `inputs`.
-    # `FullInputs::fromSet` is upstream's own split back into the two,
-    # the one it uses to write the ATerm.
-    if NIX_2_36:
-        @needs("nix/store/derivation/full-inputs.hh")
-        def input_srcs(self) -> list[StorePath]:
-            """Store paths the build reads that no derivation makes."""
-            Cxx("""
-return as_list(nix::derivation::FullInputs::fromSet(self.inputs).srcs);
-            """)
+    @needs("huggorm_decl/cpp/derivation.hpp")
+    def input_srcs(self) -> list[StorePath]:
+        """Store paths the build reads that no derivation makes."""
+        Cxx("return as_list(huggorm::input_srcs(self));")
 
-        @needs("nix/store/derivation/full-inputs.hh")
-        def input_drvs(self) -> dict[str, InputDrvNode]:
-            """The derivations the build needs, by `.drv` base name, and
-            which of their outputs.
+    @needs("huggorm_decl/cpp/derivation.hpp")
+    def input_drvs(self) -> dict[str, InputDrvNode]:
+        """The derivations the build needs, by `.drv` base name, and
+        which of their outputs.
 
-            Keyed by base name because a map is keyed by str on the
-            wire."""
-            Cxx("""
+        Keyed by base name because a map is keyed by str on the
+        wire."""
+        Cxx("""
 std::map<std::string, nix::DerivedPathMap<std::set<nix::OutputName, std::less<>>>::ChildNode> out;
-for (auto & [path, node] : nix::derivation::FullInputs::fromSet(self.inputs).drvs.map)
+for (auto & [path, node] : huggorm::input_drvs(self).map)
     out.emplace(std::string(path.to_string()), node);
 return out;
-            """)
-    else:
-        @reads("inputSrcs")
-        def input_srcs(self) -> list[StorePath]:
-            """Store paths the build reads that no derivation makes."""
-
-        def input_drvs(self) -> dict[str, InputDrvNode]:
-            """The derivations the build needs, by `.drv` base name, and
-            which of their outputs.
-
-            Keyed by base name because a map is keyed by str on the
-            wire."""
-            Cxx("""
-std::map<std::string, nix::DerivedPathMap<std::set<nix::OutputName, std::less<>>>::ChildNode> out;
-for (auto & [path, node] : self.inputDrvs.map)
-    out.emplace(std::string(path.to_string()), node);
-return out;
-            """)
+        """)
 
     @reads("outputs")
     def outputs(self) -> dict[str, DerivationOutput]:
