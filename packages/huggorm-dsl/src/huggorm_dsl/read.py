@@ -364,9 +364,13 @@ class Type:
         return self.args[0] if self.optional else self
 
     @property
+    def container(self) -> bool:
+        return self.origin in (Origin.LIST, Origin.DICT)
+
+    @property
     def element(self) -> Type:
         """What a list holds, or a map's value."""
-        if self.origin not in (Origin.LIST, Origin.DICT):
+        if not self.container:
             raise TypeError(f"'{self.python}' is not a container")
         return self.args[0]
 

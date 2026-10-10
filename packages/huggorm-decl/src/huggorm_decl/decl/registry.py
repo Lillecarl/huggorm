@@ -121,8 +121,7 @@ def registry_entries(store: Store,
     every later one. A write through this module does not reach a
     later listing; read the file."""
     Cxx("""
-auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(settings);
 std::vector<huggorm::RegistryEntry> out;
 for (auto & registry : nix::fetchers::getRegistries(*fetch, *store))
     for (auto & entry : registry->entries)
@@ -157,8 +156,7 @@ def registry_add(path: Str | None, source: Str, target: Str,
     entry replaces every earlier one for the same source."""
     if NIX_2_36:
         Cxx("""
-auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(settings);
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(source, dir);
@@ -179,8 +177,7 @@ return huggorm::RegistryWrite{file.string(), removed, to.input.to_string(), std:
         """)
     else:
         Cxx("""
-auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(settings);
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(*fetch, source, dir);
@@ -215,8 +212,7 @@ def registry_remove(path: Str | None, source: Str,
     written for `nixpkgs/nixos-unstable`."""
     if NIX_2_36:
         Cxx("""
-auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(settings);
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(source, dir);
@@ -232,8 +228,7 @@ return huggorm::RegistryWrite{file.string(), removed, std::nullopt, std::nullopt
         """)
     else:
         Cxx("""
-auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(settings);
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(*fetch, source, dir);
@@ -265,8 +260,7 @@ def registry_pin(store: Store, path: Str | None, source: Str,
     into a revision."""
     if NIX_2_36:
         Cxx("""
-auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(settings);
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(source, dir);
@@ -289,8 +283,7 @@ return huggorm::RegistryWrite{
         """)
     else:
         Cxx("""
-auto fetch = huggorm::call_settings<nix::fetchers::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto fetch = huggorm::call_settings<nix::fetchers::Settings>(settings);
 auto dir = base ? std::filesystem::path(*base) : std::filesystem::current_path();
 auto file = path ? std::filesystem::path(*path) : nix::fetchers::getUserRegistryPath();
 auto from = nix::parseFlakeRef(*fetch, source, dir);

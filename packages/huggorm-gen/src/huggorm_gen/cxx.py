@@ -309,7 +309,7 @@ def absent(pr: Param) -> bool:
     None has to say so in its own type."""
     if not pr.has_default or pr.default is not None:
         return False
-    return pr.type.required.origin is Origin.LIST
+    return pr.type.required.container
 
 
 def default(pr: Param) -> str:

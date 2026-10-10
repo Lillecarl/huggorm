@@ -2036,8 +2036,7 @@ return self.wrap_builder(made);
 
         THIS FETCHES what is not locked yet, into this state's store."""
         Cxx("""
-auto flake_settings = huggorm::call_settings<nix::flake::Settings>(
-    settings.value_or(std::map<std::string, std::string>{}));
+auto flake_settings = huggorm::call_settings<nix::flake::Settings>(settings);
 nix::flake::LockFlags flags;
 flags.recreateLockFile = recreate;
 flags.writeLockFile = write_lock_file;

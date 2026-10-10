@@ -2080,3 +2080,43 @@ def test_an_optional_container_return_is_refused(
                      {}, ir.Errors("", {}), (unit,))
     with pytest.raises(TypeError, match="has no conversion"):
         nbemit.Emitter(model, unit).bind_function(unit.classes[0])
+
+
+ABSENT_CONTAINER = '''"""A container parameter that may be omitted."""
+
+from huggorm_dsl.declare import Cxx, Str, binding, header
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """A store."""
+
+    def add(self, names: PARAM | None = None) -> None:
+        """Add some names."""
+        Cxx("self.add(names);")
+'''
+
+
+@pytest.mark.parametrize(("param", "held"), [
+    ("list[Str]", "std::vector<std::string>"),
+    ("dict[str, Str]", "std::map<std::string, std::string>")])
+def test_an_absent_container_parameter_is_an_empty_one(
+        tmp_path: pathlib.Path, param: str, held: str) -> None:
+    """nanobind's container casters refuse None, so the binding takes
+    an optional and opens it to an empty container (huggorm#104,
+    huggorm#139)."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen import nbemit
+
+    unit = ir.ModuleModel.of(read(_declaration(
+        tmp_path, ABSENT_CONTAINER.replace("PARAM", param))), "")
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {},
+                     {}, ir.Errors("", {}), (unit,))
+    names = unit.classes[0].methods[0].params[0]
+    assert names.absent
+    assert names.type.container and not names.type.optional
+    emitted = nbemit.Emitter(model, unit).bind_function(unit.classes[0])
+    assert (f"const std::optional<{held}> & names_" in emitted
+            and f"names_.value_or({held}{{}})" in emitted), emitted

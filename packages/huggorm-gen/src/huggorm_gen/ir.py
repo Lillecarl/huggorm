@@ -336,11 +336,10 @@ class ParamModel:
     @classmethod
     def of(cls, p: Param, resolver: Resolver) -> ParamModel:
         declared = p.type
-        # A LIST that defaults to None is the list: an absent list IS
-        # an empty one, so every surface spells it `list[X]`
-        # (huggorm#104).
-        if (p.has_default and p.default is None
-                and declared.required.origin is Origin.LIST):
+        # A container that defaults to None is the container: an absent
+        # one IS an empty one, so every surface spells it `list[X]` or
+        # `dict[str, X]` (huggorm#104).
+        if cxx.absent(p):
             declared = declared.required
         if not p.has_default:
             default = None
