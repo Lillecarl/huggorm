@@ -2047,3 +2047,36 @@ def test_a_decorator_that_is_not_a_bare_name_is_refused(
         '    """A stream."""\n')
     with pytest.raises(DeclarationError, match="bare name"):
         read(_declaration(tmp_path, source))
+
+
+OPTIONAL_LIST = '''"""A return the emitter cannot convert."""
+
+from huggorm_dsl.declare import Str, binding, header
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """A store."""
+
+    def paths(self) -> RETURNS:
+        """Some paths."""
+'''
+
+
+@pytest.mark.parametrize("returns", ["list[Str] | None",
+                                     "dict[str, Str] | None"])
+def test_an_optional_container_return_is_refused(
+        tmp_path: pathlib.Path, returns: str) -> None:
+    """Nothing converts the payload of an optional, so nanobind would
+    hand Python a set where the declaration says list (huggorm#139)."""
+    from huggorm_dsl.read import read
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen import nbemit
+
+    unit = ir.ModuleModel.of(read(_declaration(
+        tmp_path, OPTIONAL_LIST.replace("RETURNS", returns))), "")
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {},
+                     {}, ir.Errors("", {}), (unit,))
+    with pytest.raises(TypeError, match="has no conversion"):
+        nbemit.Emitter(model, unit).bind_function(unit.classes[0])

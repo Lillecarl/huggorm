@@ -1115,6 +1115,15 @@ class Emitter:
 
         None when this method needs none of the four. `_method` then
         binds it by pointer, which is the shorter and better line."""
+        if (m.returns is not None and m.returns.optional
+                and m.returns.required.container):
+            # Neither a pointer bind nor `as_list` converts the payload
+            # of an optional, so nanobind would cast the C++ type: a set
+            # where the declaration says list (huggorm#139).
+            raise TypeError(
+                f"{cls.name}.{m.name}: a `{m.returns.spelling}` return has "
+                f"no conversion. Declare the container alone: an absent one "
+                f"is an empty one.")
         # A guarded accessor reaches through the union pair rather than
         # through `via`, so the two are read separately and `call` below
         # is rebuilt after the guard picks its reach.
@@ -1204,8 +1213,7 @@ class Emitter:
             # the plain one.
             case ir.Origin.DICT:
                 return [*head, f"{INDENT * 4}return as_map({call});"]
-            # Not converted, so nanobind casts the C++ type: a
-            # `list[T] | None` over a set is a gap (huggorm#139).
+            # An optional container is refused above.
             case ir.Origin.OPTIONAL | None:
                 pass
             case _:
