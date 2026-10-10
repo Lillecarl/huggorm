@@ -37,4 +37,17 @@ nix::FlakeRef flake_ref_from_attrs(const nix::fetchers::Settings & fetch, const 
         return nix::FlakeRef::fromAttrs(attrs);
 }
 
+/**
+ * Drops what the accessor under `path` cached of it. 2.34 drops the
+ * path's entry; 2.35 has only the accessor's whole cache to drop.
+ */
+template <typename Path>
+void invalidate_cache(const Path & path)
+{
+    if constexpr (requires { path.invalidateCache(); })
+        path.invalidateCache();
+    else
+        path.accessor->invalidateCache();
+}
+
 }  // namespace huggorm
