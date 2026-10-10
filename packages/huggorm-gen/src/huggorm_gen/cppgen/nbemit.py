@@ -1133,8 +1133,8 @@ class Emitter:
         wants_list = (m.returns is not None
                       and m.returns.origin in (ir.Origin.LIST, ir.Origin.DICT))
         if not (cls.via or m.returns_handle or m.reads or m.guard
-                or m.names or m.produces or wants_list
-                or any(pr.via for pr in m.params)):
+                or m.names or m.produces or wants_list or m.returns_word
+                or any(pr.via or pr.parsed_by for pr in m.params)):
             return None
         for pr in m.params:
             if pr.collection and pr.type.optional:
@@ -1226,6 +1226,11 @@ class Emitter:
         # that says which - emitted beside this, not written by hand.
         # Before this, `Hash.algorithm` carried the conversion as a `Cxx`
         # body, which is a MAPPING written into a declaration.
+        if m.returns_word and m.returns.optional:
+            return [*head, f"{INDENT * 4}auto answer = {call};",
+                    f"{INDENT * 4}if (!answer)",
+                    f"{INDENT * 5}return std::nullopt;",
+                    f"{INDENT * 4}return {NAMESPACE}::as_word(*answer);"]
         if m.returns_word:
             return [*head, f"{INDENT * 4}return {NAMESPACE}::as_word({call});"]
         # A width the DECLARATION spells. `size()` answers a size_t and
@@ -1448,6 +1453,13 @@ class Emitter:
                 # value - and a second method taking the same vocabulary
                 # cannot spell the parse differently.
                 args += f", {spelled} {pr.name}_"
+                if pr.type.optional:
+                    opening += [
+                        f"{INDENT * depth}std::optional<decltype({parser}"
+                        f"(*{pr.name}_))> {pr.name};",
+                        f"{INDENT * depth}if ({pr.name}_)",
+                        f"{INDENT * (depth + 1)}{pr.name} = {parser}(*{pr.name}_);"]
+                    continue
                 opening.append(f"{INDENT * depth}const auto {pr.name} = "
                                f"{parser}({pr.name}_);")
                 continue

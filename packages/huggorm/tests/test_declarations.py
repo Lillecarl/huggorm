@@ -2170,3 +2170,91 @@ def test_an_optional_list_over_a_set_is_refused(
     """`as_set` converts a vector, not an optional one (huggorm#139)."""
     with pytest.raises(TypeError, match=r"'paths' is a .* has no conversion"):
         _set_param(tmp_path, "list[StorePath] | None")
+
+
+# A vocabulary declared beside its user: a test declaration cannot
+# import `words.py`, because the reader matches a class by the module
+# the import runs, and that is the installed one.
+WORDS_STORE = '''"""A store that takes and answers a vocabulary."""
+
+from enum import StrEnum
+
+from huggorm_dsl.declare import Enumerated, binding, binds, header, words
+
+
+@header("nix/util/hash.hh")
+@words(parsed_by="nix::parseHashAlgo",
+       enumerated=Enumerated("nix::HashAlgorithm"))
+class HashAlgorithm(StrEnum):
+    """A digest."""
+
+    MD5 = "md5"
+    SHA256 = "sha256"
+
+
+@header("nix/store/store-api.hh")
+@binding(cxx="nix::Store", threading="pool", blocking=False)
+class Store:
+    """A store."""
+
+DECLARED
+'''
+
+SCALAR_WORDS = '''
+    def one(self, algo: HashAlgorithm) -> None:
+        """One."""
+
+    def maybe(self, algo: HashAlgorithm | None) -> None:
+        """Maybe one."""
+
+    def answer(self) -> HashAlgorithm:
+        """An answer."""
+
+    def maybe_answer(self) -> HashAlgorithm | None:
+        """Maybe an answer."""
+'''
+
+
+def _vocabulary(tmp_path: pathlib.Path, declared: str) -> str:
+    from huggorm_dsl.corpus import Corpus
+    from huggorm_gen import ir
+    from huggorm_gen.cppgen import nbemit
+
+    (tmp_path / "probe.py").write_text(
+        WORDS_STORE.replace("DECLARED", declared))
+    unit = ir.ModuleModel.of(
+        Corpus(tmp_path, nanobind=("probe.py",)).module("probe"), "")
+    model = ir.Model({c.name: c for c in unit.classes}, {}, {},
+                     {}, ir.Errors("", {}), (unit,))
+    store = next(c for c in unit.classes if c.name == "Store")
+    return nbemit.Emitter(model, unit).bind_function(store)
+
+
+def test_a_vocabulary_converts_with_no_body(tmp_path: pathlib.Path) -> None:
+    """Bound by pointer, each of these took or answered the C++ enum,
+    which no Python value converts to: a call that raises
+    (huggorm#139)."""
+    emitted = _vocabulary(tmp_path, SCALAR_WORDS)
+    for line in ("const auto algo = nix::parseHashAlgo(algo_);",
+                 "algo = nix::parseHashAlgo(*algo_);",
+                 "return huggorm::as_word(self.answer());",
+                 "return huggorm::as_word(*answer);"):
+        assert line in emitted, emitted
+    assert "&nix::Store::" not in emitted, emitted
+
+
+@pytest.mark.parametrize(("declared", "what"), [
+    ('    def many(self, algos: list[HashAlgorithm]) -> None:\n'
+     '        """Many."""\n', "Store.many: parameter 'algos'"),
+    ('    def answers(self) -> dict[str, HashAlgorithm]:\n'
+     '        """Answers."""\n', "Store.answers: return"),
+    ('\n\n@binds("nix::pick")\n'
+     'def pick(algo: HashAlgorithm) -> None:\n'
+     '    """Pick."""\n', "pick: parameter 'algo'")])
+def test_a_vocabulary_nothing_converts_is_refused(
+        tmp_path: pathlib.Path, declared: str, what: str) -> None:
+    """A container of them has no conversion line, and a free function
+    with no body is bound by name (huggorm#139)."""
+    with pytest.raises(TypeError, match=f"{re.escape(what)} .* nothing "
+                                        f"converts here"):
+        _vocabulary(tmp_path, declared)

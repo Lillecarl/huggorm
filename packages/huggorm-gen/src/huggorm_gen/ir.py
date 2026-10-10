@@ -432,6 +432,32 @@ def _spells(m: Method, where: str, resolver: Resolver) -> tuple[str, ...]:
     return m.spells
 
 
+def _unconverted(m: Method, where: str, resolver: Resolver, *,
+                 scalars: bool) -> None:
+    """Refuse a vocabulary no emitted line converts.
+
+    `_derived` parses a vocabulary parameter and renders a vocabulary
+    return, one value each. A container of them has no such line, and
+    a bound name is called with what nanobind casts: a C++ enum that
+    no Python value converts to. Either way the failure would be a
+    call that raises, far from the declaration (huggorm#139)."""
+    if m.cxx_body is not None:
+        return
+    for t, what in [*((p.type, f"parameter {p.name!r}") for p in m.params),
+                    (m.ret, "return")]:
+        if t is None or not (scalars or t.required.container):
+            continue
+        leaf = t.leaf
+        held = resolver.known.get(leaf.python)
+        converts = (cxx.parsed_by(leaf, resolver.known) if what != "return"
+                    else held is not None and held.is_words
+                    and held.decl.enumerated)
+        if converts:
+            raise TypeError(
+                f"{where}: {what} `{t.python}` holds a vocabulary that "
+                f"nothing converts here. Carry a Cxx body.")
+
+
 def _attribute(owner: Class, m: Method) -> TypeError:
     """The refusal a `@property` accessor gets, and why it is one.
 
@@ -536,6 +562,9 @@ class MethodModel:
         if m.prop:
             raise _attribute(owner, m)
         params = tuple(ParamModel.of(p, resolver) for p in m.params)
+        virtual = _virtual(owner, m)
+        if not virtual:
+            _unconverted(m, f"{owner.name}.{m.name}", resolver, scalars=False)
         tagged = _tagged(owner, m)
         where = f'{owner.name}.{m.name}: @guard("{m.guard}")'
         guard = (tagged.test(m.guard, where)
@@ -547,7 +576,7 @@ class MethodModel:
                    guard=guard, names=tagged if m.names else None,
                    produces=m.produces,
                    fills=_fill(owner, m, params, resolver),
-                   local=m.local, virtual=_virtual(owner, m),
+                   local=m.local, virtual=virtual,
                    posted=_posted(owner, m),
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
@@ -609,6 +638,7 @@ class FunctionModel:
             for pr in fn.params:
                 crossable(pr.type, f"{fn.name}({pr.name})")
             crossable(fn.ret, f"{fn.name}'s return")
+        _unconverted(fn, fn.name, resolver, scalars=True)
         return cls(fn.name, f"{package}.{module}", policy,
                    tuple(ParamModel.of(p, resolver) for p in fn.params),
                    type_ref(fn.ret, resolver) if fn.ret is not None else None,
