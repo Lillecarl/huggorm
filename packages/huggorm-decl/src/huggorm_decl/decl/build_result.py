@@ -26,7 +26,6 @@ sixteen, and `success` and `error` carry different things anyway.
 
 from huggorm_decl.decl.derived_path import DerivedPath
 from huggorm_decl.decl.errors import BuildError
-from huggorm_decl.decl.realisation import Realisation
 from huggorm_decl.decl.words import BuildSuccessStatus
 from huggorm_dsl.declare import (
     I64,
@@ -43,8 +42,14 @@ from huggorm_dsl.declare import (
     wire_value,
 )
 
+# What a build reports per output: 2.35 drops the key, which the
+# output's name already gives.
 if NIX_2_35:
-    from huggorm_decl.decl.realisation import UnkeyedRealisation
+    from huggorm_decl.decl.realisation import (
+        UnkeyedRealisation as BuiltRealisation,
+    )
+else:
+    from huggorm_decl.decl.realisation import Realisation as BuiltRealisation
 
 
 @produced
@@ -70,24 +75,14 @@ class BuildSuccess:
         """How it came to be valid - built, substituted, or already."""
         Cxx("return huggorm::as_word(self.status);")
 
-    if NIX_2_35:
-        @reads("builtOutputs")
-        def built_outputs(self) -> dict[str, UnkeyedRealisation]:
-            """Each wanted output's name, and what it turned out to be.
+    @reads("builtOutputs")
+    def built_outputs(self) -> dict[str, BuiltRealisation]:
+        """Each wanted output's name, and what it turned out to be.
 
-            Empty unless the target was a derivation whose outputs are
-            content-addressed: upstream fills this from the
-            realisations, and an input-addressed output's path is known
-            before the build so nothing has to report it."""
-    else:
-        @reads("builtOutputs")
-        def built_outputs(self) -> dict[str, Realisation]:
-            """Each wanted output's name, and what it turned out to be.
-
-            Empty unless the target was a derivation whose outputs are
-            content-addressed: upstream fills this from the
-            realisations, and an input-addressed output's path is known
-            before the build so nothing has to report it."""
+        Empty unless the target was a derivation whose outputs are
+        content-addressed: upstream fills this from the
+        realisations, and an input-addressed output's path is known
+        before the build so nothing has to report it."""
 
     @staticmethod
     def _from_parts() -> BuildSuccess:
