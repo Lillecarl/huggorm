@@ -27,8 +27,10 @@ bound type into a module that only routes them.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any, Generic, TypeVar
 
 
 class WireKind(StrEnum):
@@ -178,16 +180,22 @@ class Acquire:
     required: int
 
 
-# How one node of a value tree is read. Accessor NAMES, not bound
-# methods: the walker is handed a fresh object per node, so it looks
-# each one up on the node it is walking.
+# How one node of a value tree is read. `A` is an accessor: its name
+# in the build, which checks it against the class, and in `_policy` an
+# `Accessor` the server calls with the node or the state, then the
+# method's own arguments. Not a bound method: the walker meets a fresh
+# object per node.
+A = TypeVar("A")
+Accessor = Callable[..., Any]
+
+
 @dataclass(frozen=True, slots=True)
-class Leaf:
+class Leaf(Generic[A]):
     """A node that crosses as one scalar. `wire` is its declared type,
     which picks the arm; `read` answers it."""
 
     wire: str
-    read: str
+    read: A
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,24 +204,24 @@ class Null:
 
 
 @dataclass(frozen=True, slots=True)
-class Items:
+class Items(Generic[A]):
     """A node that holds values by position."""
 
-    size: str
-    item: str
+    size: A
+    item: A
 
 
 @dataclass(frozen=True, slots=True)
-class Entries:
+class Entries(Generic[A]):
     """A node that holds values by name."""
 
-    size: str
-    name: str
-    value: str
+    size: A
+    name: A
+    value: A
 
 
 @dataclass(frozen=True, slots=True)
-class Tree:
+class Tree(Generic[A]):
     """How a value that HOLDS other values is walked.
 
     Declared next to the binding, because only the declaration knows
@@ -227,31 +235,31 @@ class Tree:
 
     `identity` is what makes two nodes the same node, and it is
     declared rather than assumed: Python identity is not it wherever a
-    binding builds a fresh wrapper per access. Empty falls back to
+    binding builds a fresh wrapper per access. None falls back to
     `id()`.
 
     `force` forces a node in place and `stop` keeps an `Entries` node a
-    proxy, both only in a walk that forces. Empty means the type
+    proxy, both only in a walk that forces. None means the type
     declares neither."""
 
-    kind: str
-    kinds: dict[str, Leaf | Items | Entries | Null]
-    identity: str = ""
-    force: str = ""
-    stop: str = ""
+    kind: A
+    kinds: dict[str, Leaf[A] | Items[A] | Entries[A] | Null]
+    identity: A | None = None
+    force: A | None = None
+    stop: A | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class Builds:
+class Builds(Generic[A]):
     """How Python data becomes a value, by the methods of the type that
     makes values.
 
     `leaves` is keyed by a tree leaf's wire type. `add_item` and
     `add_entry` fill what `items` and `entries` made."""
 
-    null: str
-    leaves: dict[str, str]
-    items: str
-    add_item: str
-    entries: str
-    add_entry: str
+    null: A
+    leaves: dict[str, A]
+    items: A
+    add_item: A
+    entries: A
+    add_entry: A

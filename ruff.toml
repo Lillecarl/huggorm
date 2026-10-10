@@ -66,6 +66,10 @@ select = [
 # anchored path matches in only one of the two.
 "**/decl/*.py" = ["F821", "UP037", "PIE790"]
 
+# UP046: the payload ships into `huggorm_generated`, which runs on
+# 3.11, and PEP 695 type parameters arrived in 3.12.
+"**/payload/*.py" = ["UP046"]
+
 [lint.isort]
 # test_remote holds the shared harness the other suites import. Left
 # undeclared it is third-party at the repo root and first-party in the

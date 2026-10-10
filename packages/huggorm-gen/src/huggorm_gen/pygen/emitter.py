@@ -320,6 +320,57 @@ class _Specs:
         return ast.Name(id=var)
 
 
+def _accessor(name: str) -> ast.expr:
+    """The method `name`, called on the object the server hands it.
+    Generated code, so a typechecker reads the call and the server
+    looks no name up."""
+    return _ann(f"lambda o, *a: o.{name}(*a)", name)
+
+
+def _typed(cls: type, *args: ast.expr, **kw: ast.expr) -> ast.expr:
+    """`cls[Accessor](...)`. The type argument is explicit, because a
+    typechecker would infer one accessor's type for the whole tree."""
+    return ast.Call(
+        func=ast.Subscript(value=ast.Name(id=cls.__name__),
+                           slice=ast.Name(id="Accessor")),
+        args=list(args),
+        keywords=[ast.keyword(arg=k, value=v) for k, v in kw.items()])
+
+
+def _bound_tree(t: cs.Tree[str]) -> ast.expr:
+    """`t`, with each accessor name as an `Accessor`."""
+    values: list[ast.expr] = []
+    for how in t.kinds.values():
+        match how:
+            case cs.Leaf():
+                values.append(_typed(cs.Leaf, ast.Constant(value=how.wire),
+                                     _accessor(how.read)))
+            case cs.Items():
+                values.append(_typed(cs.Items, _accessor(how.size),
+                                     _accessor(how.item)))
+            case cs.Entries():
+                values.append(_typed(cs.Entries, _accessor(how.size),
+                                     _accessor(how.name), _accessor(how.value)))
+            case cs.Null():
+                values.append(_literal(how))
+            case _:
+                assert_never(how)
+    kinds = ast.Dict(keys=[ast.Constant(value=k) for k in t.kinds], values=values)
+    optional = {k: _accessor(v) for k, v in (
+        ("identity", t.identity), ("force", t.force), ("stop", t.stop))
+        if v is not None}
+    return _typed(cs.Tree, _accessor(t.kind), kinds, **optional)
+
+
+def _bound_builds(b: cs.Builds[str]) -> ast.expr:
+    """`b`, with each builder name as an `Accessor`."""
+    leaves = ast.Dict(keys=[ast.Constant(value=w) for w in b.leaves],
+                      values=[_accessor(n) for n in b.leaves.values()])
+    return _typed(cs.Builds, _accessor(b.null), leaves, _accessor(b.items),
+                  _accessor(b.add_item), _accessor(b.entries),
+                  _accessor(b.add_entry))
+
+
 def policy_module(model: ir.Model) -> str:
     """`_policy.py`: the wire policy of every declared type.
 
@@ -342,7 +393,7 @@ def policy_module(model: ir.Model) -> str:
     classes = [*model.constructed, *model.handed_back]
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
-        import_from("_callspec", "Acquire", "Arg", "Builds", "Call", "Entries",
+        import_from("_callspec", "Accessor", "Acquire", "Arg", "Builds", "Call", "Entries",
                     "Hook", "Items", "Leaf", "Local", "Null", "Subscription",
                     "Tree", "Wire", "WireKind", level=1),
     ]
@@ -388,10 +439,11 @@ def policy_module(model: ir.Model) -> str:
                        for i, m in enumerate(c.hooks)))
         for c in model.called_back]))
     # The value TREES, and how values are built.
-    body.append(_table("TREES", "dict[str, Tree]", [
-        (c.name, c.tree) for c in classes if c.tree is not None]))
-    body.append(_table("BUILDERS", "dict[str, Builds]", [
-        (c.name, c.builds) for c in classes if c.builds is not None]))
+    body.append(_table("TREES", "dict[str, Tree[Accessor]]", [
+        (c.name, _bound_tree(c.tree)) for c in classes if c.tree is not None]))
+    body.append(_table("BUILDERS", "dict[str, Builds[Accessor]]", [
+        (c.name, _bound_builds(c.builds))
+        for c in classes if c.builds is not None]))
     body.extend(_directory(model, specs))
     body.append(ast.AnnAssign(
         target=ast.Name(id="CALLS"),

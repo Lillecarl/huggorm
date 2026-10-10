@@ -31,6 +31,7 @@ from anyio.abc import SocketStream
 
 from huggorm_bindings.errors import NixError
 from huggorm_generated._callspec import (
+    Accessor,
     Acquire,
     Builds,
     Call,
@@ -127,8 +128,9 @@ class TreeWalk:
     Everything it knows about the type comes from `spec`, which the
     binding declares and the build emits: which accessor says what
     a node is, which accessor reads each scalar kind, and how to reach
-    the elements of a list or an attribute set. This class names no
-    type and no method.
+    the elements of a list or an attribute set. Each accessor is
+    generated code that calls the method, so this class names no type
+    and no method.
 
     It runs in ONE hop for the whole tree. A node per round trip would
     put a thread handover between every attribute, which is the cost
@@ -154,10 +156,10 @@ class TreeWalk:
     forcing would instantiate.
     """
 
-    def __init__(self, spec: Tree, depth: int, budget: int,
+    def __init__(self, spec: Tree[Accessor], depth: int, budget: int,
                  force: bool = False) -> None:
         self.spec = spec
-        self.forcing = force and bool(spec.force)
+        self.forcing = force and spec.force is not None
         self.depth = depth
         self.left = budget
         self.seen: set[Any] = set()
@@ -172,15 +174,16 @@ class TreeWalk:
         which reads as "already seen" and truncates a tree that was
         never visited."""
         how = self.spec.identity
-        return getattr(obj, how)() if how else id(obj)
+        return how(obj) if how is not None else id(obj)
 
     def _stops(self, obj: Any) -> bool:
         """Whether a forcing walk keeps this node a proxy. A throw
         while asking means the same: the read raises it later."""
-        if not self.spec.stop:
+        stop = self.spec.stop
+        if stop is None:
             return False
         try:
-            return bool(getattr(obj, self.spec.stop)())
+            return bool(stop(obj))
         except NixError:
             return True
 
@@ -193,28 +196,26 @@ class TreeWalk:
             return tree.Stays(type(obj).__name__, obj)
         self.left -= 1
         self.seen.add(key)
-        if self.forcing:
+        if self.forcing and (force := self.spec.force) is not None:
             try:
-                getattr(obj, self.spec.force)()
+                force(obj)
             except NixError:
                 return tree.Stays(type(obj).__name__, obj)
-        match self.spec.kinds.get(getattr(obj, self.spec.kind)()):
+        match self.spec.kinds.get(self.spec.kind(obj)):
             case Leaf(wire=wire, read=read):
-                return tree.Leaf(wire, getattr(obj, read)())
+                return tree.Leaf(wire, read(obj))
             case Null():
                 return tree.Leaf("null", None)
             case Items(size=size, item=item):
-                at = getattr(obj, item)
                 return tree.Items(type(obj).__name__, obj,
-                                  [self.node(at(i), depth + 1)
-                                   for i in range(getattr(obj, size)())])
+                                  [self.node(item(obj, i), depth + 1)
+                                   for i in range(size(obj))])
             case Entries(size=size, name=name, value=value):
                 if self.forcing and self._stops(obj):
                     return tree.Stays(type(obj).__name__, obj)
-                key, at = getattr(obj, name), getattr(obj, value)
                 return tree.Entries(type(obj).__name__, obj,
-                                    {key(i): self.node(at(i), depth + 1)
-                                     for i in range(getattr(obj, size)())})
+                                    {name(obj, i): self.node(value(obj, i), depth + 1)
+                                     for i in range(size(obj))})
             case None:
                 # A kind nothing describes: it stays where it is.
                 self.truncated = True
@@ -224,8 +225,8 @@ class TreeWalk:
 class Build:
     """Python data made into one value, on the state's OWN thread.
 
-    Every method it calls is named by `spec`, which the binding
-    declares and the build emits, so this class names no type.
+    Every method it calls is in `spec`, which the binding declares and
+    the build emits, so this class names no type.
 
     Bottom-up: a Nix list or attribute set is sized when it is made, so
     a child is complete before its parent takes it. `given` holds the
@@ -235,7 +236,7 @@ class Build:
     round trip. The root is always a handle: the caller asked for a
     value, and a bare scalar is not one."""
 
-    def __init__(self, spec: Builds, given: dict[str, Any]) -> None:
+    def __init__(self, spec: Builds[Accessor], given: dict[str, Any]) -> None:
         self.spec = spec
         self.given = given
 
@@ -261,31 +262,29 @@ class Build:
         """One data node, and the value made for it."""
         match raw:
             case [Node.LEAF, None]:
-                made = getattr(state, self.spec.null)()
+                made = self.spec.null(state)
                 return tree.Leaf("null", None), made
             case [Node.LEAF, bool() | int() | float() | str() as v]:
                 wire = type(v).__name__
-                made = getattr(state, self.spec.leaves[wire])(v)
+                made = self.spec.leaves[wire](state, v)
                 return tree.Leaf(wire, v), made
             case [Node.STAYS, str(hid)]:
                 obj = self.given[hid]
                 return tree.Stays(type(obj).__name__, obj), obj
             case [Node.ITEMS, list(items)]:
-                made = getattr(state, self.spec.items)()
-                add = getattr(state, self.spec.add_item)
+                made = self.spec.items(state)
                 nodes = []
                 for i in items:
                     n, m = self.node(state, i)
-                    add(made, m)
+                    self.spec.add_item(state, made, m)
                     nodes.append(n)
                 return tree.Items(type(made).__name__, made, nodes), made
             case [Node.ENTRIES, dict(entries)]:
-                made = getattr(state, self.spec.entries)()
-                add = getattr(state, self.spec.add_entry)
+                made = self.spec.entries(state)
                 named = {}
                 for k, v in entries.items():
                     n, m = self.node(state, v)
-                    add(made, k, m)
+                    self.spec.add_entry(state, made, k, m)
                     named[k] = n
                 return tree.Entries(type(made).__name__, made, named), made
         raise ProtocolError(f"a data node arrived as {raw!r:.80}")

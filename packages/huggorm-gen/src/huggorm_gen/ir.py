@@ -789,7 +789,7 @@ class ClassModel:
     # The declared factory's name, whether this module binds it or not.
     factory_name: str = ""
     # How a value that holds values is walked, or None.
-    tree: callspec.Tree | None = None
+    tree: callspec.Tree[str] | None = None
     # The declared class this one derives from, or "".
     base: str = ""
     # What C++ holds one through: "shared_ptr", or "".
@@ -797,7 +797,7 @@ class ClassModel:
     # A remote client may pass one, and the server calls it back.
     calls_back: bool = False
     # How Python data becomes a value, or None.
-    builds: callspec.Builds | None = None
+    builds: callspec.Builds[str] | None = None
 
     @classmethod
     def of(cls, c: Class, package: str, module: str, resolver: Resolver,
@@ -994,13 +994,13 @@ def _virtual(owner: Class, m: Method) -> bool:
     return True
 
 
-def _tree(decl: Decl) -> callspec.Tree | None:
+def _tree(decl: Decl) -> callspec.Tree[str] | None:
     """`@tree(...)`, as the record the server reads."""
     spec = decl.tree
     if spec is None:
         return None
-    kinds: dict[str, callspec.Leaf | callspec.Items | callspec.Entries
-                | callspec.Null] = {}
+    kinds: dict[str, callspec.Leaf[str] | callspec.Items[str]
+                | callspec.Entries[str] | callspec.Null] = {}
     for answer, how in spec.kinds.items():
         match how:
             case declare.Leaf():
@@ -1013,11 +1013,11 @@ def _tree(decl: Decl) -> callspec.Tree | None:
                 kinds[answer] = callspec.Null()
             case _:
                 assert_never(how)
-    return callspec.Tree(spec.kind, kinds, spec.identity, spec.force,
-                         spec.stop)
+    return callspec.Tree(spec.kind, kinds, spec.identity or None,
+                         spec.force or None, spec.stop or None)
 
 
-def _walkable(cls: ClassModel, spec: callspec.Tree) -> None:
+def _walkable(cls: ClassModel, spec: callspec.Tree[str]) -> None:
     """Refuse a tree that names an accessor the class does not bind,
     or a leaf type the value message has no arm for."""
     names = [spec.kind, *(n for n in (spec.identity, spec.force, spec.stop) if n)]
@@ -1042,7 +1042,7 @@ def _walkable(cls: ClassModel, spec: callspec.Tree) -> None:
             f"not bind.")
 
 
-def _builds(decl: Decl) -> callspec.Builds | None:
+def _builds(decl: Decl) -> callspec.Builds[str] | None:
     """`@builds(...)`, as the record the server reads."""
     spec = decl.builds
     if spec is None:
@@ -1051,7 +1051,7 @@ def _builds(decl: Decl) -> callspec.Builds | None:
                            spec.add_item, spec.entries, spec.add_entry)
 
 
-def _buildable(cls: ClassModel, spec: callspec.Builds) -> None:
+def _buildable(cls: ClassModel, spec: callspec.Builds[str]) -> None:
     """Refuse builders the class does not bind, or a leaf the tree has
     no arm for."""
     if odd := sorted(set(spec.leaves) - TREE_LEAVES):
