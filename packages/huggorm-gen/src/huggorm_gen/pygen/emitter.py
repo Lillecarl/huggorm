@@ -343,8 +343,8 @@ def policy_module(model: ir.Model) -> str:
     body: list[ast.stmt] = [
         ast.Expr(value=ast.Constant(value=POLICY_DOC)),
         import_from("_callspec", "Acquire", "Arg", "Builds", "Call", "Entries",
-                    "Hook", "Items", "Leaf", "Local", "Null", "Tree", "Wire",
-                    "WireKind", level=1),
+                    "Hook", "Items", "Leaf", "Local", "Null", "Subscription",
+                    "Tree", "Wire", "WireKind", level=1),
     ]
     body.append(_table("WIRE_FIELDS", "dict[str, tuple[Arg, ...]]",
                        [(c.name, _args([(f.name, f.type) for f in c.wire_fields]))
@@ -372,7 +372,8 @@ def policy_module(model: ir.Model) -> str:
             if model.offered(m):
                 offered.append(specs.add(
                     _spec_name(c.name, m.name),
-                    _spec(specs.next, m.name, m.params, m.returns)))
+                    _spec(specs.next, m.name, m.params, m.returns,
+                          m.subscription)))
             else:
                 body.append(ast.Assign(
                     targets=[ast.Name(id=_spec_name(c.name, m.name))],
@@ -707,7 +708,8 @@ def protocol_module(model: ir.Model) -> ast.Module:
 
 
 def _spec(index: int, name: str, params: Sequence[ir.ParamModel],
-          returns: ir.TypeRef | None) -> cs.Call:
+          returns: ir.TypeRef | None,
+          subscription: cs.Subscription | None = None) -> cs.Call:
     """One call's spec.
 
     A typed value, not a dict literal. A checker sees nothing in a
@@ -720,7 +722,7 @@ def _spec(index: int, name: str, params: Sequence[ir.ParamModel],
     present, and carrying a default here would suggest the runtime
     fills one in."""
     return cs.Call(index, name, _args([(p.name, p.type) for p in params]),
-                   _wire(returns))
+                   _wire(returns), subscription)
 
 
 def _directory(model: ir.Model, specs: _Specs) -> list[ast.stmt]:
@@ -741,7 +743,7 @@ def _directory(model: ir.Model, specs: _Specs) -> list[ast.stmt]:
         for c in model.acquirable]
     functions = [model.functions[n] for n in sorted(model.functions)]
     free = [(fn.name, specs.add(f"_fn_{fn.name}", _spec(
-        specs.next, fn.name, fn.params, fn.returns)))
+        specs.next, fn.name, fn.params, fn.returns, fn.subscription)))
         for fn in functions if not model.function_blockers(fn)]
     # ...and the ones the wire cannot carry, with the reason.
     #

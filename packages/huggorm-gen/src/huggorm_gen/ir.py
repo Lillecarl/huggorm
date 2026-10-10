@@ -21,7 +21,7 @@ from functools import cached_property
 from typing import NamedTuple, assert_never
 
 from huggorm_dsl import declare
-from huggorm_dsl.declare import Crossing, Decl, DeclKind, Threading
+from huggorm_dsl.declare import Crossing, Decl, DeclKind, Subscription, Threading
 from huggorm_dsl.read import (
     MESSAGE_PARTS,
     Body,
@@ -583,6 +583,8 @@ class MethodModel:
     virtual: bool = False
     # `@posted`: Nix need not wait for an async override.
     posted: bool = False
+    # `@subscription`: what it does to a subscription a server shares.
+    subscription: callspec.Subscription | None = None
     # The C++ type of the HANDLE class it returns, or "".
     returns_handle: str = ""
     # It returns a vocabulary with a C++ enum behind it.
@@ -617,6 +619,7 @@ class MethodModel:
                    fills=_fill(owner, m, params, resolver),
                    local=m.local, virtual=virtual,
                    posted=_posted(owner, m),
+                   subscription=_subscription(f"{owner.name}.{m.name}", m),
                    returns_handle=cxx.held(handle) if handle else "",
                    returns_word=(word is not None and word.is_words
                                  and bool(word.decl.enumerated)),
@@ -668,6 +671,8 @@ class FunctionModel:
     startup: bool = False
     # Turns a library exception into a Python one (`@translator`).
     translator: bool = False
+    # `@subscription`: what it does to a subscription a server shares.
+    subscription: callspec.Subscription | None = None
 
     @classmethod
     def of(cls, fn: Method, package: str, module: str,
@@ -684,7 +689,8 @@ class FunctionModel:
                    _clean(fn.doc), cxx_name=fn.binds, cxx_body=fn.cxx_body,
                    blocks=fn.blocks, instant=fn.instant, headers=fn.headers,
                    spells=_spells(fn, fn.name, resolver), startup=fn.startup,
-                   translator=fn.translator)
+                   translator=fn.translator,
+                   subscription=_subscription(fn.name, fn))
 
     @property
     def wrapped(self) -> bool:
@@ -929,6 +935,32 @@ class ClassModel:
     @property
     def message(self) -> str:
         return f"{self.name}Msg"
+
+
+_SUBSCRIPTION = {
+    Subscription.OPEN: callspec.Subscription.OPEN,
+    Subscription.CLOSE: callspec.Subscription.CLOSE,
+}
+
+
+def _subscription(where: str, m: Method) -> callspec.Subscription | None:
+    """`@subscription`, in the shape the server calls: an OPEN takes
+    `(capacity, level)` and answers a reader, and a CLOSE takes nothing
+    and answers nothing."""
+    if m.subscription is None:
+        return None
+    names = [p.name for p in m.params]
+    if m.subscription is Subscription.OPEN and (
+            names != ["capacity", "level"] or m.ret is None):
+        raise TypeError(
+            f"{where}: @subscription(OPEN) takes (capacity, level) and "
+            f"answers a reader; this takes {names}")
+    if m.subscription is Subscription.CLOSE and (names or m.ret is not None):
+        raise TypeError(
+            f"{where}: @subscription(CLOSE) takes nothing and answers "
+            f"nothing")
+    return _SUBSCRIPTION[m.subscription]
+
 
 def _posted(owner: Class, m: Method) -> bool:
     """`@posted`, refused where no caller could go on without it."""

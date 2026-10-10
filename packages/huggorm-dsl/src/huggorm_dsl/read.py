@@ -75,7 +75,15 @@ from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin, get_overloads
 
 from huggorm_dsl import declare
-from huggorm_dsl.declare import Crossing, Cxx, Decl, DeclKind, Field, Threading
+from huggorm_dsl.declare import (
+    Crossing,
+    Cxx,
+    Decl,
+    DeclKind,
+    Field,
+    Subscription,
+    Threading,
+)
 
 # Decorators that are Python's, not ours. A declaration may use them
 # and they are read rather than applied.
@@ -547,6 +555,9 @@ class Method:
     # None means it declared none, which is what keeps a runtime
     # helper out of every generated form.
     policy: Threading | None = None
+    # What the call does to a subscription a server shares, from
+    # @subscription.
+    subscription: Subscription | None = None
 
 
 @dataclass(frozen=True)
@@ -1327,6 +1338,7 @@ def _method(node: ast.FunctionDef, vocab: dict[str, str],
         startup=bool(getattr(marked, "_startup", False)),
         translator=bool(getattr(marked, "_translator", False)),
         policy=getattr(marked, "_policy", None),
+        subscription=getattr(marked, "_subscription", None),
     )
 
 

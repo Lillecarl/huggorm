@@ -38,6 +38,7 @@ from huggorm_generated._callspec import (
     Items,
     Leaf,
     Null,
+    Subscription,
     Tree,
 )
 from huggorm_generated._classes import CLASSES
@@ -290,40 +291,18 @@ class Build:
         raise ProtocolError(f"a data node arrived as {raw!r:.80}")
 
 
-async def _drop_subscription(target: Any) -> None:
-    """Clear a state's subscription, on the state's own thread.
-
-    AWAITED, under the fan-out's lock: the next `join` must not open a
-    subscription while this one is still being dropped, because
-    `unsubscribe` clears the slot whatever is in it (huggorm#85)."""
-    await target.unsubscribe_logs()
+def _roles(specs: Iterable[Call]) -> dict[Subscription, Call]:
+    """The calls among `specs` that open and close a shared
+    subscription, by the role the declaration gives them."""
+    return {s.subscription: s for s in specs if s.subscription is not None}
 
 
-async def _drop_process_subscription() -> None:
-    """Clear the process-wide subscription. As `_drop_subscription`,
-    awaited for the same reason.
-
-    No target, because there is nothing to name: the sink belongs to
-    the process. That is the whole difference between the two, which
-    is why they are two three-line functions rather than one with a
-    branch."""
-    from huggorm_generated import unsubscribe_process_logs
-    await unsubscribe_process_logs()
-
-
-async def _open_process_subscription(capacity: int, level: int) -> Any:
-    """Subscribe to the process sink, as wide as any reader wants.
-
-    A function rather than the binding call itself, because the
-    import is deferred: `huggorm_generated` is the built extension,
-    and this module is imported by tools that never load it."""
-    from huggorm_generated import subscribe_process_logs
-    return await subscribe_process_logs(capacity=capacity, level=level)
-
-
-def _method(name: str) -> Callable[..., Awaitable[Any]]:
+def _method(spec: Call) -> Callable[..., Awaitable[Any]]:
+    """The call on the object a handle names. By the method, not
+    through a runner: a log reader is a fan-out `Reader`, duck-typed as
+    the class the spec belongs to."""
     async def run(token: str, target: Any, *args: Any) -> Any:
-        return await getattr(target, name)(*args)
+        return await getattr(target, spec.name)(*args)
     return run
 
 
@@ -377,30 +356,34 @@ class Dispatcher:
         # empty fan-out stays, holds nothing, and is dropped with the
         # state it belongs to (`_on_drop`).
         self._log_fanouts: dict[int, Fanout] = {}
+        # The `@subscription` calls, routed through the fan-outs.
+        # Called straight through, an OPEN REPLACES the thread's
+        # subscription, and an open `Session/Logs` stream on that
+        # state goes connected and silent (huggorm#85). So the handle a
+        # remote OPEN answers is a fan-out reader, and a remote CLOSE
+        # leaves only the readers that connection opened. Keyed by the
+        # declared role, so no layer above the bindings names a method
+        # or a type (`test_no_hardcoded_domain_types`).
+        self._subscriptions = {cls: _roles(specs)
+                               for cls, specs in METHODS.items()}
+        self._method_roles: dict[Subscription, Callable[..., Awaitable[Any]]] = {
+            Subscription.OPEN: self._subscribe_logs,
+            Subscription.CLOSE: self._unsubscribe_logs,
+        }
+        self._free_roles: dict[Subscription, Callable[..., Awaitable[Any]]] = {
+            Subscription.OPEN: self._subscribe_process_logs,
+            Subscription.CLOSE: self._unsubscribe_process_logs,
+        }
         # One fan-out for the process sink. Not a map, because there
         # is one sink and nothing to key by, and not created lazily
         # for the same reason.
-        self._process_fanout = Fanout(_open_process_subscription,
-                                      _drop_process_subscription)
-        # The generated subscribe rpcs, routed through the fan-outs.
-        # Called straight through, `subscribe_logs` REPLACES the
-        # thread's subscription, and an open `Session/Logs` stream on
-        # that state goes connected and silent (huggorm#85). So the
-        # handle a remote subscribe answers is a fan-out reader, and a
-        # remote unsubscribe leaves only the readers that connection
-        # opened. Weak, because the handle table and the fan-out are
-        # what keep a reader alive.
-        #
-        # Keyed by name, never by class: no layer above the bindings
-        # names a domain type (`test_no_hardcoded_domain_types`).
-        self._method_overrides: dict[str, Callable[..., Awaitable[Any]]] = {
-            "subscribe_logs": self._subscribe_logs,
-            "unsubscribe_logs": self._unsubscribe_logs,
-        }
-        self._free_overrides: dict[str, Callable[..., Awaitable[Any]]] = {
-            "subscribe_process_logs": self._subscribe_process_logs,
-            "unsubscribe_process_logs": self._unsubscribe_process_logs,
-        }
+        process = _roles(FREE.values())
+        self._process_fanout = Fanout(
+            lambda capacity, level: FUNCTIONS[
+                process[Subscription.OPEN].name](capacity, level),
+            lambda: FUNCTIONS[process[Subscription.CLOSE].name]())
+        # Weak, because the handle table and the fan-out are what keep
+        # a reader alive.
         self._handle_readers: dict[tuple[str, int], weakref.WeakSet[Reader]] = {}
         # A failure crosses the same way a value does: by what the
         # bindings declare, never by a type this file names
@@ -411,16 +394,17 @@ class Dispatcher:
     def _fanout(self, target: Any) -> Fanout:
         """This state's fan-out, made on first use.
 
-        `subscribe_logs` hops onto the state's own thread, so the
-        binding call is bound to the target here and the fan-out
-        never has to name one."""
+        Its OPEN and CLOSE run on the state's own runner, so the
+        fan-out never has to name the target."""
         key = id(target)
         fan = self._log_fanouts.get(key)
         if fan is None:
+            roles = self._subscriptions[DECLARED[type(target)]]
+            runner = _runner(target)
             fan = Fanout(
-                lambda capacity, level: target.subscribe_logs(
-                    capacity=capacity, level=level),
-                lambda: _drop_subscription(target))
+                lambda capacity, level: runner.call(
+                    roles[Subscription.OPEN], [capacity, level]),
+                lambda: runner.call(roles[Subscription.CLOSE], []))
             self._log_fanouts[key] = fan
         return fan
 
@@ -560,7 +544,8 @@ class Dispatcher:
             for m in methods:
                 handlers[m.index] = CallHandler(
                     Target.HANDLE,
-                    self._method_overrides.get(m.name) or _method(m.name),
+                    (self._method_roles[m.subscription] if m.subscription
+                     else _method(m)),
                     f"{cls_name}.{m.name}")
         for cls_name, acquire in ACQUIRE.items():
             handlers[acquire.index] = CallHandler(
@@ -569,7 +554,8 @@ class Dispatcher:
         for fname, call in FREE.items():
             handlers[call.index] = CallHandler(
                 Target.NONE,
-                self._free_overrides.get(fname) or _function(FUNCTIONS[fname]),
+                (self._free_roles[call.subscription] if call.subscription
+                 else _function(FUNCTIONS[fname])),
                 f"Functions.{fname}")
         listed = {c.index for c in CALLS}
         if handlers.keys() != listed:

@@ -44,6 +44,7 @@ from huggorm_dsl.declare import (
     PyFunc,
     Str,
     StrView,
+    Subscription,
     binding,
     binds,
     blocks,
@@ -61,6 +62,7 @@ from huggorm_dsl.declare import (
     produces,
     reads,
     startup,
+    subscription,
     tagged,
     threading,
     tree,
@@ -1861,6 +1863,7 @@ if (arity < 1)
 return self.make_primop(name, static_cast<std::size_t>(arity), fn);
         """)
 
+    @subscription(Subscription.OPEN)
     def subscribe_logs(self, capacity: I64 = 1024,
                        level: I64 = 3) -> LogStream:
         """Record what Nix says on THIS state's thread.
@@ -1916,6 +1919,7 @@ return huggorm::subscribe_logs(static_cast<std::size_t>(capacity),
                                static_cast<std::uint64_t>(level));
         """)
 
+    @subscription(Subscription.CLOSE)
     def unsubscribe_logs(self) -> None:
         """Stop recording on this state's thread.
 
@@ -2738,6 +2742,7 @@ return static_cast<bool>(NIX_USE_BOEHMGC);
 
 @needs("huggorm_decl/cpp/logging.hpp")
 @threading("pool")
+@subscription(Subscription.OPEN)
 def subscribe_process_logs(capacity: I64 = 1024,
                            level: I64 = 3) -> LogStream:
     """Record what no subscribed thread claims.
@@ -2802,6 +2807,7 @@ return huggorm::subscribe_process_logs(static_cast<std::size_t>(capacity),
 @needs("huggorm_decl/cpp/logging.hpp")
 @threading("pool")
 @binds("huggorm::unsubscribe_process_logs")
+@subscription(Subscription.CLOSE)
 def unsubscribe_process_logs() -> None:
     """Stop recording process-wide.
 

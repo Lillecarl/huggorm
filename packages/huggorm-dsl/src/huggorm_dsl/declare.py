@@ -54,6 +54,16 @@ class Crossing(StrEnum):
     LOCAL = "local"
 
 
+class Subscription(StrEnum):
+    """What a call does to a subscription a server shares (huggorm#85)."""
+
+    # Opens one subscription per object, or per process for a free
+    # function, and answers each caller its own reader of it.
+    OPEN = "open"
+    # Leaves only the readers this caller opened.
+    CLOSE = "close"
+
+
 class DeclKind(StrEnum):
     """What sort of declaration a `Decl` is."""
 
@@ -543,6 +553,8 @@ MARKERS: dict[str, Marker] = {
     # On a method of an @in_process class.
     "virtual": Marker(_t("method"), "flag"),
     "posted": Marker(_t("method"), "flag", requires=frozenset({"virtual"})),
+    # On a method, or on a module-level function, a server serves.
+    "subscription": Marker(_t("method", "free"), "once"),
 }
 
 
@@ -1081,6 +1093,20 @@ def posted[F: Callable[..., Any]](fn: F) -> F:
     queued call has run."""
     fn._posted = True  # type: ignore[attr-defined]
     return fn
+
+
+def subscription[F: Callable[..., Any]](role: Subscription) -> Callable[[F], F]:
+    """A server shares this call among its callers (huggorm#85).
+
+    The binding REPLACES a thread's subscription, so a second caller
+    passed straight through would silence the first. The server opens
+    the subscription once and answers each OPEN with a reader of it;
+    a CLOSE leaves only that caller's readers. In process, the call
+    runs as declared."""
+    def mark(fn: F) -> F:
+        fn._subscription = role  # type: ignore[attr-defined]
+        return fn
+    return mark
 
 
 def reads[F: Callable[..., Any]](member: str,

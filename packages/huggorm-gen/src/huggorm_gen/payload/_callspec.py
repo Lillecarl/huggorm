@@ -87,6 +87,15 @@ class Arg:
     type: Wire
 
 
+class Subscription(StrEnum):
+    """What a call does to a subscription the server shares
+    (huggorm#85). The server opens one per object, or per process for
+    a free function, and hands each caller its own reader."""
+
+    OPEN = "open"
+    CLOSE = "close"
+
+
 @dataclass(frozen=True, slots=True)
 class Call:
     """One remote method, decided at build time.
@@ -113,6 +122,9 @@ class Call:
     name: str
     args: tuple[Arg, ...]
     returns: Wire | None
+    # What the server does in place of a plain call, from the
+    # declaration's `@subscription`.
+    subscription: Subscription | None = None
 
 
 @dataclass(frozen=True, slots=True)
