@@ -1910,7 +1910,7 @@ return self.make_primop(name, static_cast<std::size_t>(arity), fn);
         half of the records, which is worse than either getting none.
         """
         # One evaluation thread: nothing under src/libexpr names
-        # `eval-cores` in 2.34.8. The ceiling: huggorm#102. Lowering
+        # `eval-cores` in the 2.35 or the git lane. The ceiling: huggorm#102. Lowering
         # again: huggorm#95. No pin since huggorm#89 step 4.
         Cxx("""
 if (capacity < 1)
