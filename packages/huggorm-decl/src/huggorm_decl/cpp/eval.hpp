@@ -996,11 +996,10 @@ inline nix::fun<nix::PrimOpFun> primop_impl(
  * dangling. huggorm#33 argued for a borrowed view that refuses to
  * outlive the call; the root is why none is needed.
  *
- * The callable is NEVER RELEASED. `addPrimOp` does `new PrimOp(...)`
- * into GC memory and Boehm runs no destructors, so the captured
- * `nb::object` keeps its reference for the life of the process. A
- * registration is permanent, and that is upstream's shape rather
- * than a choice here.
+ * A registration lasts as long as the state. The state owns the
+ * `PrimOp` (`ownPrimOp`, nix-evalstate-owns-primops.patch) and frees it
+ * with itself; the callable lives in the core's slot, which the core
+ * drops with the state.
  *
  * Errors go out the way `primops.cc` sends them, at
  * `error_position`: the call position on 2.35, as its primops do,
@@ -1062,7 +1061,8 @@ inline void Evaluator::register_primop(const std::string & name,
  * `builtins`. The callable lives as long as the state, as a
  * registered one does, so each call keeps one more.
  *
- * `new PrimOp`, as `addPrimOp` allocates one.
+ * The state owns the `PrimOp`, as it owns one `addPrimOp` makes, so
+ * neither outlives the state nor leaks after it.
  */
 inline Bridge Evaluator::make_primop(const std::string & name,
                                      std::size_t arity,
@@ -1070,11 +1070,11 @@ inline Bridge Evaluator::make_primop(const std::string & name,
 {
     const std::size_t slot = core_->hold_primop(std::move(fn));
     auto * made = alloc();
-    made->mkPrimOp(new nix::PrimOp{
+    made->mkPrimOp(core_->state().ownPrimOp(nix::PrimOp{
         .name = name,
         .arity = arity,
         .impl = primop_impl(core_, slot, arity, name),
-    });
+    }));
     return wrap(made);
 }
 

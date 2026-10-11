@@ -1,0 +1,87 @@
+Free a state's primops with the state.
+
+EvalState::addPrimOp allocates each builtin with `new PrimOp` and
+stores the pointer in a Value. A Value lives in collector memory, and
+the collector runs no destructor, so the PrimOp - its name, args,
+doc string and impl - is never freed. `nix` makes one state per
+process and never sees it. An embedder that makes and drops states
+leaks every builtin each time: 84.5 KiB of malloc memory per state,
+measured with mallinfo2 and valgrind (huggorm#162). Over 99% of the
+loss is this one stack.
+
+The state now keeps its primops in a std::list and frees them in its
+destructor. `ownPrimOp` is public, so an embedder that makes a primop
+value of its own gives the state that one too.
+
+--- a/src/libexpr/eval.cc
++++ b/src/libexpr/eval.cc
+@@ -367,6 +367,12 @@
+ 
+ EvalState::~EvalState() {}
+ 
++PrimOp * EvalState::ownPrimOp(PrimOp && primOp)
++{
++    std::lock_guard lock(ownedPrimOpsMutex);
++    return &ownedPrimOps.emplace_back(std::move(primOp));
++}
++
+ void EvalState::allowPathLegacy(const std::string & path)
+ {
+     if (auto rootFS2 = rootFS.dynamic_pointer_cast<AllowListSourceAccessor>())
+@@ -530,7 +536,7 @@
+     if (primOp.arity == 0) {
+         primOp.arity = 1;
+         auto vPrimOp = allocValue();
+-        vPrimOp->mkPrimOp(new PrimOp(std::move(primOp)));
++        vPrimOp->mkPrimOp(ownPrimOp(std::move(primOp)));
+         Value v;
+         v.mkApp(vPrimOp, vPrimOp);
+         auto & primOp1 = *vPrimOp->primOp();
+@@ -548,7 +554,7 @@
+         primOp.name = primOp.name.substr(2);
+ 
+     Value * v = allocValue();
+-    v->mkPrimOp(new PrimOp(primOp));
++    v->mkPrimOp(ownPrimOp(PrimOp(primOp)));
+ 
+     if (primOp.internal)
+         internalPrimOps.emplace(primOp.name, v);
+--- a/src/libexpr/include/nix/expr/eval.hh
++++ b/src/libexpr/include/nix/expr/eval.hh
+@@ -24,7 +24,9 @@
+ #include <boost/unordered/unordered_flat_map.hpp>
+ #include <boost/unordered/concurrent_flat_map_fwd.hpp>
+ 
++#include <list>
+ #include <map>
++#include <mutex>
+ #include <optional>
+ #include <functional>
+ 
+@@ -824,10 +826,26 @@
+      */
+     std::vector<std::pair<std::string, Constant>> constantInfos;
+ 
++    /**
++     * Keep `primOp` for as long as this state lives, and return where it
++     * is kept, for `Value::mkPrimOp`.
++     *
++     * A `Value` lives in collector memory, and the collector runs no
++     * destructor. So a `PrimOp` that only a `Value` points at is never
++     * freed, and each state would leak every builtin it creates.
++     */
++    PrimOp * ownPrimOp(PrimOp && primOp);
++
+ private:
+ 
+     unsigned int baseEnvDispl = 0;
+ 
++    /**
++     * The primops this state owns. A list, so an element never moves.
++     */
++    std::list<PrimOp> ownedPrimOps;
++    std::mutex ownedPrimOpsMutex;
++
+     void createBaseEnv(const EvalSettings & settings);
+ 
+     Value * addConstant(const std::string & name, Value & v, Constant info);

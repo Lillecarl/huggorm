@@ -48,6 +48,9 @@ let
   # A pure evaluation checks for an interrupt once per function call
   # (huggorm#158). On 2.34 it applies after `interruptedThunk234`.
   callChecksInterrupt = patch "nix-call-function-checks-interrupt";
+  # A state frees its primops; each dropped state leaked 84.5 KiB
+  # (huggorm#162).
+  ownsPrimOps = patch "nix-evalstate-owns-primops";
 in
 {
   nix_2_34 = {
@@ -64,6 +67,7 @@ in
       exprPath
       parseFile
       callChecksInterrupt
+      ownsPrimOps
     ];
   };
   nix_2_35 = {
@@ -80,6 +84,7 @@ in
       exprPath
       parseFile
       callChecksInterrupt
+      ownsPrimOps
     ];
   };
   # Unpinned on purpose: it follows nixpkgs' `nixComponents_git`, so a
@@ -99,6 +104,7 @@ in
       exprPath
       parseFile
       callChecksInterrupt
+      ownsPrimOps
     ];
     # Nix master uses `#embed`, which needs GCC 15. Every PyPA image
     # ships gcc-toolset-14 (huggorm#109).
