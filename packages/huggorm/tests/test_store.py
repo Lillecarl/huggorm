@@ -55,6 +55,7 @@ from huggorm_bindings import (
     GCOptions,
     GCResults,
     GcRoot,
+    Generation,
     Hash,
     HashAlgorithm,
     Input,
@@ -1944,6 +1945,9 @@ def wire_samples(chroot: Store) -> dict[str, tuple[Any, list[tuple[Any, ...]]]]:
             [("start", 3, 7, 2, 105, 41, b"copying '/tmp/x' to the store",
               [_rebuild(LogField, False, 0, b"/tmp/x")], None)]),
         "Stat": (Stat(FileType.DIRECTORY), [(FileType.REGULAR, 7, True)]),
+        # A generation's number, link and time all differ.
+        "Generation": (_rebuild(Generation, 1, pathlib.Path("/p/salt-1-link"), 100),
+                       [(2, pathlib.Path("/p/salt-2-link"), 200)]),
     }
 
     if NIX_2_35:
