@@ -13,6 +13,7 @@ from huggorm_bindings.profiles import (
     delete_old_generations,
     find_generations,
     set_profile,
+    switch_generation,
 )
 
 
@@ -52,6 +53,29 @@ def test_deleting_old_generations_keeps_the_current_one(
     delete_old_generations(profile)
     assert [g.number() for g in find_generations(profile)] == [3]
     assert current_generation(profile) == 3
+
+
+def test_a_rollback_points_at_the_previous_generation(
+        chroot: Store, tmp_path: pathlib.Path) -> None:
+    from huggorm_bindings.errors import NixError
+
+    profile = tmp_path / "p"
+    for name in ("a", "b", "c"):
+        path = chroot.add_to_store(name, name.encode(), CA.NAR, HashAlgorithm.SHA256)
+        set_profile(chroot, profile, path)
+
+    switch_generation(profile, dry_run=True)
+    assert current_generation(profile) == 3
+    switch_generation(profile)
+    assert current_generation(profile) == 2
+    switch_generation(profile, 3)
+    assert current_generation(profile) == 3
+    switch_generation(profile, 1)
+    with pytest.raises(NixError, match="no profile version older"):
+        switch_generation(profile)
+    with pytest.raises(NixError, match="does not exist"):
+        switch_generation(profile, 9)
+    assert current_generation(profile) == 1
 
 
 def test_a_profile_that_does_not_exist_has_no_generations(tmp_path: pathlib.Path) -> None:

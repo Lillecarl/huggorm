@@ -102,6 +102,17 @@ return generation.string();
 @needs("nix/store/profiles.hh")
 @threading("pool")
 @blocks
+def switch_generation(profile: Path, number: U64 | None = None, dry_run: Bint = False) -> None:
+    """Point `profile` at generation `number`, or at the newest one older
+    than the current. `nix-env --switch-generation` and `--rollback`.
+
+    It takes the profile lock, and raises when no such generation exists."""
+    Cxx("nix::switchGeneration(profile, number, dry_run);")
+
+
+@needs("nix/store/profiles.hh")
+@threading("pool")
+@blocks
 def delete_old_generations(profile: Path, dry_run: Bint = False) -> None:
     """Delete every generation but the current one. `nix-env
     --delete-generations old`."""
