@@ -27,6 +27,7 @@ from huggorm_decl.decl.words import (
     TrustedFlag,
 )
 from huggorm_dsl.declare import (
+    NIX_2_36,
     U64,
     Bint,
     Bytes,
@@ -962,6 +963,23 @@ return self.writeDerivation(drv);
 
         `add_derivation` does the same from Nix's JSON."""
         Cxx("return self.writeDerivation(drv, repair ? nix::Repair : nix::NoRepair);")
+
+    if NIX_2_36:
+        @needs("nix/store/store-cast.hh", "nix/store/submit-store.hh")
+        def submit_output(self, path: StorePath, output: Str) -> None:
+            """Register `path` as output `output` of the build that runs now.
+
+            `nix store submit-output`. Only the store a `builder-rpc-v0`
+            build gets on `NIX_REMOTE` implements it. Every other store
+            raises, in libstore's own words.
+
+            Submit a `.drv` with a text-ingested output to register a
+            whole graph. The build cannot realise it; its consumer
+            does, through `builtins.outputOf`."""
+            Cxx("""
+nix::require<nix::SubmitStore>(self).submitOutput(
+    nix::SingleDerivedPath::Opaque{path}, output);
+            """)
 
     @needs("nix/store/log-store.hh", "nix/store/store-cast.hh")
     def get_build_log(self, path: StorePath) -> Str | None:

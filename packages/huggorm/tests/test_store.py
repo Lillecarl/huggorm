@@ -95,7 +95,7 @@ from huggorm_bindings.errors import (
     Unsupported,
     UsageError,
 )
-from huggorm_dsl.declare import NIX_2_35
+from huggorm_dsl.declare import NIX_2_35, NIX_2_36
 
 if NIX_2_35:
     from huggorm_bindings import GCSpecificPaths, GCWholeStore, UnkeyedRealisation
@@ -110,6 +110,14 @@ def store() -> Store:
 
 def test_a_store_opens_from_a_uri(store: Store) -> None:
     assert store.get_uri() == "dummy://"
+
+
+if NIX_2_36:
+    def test_only_a_builder_rpc_store_takes_a_submitted_output(store: Store) -> None:
+        """Every store but the restricted one of a `builder-rpc-v0` build
+        refuses, and libstore's message names the store."""
+        with pytest.raises(UsageError, match="not supported by store 'dummy://'"):
+            store.submit_output(store.parse_store_path(f"/nix/store/{HELLO}"), "out")
 
 
 def test_an_unknown_scheme_is_refused() -> None:
