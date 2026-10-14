@@ -114,7 +114,9 @@ def test_every_bundled_object_maps_to_a_shipped_licence() -> None:
     library cannot arrive silently. The dev install bundles nothing,
     so there the directory is absent and this passes on the set above.
     """
-    package = pathlib.Path(importlib.import_module("huggorm_bindings").__file__).parent
+    filename = importlib.import_module("huggorm_bindings").__file__
+    assert filename is not None, "huggorm_bindings has no package file"
+    package = pathlib.Path(filename).parent
     libs = package.parent / "huggorm_bindings.libs"
     if not libs.is_dir():
         pytest.skip("this install bundles no libraries")
