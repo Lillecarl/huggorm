@@ -270,7 +270,7 @@ and present every time (#91).
 
 # Maintain the issues as you work
 
-The tracker is GitHub issues on `Lillecarl/huggorm`. Issue #N is the
+The tracker is GitHub issues on `nixidae/huggorm`. Issue #N is the
 old `tasks/NNN` file for every N up to 105, so a `tasks/NNN` in a
 commit message means #N. #106 holds the old board, `tasks/README.md`.
 Refer to an issue as `#N` in Markdown, and as `huggorm#N` in code, in
