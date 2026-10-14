@@ -4,6 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "huggorm-generated"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 version = "0.1.0"
 description = "The emitted API surface: async wrappers, protocols, RPC client"
 requires-python = ">=3.11"

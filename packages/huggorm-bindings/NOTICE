@@ -1,13 +1,23 @@
-huggorm-bindings carries one file it did not write.
+huggorm-bindings is Apache-2.0, under the LICENSE beside this file. It
+uses Nix and carries parts of Nix, and those parts keep Nix's terms: the
+GNU Lesser General Public License v2.1 or later, copyright the Nix
+contributors (NixOS/nix). `COPYING.nix` beside this file is that
+licence's text, copied from the Nix source the bindings link.
+
+The extension links libnixstore, libnixexpr and the Nix libraries they
+rest on, as shared objects. That is a "work that uses the Library" in the
+sense of LGPL section 5, and section 6 permits it under Apache-2.0. The
+source of every part that is not Nix is the huggorm repository
+(https://github.com/nixidae/huggorm), so a user can rebuild the extension
+against a Nix of their own.
+
+The manylinux wheel bundles those Nix libraries, built from the Nix
+source that `nix/versions.nix` pins, with the patches in `nix/patches`.
+That source and those patches are the source of the bundled libraries.
 
 `get-env.sh` is Nix's own script, `src/nix/get-env.sh` in the Nix
 source this package links. Nix compiles it into the `nix` binary,
 where no library can reach it, so a copy travels beside the bindings,
 from the Nix of the same version. The copy is the text the binary
-embeds: the file, after the one newline Nix's build puts before it.
-
-Its terms are its own: the GNU Lesser General Public License v2.1,
-copyright the Nix contributors (NixOS/nix). Nix's README states the
-licence, and `COPYING.nix` beside the script is its text, copied from
-the same Nix source. Everything else in this package is Apache-2.0,
-under the LICENSE at the root of the huggorm repository.
+embeds: the file, after the one newline Nix's build puts before it. It
+is LGPL-2.1-or-later, as the rest of Nix is.

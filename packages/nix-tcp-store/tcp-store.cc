@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
 // A `tcp://host:port` store: the daemon protocol over a TCP connection.
 //
 // A plain `RemoteStore`, as `ssh-ng://` is, and not a `LocalFSStore` as
@@ -7,7 +9,8 @@
 // `nix copy --from` both fail with "No such file or directory").
 //
 // The client half of NixOS/nix#5265, ported to the authority-based store
-// configuration of Nix 2.34 and later.
+// configuration of Nix 2.34 and later. A port of Nix's code keeps Nix's
+// licence, so this file is LGPL-2.1-or-later and not Apache-2.0.
 
 #include "nix/store/remote-store.hh"
 #include "nix/store/remote-store-connection.hh"

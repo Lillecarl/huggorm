@@ -52,6 +52,7 @@ rec {
     src = lib.fileset.toSource {
       root = ./packages/huggorm-gen;
       fileset = lib.fileset.unions [
+        ./packages/huggorm-gen/LICENSE
         ./packages/huggorm-gen/pyproject.toml
         ./packages/huggorm-gen/src
       ];

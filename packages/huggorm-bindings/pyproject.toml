@@ -5,6 +5,8 @@ backend-path = ["_backend"]
 
 [project]
 name = "huggorm-bindings"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 version = "0.1.0"
 description = "nanobind bindings, written from declarations"
 requires-python = ">=3.11"
@@ -13,7 +15,6 @@ requires-python = ">=3.11"
 include = ["huggorm_bindings*"]
 
 # Nix's `get-env.sh` and `COPYING`, which a wheel build copies in before
-# setup.py runs, and the NOTICE naming whose terms the script travels
-# under.
+# setup.py runs, and the NOTICE naming whose terms they travel under.
 [tool.setuptools.package-data]
 huggorm_bindings = ["get-env.sh", "COPYING.nix", "NOTICE"]

@@ -1,0 +1,10 @@
+Each patch here changes another project, and it keeps that project's terms.
+The Apache-2.0 LICENSE of huggorm does not apply to these files.
+
+- `nix-*.patch`: Nix (NixOS/nix), LGPL-2.1-or-later.
+- `bdwgc-*.patch`, `boehmgc-*.patch`: the Boehm-Demers-Weiser collector
+  (bdwgc), under its own MIT-style licence.
+
+A build that links a patched library carries the change: the manylinux
+wheel bundles the Nix libraries that these patches change.
+`packages/huggorm-bindings/NOTICE` says what that wheel owes.
