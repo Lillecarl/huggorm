@@ -24,6 +24,9 @@
   nix-cmd,
   # `get-env.sh` as the `nix` binary embeds it.
   getEnvSh,
+  # The licence texts of the libraries a wheel bundles, as
+  # `licenses/<name>/<files>`, from the pinned sources.
+  licenses,
   pkg-config,
   ...
 }:
@@ -84,7 +87,8 @@ python3Packages.buildPythonPackage {
   # text of the same version, as the binary embeds it.
   # NOTICE names whose terms the script travels under, and Nix's
   # `COPYING` is those terms: LGPL-2.1 section 1 has the licence text
-  # go with every copy.
+  # go with every copy. `licenses/` holds the texts of the libraries a
+  # wheel bundles, so the dev install carries what the wheel carries.
   postInstall = ''
     cp -f ${getEnvSh} \
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/get-env.sh"
@@ -92,6 +96,9 @@ python3Packages.buildPythonPackage {
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/COPYING.nix"
     cp -f ${./NOTICE} \
       "$out/${python3Packages.python.sitePackages}/huggorm_bindings/NOTICE"
+    mkdir -p "$out/${python3Packages.python.sitePackages}/huggorm_bindings/licenses"
+    cp -r ${licenses}/* \
+      "$out/${python3Packages.python.sitePackages}/huggorm_bindings/licenses/"
   '';
 
   # Don't run `pip check` that might fail

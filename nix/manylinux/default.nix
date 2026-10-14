@@ -22,6 +22,9 @@
   boehmgc,
   # `get-env.sh` as the `nix` binary embeds it.
   getEnvSh,
+  # The licence texts of the libraries the wheel bundles, as
+  # `licenses/<name>/<files>`, from the pinned sources the image builds.
+  licenses,
   # The emitted C++ for that Nix, which every wheel compiles.
   bindings-src,
   # The generator, for the module list a check holds a wheel to, and
@@ -232,6 +235,7 @@ lib.makeScope pkgs.newScope (
           cp ${getEnvSh} huggorm_bindings/get-env.sh
           cp ${nixComponents.nix-store.src}/COPYING huggorm_bindings/COPYING.nix
           cp ${../../packages/huggorm-bindings/NOTICE} huggorm_bindings/NOTICE
+          cp -r ${licenses} huggorm_bindings/licenses
           ${interpreter py} -m pip wheel --no-build-isolation \
             --no-deps --no-index --wheel-dir dist .
           auditwheel repair --plat ${platform} --wheel-dir "$out" dist/*.whl

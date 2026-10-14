@@ -15,6 +15,7 @@ requires-python = ">=3.11"
 include = ["huggorm_bindings*"]
 
 # Nix's `get-env.sh` and `COPYING`, which a wheel build copies in before
-# setup.py runs, and the NOTICE naming whose terms they travel under.
+# setup.py runs, the NOTICE naming whose terms they travel under, and the
+# licence texts of the bundled libraries, which both builds copy in.
 [tool.setuptools.package-data]
-huggorm_bindings = ["get-env.sh", "COPYING.nix", "NOTICE"]
+huggorm_bindings = ["get-env.sh", "COPYING.nix", "NOTICE", "licenses/README", "licenses/*/*"]

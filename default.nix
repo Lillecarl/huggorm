@@ -232,6 +232,12 @@ rec {
           { echo; cat ${self.nixComponents.nix-store.src}/src/nix/get-env.sh; } > "$out"
         '';
 
+        # The licence texts of every library the manylinux wheel
+        # bundles, as `licenses/<name>/<files>`, from the pinned
+        # sources the image builds. Both lanes that carry licensing
+        # files read this one: the dev install and the wheel.
+        licenses = pkgs.callPackage ./nix/licenses.nix { };
+
         # The emitted C++ for this Nix. `HUGGORM_NIX_VERSION` picks each
         # declaration's `NIX_VERSION` branch (huggorm#55).
         bindings-src = bindings-src.overrideAttrs { HUGGORM_NIX_VERSION = self.version; };
