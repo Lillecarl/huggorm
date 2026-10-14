@@ -160,4 +160,4 @@ field rather than printed at you.
 
 `README.md` is contributor-facing: how the four layers are built, what
 the build refuses, and how to add a binding. The
-[issues](https://github.com/Lillecarl/huggorm/issues) hold one design decision each.
+[issues](https://github.com/nixidae/huggorm/issues) hold one design decision each.
